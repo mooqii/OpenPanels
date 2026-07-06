@@ -38,6 +38,7 @@ const OPENPANELS_RESOURCE_DOMAINS = [
   "data:",
   "blob:",
 ]
+const OPENPANELS_FRAME_DOMAINS = ["http://127.0.0.1:*", "http://localhost:*"]
 const localStudioServers = new Map()
 
 const pluginManifest = JSON.parse(
@@ -98,6 +99,7 @@ function registerWidgetTool() {
       "A native widget that opens the project-backed MyOpenPanels local studio.",
     connectDomains: OPENPANELS_CONNECT_DOMAINS,
     resourceDomains: OPENPANELS_RESOURCE_DOMAINS,
+    frameDomains: OPENPANELS_FRAME_DOMAINS,
     html: () => openPanelsWidgetHtml({ initialDisplayMode: "fullscreen" }),
   })
 
@@ -646,7 +648,11 @@ async function findOpenPort() {
   })
 }
 
-async function waitForLocalStudio(url, timeoutMs, getStartupError = () => null) {
+async function waitForLocalStudio(
+  url,
+  timeoutMs,
+  getStartupError = () => null
+) {
   const startedAt = Date.now()
   let lastError
   while (Date.now() - startedAt < timeoutMs) {

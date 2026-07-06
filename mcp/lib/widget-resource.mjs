@@ -22,6 +22,7 @@ export function registerWidgetResource(
     prefersBorder = false,
     connectDomains = [],
     resourceDomains = [],
+    frameDomains = [],
   }
 ) {
   const metadata = {
@@ -30,6 +31,7 @@ export function registerWidgetResource(
       csp: {
         connectDomains,
         resourceDomains,
+        frameDomains,
       },
     },
     "openai/widgetDescription": description,
@@ -37,6 +39,7 @@ export function registerWidgetResource(
     "openai/widgetCSP": {
       connect_domains: connectDomains,
       resource_domains: resourceDomains,
+      frame_domains: frameDomains,
     },
   }
 

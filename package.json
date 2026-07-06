@@ -10,7 +10,7 @@
     "format": "ultracite fix",
     "lint": "ultracite check",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
+    "test": "vitest run mcp/**/*.test.mjs && pnpm -r test",
     "check:mcp": "node --check mcp/server.mjs",
     "check": "pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
   },
