@@ -127,6 +127,27 @@ describe("@openpanels/local-server", () => {
     const current = await fetchJson(`${baseUrl}/api/bootstrap`)
     expect(current.session.id).toBe(second.session.id)
   })
+
+  it("allows cross-origin widget API requests", async () => {
+    const optionsResponse = await fetch(`${baseUrl}/api/bootstrap`, {
+      method: "OPTIONS",
+      headers: {
+        "access-control-request-headers": "content-type",
+        "access-control-request-method": "GET",
+        origin: "https://example.invalid",
+      },
+    })
+
+    expect(optionsResponse.status).toBe(204)
+    expect(optionsResponse.headers.get("access-control-allow-origin")).toBe("*")
+
+    const bootstrapResponse = await fetch(`${baseUrl}/api/bootstrap`, {
+      headers: { origin: "https://example.invalid" },
+    })
+    expect(bootstrapResponse.headers.get("access-control-allow-origin")).toBe(
+      "*"
+    )
+  })
 })
 
 async function fetchJson(url: string, init?: RequestInit): Promise<any> {

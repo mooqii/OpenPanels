@@ -29,6 +29,21 @@ applyOpenPanelsTheme(detectOpenPanelsTheme())
 
 const ACTIVE_SESSION_STORAGE_KEY = "openpanels.activeSessionId"
 
+type OpenPanelsHostWindow = Window &
+  typeof globalThis & {
+    __OPENPANELS_API_BASE__?: string
+    openai?: {
+      rawToolResult?: {
+        structuredContent?: {
+          serverUrl?: string
+        }
+      }
+      toolOutput?: {
+        serverUrl?: string
+      }
+    }
+  }
+
 interface BootstrapResponse {
   panel: OpenPanelsPanel
   session: OpenPanelsSession
@@ -38,7 +53,7 @@ interface BootstrapResponse {
 
 interface AppState extends BootstrapResponse {}
 
-function App() {
+function App({ apiBase }: { apiBase: string }) {
   const { t } = useOpenPanelsI18n()
   const [appState, setAppState] = useState<AppState | null>(null)
   const [snapshot, setSnapshot] = useState<StoreSnapshot | null>(null)
@@ -47,26 +62,29 @@ function App() {
   )
   const [sessions, setSessions] = useState<OpenPanelsSession[]>([])
 
-  const loadProject = useCallback(async (sessionId?: string | null) => {
-    const url = new URL("/api/bootstrap", window.location.origin)
-    if (sessionId) {
-      url.searchParams.set("sessionId", sessionId)
-    }
-    const response = await fetch(url)
-    const data = (await response.json()) as BootstrapResponse
-    const normalized = {
-      ...data,
-      state: normalizeSnapshot(data.state),
-    }
-    window.localStorage.setItem(
-      ACTIVE_SESSION_STORAGE_KEY,
-      normalized.session.id
-    )
-    setSelection(null)
-    setAppState(normalized)
-    setSnapshot(normalized.state)
-    setSessions(data.sessions ?? (await fetchSessions()))
-  }, [])
+  const loadProject = useCallback(
+    async (sessionId?: string | null) => {
+      const url = apiUrl(apiBase, "/api/bootstrap")
+      if (sessionId) {
+        url.searchParams.set("sessionId", sessionId)
+      }
+      const response = await apiFetch(apiBase, url)
+      const data = (await response.json()) as BootstrapResponse
+      const normalized = {
+        ...data,
+        state: normalizeSnapshot(data.state),
+      }
+      window.localStorage.setItem(
+        ACTIVE_SESSION_STORAGE_KEY,
+        normalized.session.id
+      )
+      setSelection(null)
+      setAppState(normalized)
+      setSnapshot(normalized.state)
+      setSessions(data.sessions ?? (await fetchSessions(apiBase)))
+    },
+    [apiBase]
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -86,7 +104,7 @@ function App() {
     if (!appState) return
     const timer = window.setInterval(async () => {
       try {
-        const activeSessionId = await fetchActiveSessionId()
+        const activeSessionId = await fetchActiveSessionId(apiBase)
         if (activeSessionId && activeSessionId !== appState.session.id) {
           await loadProject(activeSessionId)
         }
@@ -95,22 +113,23 @@ function App() {
       }
     }, 1000)
     return () => window.clearInterval(timer)
-  }, [appState, loadProject])
+  }, [apiBase, appState, loadProject])
 
   const assetStore = useMemo(() => {
     if (!appState) return new DataUrlAssetStore()
     return new OpenPanelsBrowserAssetStore(
+      apiBase,
       appState.session.id,
       appState.panel.id
     )
-  }, [appState])
+  }, [apiBase, appState])
 
   const saveSnapshot = useCallback((nextSnapshot: StoreSnapshot) => {
     setSnapshot(nextSnapshot)
   }, [])
 
   const createProject = useCallback(async () => {
-    const response = await fetch("/api/projects", {
+    const response = await apiFetch(apiBase, "/api/projects", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: t`Untitled` }),
@@ -124,13 +143,14 @@ function App() {
     setSelection(null)
     setAppState(normalized)
     setSnapshot(normalized.state)
-    setSessions(data.sessions ?? (await fetchSessions()))
-  }, [t])
+    setSessions(data.sessions ?? (await fetchSessions(apiBase)))
+  }, [apiBase, t])
 
   const renameProject = useCallback(
     async (title: string) => {
       if (!appState) return
-      const response = await fetch(
+      const response = await apiFetch(
+        apiBase,
         `/api/sessions/${encodeURIComponent(appState.session.id)}`,
         {
           method: "PATCH",
@@ -150,13 +170,14 @@ function App() {
         )
       )
     },
-    [appState]
+    [apiBase, appState]
   )
 
   useEffect(() => {
     if (!(appState && snapshot)) return
     const timer = window.setTimeout(() => {
-      fetch(
+      apiFetch(
+        apiBase,
         `/api/panels/${encodeURIComponent(appState.session.id)}/${encodeURIComponent(appState.panel.id)}/state`,
         {
           method: "PUT",
@@ -168,12 +189,13 @@ function App() {
       })
     }, 400)
     return () => window.clearTimeout(timer)
-  }, [appState, snapshot])
+  }, [apiBase, appState, snapshot])
 
   useEffect(() => {
     if (!(appState && selection)) return
     const timer = window.setTimeout(() => {
-      fetch(
+      apiFetch(
+        apiBase,
         `/api/panels/${encodeURIComponent(appState.session.id)}/${encodeURIComponent(appState.panel.id)}/selection`,
         {
           method: "PUT",
@@ -192,7 +214,7 @@ function App() {
       })
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [appState, selection])
+  }, [apiBase, appState, selection])
 
   if (!(appState && snapshot)) {
     return <main className="design-shell" />
@@ -375,17 +397,20 @@ function ProjectTitleControl({
 }
 
 class OpenPanelsBrowserAssetStore implements AssetStore {
+  private readonly apiBase: string
   private readonly panelId: string
   private readonly sessionId: string
 
-  constructor(sessionId: string, panelId: string) {
+  constructor(apiBase: string, sessionId: string, panelId: string) {
+    this.apiBase = apiBase
     this.sessionId = sessionId
     this.panelId = panelId
   }
 
   async upload(_asset: Partial<Asset>, file: File) {
     const dataUrl = await fileToDataUrl(file)
-    const response = await fetch(
+    const response = await apiFetch(
+      this.apiBase,
       `/api/panels/${encodeURIComponent(this.sessionId)}/${encodeURIComponent(this.panelId)}/assets`,
       {
         method: "POST",
@@ -441,13 +466,89 @@ function fileToDataUrl(file: File): Promise<string> {
   })
 }
 
-async function fetchSessions() {
-  const response = await fetch("/api/sessions")
+function apiUrl(apiBase: string, path: string | URL): URL {
+  if (path instanceof URL) return path
+  return new URL(path, normalizedApiBase(apiBase))
+}
+
+function normalizedApiBase(apiBase: string): string {
+  return apiBase.endsWith("/") ? apiBase : `${apiBase}/`
+}
+
+function apiFetch(
+  apiBase: string,
+  path: string | URL,
+  init?: RequestInit
+): Promise<Response> {
+  return fetch(apiUrl(apiBase, path), init)
+}
+
+function localHttpOrigin(): string | null {
+  if (
+    window.location.protocol === "http:" &&
+    ["127.0.0.1", "localhost"].includes(window.location.hostname)
+  ) {
+    return window.location.origin
+  }
+  return null
+}
+
+function hostServerUrl(): string | null {
+  const hostWindow = window as OpenPanelsHostWindow
+  return (
+    hostWindow.__OPENPANELS_API_BASE__ ??
+    hostWindow.openai?.toolOutput?.serverUrl ??
+    hostWindow.openai?.rawToolResult?.structuredContent?.serverUrl ??
+    null
+  )
+}
+
+function currentApiBase(): string | null {
+  return localHttpOrigin() ?? hostServerUrl()
+}
+
+function useApiBase(): string | null {
+  const [apiBase, setApiBase] = useState(() => currentApiBase())
+
+  useEffect(() => {
+    if (apiBase) return
+    const syncApiBase = () => {
+      const nextApiBase = currentApiBase()
+      if (nextApiBase) {
+        setApiBase(nextApiBase)
+      }
+    }
+    const timer = window.setInterval(syncApiBase, 100)
+    window.addEventListener("message", syncApiBase)
+    window.addEventListener("openai:set_globals", syncApiBase)
+    syncApiBase()
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener("message", syncApiBase)
+      window.removeEventListener("openai:set_globals", syncApiBase)
+    }
+  }, [apiBase])
+
+  return apiBase
+}
+
+function AppBootstrap() {
+  const apiBase = useApiBase()
+
+  if (!apiBase) {
+    return <main className="design-shell" />
+  }
+
+  return <App apiBase={apiBase} />
+}
+
+async function fetchSessions(apiBase: string) {
+  const response = await apiFetch(apiBase, "/api/sessions")
   return (await response.json()) as OpenPanelsSession[]
 }
 
-async function fetchActiveSessionId() {
-  const response = await fetch("/api/active-session")
+async function fetchActiveSessionId(apiBase: string) {
+  const response = await apiFetch(apiBase, "/api/active-session")
   const data = (await response.json()) as { sessionId?: string | null }
   return data.sessionId ?? null
 }
@@ -456,7 +557,7 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <OpenPanelsI18nProvider>
       <OpenPanelsThemeProvider>
-        <App />
+        <AppBootstrap />
       </OpenPanelsThemeProvider>
     </OpenPanelsI18nProvider>
   </StrictMode>

@@ -8,6 +8,7 @@ import { registerAppTool } from "@modelcontextprotocol/ext-apps/server"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
+import { localStudioStaticHtml } from "./lib/local-studio-static.mjs"
 import {
   openPanelsWidgetHtml,
   registerWidgetResource,
@@ -100,7 +101,11 @@ function registerWidgetTool() {
     connectDomains: OPENPANELS_CONNECT_DOMAINS,
     resourceDomains: OPENPANELS_RESOURCE_DOMAINS,
     frameDomains: OPENPANELS_FRAME_DOMAINS,
-    html: () => openPanelsWidgetHtml({ initialDisplayMode: "fullscreen" }),
+    html: async () =>
+      openPanelsWidgetHtml({
+        appHtml: await localStudioStaticHtml(),
+        initialDisplayMode: "fullscreen",
+      }),
   })
 
   registerAppTool(

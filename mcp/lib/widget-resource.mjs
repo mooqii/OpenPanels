@@ -66,9 +66,12 @@ export function registerWidgetResource(
 }
 
 export function openPanelsWidgetHtml({
+  appHtml,
   initialDisplayMode = "fullscreen",
 } = {}) {
-  return `<!doctype html>
+  return injectMcpHostBridge(
+    appHtml ??
+      `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -94,39 +97,32 @@ export function openPanelsWidgetHtml({
         z-index: 1;
       }
     </style>
-    <script id="openpanelsInitialDisplayMode">
-      window.__OPENPANELS_INITIAL_DISPLAY_MODE__ = ${JSON.stringify(initialDisplayMode)};
-    </script>
-    <script id="openpanelsMcpAppsBundle">${escapeInlineScript(mcpAppsGlobalScript())}</script>
-    <script id="openpanelsMcpHostBridge">${mcpHostBridgeScript()}</script>
   </head>
   <body>
     <div class="status" id="openpanels-status">Opening MyOpenPanels...</div>
-    <script>
-      (() => {
-        const status = document.getElementById("openpanels-status");
-        let currentUrl = "";
-
-        function toolOutput() {
-          return window.openai && (window.openai.toolOutput || window.openai.rawToolResult?.structuredContent);
-        }
-
-        function updateFrame() {
-          const output = toolOutput();
-          const serverUrl = output && output.serverUrl;
-          if (!serverUrl || serverUrl === currentUrl) return;
-          currentUrl = serverUrl;
-          status.textContent = "Opening " + serverUrl + "...";
-          window.location.replace(serverUrl);
-        }
-
-        window.addEventListener("openai:set_globals", updateFrame);
-        window.addEventListener("message", updateFrame);
-        updateFrame();
-      })();
-    </script>
   </body>
-</html>`
+</html>`,
+    { initialDisplayMode }
+  )
+}
+
+function injectMcpHostBridge(html, { initialDisplayMode = "fullscreen" } = {}) {
+  const bridge = [
+    '<script id="openpanelsInitialDisplayMode">',
+    `window.__OPENPANELS_INITIAL_DISPLAY_MODE__ = ${JSON.stringify(initialDisplayMode)};`,
+    "</script>",
+    '<script id="openpanelsMcpAppsBundle">',
+    escapeInlineScript(mcpAppsGlobalScript()),
+    "</script>",
+    '<script id="openpanelsMcpHostBridge">',
+    mcpHostBridgeScript(),
+    "</script>",
+  ].join("\n")
+
+  if (html.includes("</head>")) {
+    return html.replace("</head>", () => `${bridge}\n</head>`)
+  }
+  return `${bridge}\n${html}`
 }
 
 function mcpAppsGlobalScript() {

@@ -5,6 +5,14 @@ import { defineConfig } from "vite"
 import { createOpenPanelsApiMiddleware } from "../../packages/local-server/src/index"
 
 export default defineConfig({
+  server: {
+    cors: true,
+    headers: {
+      "Access-Control-Allow-Headers": "content-type",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,OPTIONS",
+      "Access-Control-Allow-Origin": "*",
+    },
+  },
   plugins: [
     {
       name: "openpanels-local-api",

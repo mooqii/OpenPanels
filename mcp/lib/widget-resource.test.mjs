@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
 import {
+  assertCspCompatibleStaticHtml,
+  localStudioStaticHtml,
+} from "./local-studio-static.mjs"
+import {
   openPanelsWidgetHtml,
   registerWidgetResource,
 } from "./widget-resource.mjs"
@@ -41,10 +45,28 @@ describe("registerWidgetResource", () => {
     ).toEqual(["http://127.0.0.1:*"])
   })
 
-  it("opens the local studio without nesting a localhost iframe", () => {
-    const html = openPanelsWidgetHtml()
+  it("renders a sandbox-compatible inline widget shell", () => {
+    const html = openPanelsWidgetHtml({
+      appHtml:
+        '<!doctype html><html><head></head><body><div id="root"></div><script>window.__OPENPANELS_APP__=true;</script></body></html>',
+    })
 
     expect(html).not.toMatch(/<iframe\b/i)
-    expect(html).toContain("window.location.replace(serverUrl)")
+    expect(html).not.toContain("window.location.replace")
+    expect(html).toContain("openpanelsMcpHostBridge")
+    expect(html).toContain('id="root"')
   })
+
+  it("inlines the local studio build for MCP app sandbox loading", async () => {
+    const html = await localStudioStaticHtml()
+
+    assertCspCompatibleStaticHtml(html)
+    const shellMarkup = html
+      .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+      .replace(/<style\b[\s\S]*?<\/style>/gi, "")
+    expect(html).toContain('id="root"')
+    expect(shellMarkup).not.toMatch(/<script\b[^>]+\bsrc=/i)
+    expect(shellMarkup).not.toMatch(/<link\b[^>]+\bhref=/i)
+    expect(shellMarkup).not.toMatch(/<script\b[^>]*\btype="module"/i)
+  }, 60_000)
 })

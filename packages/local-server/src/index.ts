@@ -53,6 +53,13 @@ async function routeRequest(
   staticDir?: string
 ) {
   const url = new URL(request.url ?? "/", "http://localhost")
+  setCorsHeaders(response)
+
+  if (request.method === "OPTIONS") {
+    response.statusCode = 204
+    response.end()
+    return
+  }
 
   if (request.method === "GET" && url.pathname === "/api/bootstrap") {
     const bootstrap = await ensureCanvasBootstrap(
@@ -373,6 +380,15 @@ function json(response: ServerResponse, data: unknown): void {
   response.statusCode = 200
   response.setHeader("content-type", "application/json")
   response.end(JSON.stringify(data, jsonReplacer))
+}
+
+function setCorsHeaders(response: ServerResponse): void {
+  response.setHeader("access-control-allow-origin", "*")
+  response.setHeader(
+    "access-control-allow-methods",
+    "GET,POST,PUT,PATCH,OPTIONS"
+  )
+  response.setHeader("access-control-allow-headers", "content-type")
 }
 
 function jsonReplacer(_key: string, value: unknown) {
