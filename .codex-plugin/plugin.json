@@ -1,7 +1,7 @@
 {
   "name": "openpanels",
-  "version": "0.1.0",
-  "description": "Codex-first local agent panels for artifacts, canvas, markdown, and images.",
+  "version": "0.1.1",
+  "description": "Local agent panels for artifacts, canvas, markdown, and images.",
   "author": {
     "name": "OpenPanels"
   },
@@ -17,13 +17,14 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "OpenPanels",
-    "shortDescription": "Open project-backed canvas panels inside Codex.",
-    "longDescription": "OpenPanels packages a native Codex widget, MCP tools, and skills so agents can open a local canvas workspace, read selections, insert generated images, and persist everything under the active project's .openpanels directory.",
+    "shortDescription": "Open project-backed canvas panels for coding agents.",
+    "longDescription": "OpenPanels packages a native Codex widget, generic MCP tools, and skills so agents can open a local canvas workspace, read selections, insert generated images, and persist everything under the active project's .openpanels directory.",
     "developerName": "OpenPanels",
     "category": "Productivity",
     "brandColor": "#2F7CF6",
     "capabilities": [
       "Native Codex widget",
+      "Generic MCP tools",
       "Project-local persistence",
       "Canvas selection handoff",
       "Image insertion",

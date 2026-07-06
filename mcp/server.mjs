@@ -14,6 +14,7 @@ import {
 } from "./lib/widget-resource.mjs"
 
 const TOOL_RENDER_WIDGET = "render_openpanels_widget"
+const TOOL_START_STUDIO = "start_openpanels_studio"
 const TOOL_GET_SESSION = "get_openpanels_session"
 const TOOL_OPEN_PANEL = "open_openpanels_panel"
 const TOOL_INSERT_ARTIFACT = "insert_openpanels_artifact"
@@ -51,7 +52,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "OpenPanels renders a local Codex-first design canvas. Use render_openpanels_widget to open the widget, get_openpanels_selection to read the user's current canvas selection, read_openpanels_selection_asset for the exported PNG selection, and insert_openpanels_image to place generated images back onto the canvas.",
+      "OpenPanels renders a local agent design canvas. In Codex or other clients that support native app resources, use render_openpanels_widget. In generic MCP clients such as Claude Desktop or Hermes, use start_openpanels_studio and open the returned serverUrl in a browser. Use get_openpanels_selection to read the user's current canvas selection, read_openpanels_selection_asset for the exported PNG selection, and insert_openpanels_image to place generated images back onto the canvas.",
   }
 )
 
@@ -91,7 +92,7 @@ function registerWidgetTool() {
     uri: OPENPANELS_WIDGET_URI,
     title: "OpenPanels",
     description:
-      "A native Codex widget that opens the project-backed OpenPanels local studio.",
+      "A native widget that opens the project-backed OpenPanels local studio.",
     connectDomains: OPENPANELS_CONNECT_DOMAINS,
     resourceDomains: OPENPANELS_RESOURCE_DOMAINS,
     html: () => openPanelsWidgetHtml({ initialDisplayMode: "fullscreen" }),
@@ -121,7 +122,7 @@ function registerWidgetTool() {
     },
     async ({ projectDir, displayMode = "fullscreen" }) => {
       const paths = resolvePaths(projectDir)
-      await ensureSession(paths, "Codex Session")
+      await ensureSession(paths, "Agent Session")
       const localStudio = await ensureLocalStudioServer(paths.projectDir)
       return {
         content: [
@@ -154,6 +155,31 @@ function registerWidgetTool() {
           },
         },
       }
+    }
+  )
+
+  server.registerTool(
+    TOOL_START_STUDIO,
+    {
+      title: "Start OpenPanels Studio",
+      description:
+        "Start the browser-based OpenPanels local studio and return a localhost URL for generic MCP clients.",
+      inputSchema: projectArgs,
+    },
+    async ({ projectDir }) => {
+      const paths = resolvePaths(projectDir)
+      await ensureSession(paths, "Agent Session")
+      const localStudio = await ensureLocalStudioServer(paths.projectDir)
+      return jsonText({
+        version: 1,
+        mode: "generic-mcp",
+        projectDir: paths.projectDir,
+        storageDir: paths.storageDir,
+        serverUrl: localStudio.url,
+        port: localStudio.port,
+        instructions:
+          "Open serverUrl in a browser. Keep this MCP session running while using the studio.",
+      })
     }
   )
 }
@@ -326,7 +352,7 @@ function registerStateTools() {
     },
     async ({ projectDir }) => {
       const paths = resolvePaths(projectDir)
-      const session = await ensureSession(paths, "Codex Session")
+      const session = await ensureSession(paths, "Agent Session")
       return jsonText({ session })
     }
   )
@@ -344,7 +370,7 @@ function registerStateTools() {
     },
     async ({ projectDir, kind, title }) => {
       const paths = resolvePaths(projectDir)
-      const session = await ensureSession(paths, "Codex Session")
+      const session = await ensureSession(paths, "Agent Session")
       const panel = await createPanel(paths, session, kind, title)
       return jsonText({ sessionId: session.id, panel })
     }
@@ -375,7 +401,7 @@ function registerStateTools() {
       snapshot,
     }) => {
       const paths = resolvePaths(projectDir)
-      const session = await ensureSession(paths, "Codex Session")
+      const session = await ensureSession(paths, "Agent Session")
       const targetPanel = panelId
         ? await readPanel(paths, session.id, panelId)
         : await createPanel(paths, session, "canvas", title)
@@ -646,7 +672,7 @@ async function ensureSession(paths, title) {
 }
 
 async function ensureCanvasPanel(paths) {
-  const session = await ensureSession(paths, "Codex Session")
+  const session = await ensureSession(paths, "Agent Session")
   for (const panelId of session.panelIds ?? []) {
     const panel = await readPanel(paths, session.id, panelId)
     if (panel?.kind === "canvas") return { session, panel }

@@ -7,9 +7,14 @@ Out of scope: OpenPanelsCloud, accounts, billing, team sync, hosted AI services
 
 ## 1. Product Goal
 
-OpenPanels v0.1 is a Codex-first, local, open-source agent panel system.
+OpenPanels v0.1 is a local, open-source panel system for Codex and generic
+MCP-capable agents.
 
-The first release must let Codex open a native panel workspace, send artifacts into panels, render an interactive canvas panel migrated from Moodbook, and persist all local state under the current project directory.
+The first release must let agents open a panel workspace, send artifacts into
+panels, render an interactive canvas panel migrated from Moodbook, and persist
+all local state under the current project directory. Codex gets a native widget;
+generic MCP hosts such as Claude Desktop or Hermes get a browser URL for the
+same local studio.
 
 The v0.1 product is not only an SDK. It must be a complete runnable repository:
 
@@ -23,9 +28,9 @@ pnpm dev
 The initial user experience should be close to Cowart's product shape:
 
 ```txt
-Codex
+Agent
   -> OpenPanels MCP tools
-  -> native widget / local studio
+  -> native widget or browser local studio
   -> OpenPanels runtime
   -> registered panels
   -> project-local .openpanels storage
@@ -33,8 +38,8 @@ Codex
 
 ## 2. Hard Decisions For v0.1
 
-- OpenPanels v0.1 supports Codex only.
-- The protocol can be designed cleanly, but no non-Codex adapter is required in v0.1.
+- OpenPanels v0.1 supports Codex and generic stdio MCP hosts.
+- Codex uses `render_openpanels_widget`; generic MCP hosts use `start_openpanels_studio` and open the returned `serverUrl` in a browser.
 - Local persistence uses a hidden `.openpanels/` directory in the active user project.
 - Moodbook's `react-konva + zustand + editor/store/types/hooks/renderers` canvas is the first large migrated asset.
 - The canvas is migrated into `packages/canvas/`.
@@ -458,9 +463,9 @@ It does not need:
 - cloud sync
 - admin screens
 
-## 7. Codex MCP Plugin
+## 7. MCP Server And Codex Plugin
 
-OpenPanels v0.1 must include a Codex plugin and MCP server.
+OpenPanels v0.1 must include a generic MCP server and a Codex plugin wrapper.
 
 Use Cowart as the product reference:
 
@@ -478,6 +483,7 @@ Required tools:
 
 ```txt
 render_openpanels_widget
+start_openpanels_studio
 get_openpanels_session
 open_openpanels_panel
 insert_openpanels_artifact
@@ -489,14 +495,18 @@ write_openpanels_panel_asset
 The first working path can be:
 
 ```txt
-render_openpanels_widget
+render_openpanels_widget or start_openpanels_studio
 open_openpanels_panel(kind="canvas")
 insert_openpanels_artifact(kind="image" or "canvas")
 ```
 
 ### 7.2 Widget Behavior
 
-`render_openpanels_widget` opens the OpenPanels native widget for the active project.
+`render_openpanels_widget` opens the OpenPanels native widget for clients that
+support app resources.
+
+`start_openpanels_studio` starts the same project-backed local studio and
+returns a localhost URL for generic MCP clients.
 
 The widget must know:
 
@@ -514,7 +524,8 @@ skills/openpanels-open/SKILL.md
 skills/openpanels-image/SKILL.md
 ```
 
-The skills must instruct Codex agents to use MCP tools rather than manually editing `.openpanels/` files.
+The skills must instruct agents to use MCP tools rather than manually editing
+`.openpanels/` files.
 
 ## 8. Panel Model
 
@@ -676,18 +687,20 @@ Acceptance:
 - package typechecks independently
 - canvas state round-trips through OpenPanels runtime storage
 
-### Milestone 6: Codex Plugin And MCP Tools
+### Milestone 6: MCP Tools And Codex Plugin
 
 Deliver:
 
 - `.codex-plugin/plugin.json`
 - `mcp/server.mjs`
+- generic MCP setup docs
 - required MCP tools
 - skills
 
 Acceptance:
 
 - Codex can open OpenPanels widget
+- Generic MCP agents can start OpenPanels studio and receive a browser URL
 - Codex can open a canvas panel
 - Codex can insert an image asset into the canvas
 
@@ -722,7 +735,7 @@ When an AI agent starts implementing this spec, follow this order:
 5. Implement `apps/local-studio` as a canvas-first design workspace.
 6. Migrate Moodbook canvas into `packages/canvas`.
 7. Register canvas as the first real OpenPanels panel.
-8. Add MCP server and Codex plugin.
+8. Add MCP server, generic MCP docs, and Codex plugin.
 9. Add skills.
 10. Update README with clone/install/dev/plugin instructions.
 
@@ -735,8 +748,9 @@ OpenPanels v0.1 is done when:
 - repository installs with pnpm
 - local studio runs
 - Codex can open OpenPanels
-- Codex can create or show a session
-- Codex can open a canvas panel
+- Generic MCP agents can start OpenPanels and receive a browser URL
+- Agents can create or show a session
+- Agents can open a canvas panel
 - canvas panel uses the migrated Moodbook canvas package
 - image artifacts can be inserted into the canvas
 - state persists under `.openpanels/`
