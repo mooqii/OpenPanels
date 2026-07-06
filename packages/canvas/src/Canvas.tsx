@@ -61,6 +61,7 @@ import { getShapesBounds } from "./utils/coordinates"
 
 export interface CanvasSelectionShape {
   asset?: {
+    assetRef?: string | null
     h?: number | null
     id: string
     mimeType?: string | null
@@ -76,6 +77,7 @@ export interface CanvasSelectionShape {
 }
 
 export interface CanvasSelectionSnapshot {
+  assetRef?: string | null
   imageDataUrl?: string | null
   selectedShapeIds: string[]
   selectedShapes: CanvasSelectionShape[]
@@ -236,23 +238,34 @@ export function Canvas({
   useEffect(() => {
     if (!onSelectionChange) return
     let cancelled = false
+    let captureFrame = 0
     const frame = window.requestAnimationFrame(() => {
       if (cancelled) return
-      const imageDataUrl =
-        selectedShapes.length > 0
-          ? captureTransformer(transform.transformerRef.current)
-          : null
-      onSelectionChange({
-        imageDataUrl,
-        selectedShapeIds: selectedShapes.map((shape) => shape.id),
-        selectedShapes: selectedShapes.map((shape) =>
+      captureFrame = window.requestAnimationFrame(() => {
+        if (cancelled) return
+        const summarizedShapes = selectedShapes.map((shape) =>
           summarizeSelectionShape(editor, shape)
-        ),
+        )
+        const imageDataUrl =
+          selectedShapes.length > 0
+            ? captureTransformer(transform.transformerRef.current)
+            : null
+        onSelectionChange({
+          assetRef:
+            summarizedShapes.find((shape) => shape.asset?.assetRef)?.asset
+              ?.assetRef ?? null,
+          imageDataUrl,
+          selectedShapeIds: selectedShapes.map((shape) => shape.id),
+          selectedShapes: summarizedShapes,
+        })
       })
     })
     return () => {
       cancelled = true
       window.cancelAnimationFrame(frame)
+      if (captureFrame) {
+        window.cancelAnimationFrame(captureFrame)
+      }
     }
   }, [editor, onSelectionChange, selectedShapes, transform.transformerRef])
 
@@ -1048,6 +1061,7 @@ function summarizeSelectionShape(
     asset: asset
       ? {
           id: asset.id,
+          assetRef: assetRefFromAsset(asset),
           name: "name" in asset.props ? asset.props.name : null,
           src: "src" in asset.props ? asset.props.src : null,
           w: "w" in asset.props ? asset.props.w : null,
@@ -1056,4 +1070,32 @@ function summarizeSelectionShape(
         }
       : null,
   }
+}
+
+function assetRefFromAsset(asset: { meta?: unknown; props?: unknown }) {
+  if (
+    asset.meta &&
+    typeof asset.meta === "object" &&
+    "assetRef" in asset.meta &&
+    typeof asset.meta.assetRef === "string"
+  ) {
+    return asset.meta.assetRef
+  }
+  const props = asset.props
+  if (!(props && typeof props === "object" && "src" in props)) return null
+  const src = props.src
+  if (typeof src !== "string") return null
+  const match = src.match(/^\/api\/panels\/([^/]+)\/([^/]+)\/assets\/(.+)$/)
+  if (!match) return null
+  const sessionId = decodeURIComponent(match[1] ?? "")
+  const panelId = decodeURIComponent(match[2] ?? "")
+  const assetPath = (match[3] ?? "").split("/").map(decodeURIComponent)
+  return [
+    "sessions",
+    sessionId,
+    "panels",
+    panelId,
+    "assets",
+    ...assetPath,
+  ].join("/")
 }

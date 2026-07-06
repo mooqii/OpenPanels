@@ -82,6 +82,21 @@ function App() {
     }
   }, [loadProject])
 
+  useEffect(() => {
+    if (!appState) return
+    const timer = window.setInterval(async () => {
+      try {
+        const activeSessionId = await fetchActiveSessionId()
+        if (activeSessionId && activeSessionId !== appState.session.id) {
+          await loadProject(activeSessionId)
+        }
+      } catch (error) {
+        console.error("Failed to sync OpenPanels active project", error)
+      }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [appState, loadProject])
+
   const assetStore = useMemo(() => {
     if (!appState) return new DataUrlAssetStore()
     return new OpenPanelsBrowserAssetStore(
@@ -165,6 +180,7 @@ function App() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             selection: {
+              assetRef: selection.assetRef,
               selectedShapeIds: selection.selectedShapeIds,
               selectedShapes: selection.selectedShapes,
             },
@@ -428,6 +444,12 @@ function fileToDataUrl(file: File): Promise<string> {
 async function fetchSessions() {
   const response = await fetch("/api/sessions")
   return (await response.json()) as OpenPanelsSession[]
+}
+
+async function fetchActiveSessionId() {
+  const response = await fetch("/api/active-session")
+  const data = (await response.json()) as { sessionId?: string | null }
+  return data.sessionId ?? null
 }
 
 createRoot(document.getElementById("root")!).render(

@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "openpanels": {
-      "title": "OpenPanels Widget MCP",
-      "description": "Render and persist the OpenPanels native Codex widget for project-backed canvas work.",
+      "title": "OpenPanels MCP",
+      "description": "Open the project-backed OpenPanels canvas, read current selections, and insert generated images.",
       "command": "node",
       "args": ["./scripts/start-mcp.mjs"],
       "cwd": "."

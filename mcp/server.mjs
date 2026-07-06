@@ -60,6 +60,10 @@ const panelKinds = z.enum(["canvas"])
 const projectArgs = {
   projectDir: z.string().trim().optional(),
 }
+const currentCanvasArgs = {
+  ...projectArgs,
+  sessionId: z.string().trim().optional(),
+}
 
 registerWidgetTool()
 registerStateTools()
@@ -191,11 +195,11 @@ function registerStateTools() {
       title: "Get OpenPanels Canvas State",
       description:
         "Read the current project-backed OpenPanels canvas session, panel, state, and storage paths.",
-      inputSchema: projectArgs,
+      inputSchema: currentCanvasArgs,
     },
-    async ({ projectDir }) => {
+    async ({ projectDir, sessionId }) => {
       const paths = resolvePaths(projectDir)
-      const target = await ensureCanvasPanel(paths)
+      const target = await ensureCanvasPanel(paths, sessionId)
       const state =
         (await readJson(
           panelFile(paths, target.session.id, target.panel.id, "state.json")
@@ -217,13 +221,13 @@ function registerStateTools() {
       description:
         "Return the currently selected OpenPanels canvas shapes and optional exported PNG selection data.",
       inputSchema: {
-        ...projectArgs,
+        ...currentCanvasArgs,
         includeImageBase64: z.boolean().optional(),
       },
     },
-    async ({ projectDir, includeImageBase64 = false }) => {
+    async ({ projectDir, sessionId, includeImageBase64 = false }) => {
       const paths = resolvePaths(projectDir)
-      const target = await ensureCanvasPanel(paths)
+      const target = await ensureCanvasPanel(paths, sessionId)
       const state =
         (await readJson(
           panelFile(paths, target.session.id, target.panel.id, "state.json")
@@ -263,6 +267,9 @@ function registerStateTools() {
             "selection.json"
           ),
           base64,
+          mimeType: selection.assetRef
+            ? mimeTypeForFile(selection.assetRef)
+            : null,
         },
       }
     }
@@ -274,11 +281,11 @@ function registerStateTools() {
       title: "Read OpenPanels Selection Asset",
       description:
         "Read the PNG exported from the current OpenPanels canvas selection.",
-      inputSchema: projectArgs,
+      inputSchema: currentCanvasArgs,
     },
-    async ({ projectDir }) => {
+    async ({ projectDir, sessionId }) => {
       const paths = resolvePaths(projectDir)
-      const target = await ensureCanvasPanel(paths)
+      const target = await ensureCanvasPanel(paths, sessionId)
       const state =
         (await readJson(
           panelFile(paths, target.session.id, target.panel.id, "state.json")
@@ -297,7 +304,7 @@ function registerStateTools() {
       const data = await readFile(filePath)
       return jsonText({
         assetRef: selection.assetRef,
-        mimeType: "image/png",
+        mimeType: mimeTypeForFile(selection.assetRef),
         base64: data.toString("base64"),
       })
     }
@@ -310,7 +317,7 @@ function registerStateTools() {
       description:
         "Copy a local image into OpenPanels assets and create an image shape in the current canvas.",
       inputSchema: {
-        ...projectArgs,
+        ...currentCanvasArgs,
         imagePath: z.string().trim(),
         anchorShapeId: z.string().trim().optional(),
         placement: z.enum(["right", "left", "below"]).optional(),
@@ -321,6 +328,7 @@ function registerStateTools() {
     },
     async ({
       projectDir,
+      sessionId,
       imagePath,
       anchorShapeId,
       placement = "right",
@@ -329,7 +337,7 @@ function registerStateTools() {
       displayHeight,
     }) => {
       const paths = resolvePaths(projectDir)
-      const target = await ensureCanvasPanel(paths)
+      const target = await ensureCanvasPanel(paths, sessionId)
       const result = await insertOpenPanelsImage(paths, target, {
         imagePath,
         anchorShapeId,
@@ -348,11 +356,11 @@ function registerStateTools() {
       title: "Get OpenPanels Session",
       description:
         "Read the current OpenPanels session from .openpanels storage.",
-      inputSchema: projectArgs,
+      inputSchema: currentCanvasArgs,
     },
-    async ({ projectDir }) => {
+    async ({ projectDir, sessionId }) => {
       const paths = resolvePaths(projectDir)
-      const session = await ensureSession(paths, "Agent Session")
+      const session = await ensureSession(paths, "Agent Session", sessionId)
       return jsonText({ session })
     }
   )
@@ -363,15 +371,16 @@ function registerStateTools() {
       title: "Open OpenPanels Panel",
       description: "Create a panel in the current OpenPanels session.",
       inputSchema: {
-        ...projectArgs,
+        ...currentCanvasArgs,
         kind: panelKinds,
         title: z.string().trim().optional(),
       },
     },
-    async ({ projectDir, kind, title }) => {
+    async ({ projectDir, sessionId, kind, title }) => {
       const paths = resolvePaths(projectDir)
-      const session = await ensureSession(paths, "Agent Session")
+      const session = await ensureSession(paths, "Agent Session", sessionId)
       const panel = await createPanel(paths, session, kind, title)
+      await writeActiveSession(paths, session.id)
       return jsonText({ sessionId: session.id, panel })
     }
   )
@@ -382,7 +391,7 @@ function registerStateTools() {
       title: "Insert OpenPanels Artifact",
       description: "Insert an image or canvas artifact into the design canvas.",
       inputSchema: {
-        ...projectArgs,
+        ...currentCanvasArgs,
         panelId: z.string().trim().optional(),
         kind: z.enum(["image", "canvas"]),
         title: z.string().trim().optional(),
@@ -393,6 +402,7 @@ function registerStateTools() {
     },
     async ({
       projectDir,
+      sessionId,
       panelId,
       kind,
       title,
@@ -401,10 +411,10 @@ function registerStateTools() {
       snapshot,
     }) => {
       const paths = resolvePaths(projectDir)
-      const session = await ensureSession(paths, "Agent Session")
+      const session = await ensureSession(paths, "Agent Session", sessionId)
       const targetPanel = panelId
         ? await readPanel(paths, session.id, panelId)
-        : await createPanel(paths, session, "canvas", title)
+        : (await ensureCanvasPanel(paths, session.id)).panel
       if (!targetPanel) throw new Error(`Panel not found: ${panelId}`)
       const artifact = {
         id: createId("artifact"),
@@ -421,6 +431,7 @@ function registerStateTools() {
         ...(kind === "canvas" ? { snapshot: snapshot ?? {} } : {}),
       }
       await appendArtifact(paths, session.id, artifact)
+      await writeActiveSession(paths, session.id)
       return jsonText({ artifact, panel: targetPanel })
     }
   )
@@ -440,6 +451,7 @@ function registerStateTools() {
     async ({ projectDir, sessionId, panelId, state }) => {
       const paths = resolvePaths(projectDir)
       await writeJson(panelFile(paths, sessionId, panelId, "state.json"), state)
+      await writeActiveSession(paths, sessionId)
       return jsonText({ saved: true, sessionId, panelId })
     }
   )
@@ -645,18 +657,27 @@ async function waitForLocalStudio(url, timeoutMs) {
   )
 }
 
-async function ensureSession(paths, title) {
+async function ensureSession(paths, title, requestedSessionId) {
   await mkdir(join(paths.storageDir, "sessions"), { recursive: true })
   const indexPath = join(paths.storageDir, "index.json")
   const index = (await readJson(indexPath)) ?? {
     schemaVersion: 1,
     sessions: [],
   }
-  const existing = index.sessions?.[0]
+  if (requestedSessionId) {
+    const session = await readSession(paths, requestedSessionId)
+    if (!session) {
+      throw new Error(`OpenPanels session not found: ${requestedSessionId}`)
+    }
+    return session
+  }
+  const activeSessionId = await readActiveSession(paths)
+  const existing =
+    (activeSessionId
+      ? index.sessions?.find((session) => session.id === activeSessionId)
+      : null) ?? index.sessions?.[0]
   if (existing) {
-    const session = await readJson(
-      join(paths.storageDir, "sessions", safePart(existing.id), "session.json")
-    )
+    const session = await readSession(paths, existing.id)
     if (session) return session
   }
   const now = new Date().toISOString()
@@ -668,11 +689,16 @@ async function ensureSession(paths, title) {
     panelIds: [],
   }
   await writeSession(paths, session)
+  await writeActiveSession(paths, session.id)
   return session
 }
 
-async function ensureCanvasPanel(paths) {
-  const session = await ensureSession(paths, "Agent Session")
+async function ensureCanvasPanel(paths, requestedSessionId) {
+  const session = await ensureSession(
+    paths,
+    "Agent Session",
+    requestedSessionId
+  )
   for (const panelId of session.panelIds ?? []) {
     const panel = await readPanel(paths, session.id, panelId)
     if (panel?.kind === "canvas") return { session, panel }
@@ -852,6 +878,7 @@ async function insertOpenPanelsImage(paths, target, input) {
   state.currentPageId = pageId
   state.selectedShapeIds = [shapeId]
   await writeJson(statePath, state)
+  await writeActiveSession(paths, target.session.id)
   return {
     sessionId: target.session.id,
     panelId: target.panel.id,
@@ -868,11 +895,25 @@ async function writeSession(paths, session) {
   const dir = join(paths.storageDir, "sessions", safePart(session.id))
   await mkdir(dir, { recursive: true })
   await writeJson(join(dir, "session.json"), session)
+  const indexPath = join(paths.storageDir, "index.json")
+  const index = (await readJson(indexPath)) ?? {
+    schemaVersion: 1,
+    sessions: [],
+  }
+  const existingSessions = Array.isArray(index.sessions) ? index.sessions : []
+  const sessionsById = new Map(
+    existingSessions.map((existing) => [existing.id, existing])
+  )
+  sessionsById.set(session.id, {
+    id: session.id,
+    title: session.title,
+    updatedAt: session.updatedAt,
+  })
   await writeJson(join(paths.storageDir, "index.json"), {
     schemaVersion: 1,
-    sessions: [
-      { id: session.id, title: session.title, updatedAt: session.updatedAt },
-    ],
+    sessions: [...sessionsById.values()].sort((a, b) =>
+      String(b.updatedAt).localeCompare(String(a.updatedAt))
+    ),
   })
 }
 
@@ -907,6 +948,28 @@ async function createPanel(paths, session, kind, title) {
 
 async function readPanel(paths, sessionId, panelId) {
   return readJson(panelFile(paths, sessionId, panelId, "panel.json"))
+}
+
+async function readSession(paths, sessionId) {
+  return readJson(
+    join(paths.storageDir, "sessions", safePart(sessionId), "session.json")
+  )
+}
+
+async function readActiveSession(paths) {
+  const active = await readJson(activeSessionFile(paths))
+  return typeof active?.sessionId === "string" ? active.sessionId : null
+}
+
+async function writeActiveSession(paths, sessionId) {
+  await writeJson(activeSessionFile(paths), {
+    sessionId,
+    updatedAt: new Date().toISOString(),
+  })
+}
+
+function activeSessionFile(paths) {
+  return join(paths.storageDir, "active-session.json")
 }
 
 async function appendArtifact(paths, sessionId, artifact) {

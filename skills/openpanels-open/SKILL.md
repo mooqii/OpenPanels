@@ -5,6 +5,10 @@ description: Open OpenPanels for the active project in Codex or a generic MCP ho
 
 Use this skill when the user asks to open, view, or work in OpenPanels.
 
+In Codex, if OpenPanels MCP tools are not already visible in the active tool
+list, use tool discovery/search for `render_openpanels_widget` or
+`start_openpanels_studio` before concluding that OpenPanels is unavailable.
+
 In Codex, use the `render_openpanels_widget` MCP tool so the native widget opens inline.
 
 In a generic MCP host that cannot render native app resources, use `start_openpanels_studio` and tell the user to open the returned `serverUrl` in a browser.

@@ -1,10 +1,10 @@
-import { readFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http"
-import { extname, join } from "node:path"
+import { extname, join, resolve } from "node:path"
 import { LocalOpenPanelsStorage } from "@openpanels/local-storage"
 import type {
   CreateSessionInput,
@@ -57,6 +57,7 @@ async function routeRequest(
   if (request.method === "GET" && url.pathname === "/api/bootstrap") {
     const bootstrap = await ensureCanvasBootstrap(
       runtime,
+      storage,
       url.searchParams.get("sessionId")
     )
     return json(response, bootstrap)
@@ -65,11 +66,26 @@ async function routeRequest(
   if (request.method === "POST" && url.pathname === "/api/projects") {
     const body = (await readBody(request)) as { title?: string }
     const bootstrap = await createCanvasProject(runtime, body.title)
+    await writeActiveSession(storage, bootstrap.session.id)
     return json(response, bootstrap)
   }
 
   if (request.method === "GET" && url.pathname === "/api/sessions") {
     return json(response, await runtime.listSessions())
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/active-session") {
+    return json(response, { sessionId: await readActiveSession(storage) })
+  }
+
+  if (request.method === "PUT" && url.pathname === "/api/active-session") {
+    const body = (await readBody(request)) as { sessionId?: string }
+    const sessionId = body.sessionId?.trim()
+    if (!(sessionId && (await runtime.getSession(sessionId)))) {
+      throw new Error(`OpenPanels session not found: ${sessionId}`)
+    }
+    await writeActiveSession(storage, sessionId)
+    return json(response, { sessionId })
   }
 
   const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/)
@@ -230,16 +246,21 @@ export function createOpenPanelsApiMiddleware(projectDir: string) {
 
 async function ensureCanvasBootstrap(
   runtime: OpenPanelsRuntime,
+  storage: LocalOpenPanelsStorage,
   requestedSessionId?: string | null
 ) {
   const sessions = await runtime.listSessions()
+  const activeSessionId = await readActiveSession(storage)
   const session =
     (requestedSessionId
       ? await runtime.getSession(requestedSessionId)
       : null) ??
+    (activeSessionId ? await runtime.getSession(activeSessionId) : null) ??
     sessions[0] ??
     (await runtime.createSession({ title: "Untitled" }))
-  return ensureCanvasForSession(runtime, session)
+  const bootstrap = await ensureCanvasForSession(runtime, session)
+  await writeActiveSession(storage, bootstrap.session.id)
+  return bootstrap
 }
 
 async function createCanvasProject(
@@ -302,6 +323,41 @@ async function renameSession(
   }
   await storage.writeSession(updated)
   return updated
+}
+
+async function readActiveSession(
+  storage: LocalOpenPanelsStorage
+): Promise<string | null> {
+  try {
+    const active = JSON.parse(
+      await readFile(activeSessionPath(storage), "utf8")
+    )
+    return typeof active?.sessionId === "string" ? active.sessionId : null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
+}
+
+async function writeActiveSession(
+  storage: LocalOpenPanelsStorage,
+  sessionId: string
+): Promise<void> {
+  const filePath = activeSessionPath(storage)
+  await mkdir(resolve(filePath, ".."), { recursive: true })
+  await writeFile(
+    filePath,
+    `${JSON.stringify(
+      { sessionId, updatedAt: new Date().toISOString() },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  )
+}
+
+function activeSessionPath(storage: LocalOpenPanelsStorage): string {
+  return join(storage.rootDir, "active-session.json")
 }
 
 async function readBody(request: IncomingMessage): Promise<unknown> {

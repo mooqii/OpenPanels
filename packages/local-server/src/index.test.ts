@@ -56,6 +56,77 @@ describe("@openpanels/local-server", () => {
     expect(assetResponse.headers.get("content-type")).toBe("image/png")
     expect(await assetResponse.arrayBuffer()).toHaveProperty("byteLength")
   })
+
+  it("preserves selected image asset refs when no selection raster is available", async () => {
+    const bootstrap = await fetchJson(`${baseUrl}/api/bootstrap`)
+    const tinyPng =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    const uploaded = await fetchJson(
+      `${baseUrl}/api/panels/${bootstrap.session.id}/${bootstrap.panel.id}/assets`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          dataUrl: tinyPng,
+          fileName: "selected.png",
+          mimeType: "image/png",
+        }),
+      }
+    )
+
+    const result = await fetchJson(
+      `${baseUrl}/api/panels/${bootstrap.session.id}/${bootstrap.panel.id}/selection`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          selection: {
+            assetRef: uploaded.assetRef,
+            selectedShapeIds: ["shape:image"],
+            selectedShapes: [
+              {
+                id: "shape:image",
+                type: "image",
+                asset: { assetRef: uploaded.assetRef },
+              },
+            ],
+          },
+        }),
+      }
+    )
+
+    expect(result.selection.assetRef).toBe(uploaded.assetRef)
+  })
+
+  it("tracks the active project for browser and agent coordination", async () => {
+    const first = await fetchJson(`${baseUrl}/api/bootstrap`)
+    const second = await fetchJson(`${baseUrl}/api/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Second" }),
+    })
+
+    expect(await fetchJson(`${baseUrl}/api/active-session`)).toMatchObject({
+      sessionId: second.session.id,
+    })
+
+    const switched = await fetchJson(
+      `${baseUrl}/api/bootstrap?sessionId=${encodeURIComponent(first.session.id)}`
+    )
+    expect(switched.session.id).toBe(first.session.id)
+    expect(await fetchJson(`${baseUrl}/api/active-session`)).toMatchObject({
+      sessionId: first.session.id,
+    })
+
+    await fetchJson(`${baseUrl}/api/active-session`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: second.session.id }),
+    })
+
+    const current = await fetchJson(`${baseUrl}/api/bootstrap`)
+    expect(current.session.id).toBe(second.session.id)
+  })
 })
 
 async function fetchJson(url: string, init?: RequestInit): Promise<any> {

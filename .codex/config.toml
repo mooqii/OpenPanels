@@ -1,0 +1,3 @@
+[mcp_servers.openpanels]
+command = "node"
+args = ["./scripts/start-mcp.mjs"]
