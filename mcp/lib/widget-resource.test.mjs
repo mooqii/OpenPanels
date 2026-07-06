@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
-import { registerWidgetResource } from "./widget-resource.mjs"
+import {
+  openPanelsWidgetHtml,
+  registerWidgetResource,
+} from "./widget-resource.mjs"
 
 describe("registerWidgetResource", () => {
   it("exposes nested iframe domains in widget CSP metadata", async () => {
@@ -36,5 +39,12 @@ describe("registerWidgetResource", () => {
     expect(
       resource.contents[0]._meta["openai/widgetCSP"].frame_domains
     ).toEqual(["http://127.0.0.1:*"])
+  })
+
+  it("opens the local studio without nesting a localhost iframe", () => {
+    const html = openPanelsWidgetHtml()
+
+    expect(html).not.toMatch(/<iframe\b/i)
+    expect(html).toContain("window.location.replace(serverUrl)")
   })
 })

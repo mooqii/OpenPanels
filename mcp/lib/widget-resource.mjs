@@ -76,18 +76,12 @@ export function openPanelsWidgetHtml({
     <title>MyOpenPanels</title>
     <style>
       html,
-      body,
-      #openpanels-frame {
+      body {
         width: 100%;
         height: 100%;
         margin: 0;
         overflow: hidden;
         background: #0d1117;
-      }
-
-      #openpanels-frame {
-        display: block;
-        border: 0;
       }
 
       .status {
@@ -108,10 +102,8 @@ export function openPanelsWidgetHtml({
   </head>
   <body>
     <div class="status" id="openpanels-status">Opening MyOpenPanels...</div>
-    <iframe id="openpanels-frame" title="MyOpenPanels" allow="clipboard-read; clipboard-write"></iframe>
     <script>
       (() => {
-        const frame = document.getElementById("openpanels-frame");
         const status = document.getElementById("openpanels-status");
         let currentUrl = "";
 
@@ -124,8 +116,8 @@ export function openPanelsWidgetHtml({
           const serverUrl = output && output.serverUrl;
           if (!serverUrl || serverUrl === currentUrl) return;
           currentUrl = serverUrl;
-          frame.src = serverUrl;
-          status.style.display = "none";
+          status.textContent = "Opening " + serverUrl + "...";
+          window.location.replace(serverUrl);
         }
 
         window.addEventListener("openai:set_globals", updateFrame);

@@ -25,7 +25,7 @@ codex plugin marketplace add mooqii/OpenPanels
 To pin a stable release, install a tagged ref:
 
 ```bash
-codex plugin marketplace add mooqii/OpenPanels --ref v0.1.1
+codex plugin marketplace add mooqii/OpenPanels --ref v0.1.2
 ```
 
 After adding the marketplace, restart Codex, open the plugin directory, choose
