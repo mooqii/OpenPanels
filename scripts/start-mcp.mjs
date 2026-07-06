@@ -8,22 +8,27 @@ const ROOT_DIR = path.resolve(
   ".."
 )
 const REQUIRED_DEPENDENCIES = [
-  "@modelcontextprotocol/ext-apps",
-  "@modelcontextprotocol/sdk",
-  "@vitejs/plugin-react",
-  "react",
-  "react-dom",
-  "vite",
-  "zod",
+  { packageName: "@modelcontextprotocol/ext-apps" },
+  { packageName: "@modelcontextprotocol/sdk" },
+  { packageName: "@vitejs/plugin-react" },
+  { packageName: "vite" },
+  { packageName: "zod" },
+  { packageName: "react", workspacePath: "apps/local-studio" },
+  { packageName: "react-dom", workspacePath: "apps/local-studio" },
 ]
 
-function dependencyDir(packageName) {
-  return path.join(ROOT_DIR, "node_modules", ...packageName.split("/"))
+function dependencyDir(dependency) {
+  return path.join(
+    ROOT_DIR,
+    dependency.workspacePath ?? "",
+    "node_modules",
+    ...dependency.packageName.split("/")
+  )
 }
 
 function missingDependencies() {
   return REQUIRED_DEPENDENCIES.filter(
-    (packageName) => !existsSync(dependencyDir(packageName))
+    (dependency) => !existsSync(dependencyDir(dependency))
   )
 }
 
@@ -39,7 +44,12 @@ function pnpmCommand() {
 
 function runPnpmInstall() {
   const pnpm = pnpmCommand()
-  const result = spawnSync(pnpm.command, [...pnpm.args, "install"], {
+  const result = spawnSync(pnpm.command, [
+    ...pnpm.args,
+    "install",
+    "--config.minimum-release-age=0",
+    "--config.dangerously-allow-all-builds=true",
+  ], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,
