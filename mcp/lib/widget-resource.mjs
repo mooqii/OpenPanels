@@ -70,7 +70,7 @@ export function openPanelsWidgetHtml({
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OpenPanels</title>
+    <title>MyOpenPanels</title>
     <style>
       html,
       body,
@@ -104,8 +104,8 @@ export function openPanelsWidgetHtml({
     <script id="openpanelsMcpHostBridge">${mcpHostBridgeScript()}</script>
   </head>
   <body>
-    <div class="status" id="openpanels-status">Opening OpenPanels...</div>
-    <iframe id="openpanels-frame" title="OpenPanels" allow="clipboard-read; clipboard-write"></iframe>
+    <div class="status" id="openpanels-status">Opening MyOpenPanels...</div>
+    <iframe id="openpanels-frame" title="MyOpenPanels" allow="clipboard-read; clipboard-write"></iframe>
     <script>
       (() => {
         const frame = document.getElementById("openpanels-frame");
@@ -250,7 +250,7 @@ function mcpHostBridgeScript() {
 
   try {
     const mcpApp = new apps.App(
-      { name: "openpanels", version: "0.1.0" },
+      { name: "myopenpanels", version: "0.1.0" },
       { availableDisplayModes: ["inline", "fullscreen"] },
       { autoResize: true },
     );

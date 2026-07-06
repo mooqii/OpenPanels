@@ -1,9 +1,9 @@
 {
-  "name": "openpanels",
+  "name": "myopenpanels",
   "version": "0.1.1",
   "description": "Local agent panels for artifacts, canvas, markdown, and images.",
   "author": {
-    "name": "OpenPanels"
+    "name": "MyOpenPanels"
   },
   "keywords": [
     "canvas",
@@ -16,10 +16,10 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "OpenPanels",
+    "displayName": "MyOpenPanels",
     "shortDescription": "Open project-backed canvas panels for coding agents.",
-    "longDescription": "OpenPanels packages a native Codex widget, generic MCP tools, and skills so agents can open a local canvas workspace, read selections, insert generated images, and persist everything under the active project's .openpanels directory.",
-    "developerName": "OpenPanels",
+    "longDescription": "MyOpenPanels packages a native Codex widget, generic MCP tools, and skills so agents can open a local canvas workspace, read selections, insert generated images, and persist everything under the active project's .openpanels directory.",
+    "developerName": "MyOpenPanels",
     "category": "Productivity",
     "brandColor": "#2F7CF6",
     "capabilities": [
@@ -31,9 +31,9 @@
       "Agent artifacts"
     ],
     "defaultPrompt": [
-      "Open OpenPanels for this project.",
-      "Use the current OpenPanels canvas selection as image context.",
-      "Insert the generated image into OpenPanels."
+      "Open MyOpenPanels for this project.",
+      "Use the current MyOpenPanels canvas selection as image context.",
+      "Insert the generated image into MyOpenPanels."
     ]
   }
 }

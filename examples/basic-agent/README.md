@@ -1,6 +1,6 @@
 # Basic Agent Example
 
-Generic MCP agents should first call `start_openpanels_studio`, open the
+Generic MCP agents should first call `start_myopenpanels_studio`, open the
 returned `serverUrl`, and then use the canvas/asset tools exposed by the MCP
 server.
 

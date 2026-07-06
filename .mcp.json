@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "openpanels": {
-      "title": "OpenPanels MCP",
-      "description": "Open the project-backed OpenPanels canvas, read current selections, and insert generated images.",
+    "myopenpanels": {
+      "title": "MyOpenPanels MCP",
+      "description": "Open the project-backed MyOpenPanels canvas, read current selections, and insert generated images.",
       "command": "node",
       "args": ["./scripts/start-mcp.mjs"],
       "cwd": "."

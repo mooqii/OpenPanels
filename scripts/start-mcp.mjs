@@ -64,7 +64,7 @@ function runPnpmInstall() {
   if (result.error) throw result.error
   if (result.status !== 0) {
     throw new Error(
-      `pnpm install failed while preparing OpenPanels MCP (exit ${result.status}).`
+      `pnpm install failed while preparing MyOpenPanels MCP (exit ${result.status}).`
     )
   }
 }

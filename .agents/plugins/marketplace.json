@@ -1,8 +1,8 @@
 {
-  "name": "openpanels",
+  "name": "myopenpanels",
   "plugins": [
     {
-      "name": "openpanels",
+      "name": "myopenpanels",
       "source": {
         "source": "local",
         "path": "./"
@@ -13,7 +13,7 @@
       },
       "category": "Productivity",
       "interface": {
-        "displayName": "OpenPanels"
+        "displayName": "MyOpenPanels"
       }
     }
   ]

@@ -13,19 +13,19 @@ import {
   registerWidgetResource,
 } from "./lib/widget-resource.mjs"
 
-const TOOL_RENDER_WIDGET = "render_openpanels_widget"
-const TOOL_START_STUDIO = "start_openpanels_studio"
-const TOOL_GET_SESSION = "get_openpanels_session"
-const TOOL_OPEN_PANEL = "open_openpanels_panel"
-const TOOL_INSERT_ARTIFACT = "insert_openpanels_artifact"
-const TOOL_SAVE_PANEL_STATE = "save_openpanels_panel_state"
-const TOOL_READ_ASSET = "read_openpanels_panel_asset"
-const TOOL_WRITE_ASSET = "write_openpanels_panel_asset"
-const TOOL_GET_CANVAS_STATE = "get_openpanels_canvas_state"
-const TOOL_GET_SELECTION = "get_openpanels_selection"
-const TOOL_READ_SELECTION_ASSET = "read_openpanels_selection_asset"
-const TOOL_INSERT_IMAGE = "insert_openpanels_image"
-const OPENPANELS_WIDGET_URI = "ui://widget/openpanels/index.html"
+const TOOL_RENDER_WIDGET = "render_myopenpanels_widget"
+const TOOL_START_STUDIO = "start_myopenpanels_studio"
+const TOOL_GET_SESSION = "get_myopenpanels_session"
+const TOOL_OPEN_PANEL = "open_myopenpanels_panel"
+const TOOL_INSERT_ARTIFACT = "insert_myopenpanels_artifact"
+const TOOL_SAVE_PANEL_STATE = "save_myopenpanels_panel_state"
+const TOOL_READ_ASSET = "read_myopenpanels_panel_asset"
+const TOOL_WRITE_ASSET = "write_myopenpanels_panel_asset"
+const TOOL_GET_CANVAS_STATE = "get_myopenpanels_canvas_state"
+const TOOL_GET_SELECTION = "get_myopenpanels_selection"
+const TOOL_READ_SELECTION_ASSET = "read_myopenpanels_selection_asset"
+const TOOL_INSERT_IMAGE = "insert_myopenpanels_image"
+const OPENPANELS_WIDGET_URI = "ui://widget/myopenpanels/index.html"
 const OPENPANELS_CONNECT_DOMAINS = [
   "http://127.0.0.1:*",
   "http://localhost:*",
@@ -38,7 +38,6 @@ const OPENPANELS_RESOURCE_DOMAINS = [
   "data:",
   "blob:",
 ]
-const LOCAL_STUDIO_PACKAGE = "@openpanels/local-studio"
 const localStudioServers = new Map()
 
 const pluginManifest = JSON.parse(
@@ -52,7 +51,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "OpenPanels renders a local agent design canvas. In Codex or other clients that support native app resources, use render_openpanels_widget. In generic MCP clients such as Claude Desktop or Hermes, use start_openpanels_studio and open the returned serverUrl in a browser. Use get_openpanels_selection to read the user's current canvas selection, read_openpanels_selection_asset for the exported PNG selection, and insert_openpanels_image to place generated images back onto the canvas.",
+      "MyOpenPanels renders a local agent design canvas. In Codex or other clients that support native app resources, use render_myopenpanels_widget. In generic MCP clients such as Claude Desktop or Hermes, use start_myopenpanels_studio and open the returned serverUrl in a browser. Use get_myopenpanels_selection to read the user's current canvas selection, read_myopenpanels_selection_asset for the exported PNG selection, and insert_myopenpanels_image to place generated images back onto the canvas.",
   }
 )
 
@@ -92,11 +91,11 @@ function registerShutdownCleanup() {
 
 function registerWidgetTool() {
   registerWidgetResource(server, {
-    name: "openpanels-widget",
+    name: "myopenpanels-widget",
     uri: OPENPANELS_WIDGET_URI,
-    title: "OpenPanels",
+    title: "MyOpenPanels",
     description:
-      "A native widget that opens the project-backed OpenPanels local studio.",
+      "A native widget that opens the project-backed MyOpenPanels local studio.",
     connectDomains: OPENPANELS_CONNECT_DOMAINS,
     resourceDomains: OPENPANELS_RESOURCE_DOMAINS,
     html: () => openPanelsWidgetHtml({ initialDisplayMode: "fullscreen" }),
@@ -106,8 +105,8 @@ function registerWidgetTool() {
     server,
     TOOL_RENDER_WIDGET,
     {
-      title: "Open OpenPanels",
-      description: "Open the OpenPanels local widget for the active project.",
+      title: "Open MyOpenPanels",
+      description: "Open the MyOpenPanels local widget for the active project.",
       inputSchema: {
         ...projectArgs,
         displayMode: z.enum(["fullscreen", "inline"]).optional(),
@@ -120,8 +119,8 @@ function registerWidgetTool() {
         "ui/resourceUri": OPENPANELS_WIDGET_URI,
         "openai/outputTemplate": OPENPANELS_WIDGET_URI,
         "openai/widgetAccessible": true,
-        "openai/toolInvocation/invoking": "Opening OpenPanels...",
-        "openai/toolInvocation/invoked": "OpenPanels ready",
+        "openai/toolInvocation/invoking": "Opening MyOpenPanels...",
+        "openai/toolInvocation/invoked": "MyOpenPanels ready",
       },
     },
     async ({ projectDir, displayMode = "fullscreen" }) => {
@@ -132,12 +131,12 @@ function registerWidgetTool() {
         content: [
           {
             type: "text",
-            text: `Opened OpenPanels for ${paths.projectDir}`,
+            text: `Opened MyOpenPanels for ${paths.projectDir}`,
           },
         ],
         structuredContent: {
           version: 1,
-          widget: "openpanels-widget",
+          widget: "myopenpanels-widget",
           rendering: "local-studio",
           projectDir: paths.projectDir,
           storageDir: paths.storageDir,
@@ -149,7 +148,7 @@ function registerWidgetTool() {
           "openai/outputTemplate": OPENPANELS_WIDGET_URI,
           widgetData: {
             version: 1,
-            widget: "openpanels-widget",
+            widget: "myopenpanels-widget",
             rendering: "local-studio",
             projectDir: paths.projectDir,
             storageDir: paths.storageDir,
@@ -165,9 +164,9 @@ function registerWidgetTool() {
   server.registerTool(
     TOOL_START_STUDIO,
     {
-      title: "Start OpenPanels Studio",
+      title: "Start MyOpenPanels Studio",
       description:
-        "Start the browser-based OpenPanels local studio and return a localhost URL for generic MCP clients.",
+        "Start the browser-based MyOpenPanels local studio and return a localhost URL for generic MCP clients.",
       inputSchema: projectArgs,
     },
     async ({ projectDir }) => {
@@ -192,9 +191,9 @@ function registerStateTools() {
   server.registerTool(
     TOOL_GET_CANVAS_STATE,
     {
-      title: "Get OpenPanels Canvas State",
+      title: "Get MyOpenPanels Canvas State",
       description:
-        "Read the current project-backed OpenPanels canvas session, panel, state, and storage paths.",
+        "Read the current project-backed MyOpenPanels canvas session, panel, state, and storage paths.",
       inputSchema: currentCanvasArgs,
     },
     async ({ projectDir, sessionId }) => {
@@ -217,9 +216,9 @@ function registerStateTools() {
   server.registerTool(
     TOOL_GET_SELECTION,
     {
-      title: "Get OpenPanels Selection",
+      title: "Get MyOpenPanels Selection",
       description:
-        "Return the currently selected OpenPanels canvas shapes and optional exported PNG selection data.",
+        "Return the currently selected MyOpenPanels canvas shapes and optional exported PNG selection data.",
       inputSchema: {
         ...currentCanvasArgs,
         includeImageBase64: z.boolean().optional(),
@@ -249,7 +248,7 @@ function registerStateTools() {
       const selectedShapes = selection.selectedShapes ?? []
       const summary =
         selectedShapes.length === 0
-          ? "No OpenPanels shapes are currently selected and no image fallback is available."
+          ? "No MyOpenPanels shapes are currently selected and no image fallback is available."
           : selectedShapes
               .map(
                 (shape) =>
@@ -278,9 +277,9 @@ function registerStateTools() {
   server.registerTool(
     TOOL_READ_SELECTION_ASSET,
     {
-      title: "Read OpenPanels Selection Asset",
+      title: "Read MyOpenPanels Selection Asset",
       description:
-        "Read the PNG exported from the current OpenPanels canvas selection.",
+        "Read the PNG exported from the current MyOpenPanels canvas selection.",
       inputSchema: currentCanvasArgs,
     },
     async ({ projectDir, sessionId }) => {
@@ -295,7 +294,7 @@ function registerStateTools() {
       )
       const selection = withLastImageFallback(rawSelection, state)
       if (!selection?.assetRef)
-        throw new Error("No OpenPanels selection asset is available.")
+        throw new Error("No MyOpenPanels selection asset is available.")
       const filePath = resolve(
         paths.storageDir,
         ...selection.assetRef.split("/").map(safePart)
@@ -313,9 +312,9 @@ function registerStateTools() {
   server.registerTool(
     TOOL_INSERT_IMAGE,
     {
-      title: "Insert OpenPanels Image",
+      title: "Insert MyOpenPanels Image",
       description:
-        "Copy a local image into OpenPanels assets and create an image shape in the current canvas.",
+        "Copy a local image into MyOpenPanels assets and create an image shape in the current canvas.",
       inputSchema: {
         ...currentCanvasArgs,
         imagePath: z.string().trim(),
@@ -353,9 +352,9 @@ function registerStateTools() {
   server.registerTool(
     TOOL_GET_SESSION,
     {
-      title: "Get OpenPanels Session",
+      title: "Get MyOpenPanels Session",
       description:
-        "Read the current OpenPanels session from .openpanels storage.",
+        "Read the current MyOpenPanels session from .openpanels storage.",
       inputSchema: currentCanvasArgs,
     },
     async ({ projectDir, sessionId }) => {
@@ -368,8 +367,8 @@ function registerStateTools() {
   server.registerTool(
     TOOL_OPEN_PANEL,
     {
-      title: "Open OpenPanels Panel",
-      description: "Create a panel in the current OpenPanels session.",
+      title: "Open MyOpenPanels Panel",
+      description: "Create a panel in the current MyOpenPanels session.",
       inputSchema: {
         ...currentCanvasArgs,
         kind: panelKinds,
@@ -388,7 +387,7 @@ function registerStateTools() {
   server.registerTool(
     TOOL_INSERT_ARTIFACT,
     {
-      title: "Insert OpenPanels Artifact",
+      title: "Insert MyOpenPanels Artifact",
       description: "Insert an image or canvas artifact into the design canvas.",
       inputSchema: {
         ...currentCanvasArgs,
@@ -439,7 +438,7 @@ function registerStateTools() {
   server.registerTool(
     TOOL_SAVE_PANEL_STATE,
     {
-      title: "Save OpenPanels Panel State",
+      title: "Save MyOpenPanels Panel State",
       description: "Persist panel state under .openpanels.",
       inputSchema: {
         ...projectArgs,
@@ -459,7 +458,7 @@ function registerStateTools() {
   server.registerTool(
     TOOL_WRITE_ASSET,
     {
-      title: "Write OpenPanels Panel Asset",
+      title: "Write MyOpenPanels Panel Asset",
       description: "Copy an existing local file into a panel asset directory.",
       inputSchema: {
         ...projectArgs,
@@ -497,7 +496,7 @@ function registerStateTools() {
   server.registerTool(
     TOOL_READ_ASSET,
     {
-      title: "Read OpenPanels Panel Asset",
+      title: "Read MyOpenPanels Panel Asset",
       description: "Read a panel asset from .openpanels.",
       inputSchema: {
         ...projectArgs,
@@ -552,12 +551,9 @@ async function ensureLocalStudioServer(projectDir) {
   const port = await findOpenPort()
   const url = `http://127.0.0.1:${port}`
   const child = spawn(
-    packageRunnerCommand(),
+    process.execPath,
     [
-      "--filter",
-      LOCAL_STUDIO_PACKAGE,
-      "exec",
-      "vite",
+      viteCliPath(),
       "--host",
       "127.0.0.1",
       "--port",
@@ -565,13 +561,13 @@ async function ensureLocalStudioServer(projectDir) {
       "--strictPort",
     ],
     {
-      cwd: pluginRootDir(),
+      cwd: localStudioDir(),
       env: {
         ...process.env,
         FORCE_COLOR: "0",
         OPENPANELS_PROJECT_DIR: projectDir,
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32",
     }
   )
@@ -582,7 +578,18 @@ async function ensureLocalStudioServer(projectDir) {
   child.stderr?.on("data", (chunk) =>
     process.stderr.write(`[openpanels-studio] ${chunk}`)
   )
-  child.once("exit", () => {
+  let startupError = null
+  child.once("error", (error) => {
+    startupError = error
+  })
+  child.once("exit", (code, signal) => {
+    if (!startupError && code !== 0) {
+      startupError = new Error(
+        `OpenPanels local studio exited during startup (code ${code}, signal ${
+          signal ?? "none"
+        }).`
+      )
+    }
     const current = localStudioServers.get(projectDir)
     if (current?.process === child) localStudioServers.delete(projectDir)
   })
@@ -591,7 +598,7 @@ async function ensureLocalStudioServer(projectDir) {
   localStudioServers.set(projectDir, serverInfo)
 
   try {
-    await waitForLocalStudio(url, 20_000)
+    await waitForLocalStudio(url, 20_000, () => startupError)
   } catch (error) {
     stopLocalStudio(serverInfo)
     localStudioServers.delete(projectDir)
@@ -607,12 +614,16 @@ function stopLocalStudio(serverInfo) {
   }
 }
 
-function packageRunnerCommand() {
-  return process.env.OPENPANELS_PNPM_COMMAND || "pnpm"
-}
-
 function pluginRootDir() {
   return resolve(fileURLToPath(new URL("..", import.meta.url)))
+}
+
+function localStudioDir() {
+  return join(pluginRootDir(), "apps", "local-studio")
+}
+
+function viteCliPath() {
+  return join(pluginRootDir(), "node_modules", "vite", "bin", "vite.js")
 }
 
 async function findOpenPort() {
@@ -635,10 +646,12 @@ async function findOpenPort() {
   })
 }
 
-async function waitForLocalStudio(url, timeoutMs) {
+async function waitForLocalStudio(url, timeoutMs, getStartupError = () => null) {
   const startedAt = Date.now()
   let lastError
   while (Date.now() - startedAt < timeoutMs) {
+    const startupError = getStartupError()
+    if (startupError) throw startupError
     try {
       const response = await fetch(`${url}/api/bootstrap`)
       if (response.ok) return
