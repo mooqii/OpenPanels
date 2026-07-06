@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "openpanels": {
+      "title": "OpenPanels Widget MCP",
+      "description": "Render and persist the OpenPanels native Codex widget for project-backed canvas work.",
+      "command": "node",
+      "args": ["./scripts/start-mcp.mjs"],
+      "cwd": "."
+    }
+  }
+}

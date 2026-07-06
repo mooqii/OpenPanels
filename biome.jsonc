@@ -1,0 +1,73 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "extends": [
+    "ultracite/core",
+    "ultracite/react",
+    "ultracite/biome/core",
+    "ultracite/biome/react",
+    "ultracite/biome/remix"
+  ],
+  "files": {
+    "ignoreUnknown": false,
+    "includes": [
+      "**/src/**/*",
+      "**/.vscode/**/*",
+      "**/index.html",
+      "**/vite.config.js",
+      "**/vite.config.ts",
+      "**/scripts/**/*",
+      "**/mcp/**/*",
+      "!**/dist/**/*"
+    ]
+  },
+  "javascript": {
+    "formatter": {
+      "semicolons": "asNeeded"
+    }
+  },
+  "linter": {
+    "rules": {
+      "correctness": {
+        "useImageSize": "off"
+      },
+      "suspicious": {
+        "noConsole": "off",
+        "noExplicitAny": "off",
+        "noArrayIndexKey": "off",
+        "noDocumentCookie": "off",
+        "noMisplacedAssertion": "off",
+        "useAwait": "off"
+      },
+      "nursery": {
+        "noShadow": "off"
+      },
+      "style": {
+        "noHeadElement": "off",
+        "noNestedTernary": "off",
+        "noNonNullAssertion": "off",
+        "noMagicNumbers": "off",
+        "useBlockStatements": "off",
+        "useNamingConvention": "off",
+        "useFilenamingConvention": "off",
+        "useConsistentTypeDefinitions": "off"
+      },
+      "performance": {
+        "noImgElement": "off",
+        "noBarrelFile": "off",
+        "useTopLevelRegex": "off"
+      },
+      "complexity": {
+        "noExcessiveLinesPerFunction": "off",
+        "noExcessiveCognitiveComplexity": "off"
+      },
+      "a11y": {
+        "noSvgWithoutTitle": "off",
+        "useValidAnchor": "off",
+        "useSemanticElements": "off",
+        "useKeyWithClickEvents": "off",
+        "noStaticElementInteractions": "off",
+        "noNoninteractiveElementInteractions": "off"
+      }
+    }
+  }
+}

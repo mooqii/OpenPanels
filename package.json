@@ -1,0 +1,33 @@
+{
+  "name": "openpanels",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.26.2",
+  "scripts": {
+    "dev": "pnpm --filter @openpanels/local-studio dev",
+    "build": "pnpm -r build",
+    "format": "ultracite fix",
+    "lint": "ultracite check",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "check:mcp": "node --check mcp/server.mjs",
+    "check": "pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.6",
+    "@types/node": "^25.3.5",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.4",
+    "typescript": "^5.9.3",
+    "ultracite": "7.2.5",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18"
+  }
+}

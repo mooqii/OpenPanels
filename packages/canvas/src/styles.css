@@ -1,0 +1,102 @@
+.op-canvas-panel {
+  position: relative;
+  overflow: hidden;
+  color: var(--op-text-primary);
+  background: var(--op-canvas-background);
+}
+
+.op-canvas-title {
+  position: absolute;
+  top: 22px;
+  left: calc(
+    var(--main-layout-sidebar-offset, var(--home-main-offset, 0px)) +
+    0.75rem
+  );
+  z-index: 40;
+  display: inline-flex;
+  gap: 12px;
+  align-items: center;
+  height: 24px;
+  font-size: 18px;
+  font-weight: 750;
+  color: var(--op-title);
+  letter-spacing: 0;
+}
+
+.op-canvas-menu-button {
+  color: var(--op-text-tertiary);
+}
+
+.op-canvas-menu-popover {
+  color: var(--op-text-primary);
+  background: var(--op-bg-base);
+  border: 1px solid var(--op-border-default);
+}
+
+.op-canvas-panel .button--ghost {
+  color: var(--op-text-tertiary);
+}
+
+.op-canvas-panel .button--ghost:hover,
+.op-canvas-panel .button--ghost[data-hovered="true"] {
+  color: var(--op-text-primary);
+  background: var(--op-hover);
+}
+
+.op-canvas-panel .button--primary {
+  color: var(--op-primary-foreground);
+}
+
+@layer components {
+  .bg-canvas-background {
+    background-color: var(--op-canvas-background);
+  }
+
+  .bg-canvas-toolbar {
+    background-color: var(--op-canvas-toolbar);
+  }
+
+  .bg-bg-base {
+    background-color: var(--op-bg-base);
+  }
+
+  .bg-bg-elevated {
+    background-color: var(--op-bg-elevated);
+  }
+
+  .bg-bg-muted {
+    background-color: var(--op-bg-muted);
+  }
+
+  .bg-surface-secondary {
+    background-color: var(--surface-secondary);
+  }
+
+  .border-border,
+  .border-border-default {
+    border-color: var(--op-border-default);
+  }
+
+  .border-border-strong {
+    border-color: var(--op-border-strong);
+  }
+
+  .text-foreground,
+  .text-text-primary {
+    color: var(--op-text-primary);
+  }
+
+  .text-text-secondary {
+    color: var(--op-text-secondary);
+  }
+
+  .text-text-tertiary,
+  .text-muted {
+    color: var(--op-text-tertiary);
+  }
+
+  .shape-toolbar {
+    border: 1px solid var(--op-toolbar-border);
+    box-shadow: var(--op-toolbar-shadow);
+  }
+}

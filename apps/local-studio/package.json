@@ -1,0 +1,35 @@
+{
+  "name": "@openpanels/local-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 43217",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest --run --passWithNoTests"
+  },
+  "dependencies": {
+    "@heroui/react": "3.0.5",
+    "@heroui/styles": "3.0.5",
+    "@openpanels/canvas": "workspace:*",
+    "@openpanels/core": "workspace:*",
+    "@openpanels/local-server": "workspace:*",
+    "@openpanels/protocol": "workspace:*",
+    "@openpanels/react": "workspace:*",
+    "@openpanels/runtime": "workspace:*",
+    "@tailwindcss/vite": "^4.3.2",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "tailwindcss": "^4.3.2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.4",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18"
+  }
+}

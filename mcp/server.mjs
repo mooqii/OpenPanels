@@ -1,0 +1,1097 @@
+import { spawn } from "node:child_process"
+import { readFileSync } from "node:fs"
+import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises"
+import { createServer } from "node:net"
+import { basename, extname, join, relative, resolve, sep } from "node:path"
+import { fileURLToPath } from "node:url"
+import { registerAppTool } from "@modelcontextprotocol/ext-apps/server"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import { z } from "zod"
+import {
+  openPanelsWidgetHtml,
+  registerWidgetResource,
+} from "./lib/widget-resource.mjs"
+
+const TOOL_RENDER_WIDGET = "render_openpanels_widget"
+const TOOL_GET_SESSION = "get_openpanels_session"
+const TOOL_OPEN_PANEL = "open_openpanels_panel"
+const TOOL_INSERT_ARTIFACT = "insert_openpanels_artifact"
+const TOOL_SAVE_PANEL_STATE = "save_openpanels_panel_state"
+const TOOL_READ_ASSET = "read_openpanels_panel_asset"
+const TOOL_WRITE_ASSET = "write_openpanels_panel_asset"
+const TOOL_GET_CANVAS_STATE = "get_openpanels_canvas_state"
+const TOOL_GET_SELECTION = "get_openpanels_selection"
+const TOOL_READ_SELECTION_ASSET = "read_openpanels_selection_asset"
+const TOOL_INSERT_IMAGE = "insert_openpanels_image"
+const OPENPANELS_WIDGET_URI = "ui://widget/openpanels/index.html"
+const OPENPANELS_CONNECT_DOMAINS = [
+  "http://127.0.0.1:*",
+  "http://localhost:*",
+  "ws://127.0.0.1:*",
+  "ws://localhost:*",
+]
+const OPENPANELS_RESOURCE_DOMAINS = [
+  "http://127.0.0.1:*",
+  "http://localhost:*",
+  "data:",
+  "blob:",
+]
+const LOCAL_STUDIO_PACKAGE = "@openpanels/local-studio"
+const localStudioServers = new Map()
+
+const pluginManifest = JSON.parse(
+  readFileSync(new URL("../.codex-plugin/plugin.json", import.meta.url), "utf8")
+)
+
+const server = new McpServer(
+  {
+    name: pluginManifest.name,
+    version: pluginManifest.version,
+  },
+  {
+    instructions:
+      "OpenPanels renders a local Codex-first design canvas. Use render_openpanels_widget to open the widget, get_openpanels_selection to read the user's current canvas selection, read_openpanels_selection_asset for the exported PNG selection, and insert_openpanels_image to place generated images back onto the canvas.",
+  }
+)
+
+const panelKinds = z.enum(["canvas"])
+const projectArgs = {
+  projectDir: z.string().trim().optional(),
+}
+
+registerWidgetTool()
+registerStateTools()
+registerShutdownCleanup()
+
+const transport = new StdioServerTransport()
+await server.connect(transport)
+
+function registerShutdownCleanup() {
+  const cleanup = () => {
+    for (const serverInfo of localStudioServers.values()) {
+      stopLocalStudio(serverInfo)
+    }
+    localStudioServers.clear()
+  }
+  process.once("exit", cleanup)
+  process.once("SIGINT", () => {
+    cleanup()
+    process.exit(130)
+  })
+  process.once("SIGTERM", () => {
+    cleanup()
+    process.exit(143)
+  })
+}
+
+function registerWidgetTool() {
+  registerWidgetResource(server, {
+    name: "openpanels-widget",
+    uri: OPENPANELS_WIDGET_URI,
+    title: "OpenPanels",
+    description:
+      "A native Codex widget that opens the project-backed OpenPanels local studio.",
+    connectDomains: OPENPANELS_CONNECT_DOMAINS,
+    resourceDomains: OPENPANELS_RESOURCE_DOMAINS,
+    html: () => openPanelsWidgetHtml({ initialDisplayMode: "fullscreen" }),
+  })
+
+  registerAppTool(
+    server,
+    TOOL_RENDER_WIDGET,
+    {
+      title: "Open OpenPanels",
+      description: "Open the OpenPanels local widget for the active project.",
+      inputSchema: {
+        ...projectArgs,
+        displayMode: z.enum(["fullscreen", "inline"]).optional(),
+      },
+      _meta: {
+        ui: {
+          resourceUri: OPENPANELS_WIDGET_URI,
+          visibility: ["model", "app"],
+        },
+        "ui/resourceUri": OPENPANELS_WIDGET_URI,
+        "openai/outputTemplate": OPENPANELS_WIDGET_URI,
+        "openai/widgetAccessible": true,
+        "openai/toolInvocation/invoking": "Opening OpenPanels...",
+        "openai/toolInvocation/invoked": "OpenPanels ready",
+      },
+    },
+    async ({ projectDir, displayMode = "fullscreen" }) => {
+      const paths = resolvePaths(projectDir)
+      await ensureSession(paths, "Codex Session")
+      const localStudio = await ensureLocalStudioServer(paths.projectDir)
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Opened OpenPanels for ${paths.projectDir}`,
+          },
+        ],
+        structuredContent: {
+          version: 1,
+          widget: "openpanels-widget",
+          rendering: "local-studio",
+          projectDir: paths.projectDir,
+          storageDir: paths.storageDir,
+          serverUrl: localStudio.url,
+          port: localStudio.port,
+          displayMode,
+        },
+        _meta: {
+          "openai/outputTemplate": OPENPANELS_WIDGET_URI,
+          widgetData: {
+            version: 1,
+            widget: "openpanels-widget",
+            rendering: "local-studio",
+            projectDir: paths.projectDir,
+            storageDir: paths.storageDir,
+            serverUrl: localStudio.url,
+            port: localStudio.port,
+            displayMode,
+          },
+        },
+      }
+    }
+  )
+}
+
+function registerStateTools() {
+  server.registerTool(
+    TOOL_GET_CANVAS_STATE,
+    {
+      title: "Get OpenPanels Canvas State",
+      description:
+        "Read the current project-backed OpenPanels canvas session, panel, state, and storage paths.",
+      inputSchema: projectArgs,
+    },
+    async ({ projectDir }) => {
+      const paths = resolvePaths(projectDir)
+      const target = await ensureCanvasPanel(paths)
+      const state =
+        (await readJson(
+          panelFile(paths, target.session.id, target.panel.id, "state.json")
+        )) ?? emptyCanvasSnapshot()
+      return jsonText({
+        session: target.session,
+        panel: target.panel,
+        state,
+        storageDir: paths.storageDir,
+        panelDir: panelDir(paths, target.session.id, target.panel.id),
+      })
+    }
+  )
+
+  server.registerTool(
+    TOOL_GET_SELECTION,
+    {
+      title: "Get OpenPanels Selection",
+      description:
+        "Return the currently selected OpenPanels canvas shapes and optional exported PNG selection data.",
+      inputSchema: {
+        ...projectArgs,
+        includeImageBase64: z.boolean().optional(),
+      },
+    },
+    async ({ projectDir, includeImageBase64 = false }) => {
+      const paths = resolvePaths(projectDir)
+      const target = await ensureCanvasPanel(paths)
+      const state =
+        (await readJson(
+          panelFile(paths, target.session.id, target.panel.id, "state.json")
+        )) ?? emptyCanvasSnapshot()
+      const rawSelection =
+        (await readJson(
+          panelFile(paths, target.session.id, target.panel.id, "selection.json")
+        )) ?? emptySelection(target.session.id, target.panel.id)
+      const selection = withLastImageFallback(rawSelection, state)
+      let base64 = null
+      if (includeImageBase64 && selection.assetRef) {
+        const filePath = resolve(
+          paths.storageDir,
+          ...selection.assetRef.split("/").map(safePart)
+        )
+        assertInside(paths.storageDir, filePath)
+        base64 = (await readFile(filePath)).toString("base64")
+      }
+      const selectedShapes = selection.selectedShapes ?? []
+      const summary =
+        selectedShapes.length === 0
+          ? "No OpenPanels shapes are currently selected and no image fallback is available."
+          : selectedShapes
+              .map(
+                (shape) =>
+                  `${shape.id ?? "unknown"} [${shape.type ?? "unknown"}]${shape.asset?.name ? ` (${shape.asset.name})` : ""}`
+              )
+              .join("\n")
+      return {
+        content: [{ type: "text", text: summary }],
+        structuredContent: {
+          selection,
+          selectionFile: panelFile(
+            paths,
+            target.session.id,
+            target.panel.id,
+            "selection.json"
+          ),
+          base64,
+        },
+      }
+    }
+  )
+
+  server.registerTool(
+    TOOL_READ_SELECTION_ASSET,
+    {
+      title: "Read OpenPanels Selection Asset",
+      description:
+        "Read the PNG exported from the current OpenPanels canvas selection.",
+      inputSchema: projectArgs,
+    },
+    async ({ projectDir }) => {
+      const paths = resolvePaths(projectDir)
+      const target = await ensureCanvasPanel(paths)
+      const state =
+        (await readJson(
+          panelFile(paths, target.session.id, target.panel.id, "state.json")
+        )) ?? emptyCanvasSnapshot()
+      const rawSelection = await readJson(
+        panelFile(paths, target.session.id, target.panel.id, "selection.json")
+      )
+      const selection = withLastImageFallback(rawSelection, state)
+      if (!selection?.assetRef)
+        throw new Error("No OpenPanels selection asset is available.")
+      const filePath = resolve(
+        paths.storageDir,
+        ...selection.assetRef.split("/").map(safePart)
+      )
+      assertInside(paths.storageDir, filePath)
+      const data = await readFile(filePath)
+      return jsonText({
+        assetRef: selection.assetRef,
+        mimeType: "image/png",
+        base64: data.toString("base64"),
+      })
+    }
+  )
+
+  server.registerTool(
+    TOOL_INSERT_IMAGE,
+    {
+      title: "Insert OpenPanels Image",
+      description:
+        "Copy a local image into OpenPanels assets and create an image shape in the current canvas.",
+      inputSchema: {
+        ...projectArgs,
+        imagePath: z.string().trim(),
+        anchorShapeId: z.string().trim().optional(),
+        placement: z.enum(["right", "left", "below"]).optional(),
+        fileName: z.string().trim().optional(),
+        displayWidth: z.number().positive().optional(),
+        displayHeight: z.number().positive().optional(),
+      },
+    },
+    async ({
+      projectDir,
+      imagePath,
+      anchorShapeId,
+      placement = "right",
+      fileName,
+      displayWidth,
+      displayHeight,
+    }) => {
+      const paths = resolvePaths(projectDir)
+      const target = await ensureCanvasPanel(paths)
+      const result = await insertOpenPanelsImage(paths, target, {
+        imagePath,
+        anchorShapeId,
+        placement,
+        fileName,
+        displayWidth,
+        displayHeight,
+      })
+      return jsonText(result)
+    }
+  )
+
+  server.registerTool(
+    TOOL_GET_SESSION,
+    {
+      title: "Get OpenPanels Session",
+      description:
+        "Read the current OpenPanels session from .openpanels storage.",
+      inputSchema: projectArgs,
+    },
+    async ({ projectDir }) => {
+      const paths = resolvePaths(projectDir)
+      const session = await ensureSession(paths, "Codex Session")
+      return jsonText({ session })
+    }
+  )
+
+  server.registerTool(
+    TOOL_OPEN_PANEL,
+    {
+      title: "Open OpenPanels Panel",
+      description: "Create a panel in the current OpenPanels session.",
+      inputSchema: {
+        ...projectArgs,
+        kind: panelKinds,
+        title: z.string().trim().optional(),
+      },
+    },
+    async ({ projectDir, kind, title }) => {
+      const paths = resolvePaths(projectDir)
+      const session = await ensureSession(paths, "Codex Session")
+      const panel = await createPanel(paths, session, kind, title)
+      return jsonText({ sessionId: session.id, panel })
+    }
+  )
+
+  server.registerTool(
+    TOOL_INSERT_ARTIFACT,
+    {
+      title: "Insert OpenPanels Artifact",
+      description: "Insert an image or canvas artifact into the design canvas.",
+      inputSchema: {
+        ...projectArgs,
+        panelId: z.string().trim().optional(),
+        kind: z.enum(["image", "canvas"]),
+        title: z.string().trim().optional(),
+        assetRef: z.string().optional(),
+        mimeType: z.string().optional(),
+        snapshot: z.unknown().optional(),
+      },
+    },
+    async ({
+      projectDir,
+      panelId,
+      kind,
+      title,
+      assetRef,
+      mimeType,
+      snapshot,
+    }) => {
+      const paths = resolvePaths(projectDir)
+      const session = await ensureSession(paths, "Codex Session")
+      const targetPanel = panelId
+        ? await readPanel(paths, session.id, panelId)
+        : await createPanel(paths, session, "canvas", title)
+      if (!targetPanel) throw new Error(`Panel not found: ${panelId}`)
+      const artifact = {
+        id: createId("artifact"),
+        panelId: targetPanel.id,
+        kind,
+        title,
+        createdAt: new Date().toISOString(),
+        ...(kind === "image"
+          ? {
+              assetRef: assetRef ?? "",
+              mimeType: mimeType ?? "application/octet-stream",
+            }
+          : {}),
+        ...(kind === "canvas" ? { snapshot: snapshot ?? {} } : {}),
+      }
+      await appendArtifact(paths, session.id, artifact)
+      return jsonText({ artifact, panel: targetPanel })
+    }
+  )
+
+  server.registerTool(
+    TOOL_SAVE_PANEL_STATE,
+    {
+      title: "Save OpenPanels Panel State",
+      description: "Persist panel state under .openpanels.",
+      inputSchema: {
+        ...projectArgs,
+        sessionId: z.string(),
+        panelId: z.string(),
+        state: z.unknown(),
+      },
+    },
+    async ({ projectDir, sessionId, panelId, state }) => {
+      const paths = resolvePaths(projectDir)
+      await writeJson(panelFile(paths, sessionId, panelId, "state.json"), state)
+      return jsonText({ saved: true, sessionId, panelId })
+    }
+  )
+
+  server.registerTool(
+    TOOL_WRITE_ASSET,
+    {
+      title: "Write OpenPanels Panel Asset",
+      description: "Copy an existing local file into a panel asset directory.",
+      inputSchema: {
+        ...projectArgs,
+        sessionId: z.string(),
+        panelId: z.string(),
+        sourcePath: z.string(),
+        requestedName: z.string().optional(),
+      },
+    },
+    async ({ projectDir, sessionId, panelId, sourcePath, requestedName }) => {
+      const paths = resolvePaths(projectDir)
+      const source = resolve(sourcePath)
+      await stat(source)
+      const assetDir = panelFile(paths, sessionId, panelId, "assets")
+      await mkdir(assetDir, { recursive: true })
+      const fileName = await uniqueFileName(
+        assetDir,
+        requestedName ?? basename(source)
+      )
+      const filePath = join(assetDir, fileName)
+      assertInside(paths.storageDir, filePath)
+      await copyFile(source, filePath)
+      const assetRef = [
+        "sessions",
+        safePart(sessionId),
+        "panels",
+        safePart(panelId),
+        "assets",
+        fileName,
+      ].join("/")
+      return jsonText({ assetRef, fileName })
+    }
+  )
+
+  server.registerTool(
+    TOOL_READ_ASSET,
+    {
+      title: "Read OpenPanels Panel Asset",
+      description: "Read a panel asset from .openpanels.",
+      inputSchema: {
+        ...projectArgs,
+        assetRef: z.string(),
+      },
+    },
+    async ({ projectDir, assetRef }) => {
+      const paths = resolvePaths(projectDir)
+      const filePath = resolve(
+        paths.storageDir,
+        ...assetRef.split("/").map(safePart)
+      )
+      assertInside(paths.storageDir, filePath)
+      const data = await readFile(filePath)
+      return {
+        content: [
+          {
+            type: "text",
+            text: data.toString("base64"),
+          },
+        ],
+        structuredContent: {
+          assetRef,
+          base64: data.toString("base64"),
+        },
+      }
+    }
+  )
+}
+
+function resolvePaths(projectDir) {
+  const resolvedProjectDir = resolve(
+    projectDir || process.env.OPENPANELS_PROJECT_DIR || process.cwd()
+  )
+  const storageDir = resolve(resolvedProjectDir, ".openpanels")
+  assertInside(resolvedProjectDir, storageDir)
+  return { projectDir: resolvedProjectDir, storageDir }
+}
+
+async function ensureLocalStudioServer(projectDir) {
+  const existing = localStudioServers.get(projectDir)
+  if (existing?.process && !existing.process.killed) {
+    try {
+      await waitForLocalStudio(existing.url, 500)
+      return existing
+    } catch (_error) {
+      stopLocalStudio(existing)
+      localStudioServers.delete(projectDir)
+    }
+  }
+
+  const port = await findOpenPort()
+  const url = `http://127.0.0.1:${port}`
+  const child = spawn(
+    packageRunnerCommand(),
+    [
+      "--filter",
+      LOCAL_STUDIO_PACKAGE,
+      "exec",
+      "vite",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--strictPort",
+    ],
+    {
+      cwd: pluginRootDir(),
+      env: {
+        ...process.env,
+        FORCE_COLOR: "0",
+        OPENPANELS_PROJECT_DIR: projectDir,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: process.platform === "win32",
+    }
+  )
+
+  child.stdout?.on("data", (chunk) =>
+    process.stderr.write(`[openpanels-studio] ${chunk}`)
+  )
+  child.stderr?.on("data", (chunk) =>
+    process.stderr.write(`[openpanels-studio] ${chunk}`)
+  )
+  child.once("exit", () => {
+    const current = localStudioServers.get(projectDir)
+    if (current?.process === child) localStudioServers.delete(projectDir)
+  })
+
+  const serverInfo = { projectDir, url, port, process: child }
+  localStudioServers.set(projectDir, serverInfo)
+
+  try {
+    await waitForLocalStudio(url, 20_000)
+  } catch (error) {
+    stopLocalStudio(serverInfo)
+    localStudioServers.delete(projectDir)
+    throw error
+  }
+
+  return serverInfo
+}
+
+function stopLocalStudio(serverInfo) {
+  if (serverInfo?.process && !serverInfo.process.killed) {
+    serverInfo.process.kill()
+  }
+}
+
+function packageRunnerCommand() {
+  return process.env.OPENPANELS_PNPM_COMMAND || "pnpm"
+}
+
+function pluginRootDir() {
+  return resolve(fileURLToPath(new URL("..", import.meta.url)))
+}
+
+async function findOpenPort() {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer()
+    server.unref()
+    server.on("error", reject)
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address()
+      server.close(() => {
+        if (address && typeof address === "object") {
+          resolvePort(address.port)
+        } else {
+          reject(
+            new Error("Could not allocate an OpenPanels local studio port.")
+          )
+        }
+      })
+    })
+  })
+}
+
+async function waitForLocalStudio(url, timeoutMs) {
+  const startedAt = Date.now()
+  let lastError
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const response = await fetch(`${url}/api/bootstrap`)
+      if (response.ok) return
+      lastError = new Error(
+        `OpenPanels local studio responded with ${response.status}.`
+      )
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250))
+  }
+  throw new Error(
+    `OpenPanels local studio did not become ready at ${url}: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`
+  )
+}
+
+async function ensureSession(paths, title) {
+  await mkdir(join(paths.storageDir, "sessions"), { recursive: true })
+  const indexPath = join(paths.storageDir, "index.json")
+  const index = (await readJson(indexPath)) ?? {
+    schemaVersion: 1,
+    sessions: [],
+  }
+  const existing = index.sessions?.[0]
+  if (existing) {
+    const session = await readJson(
+      join(paths.storageDir, "sessions", safePart(existing.id), "session.json")
+    )
+    if (session) return session
+  }
+  const now = new Date().toISOString()
+  const session = {
+    id: createId("session"),
+    title,
+    createdAt: now,
+    updatedAt: now,
+    panelIds: [],
+  }
+  await writeSession(paths, session)
+  return session
+}
+
+async function ensureCanvasPanel(paths) {
+  const session = await ensureSession(paths, "Codex Session")
+  for (const panelId of session.panelIds ?? []) {
+    const panel = await readPanel(paths, session.id, panelId)
+    if (panel?.kind === "canvas") return { session, panel }
+  }
+  const panel = await createPanel(paths, session, "canvas", "Design canvas")
+  return { session, panel }
+}
+
+function emptySelection(sessionId, panelId) {
+  return {
+    sessionId,
+    panelId,
+    selectedShapeIds: [],
+    selectedShapes: [],
+    assetRef: null,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function withLastImageFallback(selection, state) {
+  const selectedShapes = selection?.selectedShapes ?? []
+  if (selectedShapes.length > 0) return selection
+  const fallback = findLastImageSelectionShape(state)
+  if (!fallback) return selection
+  return {
+    ...selection,
+    selectedShapeIds: [fallback.id],
+    selectedShapes: [fallback],
+    assetRef: fallback.asset?.assetRef ?? null,
+    fallback: "last-image",
+  }
+}
+
+function findLastImageSelectionShape(state) {
+  const store =
+    state?.store && typeof state.store === "object" ? state.store : {}
+  const images = Object.values(store)
+    .filter((record) => record?.typeName === "shape" && record.type === "image")
+    .sort((a, b) => {
+      const indexDiff = (Number(b.index) || 0) - (Number(a.index) || 0)
+      if (indexDiff !== 0) return indexDiff
+      return String(b.id).localeCompare(String(a.id))
+    })
+  const shape = images[0]
+  if (!shape) return null
+  return summarizeShapeForAgent(shape, store)
+}
+
+function summarizeShapeForAgent(shape, store) {
+  const asset = shape?.props?.assetId ? store[shape.props.assetId] : null
+  const assetRef = assetRefFromAsset(asset)
+  return {
+    id: shape.id,
+    type: shape.type,
+    parentId: shape.parentId,
+    props: shape.props ?? {},
+    bounds: shapeBounds(shape),
+    asset: asset
+      ? {
+          id: asset.id,
+          type: asset.type,
+          name: asset.props?.name ?? null,
+          src: asset.props?.src ?? null,
+          w: asset.props?.w ?? null,
+          h: asset.props?.h ?? null,
+          mimeType: asset.props?.mimeType ?? null,
+          assetRef,
+        }
+      : null,
+  }
+}
+
+function assetRefFromAsset(asset) {
+  if (!asset) return null
+  if (typeof asset.meta?.assetRef === "string") return asset.meta.assetRef
+  const src = asset.props?.src
+  if (typeof src !== "string") return null
+  const match = src.match(/^\/api\/panels\/([^/]+)\/([^/]+)\/assets\/(.+)$/)
+  if (!match) return null
+  const sessionId = decodeURIComponent(match[1])
+  const panelId = decodeURIComponent(match[2])
+  const assetPath = match[3].split("/").map(decodeURIComponent).join("/")
+  return [
+    "sessions",
+    sessionId,
+    "panels",
+    panelId,
+    "assets",
+    ...assetPath.split("/"),
+  ].join("/")
+}
+
+async function insertOpenPanelsImage(paths, target, input) {
+  const source = resolve(input.imagePath)
+  await stat(source)
+  const imageBuffer = await readFile(source)
+  const dimensions = readImageDimensions(imageBuffer) ?? {}
+  const assetDir = panelFile(
+    paths,
+    target.session.id,
+    target.panel.id,
+    "assets"
+  )
+  await mkdir(assetDir, { recursive: true })
+  const fileName = await uniqueFileName(
+    assetDir,
+    input.fileName ?? basename(source)
+  )
+  const filePath = join(assetDir, fileName)
+  assertInside(paths.storageDir, filePath)
+  await copyFile(source, filePath)
+
+  const statePath = panelFile(
+    paths,
+    target.session.id,
+    target.panel.id,
+    "state.json"
+  )
+  const state = (await readJson(statePath)) ?? emptyCanvasSnapshot()
+  const store =
+    state.store && typeof state.store === "object" ? state.store : {}
+  const pageId = state.currentPageId || findFirstPageId(store) || "page:main"
+  if (!store[pageId]) {
+    store[pageId] = { id: pageId, typeName: "page", name: "Page 1", index: 1 }
+  }
+  const width = input.displayWidth ?? dimensions.width ?? 512
+  const height =
+    input.displayHeight ??
+    (dimensions.width && dimensions.height && input.displayWidth
+      ? Math.round((input.displayWidth * dimensions.height) / dimensions.width)
+      : (dimensions.height ?? 512))
+  const anchor = input.anchorShapeId ? store[input.anchorShapeId] : null
+  const anchorBounds = anchor?.typeName === "shape" ? shapeBounds(anchor) : null
+  const position = placeImage(anchorBounds, width, height, input.placement)
+  const assetId = createId("asset")
+  const shapeId = createId("shape")
+  const assetRef = [
+    "sessions",
+    safePart(target.session.id),
+    "panels",
+    safePart(target.panel.id),
+    "assets",
+    fileName,
+  ].join("/")
+  const assetUrl = `/api/panels/${encodeURIComponent(target.session.id)}/${encodeURIComponent(target.panel.id)}/assets/${encodeURIComponent(fileName)}`
+  const mimeType = mimeTypeForFile(fileName)
+
+  store[assetId] = {
+    id: assetId,
+    typeName: "asset",
+    type: "image",
+    props: {
+      name: fileName,
+      src: assetUrl,
+      w: dimensions.width ?? width,
+      h: dimensions.height ?? height,
+      mimeType,
+      isAnimated: false,
+    },
+    meta: { assetRef },
+  }
+  store[shapeId] = {
+    id: shapeId,
+    typeName: "shape",
+    type: "image",
+    parentId: anchor?.parentId || pageId,
+    index: nextShapeIndex(store, pageId),
+    props: {
+      x: position.x,
+      y: position.y,
+      width,
+      height,
+      assetId,
+    },
+  }
+  state.store = store
+  state.currentPageId = pageId
+  state.selectedShapeIds = [shapeId]
+  await writeJson(statePath, state)
+  return {
+    sessionId: target.session.id,
+    panelId: target.panel.id,
+    assetId,
+    shapeId,
+    assetRef,
+    assetFile: filePath,
+    assetUrl,
+    bounds: { x: position.x, y: position.y, width, height },
+  }
+}
+
+async function writeSession(paths, session) {
+  const dir = join(paths.storageDir, "sessions", safePart(session.id))
+  await mkdir(dir, { recursive: true })
+  await writeJson(join(dir, "session.json"), session)
+  await writeJson(join(paths.storageDir, "index.json"), {
+    schemaVersion: 1,
+    sessions: [
+      { id: session.id, title: session.title, updatedAt: session.updatedAt },
+    ],
+  })
+}
+
+async function createPanel(paths, session, kind, title) {
+  const now = new Date().toISOString()
+  const panel = {
+    id: createId("panel"),
+    sessionId: session.id,
+    kind,
+    title: title || titleForKind(kind),
+    createdAt: now,
+    updatedAt: now,
+    stateRef: `sessions/${session.id}/panels/panel/state.json`,
+  }
+  const dir = panelDir(paths, session.id, panel.id)
+  await mkdir(dir, { recursive: true })
+  panel.stateRef = `sessions/${safePart(session.id)}/panels/${safePart(panel.id)}/state.json`
+  await writeJson(join(dir, "panel.json"), panel)
+  await writeJson(
+    join(dir, "state.json"),
+    kind === "canvas" ? emptyCanvasSnapshot() : {}
+  )
+  const nextSession = {
+    ...session,
+    updatedAt: now,
+    panelIds: [...new Set([...(session.panelIds ?? []), panel.id])],
+  }
+  await writeSession(paths, nextSession)
+  Object.assign(session, nextSession)
+  return panel
+}
+
+async function readPanel(paths, sessionId, panelId) {
+  return readJson(panelFile(paths, sessionId, panelId, "panel.json"))
+}
+
+async function appendArtifact(paths, sessionId, artifact) {
+  const filePath = join(
+    paths.storageDir,
+    "sessions",
+    safePart(sessionId),
+    "artifacts.json"
+  )
+  const artifacts = (await readJson(filePath)) ?? []
+  await writeJson(filePath, [...artifacts, artifact])
+}
+
+function panelDir(paths, sessionId, panelId) {
+  const dir = join(
+    paths.storageDir,
+    "sessions",
+    safePart(sessionId),
+    "panels",
+    safePart(panelId)
+  )
+  assertInside(paths.storageDir, dir)
+  return dir
+}
+
+function panelFile(paths, sessionId, panelId, name) {
+  return join(panelDir(paths, sessionId, panelId), safePart(name))
+}
+
+async function readJson(filePath) {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"))
+  } catch (error) {
+    if (error?.code === "ENOENT") return null
+    throw error
+  }
+}
+
+async function writeJson(filePath, value) {
+  await mkdir(resolve(filePath, ".."), { recursive: true })
+  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8")
+}
+
+function createId(prefix) {
+  return `${prefix}:${crypto.randomUUID()}`
+}
+
+function titleForKind(kind) {
+  return kind.charAt(0).toUpperCase() + kind.slice(1)
+}
+
+function emptyCanvasSnapshot() {
+  return {
+    schema: {
+      schemaVersion: 1,
+      recordVersions: { page: 1, shape: 1, asset: 1 },
+    },
+    currentPageId: "page:main",
+    openedGroupId: null,
+    selectedShapeIds: [],
+    store: {
+      "page:main": {
+        id: "page:main",
+        typeName: "page",
+        name: "Page 1",
+        index: 1,
+      },
+    },
+  }
+}
+
+function findFirstPageId(store) {
+  return (
+    Object.values(store).find((record) => record?.typeName === "page")?.id ??
+    null
+  )
+}
+
+function nextShapeIndex(store, pageId) {
+  let max = 0
+  for (const record of Object.values(store)) {
+    if (
+      record?.typeName === "shape" &&
+      record.parentId === pageId &&
+      Number.isFinite(record.index)
+    ) {
+      max = Math.max(max, record.index)
+    }
+  }
+  return max + 1
+}
+
+function shapeBounds(shape) {
+  const props = shape.props || {}
+  return {
+    x: Number(props.x) || 0,
+    y: Number(props.y) || 0,
+    width: Number(props.width || props.w) || 160,
+    height: Number(props.height || props.h) || 120,
+  }
+}
+
+function placeImage(anchorBounds, width, _height, placement) {
+  if (!anchorBounds) return { x: 160, y: 160 }
+  const margin = 40
+  switch (placement) {
+    case "left":
+      return { x: anchorBounds.x - width - margin, y: anchorBounds.y }
+    case "below":
+      return {
+        x: anchorBounds.x,
+        y: anchorBounds.y + anchorBounds.height + margin,
+      }
+    default:
+      return {
+        x: anchorBounds.x + anchorBounds.width + margin,
+        y: anchorBounds.y,
+      }
+  }
+}
+
+function readImageDimensions(buffer) {
+  if (
+    buffer.length >= 24 &&
+    buffer[0] === 0x89 &&
+    buffer.toString("ascii", 1, 4) === "PNG"
+  ) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
+  }
+  if (buffer.length >= 10 && buffer.toString("ascii", 0, 3) === "GIF") {
+    return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) }
+  }
+  if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2
+    while (offset < buffer.length) {
+      if (buffer[offset] !== 0xff) break
+      const marker = buffer[offset + 1]
+      const length = buffer.readUInt16BE(offset + 2)
+      if (marker >= 0xc0 && marker <= 0xc3) {
+        return {
+          height: buffer.readUInt16BE(offset + 5),
+          width: buffer.readUInt16BE(offset + 7),
+        }
+      }
+      offset += 2 + length
+    }
+  }
+  return null
+}
+
+function mimeTypeForFile(fileName) {
+  switch (extname(fileName).toLowerCase()) {
+    case ".png":
+      return "image/png"
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg"
+    case ".gif":
+      return "image/gif"
+    case ".webp":
+      return "image/webp"
+    default:
+      return "application/octet-stream"
+  }
+}
+
+function safePart(value) {
+  const safe = basename(String(value))
+    .replace(/[^a-zA-Z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  if (!safe || safe === "." || safe === "..")
+    throw new Error(`Unsafe path part: ${value}`)
+  return safe
+}
+
+async function uniqueFileName(dir, requestedName) {
+  const raw = basename(requestedName || "asset.bin")
+  const extension = extname(raw) || ".bin"
+  const base =
+    raw
+      .slice(0, raw.length - extname(raw).length)
+      .replace(/[^a-zA-Z0-9._-]+/g, "-") || "asset"
+  let candidate = `${base}${extension}`
+  let counter = 2
+  while (true) {
+    try {
+      await stat(join(dir, candidate))
+      candidate = `${base}-${counter}${extension}`
+      counter += 1
+    } catch (error) {
+      if (error?.code === "ENOENT") return candidate
+      throw error
+    }
+  }
+}
+
+function assertInside(parent, child) {
+  const rel = relative(parent, child)
+  if (rel.startsWith("..") || rel.includes(`..${sep}`)) {
+    throw new Error(`Path escapes OpenPanels storage: ${child}`)
+  }
+}
+
+function jsonText(value) {
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(value, null, 2),
+      },
+    ],
+    structuredContent: value,
+  }
+}
