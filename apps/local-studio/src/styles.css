@@ -114,6 +114,26 @@ textarea {
   background: var(--op-canvas-background);
 }
 
+.design-shell--status {
+  display: grid;
+  place-items: center;
+}
+
+.op-boot-status {
+  display: grid;
+  gap: 8px;
+  max-width: min(520px, 80vw);
+  font-size: 13px;
+  color: var(--op-text-secondary);
+  text-align: center;
+}
+
+.op-boot-status__detail {
+  font-size: 12px;
+  color: var(--op-text-tertiary);
+  overflow-wrap: anywhere;
+}
+
 .op-project-title {
   position: relative;
   display: inline-flex;

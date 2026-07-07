@@ -1,6 +1,6 @@
 {
   "name": "@openpanels/canvas",
-  "version": "0.1.2",
+  "version": "0.1.6",
   "type": "module",
   "main": "./src/index.tsx",
   "types": "./src/index.tsx",

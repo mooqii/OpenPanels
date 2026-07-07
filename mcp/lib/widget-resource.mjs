@@ -68,11 +68,22 @@ export function registerWidgetResource(
 export function openPanelsWidgetHtml({
   appHtml,
   initialApiBase,
+  initialBootstrap,
+  initialProjectDir,
+  initialStorageDir,
   initialDisplayMode = "fullscreen",
 } = {}) {
-  return injectMcpHostBridge(
-    appHtml ??
-      `<!doctype html>
+  return injectMcpHostBridge(appHtml ?? fallbackWidgetHtml(), {
+    initialApiBase,
+    initialBootstrap,
+    initialDisplayMode,
+    initialProjectDir,
+    initialStorageDir,
+  })
+}
+
+function fallbackWidgetHtml() {
+  return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -102,20 +113,33 @@ export function openPanelsWidgetHtml({
   <body>
     <div class="status" id="openpanels-status">Opening MyOpenPanels...</div>
   </body>
-</html>`,
-    { initialApiBase, initialDisplayMode }
-  )
+</html>`
 }
 
 function injectMcpHostBridge(
   html,
-  { initialApiBase, initialDisplayMode = "fullscreen" } = {}
+  {
+    initialApiBase,
+    initialBootstrap,
+    initialDisplayMode = "fullscreen",
+    initialProjectDir,
+    initialStorageDir,
+  } = {}
 ) {
   const bridge = [
     '<script id="openpanelsInitialDisplayMode">',
     `window.__OPENPANELS_INITIAL_DISPLAY_MODE__ = ${JSON.stringify(initialDisplayMode)};`,
     typeof initialApiBase === "string" && initialApiBase
       ? `window.__OPENPANELS_API_BASE__ = ${JSON.stringify(initialApiBase)};`
+      : "",
+    initialBootstrap
+      ? `window.__OPENPANELS_BOOTSTRAP__ = ${escapeInlineJson(JSON.stringify(initialBootstrap))};`
+      : "",
+    typeof initialProjectDir === "string" && initialProjectDir
+      ? `window.__OPENPANELS_PROJECT_DIR__ = ${JSON.stringify(initialProjectDir)};`
+      : "",
+    typeof initialStorageDir === "string" && initialStorageDir
+      ? `window.__OPENPANELS_STORAGE_DIR__ = ${JSON.stringify(initialStorageDir)};`
       : "",
     "</script>",
     '<script id="openpanelsMcpAppsBundle">',
@@ -191,12 +215,21 @@ function escapeInlineScript(source) {
     .replaceAll("</SCRIPT", "<\\/SCRIPT")
 }
 
+function escapeInlineJson(source) {
+  return source
+    .replaceAll("</script", "<\\/script")
+    .replaceAll("</SCRIPT", "<\\/SCRIPT")
+    .replaceAll("<!--", "<\\!--")
+}
+
 function mcpHostBridgeScript() {
   return `(() => {
   "use strict";
 
   const apps = globalThis.__OPENPANELS_MCP_APPS__;
   if (!apps || typeof apps.App !== "function") return;
+
+  let mcpApp = null;
 
   function publishHostGlobals(globals) {
     window.openai = Object.assign(window.openai || {}, globals);
@@ -239,6 +272,64 @@ function mcpHostBridgeScript() {
     });
   }
 
+  function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(label)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  function toBridgeError(error) {
+    if (error instanceof Error) return error;
+    return new Error(String(error || "MyOpenPanels host bridge is unavailable."));
+  }
+
+  async function waitForReady(app) {
+    if (app?.ready) {
+      await withTimeout(app.ready, 4000, "MyOpenPanels host bridge did not become ready.");
+    }
+    if (globalThis.__OPENPANELS_MCP_HOST_ERROR__) {
+      throw toBridgeError(globalThis.__OPENPANELS_MCP_HOST_ERROR__);
+    }
+  }
+
+  function installOpenPanelsApi(app) {
+    const api = window.openPanelsMcp || {};
+    window.openPanelsMcp = api;
+
+    api.callServerTool = async (request, options) => {
+      try {
+        if (!app || typeof app.callServerTool !== "function") {
+          throw new Error("Host tool bridge is unavailable.");
+        }
+        await waitForReady(app);
+        return await withTimeout(
+          app.callServerTool(request, options),
+          options?.timeoutMs || 30000,
+          "MyOpenPanels server tool call timed out.",
+        );
+      } catch (error) {
+        throw toBridgeError(error);
+      }
+    };
+
+    api.getHostCapabilities = () => {
+      try {
+        return typeof app?.getHostCapabilities === "function" ? app.getHostCapabilities() : null;
+      } catch (_error) {
+        return null;
+      }
+    };
+
+    api.requestDisplayMode = async (modeOrRequest) => {
+      if (!app || typeof app.requestDisplayMode !== "function") return {};
+      const request = typeof modeOrRequest === "string" ? { mode: modeOrRequest } : (modeOrRequest || { mode: "inline" });
+      await waitForReady(app);
+      return app.requestDisplayMode(request);
+    };
+  }
+
   window.addEventListener("message", (event) => {
     const result = event.data?.params?.result;
     if (event.data?.method === "ui/notifications/tool-result" && result) {
@@ -247,16 +338,19 @@ function mcpHostBridgeScript() {
   });
 
   try {
-    const mcpApp = new apps.App(
-      { name: "myopenpanels", version: "0.1.0" },
+    mcpApp = new apps.App(
+      { name: "myopenpanels", version: "0.1.6" },
       { availableDisplayModes: ["inline", "fullscreen"] },
       { autoResize: true },
     );
+    globalThis.__OPENPANELS_MCP_APP__ = mcpApp;
+    installOpenPanelsApi(mcpApp);
 
     mcpApp.addEventListener("hostcontextchanged", applyHostContext);
     mcpApp.addEventListener("toolresult", handleToolResult);
-    mcpApp.connect()
+    mcpApp.ready = mcpApp.connect()
       .then(() => {
+        installOpenPanelsApi(mcpApp);
         publishHostGlobals({
           hostCapabilities: mcpApp.getHostCapabilities && mcpApp.getHostCapabilities(),
           hostInfo: mcpApp.getHostVersion && mcpApp.getHostVersion(),
@@ -267,9 +361,11 @@ function mcpHostBridgeScript() {
         }
       })
       .catch((error) => {
+        globalThis.__OPENPANELS_MCP_HOST_ERROR__ = error;
         publishHostGlobals({ hostBridgeError: String(error?.message || error) });
       });
   } catch (error) {
+    globalThis.__OPENPANELS_MCP_HOST_ERROR__ = error;
     publishHostGlobals({ hostBridgeError: String(error?.message || error) });
   }
 })();`

@@ -1,6 +1,6 @@
 {
   "name": "myopenpanels",
-  "version": "0.1.2",
+  "version": "0.1.6",
   "description": "Local agent panels for artifacts, canvas, markdown, and images.",
   "author": {
     "name": "MyOpenPanels"

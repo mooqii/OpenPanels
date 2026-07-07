@@ -20,13 +20,18 @@ const TOOL_GET_SESSION = "get_myopenpanels_session"
 const TOOL_OPEN_PANEL = "open_myopenpanels_panel"
 const TOOL_INSERT_ARTIFACT = "insert_myopenpanels_artifact"
 const TOOL_SAVE_PANEL_STATE = "save_myopenpanels_panel_state"
+const TOOL_SAVE_SELECTION_STATE = "save_myopenpanels_selection_state"
 const TOOL_READ_ASSET = "read_myopenpanels_panel_asset"
 const TOOL_WRITE_ASSET = "write_myopenpanels_panel_asset"
 const TOOL_GET_CANVAS_STATE = "get_myopenpanels_canvas_state"
 const TOOL_GET_SELECTION = "get_myopenpanels_selection"
 const TOOL_READ_SELECTION_ASSET = "read_myopenpanels_selection_asset"
 const TOOL_INSERT_IMAGE = "insert_myopenpanels_image"
-const OPENPANELS_WIDGET_URI = "ui://widget/myopenpanels/index.html"
+const APP_TOOL_GET_CANVAS_STATE = "openpanels_app_get_canvas_state_v016"
+const APP_TOOL_SAVE_PANEL_STATE = "openpanels_app_save_panel_state_v016"
+const APP_TOOL_SAVE_SELECTION_STATE = "openpanels_app_save_selection_state_v016"
+const APP_TOOL_READ_ASSET = "openpanels_app_read_panel_asset_v016"
+const OPENPANELS_WIDGET_URI = "ui://widget/myopenpanels/0.1.6/index.html"
 const OPENPANELS_CONNECT_DOMAINS = [
   "http://127.0.0.1:*",
   "http://localhost:*",
@@ -66,6 +71,11 @@ const currentCanvasArgs = {
   ...projectArgs,
   sessionId: z.string().trim().optional(),
 }
+const appOnlyToolMeta = {
+  ui: {
+    visibility: ["app"],
+  },
+}
 
 registerWidgetTool()
 registerStateTools()
@@ -94,7 +104,7 @@ function registerShutdownCleanup() {
 
 function registerWidgetTool() {
   registerWidgetResource(server, {
-    name: "myopenpanels-widget",
+    name: "myopenpanels-widget-0.1.6",
     uri: OPENPANELS_WIDGET_URI,
     title: "MyOpenPanels",
     description:
@@ -106,6 +116,9 @@ function registerWidgetTool() {
       openPanelsWidgetHtml({
         appHtml: await localStudioStaticHtml(),
         initialApiBase: latestWidgetData?.serverUrl,
+        initialBootstrap: latestWidgetData?.bootstrap,
+        initialProjectDir: latestWidgetData?.projectDir,
+        initialStorageDir: latestWidgetData?.storageDir,
         initialDisplayMode: "fullscreen",
       }),
   })
@@ -136,7 +149,17 @@ function registerWidgetTool() {
       const paths = resolvePaths(projectDir)
       await ensureSession(paths, "Agent Session")
       const localStudio = await ensureLocalStudioServer(paths.projectDir)
-      latestWidgetData = widgetData(paths, localStudio, displayMode)
+      const bootstrap = await readCanvasStatePayload(paths, null)
+      const publicWidgetData = {
+        ...widgetData(paths, localStudio, displayMode),
+        bootstrap,
+      }
+      latestWidgetData = {
+        ...publicWidgetData,
+        bootstrap: await readCanvasStatePayload(paths, null, {
+          hydrateAssets: true,
+        }),
+      }
       return {
         content: [
           {
@@ -144,10 +167,10 @@ function registerWidgetTool() {
             text: `Opened MyOpenPanels for ${paths.projectDir}`,
           },
         ],
-        structuredContent: latestWidgetData,
+        structuredContent: publicWidgetData,
         _meta: {
           "openai/outputTemplate": OPENPANELS_WIDGET_URI,
-          widgetData: latestWidgetData,
+          widgetData: publicWidgetData,
         },
       }
     }
@@ -182,13 +205,160 @@ function registerWidgetTool() {
 function widgetData(paths, localStudio, displayMode) {
   return {
     version: 1,
-    widget: "myopenpanels-widget",
+    widget: "myopenpanels-widget-0.1.6",
     rendering: "local-studio",
     projectDir: paths.projectDir,
     storageDir: paths.storageDir,
     serverUrl: localStudio.url,
     port: localStudio.port,
     displayMode,
+  }
+}
+
+async function readCanvasStatePayload(
+  paths,
+  sessionId,
+  { hydrateAssets = false } = {}
+) {
+  const target = await ensureCanvasPanel(paths, sessionId)
+  let state =
+    (await readJson(
+      panelFile(paths, target.session.id, target.panel.id, "state.json")
+    )) ?? emptyCanvasSnapshot()
+  if (hydrateAssets) {
+    state = await hydrateSnapshotAssets(paths, state)
+  }
+  return {
+    session: target.session,
+    panel: target.panel,
+    state,
+    storageDir: paths.storageDir,
+    panelDir: panelDir(paths, target.session.id, target.panel.id),
+  }
+}
+
+async function readCanvasStateForTool({ projectDir, sessionId }) {
+  const paths = resolvePaths(projectDir)
+  return jsonText(await readCanvasStatePayload(paths, sessionId))
+}
+
+async function hydrateSnapshotAssets(paths, snapshot) {
+  const store =
+    snapshot?.store && typeof snapshot.store === "object" ? snapshot.store : {}
+  const hydratedStore = { ...store }
+  await Promise.all(
+    Object.entries(hydratedStore).map(async ([id, record]) => {
+      if (
+        !record ||
+        typeof record !== "object" ||
+        record.typeName !== "asset" ||
+        record.type !== "image"
+      ) {
+        return
+      }
+      const assetRef = record.meta?.assetRef
+      if (typeof assetRef !== "string" || !assetRef) return
+      const mimeType =
+        typeof record.props?.mimeType === "string"
+          ? record.props.mimeType
+          : mimeTypeForFile(assetRef)
+      const filePath = resolve(
+        paths.storageDir,
+        ...assetRef.split("/").map(safePart)
+      )
+      assertInside(paths.storageDir, filePath)
+      const data = await readFile(filePath)
+      hydratedStore[id] = {
+        ...record,
+        props: {
+          ...record.props,
+          src: `data:${mimeType};base64,${data.toString("base64")}`,
+        },
+      }
+    })
+  )
+  return {
+    ...snapshot,
+    store: hydratedStore,
+  }
+}
+
+async function savePanelStateForTool({
+  projectDir,
+  sessionId,
+  panelId,
+  state,
+}) {
+  const paths = resolvePaths(projectDir)
+  await writeJson(panelFile(paths, sessionId, panelId, "state.json"), state)
+  await writeActiveSession(paths, sessionId)
+  return jsonText({ saved: true, sessionId, panelId })
+}
+
+async function saveSelectionStateForTool({
+  projectDir,
+  sessionId,
+  panelId,
+  selection,
+  imageDataUrl,
+}) {
+  const paths = resolvePaths(projectDir)
+  const selectionPath = panelFile(paths, sessionId, panelId, "selection.json")
+  const normalizedSelection =
+    selection && typeof selection === "object" ? selection : {}
+  const nextSelection = {
+    ...normalizedSelection,
+    sessionId,
+    panelId,
+    updatedAt: new Date().toISOString(),
+  }
+
+  if (typeof imageDataUrl === "string" && imageDataUrl) {
+    const assetDir = panelFile(paths, sessionId, panelId, "assets")
+    await mkdir(assetDir, { recursive: true })
+    const { mimeType, data } = decodeDataUrl(imageDataUrl)
+    const extension = extensionForMimeType(mimeType)
+    const fileName = await uniqueFileName(
+      assetDir,
+      `selection-${Date.now()}${extension}`
+    )
+    const filePath = join(assetDir, fileName)
+    assertInside(paths.storageDir, filePath)
+    await writeFile(filePath, data)
+    nextSelection.assetRef = [
+      "sessions",
+      safePart(sessionId),
+      "panels",
+      safePart(panelId),
+      "assets",
+      fileName,
+    ].join("/")
+  }
+
+  await writeJson(selectionPath, nextSelection)
+  await writeActiveSession(paths, sessionId)
+  return jsonText({ saved: true, sessionId, panelId })
+}
+
+async function readPanelAssetForTool({ projectDir, assetRef }) {
+  const paths = resolvePaths(projectDir)
+  const filePath = resolve(
+    paths.storageDir,
+    ...assetRef.split("/").map(safePart)
+  )
+  assertInside(paths.storageDir, filePath)
+  const data = await readFile(filePath)
+  return {
+    content: [
+      {
+        type: "text",
+        text: data.toString("base64"),
+      },
+    ],
+    structuredContent: {
+      assetRef,
+      base64: data.toString("base64"),
+    },
   }
 }
 
@@ -201,21 +371,19 @@ function registerStateTools() {
         "Read the current project-backed MyOpenPanels canvas session, panel, state, and storage paths.",
       inputSchema: currentCanvasArgs,
     },
-    async ({ projectDir, sessionId }) => {
-      const paths = resolvePaths(projectDir)
-      const target = await ensureCanvasPanel(paths, sessionId)
-      const state =
-        (await readJson(
-          panelFile(paths, target.session.id, target.panel.id, "state.json")
-        )) ?? emptyCanvasSnapshot()
-      return jsonText({
-        session: target.session,
-        panel: target.panel,
-        state,
-        storageDir: paths.storageDir,
-        panelDir: panelDir(paths, target.session.id, target.panel.id),
-      })
-    }
+    readCanvasStateForTool
+  )
+
+  server.registerTool(
+    APP_TOOL_GET_CANVAS_STATE,
+    {
+      title: "OpenPanels App Get Canvas State",
+      description:
+        "App-only alias for the native widget to avoid cross-server tool name collisions.",
+      inputSchema: currentCanvasArgs,
+      _meta: appOnlyToolMeta,
+    },
+    readCanvasStateForTool
   )
 
   server.registerTool(
@@ -452,12 +620,58 @@ function registerStateTools() {
         state: z.unknown(),
       },
     },
-    async ({ projectDir, sessionId, panelId, state }) => {
-      const paths = resolvePaths(projectDir)
-      await writeJson(panelFile(paths, sessionId, panelId, "state.json"), state)
-      await writeActiveSession(paths, sessionId)
-      return jsonText({ saved: true, sessionId, panelId })
-    }
+    savePanelStateForTool
+  )
+
+  server.registerTool(
+    APP_TOOL_SAVE_PANEL_STATE,
+    {
+      title: "OpenPanels App Save Panel State",
+      description:
+        "App-only alias for the native widget to avoid cross-server tool name collisions.",
+      inputSchema: {
+        ...projectArgs,
+        sessionId: z.string(),
+        panelId: z.string(),
+        state: z.unknown(),
+      },
+      _meta: appOnlyToolMeta,
+    },
+    savePanelStateForTool
+  )
+
+  server.registerTool(
+    TOOL_SAVE_SELECTION_STATE,
+    {
+      title: "Save MyOpenPanels Selection State",
+      description: "Persist the current canvas selection under .myopenpanels.",
+      inputSchema: {
+        ...projectArgs,
+        sessionId: z.string(),
+        panelId: z.string(),
+        selection: z.unknown(),
+        imageDataUrl: z.string().optional(),
+      },
+    },
+    saveSelectionStateForTool
+  )
+
+  server.registerTool(
+    APP_TOOL_SAVE_SELECTION_STATE,
+    {
+      title: "OpenPanels App Save Selection State",
+      description:
+        "App-only alias for the native widget to avoid cross-server tool name collisions.",
+      inputSchema: {
+        ...projectArgs,
+        sessionId: z.string(),
+        panelId: z.string(),
+        selection: z.unknown(),
+        imageDataUrl: z.string().optional(),
+      },
+      _meta: appOnlyToolMeta,
+    },
+    saveSelectionStateForTool
   )
 
   server.registerTool(
@@ -508,27 +722,22 @@ function registerStateTools() {
         assetRef: z.string(),
       },
     },
-    async ({ projectDir, assetRef }) => {
-      const paths = resolvePaths(projectDir)
-      const filePath = resolve(
-        paths.storageDir,
-        ...assetRef.split("/").map(safePart)
-      )
-      assertInside(paths.storageDir, filePath)
-      const data = await readFile(filePath)
-      return {
-        content: [
-          {
-            type: "text",
-            text: data.toString("base64"),
-          },
-        ],
-        structuredContent: {
-          assetRef,
-          base64: data.toString("base64"),
-        },
-      }
-    }
+    readPanelAssetForTool
+  )
+
+  server.registerTool(
+    APP_TOOL_READ_ASSET,
+    {
+      title: "OpenPanels App Read Panel Asset",
+      description:
+        "App-only alias for the native widget to avoid cross-server tool name collisions.",
+      inputSchema: {
+        ...projectArgs,
+        assetRef: z.string(),
+      },
+      _meta: appOnlyToolMeta,
+    },
+    readPanelAssetForTool
   )
 }
 
@@ -687,11 +896,10 @@ async function ensureSession(paths, title, requestedSessionId) {
     sessions: [],
   }
   if (requestedSessionId) {
-    const session = await readSession(paths, requestedSessionId)
-    if (!session) {
-      throw new Error(`OpenPanels session not found: ${requestedSessionId}`)
-    }
-    return session
+    const session = await readSession(paths, requestedSessionId).catch(
+      () => null
+    )
+    if (session) return session
   }
   const activeSessionId = await readActiveSession(paths)
   const existing =
@@ -1155,6 +1363,33 @@ function mimeTypeForFile(fileName) {
       return "image/webp"
     default:
       return "application/octet-stream"
+  }
+}
+
+function extensionForMimeType(mimeType) {
+  switch (String(mimeType).toLowerCase()) {
+    case "image/jpeg":
+      return ".jpg"
+    case "image/gif":
+      return ".gif"
+    case "image/webp":
+      return ".webp"
+    default:
+      return ".png"
+  }
+}
+
+function decodeDataUrl(dataUrl) {
+  const match = String(dataUrl).match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/i)
+  if (!match) throw new Error("Expected a data URL.")
+  const mimeType = match[1] || "application/octet-stream"
+  const isBase64 = Boolean(match[2])
+  const payload = match[3] || ""
+  return {
+    mimeType,
+    data: isBase64
+      ? Buffer.from(payload, "base64")
+      : Buffer.from(decodeURIComponent(payload), "utf8"),
   }
 }
 

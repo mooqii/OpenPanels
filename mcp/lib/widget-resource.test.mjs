@@ -19,7 +19,7 @@ describe("registerWidgetResource", () => {
     }
 
     registerWidgetResource(server, {
-      name: "myopenpanels-widget",
+      name: "myopenpanels-widget-0.1.6",
       uri: "ui://widget/myopenpanels/index.html",
       title: "MyOpenPanels",
       description: "Open MyOpenPanels.",
@@ -45,11 +45,16 @@ describe("registerWidgetResource", () => {
     ).toEqual(["http://127.0.0.1:*"])
   })
 
-  it("renders a sandbox-compatible inline widget shell", () => {
+  it("renders an embedded bootstrap shell for Codex native widgets", () => {
     const html = openPanelsWidgetHtml({
       appHtml:
         '<!doctype html><html><head></head><body><div id="root"></div><script>window.__OPENPANELS_APP__=true;</script></body></html>',
       initialApiBase: "http://127.0.0.1:12345",
+      initialBootstrap: {
+        panel: { id: "panel:test" },
+        session: { id: "session:test" },
+        state: { store: {} },
+      },
     })
 
     expect(html).not.toMatch(/<iframe\b/i)
@@ -58,6 +63,8 @@ describe("registerWidgetResource", () => {
     expect(html).toContain(
       'window.__OPENPANELS_API_BASE__ = "http://127.0.0.1:12345";'
     )
+    expect(html).toContain("window.__OPENPANELS_BOOTSTRAP__")
+    expect(html).toContain('"session:test"')
     expect(html).toContain('id="root"')
   })
 
