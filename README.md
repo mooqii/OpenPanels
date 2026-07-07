@@ -12,19 +12,15 @@ MyOpenPanels is distributed from the
 portable skill instruction file:
 `skills/myopenpanels-canvas/SKILL.md`.
 
-Paste this into your agent to install and trigger the skill:
+Paste this into your agent to install the skill:
 
 ```text
-Please install and activate the MyOpenPanels skill in this agent. Fetch the
-skill file from
-https://raw.githubusercontent.com/mooqii/OpenPanels/main/skills/myopenpanels-canvas/SKILL.md,
-create a local skill named `myopenpanels-canvas` with that content, then trigger
-it whenever I say "open MyOpenPanels", "use the MyOpenPanels canvas", "put this
-on the canvas", or mention a canvas, board, selected image, or reference image
-for visual work.
+Please install the MyOpenPanels skill from GitHub repo `mooqii/OpenPanels`,
+using the skill at `skills/myopenpanels-canvas`.
 ```
 
-The skill file contains the environment setup and CLI workflow the agent needs.
+The skill description controls when the agent should use it, and the skill file
+contains the environment setup and CLI workflow the agent needs.
 
 ## Development
 

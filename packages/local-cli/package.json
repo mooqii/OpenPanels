@@ -1,6 +1,6 @@
 {
   "name": "@openpanels/local-cli",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "bin": {
     "openpanels-local": "./dist/openpanels-local.mjs"
