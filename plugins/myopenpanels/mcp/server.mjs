@@ -1,24 +1,14 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import {
-  RESOURCE_MIME_TYPE,
-  registerAppResource,
-  registerAppTool,
-} from "@modelcontextprotocol/ext-apps/server";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
-
 const execFileAsync = promisify(execFile);
-const require = createRequire(import.meta.url);
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WIDGET_URI = "ui://widget/myopenpanels/panel.html";
+const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 const TOOL_RENDER_PANEL = "render_myopenpanels_panel";
 const TOOL_START_STUDIO = "start_myopenpanels_studio";
 const LOCAL_RESOURCE_DOMAINS = ["http://127.0.0.1:*", "http://localhost:*"];
@@ -27,76 +17,144 @@ const manifest = JSON.parse(
   readFileSync(join(PLUGIN_ROOT, ".codex-plugin", "plugin.json"), "utf8")
 );
 
-const server = new McpServer(
-  {
-    name: manifest.name,
-    version: manifest.version,
+const serverInfo = {
+  name: manifest.name,
+  version: manifest.version,
+};
+
+const instructions =
+  "Open MyOpenPanels with render_myopenpanels_panel when the host supports native widgets. It starts or reuses the project-local studio and renders it inside a native Codex widget. If native widgets are unavailable, use start_myopenpanels_studio or openpanels-local studio start and open the returned serverUrl in the in-app Browser side panel.";
+
+const resourceMeta = {
+  ui: {
+    prefersBorder: false,
+    csp: {
+      connectDomains: LOCAL_RESOURCE_DOMAINS,
+      resourceDomains: LOCAL_RESOURCE_DOMAINS,
+    },
   },
-  {
-    instructions:
-      "Open MyOpenPanels with render_myopenpanels_panel when the host supports native widgets. It starts or reuses the project-local studio and renders it inside a native Codex widget. If native widgets are unavailable, use start_myopenpanels_studio or openpanels-local studio start and open the returned serverUrl in the in-app Browser side panel.",
+  "openai/widgetDescription":
+    "A native Codex widget that hosts the project-backed MyOpenPanels local studio.",
+  "openai/widgetPrefersBorder": false,
+  "openai/widgetCSP": {
+    connect_domains: LOCAL_RESOURCE_DOMAINS,
+    resource_domains: LOCAL_RESOURCE_DOMAINS,
+  },
+};
+
+const outputTemplateMeta = {
+  ui: {
+    resourceUri: WIDGET_URI,
+    visibility: ["model", "app"],
+  },
+  "ui/resourceUri": WIDGET_URI,
+  "openai/outputTemplate": WIDGET_URI,
+  "openai/widgetAccessible": true,
+  "openai/toolInvocation/invoking": "Opening MyOpenPanels...",
+  "openai/toolInvocation/invoked": "MyOpenPanels ready",
+};
+
+let inputBuffer = Buffer.alloc(0);
+
+process.stdin.on("data", (chunk) => {
+  inputBuffer = Buffer.concat([inputBuffer, chunk]);
+  drainInput().catch((error) => {
+    writeError(null, -32_603, error instanceof Error ? error.message : String(error));
+  });
+});
+
+function drainInput() {
+  while (true) {
+    const headerEnd = inputBuffer.indexOf("\r\n\r\n");
+    if (headerEnd === -1) return Promise.resolve();
+
+    const header = inputBuffer.slice(0, headerEnd).toString("utf8");
+    const match = header.match(/content-length:\s*(\d+)/i);
+    if (!match) throw new Error("Missing Content-Length header.");
+
+    const contentLength = Number(match[1]);
+    const messageStart = headerEnd + 4;
+    const messageEnd = messageStart + contentLength;
+    if (inputBuffer.length < messageEnd) return Promise.resolve();
+
+    const rawMessage = inputBuffer.slice(messageStart, messageEnd).toString("utf8");
+    inputBuffer = inputBuffer.slice(messageEnd);
+    void handleMessage(JSON.parse(rawMessage));
   }
-);
-
-registerWidgetResource(server);
-registerPanelTools(server);
-
-const transport = new StdioServerTransport();
-await server.connect(transport);
-
-function registerWidgetResource(mcpServer) {
-  const metadata = {
-    ui: {
-      prefersBorder: false,
-      csp: {
-        connectDomains: LOCAL_RESOURCE_DOMAINS,
-        resourceDomains: LOCAL_RESOURCE_DOMAINS,
-      },
-    },
-    "openai/widgetDescription":
-      "A native Codex widget that hosts the project-backed MyOpenPanels local studio.",
-    "openai/widgetPrefersBorder": false,
-    "openai/widgetCSP": {
-      connect_domains: LOCAL_RESOURCE_DOMAINS,
-      resource_domains: LOCAL_RESOURCE_DOMAINS,
-    },
-  };
-
-  registerAppResource(
-    mcpServer,
-    "myopenpanels-panel-widget",
-    WIDGET_URI,
-    {
-      title: "MyOpenPanels",
-      description:
-        "Open the MyOpenPanels local studio in a native Codex widget.",
-      _meta: metadata,
-    },
-    async () => ({
-      contents: [
-        {
-          uri: WIDGET_URI,
-          mimeType: RESOURCE_MIME_TYPE,
-          text: widgetHtml(),
-          _meta: metadata,
-        },
-      ],
-    })
-  );
 }
 
-function registerPanelTools(mcpServer) {
-  registerAppTool(
-    mcpServer,
-    TOOL_RENDER_PANEL,
+async function handleMessage(message) {
+  if (!Object.hasOwn(message, "id")) return;
+
+  try {
+    const result = await routeRequest(message.method, message.params ?? {});
+    writeMessage({ jsonrpc: "2.0", id: message.id, result });
+  } catch (error) {
+    writeError(
+      message.id,
+      -32_000,
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+}
+
+async function routeRequest(method, params) {
+  switch (method) {
+    case "initialize":
+      return {
+        protocolVersion: params.protocolVersion || "2025-06-18",
+        capabilities: {
+          resources: {},
+          tools: {},
+        },
+        serverInfo,
+        instructions,
+      };
+    case "ping":
+      return {};
+    case "tools/list":
+      return { tools: listTools() };
+    case "tools/call":
+      return callTool(params.name, params.arguments ?? {});
+    case "resources/list":
+      return { resources: [widgetResource()] };
+    case "resources/read":
+      if (params.uri !== WIDGET_URI) {
+        throw new Error(`Unknown resource: ${params.uri}`);
+      }
+      return {
+        contents: [
+          {
+            uri: WIDGET_URI,
+            mimeType: RESOURCE_MIME_TYPE,
+            text: widgetHtml(),
+            _meta: resourceMeta,
+          },
+        ],
+      };
+    default:
+      throw new Error(`Unsupported MCP method: ${method}`);
+  }
+}
+
+function listTools() {
+  return [
     {
+      name: TOOL_RENDER_PANEL,
       title: "Render MyOpenPanels Panel",
       description:
         "Start or reuse the MyOpenPanels local studio and open it in a native Codex widget for the active project.",
       inputSchema: {
-        projectDir: z.string().trim().optional(),
-        title: z.string().trim().optional(),
-        displayMode: z.enum(["fullscreen", "inline"]).optional(),
+        type: "object",
+        properties: {
+          projectDir: { type: "string" },
+          title: { type: "string" },
+          displayMode: {
+            type: "string",
+            enum: ["fullscreen", "inline"],
+          },
+        },
+        additionalProperties: false,
       },
       annotations: {
         readOnlyHint: true,
@@ -104,59 +162,19 @@ function registerPanelTools(mcpServer) {
         idempotentHint: true,
         openWorldHint: false,
       },
-      _meta: {
-        ui: {
-          resourceUri: WIDGET_URI,
-          visibility: ["model", "app"],
-        },
-        "ui/resourceUri": WIDGET_URI,
-        "openai/outputTemplate": WIDGET_URI,
-        "openai/widgetAccessible": true,
-        "openai/toolInvocation/invoking": "Opening MyOpenPanels...",
-        "openai/toolInvocation/invoked": "MyOpenPanels ready",
-      },
+      _meta: outputTemplateMeta,
     },
-    async (input = {}) => {
-      const studio = await startStudio(input.projectDir);
-      const title = input.title?.trim() || "MyOpenPanels";
-      const preferredDisplayMode = input.displayMode || "fullscreen";
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Rendered MyOpenPanels native widget at ${studio.serverUrl}.`,
-          },
-        ],
-        structuredContent: {
-          version: 1,
-          widget: "myopenpanels-panel-widget",
-          title,
-          rendering: "native-widget",
-          preferredDisplayMode,
-          ...studio,
-        },
-        _meta: {
-          "openai/outputTemplate": WIDGET_URI,
-          widgetData: {
-            title,
-            rendering: "native-widget",
-            preferredDisplayMode,
-            ...studio,
-          },
-        },
-      };
-    }
-  );
-
-  mcpServer.registerTool(
-    TOOL_START_STUDIO,
     {
+      name: TOOL_START_STUDIO,
       title: "Start MyOpenPanels Studio",
       description:
         "Start or reuse the project-local MyOpenPanels studio and return its localhost URL for browser fallback.",
       inputSchema: {
-        projectDir: z.string().trim().optional(),
+        type: "object",
+        properties: {
+          projectDir: { type: "string" },
+        },
+        additionalProperties: false,
       },
       annotations: {
         readOnlyHint: true,
@@ -165,19 +183,52 @@ function registerPanelTools(mcpServer) {
         openWorldHint: false,
       },
     },
-    async (input = {}) => {
-      const studio = await startStudio(input.projectDir);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `MyOpenPanels studio ready at ${studio.serverUrl}.`,
-          },
-        ],
-        structuredContent: studio,
-      };
-    }
-  );
+  ];
+}
+
+async function callTool(name, args) {
+  if (name === TOOL_START_STUDIO) {
+    const studio = await startStudio(args.projectDir);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `MyOpenPanels studio ready at ${studio.serverUrl}.`,
+        },
+      ],
+      structuredContent: studio,
+    };
+  }
+
+  if (name === TOOL_RENDER_PANEL) {
+    const studio = await startStudio(args.projectDir);
+    const title = args.title?.trim() || "MyOpenPanels";
+    const preferredDisplayMode = args.displayMode || "fullscreen";
+    const widgetData = {
+      version: 1,
+      widget: "myopenpanels-panel-widget",
+      title,
+      rendering: "native-widget",
+      preferredDisplayMode,
+      ...studio,
+    };
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Rendered MyOpenPanels native widget at ${studio.serverUrl}.`,
+        },
+      ],
+      structuredContent: widgetData,
+      _meta: {
+        "openai/outputTemplate": WIDGET_URI,
+        widgetData,
+      },
+    };
+  }
+
+  throw new Error(`Unknown tool: ${name}`);
 }
 
 async function startStudio(projectDir) {
@@ -244,6 +295,17 @@ function findUp(startDir, relativePath) {
   }
 }
 
+function widgetResource() {
+  return {
+    uri: WIDGET_URI,
+    name: "myopenpanels-panel-widget",
+    title: "MyOpenPanels",
+    description: "Open the MyOpenPanels local studio in a native Codex widget.",
+    mimeType: RESOURCE_MIME_TYPE,
+    _meta: resourceMeta,
+  };
+}
+
 function widgetHtml() {
   return `<!doctype html>
 <html>
@@ -289,7 +351,6 @@ function widgetHtml() {
         font-size: 15px;
       }
     </style>
-    <script>${escapeInlineScript(mcpAppsGlobalScript())}</script>
     <script>${escapeInlineScript(widgetBridgeScript())}</script>
   </head>
   <body>
@@ -303,66 +364,15 @@ function widgetHtml() {
 </html>`;
 }
 
-function mcpAppsGlobalScript() {
-  const sourcePath = require.resolve(
-    "@modelcontextprotocol/ext-apps/app-with-deps"
-  );
-  const source = readFileSync(sourcePath, "utf8");
-  const exportStart = source.lastIndexOf("export{");
-  if (exportStart === -1) {
-    throw new Error("Could not find ext-apps browser export block.");
-  }
-  const exportBlock = source
-    .slice(exportStart)
-    .match(/^export\{([^}]+)\};?\s*$/s);
-  if (!exportBlock) {
-    throw new Error("Could not parse ext-apps browser export block.");
-  }
-  const exportMap = parseExportMap(exportBlock[1]);
-  const requiredExports = [
-    "App",
-    "applyDocumentTheme",
-    "applyHostFonts",
-    "applyHostStyleVariables",
-  ];
-  for (const name of requiredExports) {
-    if (!exportMap.has(name)) {
-      throw new Error(`Missing ext-apps browser export: ${name}`);
-    }
-  }
-  return [
-    source.slice(0, exportStart),
-    ";globalThis.__MYOPENPANELS_MCP_APPS__={",
-    requiredExports
-      .map((name) => `${JSON.stringify(name)}:${exportMap.get(name)}`)
-      .join(","),
-    "};",
-  ].join("");
-}
-
-function parseExportMap(body) {
-  const exportMap = new Map();
-  for (const rawEntry of body.split(",")) {
-    const entry = rawEntry.trim();
-    if (!entry) continue;
-    const parts = entry.split(/\s+as\s+/);
-    const local = parts[0]?.trim();
-    const exported = (parts[1] || parts[0])?.trim();
-    if (local && exported) exportMap.set(exported, local);
-  }
-  return exportMap;
-}
-
 function widgetBridgeScript() {
   return `(() => {
   "use strict";
 
-  const apps = globalThis.__MYOPENPANELS_MCP_APPS__;
-  let mcpApp = null;
+  let lastServerUrl = "";
 
   function payloadFromToolResult(result) {
     const metadata = result && typeof result === "object" ? result._meta || {} : {};
-    return metadata.widgetData || result?.structuredContent || {};
+    return metadata.widgetData || result?.structuredContent || result || {};
   }
 
   function publishHostGlobals(globals) {
@@ -372,41 +382,16 @@ function widgetBridgeScript() {
     }));
   }
 
-  function applyHostContext(context) {
-    if (!context) return;
-    try {
-      if (context.theme && typeof apps.applyDocumentTheme === "function") {
-        apps.applyDocumentTheme(context.theme);
-      }
-      if (context.styles?.variables && typeof apps.applyHostStyleVariables === "function") {
-        apps.applyHostStyleVariables(context.styles.variables);
-      }
-      if (context.styles?.css?.fonts && typeof apps.applyHostFonts === "function") {
-        apps.applyHostFonts(context.styles.css.fonts);
-      }
-    } catch (_error) {}
-    publishHostGlobals({
-      hostContext: context,
-      displayMode: context.displayMode,
-      availableDisplayModes: context.availableDisplayModes,
-      widgetInstanceId: context.widgetInstanceId || context.widgetId,
-    });
-  }
-
   function render(payload) {
-    if (!payload?.serverUrl) return;
+    if (!payload?.serverUrl || payload.serverUrl === lastServerUrl) return;
+    lastServerUrl = payload.serverUrl;
     const root = document.getElementById("root");
     if (!root) return;
-    let frame = document.getElementById("myopenpanels-frame");
-    if (!frame) {
-      frame = document.createElement("iframe");
-      frame.id = "myopenpanels-frame";
-      frame.title = payload.title || "MyOpenPanels";
-      root.replaceChildren(frame);
-    }
-    if (frame.src !== payload.serverUrl) {
-      frame.src = payload.serverUrl;
-    }
+    const frame = document.createElement("iframe");
+    frame.id = "myopenpanels-frame";
+    frame.title = payload.title || "MyOpenPanels";
+    frame.src = payload.serverUrl;
+    root.replaceChildren(frame);
   }
 
   function handleToolResult(result) {
@@ -416,12 +401,6 @@ function widgetBridgeScript() {
       toolOutput: payload,
     });
     render(payload);
-    try {
-      mcpApp?.sendSizeChanged?.({
-        width: Math.ceil(window.innerWidth || 0),
-        height: Math.ceil(window.innerHeight || document.documentElement.scrollHeight || 0),
-      });
-    } catch (_error) {}
   }
 
   window.addEventListener("message", (event) => {
@@ -431,24 +410,13 @@ function widgetBridgeScript() {
     }
   });
 
-  try {
-    if (apps?.App) {
-      mcpApp = new apps.App(
-        { name: "myopenpanels", version: "0.1.0" },
-        { availableDisplayModes: ["inline", "fullscreen"] },
-        { autoResize: true }
-      );
-      globalThis.__MYOPENPANELS_MCP_APP__ = mcpApp;
-      mcpApp.addEventListener("hostcontextchanged", applyHostContext);
-      mcpApp.addEventListener("toolresult", handleToolResult);
-      mcpApp.connect().then(() => {
-        applyHostContext(mcpApp.getHostContext && mcpApp.getHostContext());
-        mcpApp.requestDisplayMode?.({ mode: "fullscreen" }).catch(() => {});
-      }).catch(() => {});
-    }
-  } catch (_error) {}
+  window.addEventListener("openai:set_globals", () => {
+    render(window.openai?.toolOutput || window.openai?.rawToolResult?.structuredContent);
+  });
 
-  render(window.openai?.toolOutput || window.openai?.rawToolResult?.structuredContent);
+  window.setInterval(() => {
+    render(window.openai?.toolOutput || window.openai?.rawToolResult?.structuredContent);
+  }, 100);
 })();`;
 }
 
@@ -456,4 +424,17 @@ function escapeInlineScript(source) {
   return source
     .replaceAll("</script", "<\\/script")
     .replaceAll("</SCRIPT", "<\\/SCRIPT");
+}
+
+function writeError(id, code, message) {
+  writeMessage({
+    jsonrpc: "2.0",
+    id,
+    error: { code, message },
+  });
+}
+
+function writeMessage(message) {
+  const json = JSON.stringify(message);
+  process.stdout.write(`Content-Length: ${Buffer.byteLength(json)}\r\n\r\n${json}`);
 }

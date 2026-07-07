@@ -5,6 +5,23 @@ open interactive panels, insert artifacts, and persist local panel state under
 the active project's `.myopenpanels/` directory through the `openpanels-local`
 CLI.
 
+## Skills
+
+MyOpenPanels is distributed as a portable skill instruction file:
+`skills/myopenpanels-canvas/SKILL.md`.
+
+Paste this into your agent to install and trigger the skill:
+
+```text
+Please install and activate the MyOpenPanels skill in this agent: create a local
+skill named `myopenpanels-canvas` from `skills/myopenpanels-canvas/SKILL.md` in
+this repository, then trigger it whenever I say "open MyOpenPanels", "use the
+MyOpenPanels canvas", "put this on the canvas", or mention a canvas, board,
+selected image, or reference image for visual work.
+```
+
+The skill file contains the environment setup and CLI workflow the agent needs.
+
 ## Development
 
 ```bash
@@ -28,10 +45,6 @@ Or use npx without a global install:
 ```bash
 npx -y @openpanels/local-cli@latest studio start --project /path/to/project --format json
 ```
-
-The agent-facing instructions live in `skills/`. Add those skill files to any
-agent environment that supports local skills, or use the CLI commands directly
-from a shell-capable agent.
 
 ## Native Codex Plugin
 
@@ -66,65 +79,6 @@ openpanels-local selection --project /path/to/project --include-image-base64 --f
 openpanels-local read-selection-asset --project /path/to/project --output /tmp/selection.png --format json
 openpanels-local insert-image --project /path/to/project --image /tmp/result.png --placement right --format json
 ```
-
-## Skills
-
-MyOpenPanels is distributed as portable skill instructions plus the
-`openpanels-local` CLI. There is no plugin manifest or agent-specific runtime
-registration required.
-
-- `skills/myopenpanels-canvas/SKILL.md` teaches agents how to use the infinite
-  canvas as visual context for image generation, start/open the local studio,
-  read selections, and insert generated images.
-
-### Install the Agent Skill
-
-1. Make the CLI available to your local agent:
-
-   ```bash
-   npm install -g @openpanels/local-cli
-   ```
-
-   If you do not want a global install, the skill can use
-   `npx -y @openpanels/local-cli@latest` as its fallback command.
-2. If your agent supports local skills, copy
-   `skills/myopenpanels-canvas/` into the agent's skills directory and keep the
-   skill name `myopenpanels-canvas`.
-3. If your agent does not support local skill installation, paste this into the
-   agent instead:
-
-   ```text
-   Use MyOpenPanels when I ask for an infinite canvas, visual workspace, image
-   generation or editing with canvas context, reference gathering, layout
-   exploration, or placing generated results onto a board.
-
-   Use the `openpanels-local` CLI. If `command -v openpanels-local` fails, use
-   `npx -y @openpanels/local-cli@latest` in place of `openpanels-local`.
-
-   To open the canvas, prefer any native OpenPanels/MyOpenPanels panel or widget
-   surface. If native panels are unavailable, run:
-   `openpanels-local studio start --project "$PWD" --format json`
-   Then open the returned `serverUrl` in the agent's in-app Browser side panel.
-
-   Read the current selection with:
-   `openpanels-local selection --project "$PWD" --format json`
-
-   Read selected pixels when needed with:
-   `openpanels-local selection --project "$PWD" --include-image-base64 --format json`
-   or:
-   `openpanels-local read-selection-asset --project "$PWD" --output /tmp/selection.png --format json`
-
-   Insert generated or local images back onto the canvas with:
-   `openpanels-local insert-image --project "$PWD" --image <path> --placement right --format json`
-
-   Do not hand-write `.myopenpanels/` files.
-   ```
-
-Trigger the skill by asking your agent to "open MyOpenPanels", "use the
-MyOpenPanels canvas", "put this on the canvas", or by naming the installed
-`myopenpanels-canvas` skill directly. Visual tasks that mention a canvas,
-selected image, board, reference image, or placing generated results should also
-trigger it.
 
 ## v0.1 Scope
 

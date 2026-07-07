@@ -40,9 +40,13 @@ export function RasterizeItem({ editor, transformerRef }: RasterizeItemProps) {
 
     const bounds = getShapesBounds(shapes)
     const file = dataUrlToFile(dataUrl, "selection.png")
+    const gap = {
+      x: bounds.width * RASTERIZED_SELECTION_OFFSET_RATIO,
+      y: bounds.height * RASTERIZED_SELECTION_OFFSET_RATIO,
+    }
     const position = {
-      x: bounds.x - bounds.width * RASTERIZED_SELECTION_OFFSET_RATIO,
-      y: bounds.y + bounds.height * RASTERIZED_SELECTION_OFFSET_RATIO,
+      x: bounds.x - gap.x,
+      y: bounds.y + bounds.height + gap.y,
     }
     await createImageFromFile(
       editor,

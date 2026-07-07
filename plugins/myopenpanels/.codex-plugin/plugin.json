@@ -1,6 +1,6 @@
 {
   "name": "myopenpanels",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Open MyOpenPanels in a native Codex widget, backed by the project-local OpenPanels studio.",
   "author": {
     "name": "OpenPanels"
