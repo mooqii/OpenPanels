@@ -37,6 +37,7 @@ const zhCNMessages: Record<string, string> = {
   "Color field": "颜色输入",
   "Corner Radius": "圆角",
   "Corner radius": "圆角",
+  "Create image from selection": "从选区创建图片",
   Crop: "裁剪",
   Custom: "自定义",
   Dark: "深色",

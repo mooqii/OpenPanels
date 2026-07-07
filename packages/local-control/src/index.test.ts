@@ -7,6 +7,7 @@ import {
   ensureCanvasBootstrap,
   getSelection,
   insertImage,
+  insertPlaceholder,
   readActiveSession,
   saveSelectionState,
 } from "./index"
@@ -75,6 +76,52 @@ describe("@openpanels/local-control", () => {
     expect(inserted.assetRef).toContain("image.png")
     expect(inserted.bounds).toEqual({ x: 160, y: 160, width: 1, height: 1 })
     expect(selection.selection.fallback).toBe("last-image")
+    expect(selection.selection.selectedShapeIds).toEqual([inserted.shapeId])
+  })
+
+  it("places generation placeholders in clear canvas space", async () => {
+    const imagePath = join(projectDir, "image.png")
+    await writeFile(imagePath, TINY_PNG)
+
+    const inserted = await insertImage({
+      projectDir,
+      imagePath,
+      displayHeight: 512,
+      displayWidth: 512,
+    })
+    const placeholder = await insertPlaceholder({
+      projectDir,
+      anchorShapeId: inserted.shapeId,
+      displayHeight: 512,
+      displayWidth: 512,
+    })
+
+    expect(placeholder.bounds).toEqual({
+      x: 160 + 512 + 80,
+      y: 160,
+      width: 512,
+      height: 512,
+    })
+  })
+
+  it("replaces a generation placeholder with the generated image", async () => {
+    const imagePath = join(projectDir, "image.png")
+    await writeFile(imagePath, TINY_PNG)
+
+    const placeholder = await insertPlaceholder({
+      projectDir,
+      displayHeight: 256,
+      displayWidth: 384,
+    })
+    const inserted = await insertImage({
+      projectDir,
+      imagePath,
+      replaceShapeId: placeholder.shapeId,
+    })
+    const selection = await getSelection({ projectDir })
+
+    expect(inserted.replacedShapeId).toBe(placeholder.shapeId)
+    expect(inserted.bounds).toEqual({ x: 160, y: 160, width: 384, height: 256 })
     expect(selection.selection.selectedShapeIds).toEqual([inserted.shapeId])
   })
 })

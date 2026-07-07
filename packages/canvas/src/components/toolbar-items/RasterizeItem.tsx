@@ -42,7 +42,9 @@ export function RasterizeItem({ editor, transformerRef }: RasterizeItemProps) {
       editor,
       file,
       { x: bounds.x, y: bounds.y },
-      editor.getAssetStore()
+      editor.getAssetStore(),
+      false,
+      { height: bounds.height, width: bounds.width }
     )
   }, [editor, shapes, transformerRef])
 

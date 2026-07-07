@@ -1,7 +1,10 @@
 import Konva from "konva"
 import { useCallback, useEffect, useRef } from "react"
 import { Group, Rect, Text } from "react-konva"
-import { resolveCanvasPlaceholderFill } from "../constants"
+import {
+  resolveCanvasPlaceholderFill,
+  resolveCanvasPlaceholderTextFill,
+} from "../constants"
 import type { PlaceholderShape } from "../types/shapes"
 
 interface PlaceholderShapeRendererProps {
@@ -36,11 +39,16 @@ export function PlaceholderShapeRenderer({
   const height = props.height ?? 100
   const cornerRadius = props.cornerRadius ?? 0
   const fill = props.fill ?? resolveCanvasPlaceholderFill()
+  const textFill = resolveCanvasPlaceholderTextFill()
   const text = props.text
+  const textFontSize = Math.min(
+    32,
+    Math.max(18, Math.round(Math.min(width, height) * 0.045))
+  )
 
   const rectRef = useRef<Konva.Rect>(null)
 
-  // Animate opacity (0.7–0.9) using Konva.Animation
+  // Animate opacity with a slow breathing rhythm while generation is pending.
   useEffect(() => {
     const node = rectRef.current
     if (!node) return
@@ -51,8 +59,7 @@ export function PlaceholderShapeRenderer({
     const anim = new Konva.Animation((frame) => {
       const nodeCurrent = rectRef.current
       if (!nodeCurrent) return
-      // Sine wave: keep the placeholder animated without making it pop too hard.
-      const opacity = 0.82 + 0.08 * Math.sin((frame.time / 1600) * Math.PI * 2)
+      const opacity = 0.82 + 0.1 * Math.sin((frame.time / 1800) * Math.PI * 2)
       nodeCurrent.opacity(opacity)
     }, layer)
 
@@ -108,8 +115,9 @@ export function PlaceholderShapeRenderer({
       {text != null && text !== "" && (
         <Text
           align="center"
-          fill="#666"
-          fontSize={14}
+          fill={textFill}
+          fontSize={textFontSize}
+          fontStyle="500"
           height={height}
           listening={false}
           text={text}

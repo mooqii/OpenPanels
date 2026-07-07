@@ -14,6 +14,7 @@ import {
   getCanvasState,
   getSelection,
   insertImage,
+  insertPlaceholder,
   readSelectionAsset,
   resolveOpenPanelsPaths,
 } from "@openpanels/local-control"
@@ -114,11 +115,29 @@ export async function runOpenPanelsCli(
         imagePath,
         placement: placementFlag(parsed),
         anchorShapeId: stringFlag(parsed, "anchor-shape-id"),
+        replaceShapeId: stringFlag(parsed, "replace-shape-id"),
         fileName: stringFlag(parsed, "file-name"),
         displayWidth: numberFlag(parsed, "display-width"),
         displayHeight: numberFlag(parsed, "display-height"),
       })
       writeResult(io, parsed, result, `Inserted image shape ${result.shapeId}`)
+      return 0
+    }
+
+    if (command === "insert-placeholder") {
+      const result = await insertPlaceholder({
+        projectDir: stringFlag(parsed, "project"),
+        anchorShapeId: stringFlag(parsed, "anchor-shape-id"),
+        displayWidth: numberFlag(parsed, "display-width"),
+        displayHeight: numberFlag(parsed, "display-height"),
+        text: stringFlag(parsed, "text"),
+      })
+      writeResult(
+        io,
+        parsed,
+        result,
+        `Inserted placeholder shape ${result.shapeId}`
+      )
       return 0
     }
 
@@ -591,6 +610,7 @@ Commands:
   canvas-state              Read the current canvas state
   selection                 Read the current canvas selection
   read-selection-asset      Write the exported selection asset to a file
+  insert-placeholder        Insert a generation placeholder into a clear area
   insert-image              Insert a local image into the canvas
 
 Options:

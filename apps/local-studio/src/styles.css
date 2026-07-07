@@ -41,6 +41,8 @@
   --op-title: #e6e8ec;
   --op-toolbar-border: rgb(255 255 255 / 3%);
   --op-toolbar-shadow: 0 14px 40px rgb(0 0 0 / 32%);
+  --canvas-placeholder: #1a2227;
+  --canvas-placeholder-text: #9aa5b1;
   font-family:
     Avenir Next,
     ui-sans-serif,
@@ -85,6 +87,8 @@
   --op-title: #20242a;
   --op-toolbar-border: rgb(20 26 35 / 8%);
   --op-toolbar-shadow: 0 14px 34px rgb(20 26 35 / 16%);
+  --canvas-placeholder: #dce2e8;
+  --canvas-placeholder-text: #606b77;
   color: #171a1f;
   color-scheme: light;
   background: #f3f5f7;

@@ -18,7 +18,10 @@ export const INITIAL_GEO_FILL = "rgba(217, 217, 217)"
 export const INITIAL_GEO_STROKE = "rgba(0, 0, 0)"
 
 export const CANVAS_PLACEHOLDER_COLOR_VARIABLE = "--canvas-placeholder"
-export const INITIAL_PLACEHOLDER_FILL = "oklch(92.05% 0.0067 106.53)"
+export const CANVAS_PLACEHOLDER_TEXT_COLOR_VARIABLE =
+  "--canvas-placeholder-text"
+export const INITIAL_PLACEHOLDER_FILL = "#1a2227"
+export const INITIAL_PLACEHOLDER_TEXT_FILL = "#9aa5b1"
 
 export function resolveCanvasPlaceholderFill() {
   if (typeof window === "undefined") {
@@ -31,6 +34,19 @@ export function resolveCanvasPlaceholderFill() {
     .trim()
 
   return fill || INITIAL_PLACEHOLDER_FILL
+}
+
+export function resolveCanvasPlaceholderTextFill() {
+  if (typeof window === "undefined") {
+    return INITIAL_PLACEHOLDER_TEXT_FILL
+  }
+
+  const fill = window
+    .getComputedStyle(document.documentElement)
+    .getPropertyValue(CANVAS_PLACEHOLDER_TEXT_COLOR_VARIABLE)
+    .trim()
+
+  return fill || INITIAL_PLACEHOLDER_TEXT_FILL
 }
 
 // Pencil drawing defaults

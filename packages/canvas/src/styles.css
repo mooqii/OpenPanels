@@ -17,8 +17,8 @@
   gap: 12px;
   align-items: center;
   height: 24px;
-  font-size: 18px;
-  font-weight: 750;
+  font-size: 14px;
+  font-weight: 500;
   color: var(--op-title);
   letter-spacing: 0;
 }

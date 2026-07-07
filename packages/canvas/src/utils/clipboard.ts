@@ -38,6 +38,34 @@ export function getImageDimensions(
   })
 }
 
+export interface CreateImageDisplaySize {
+  height: number
+  width: number
+}
+
+export function resolveImageShapeGeometry({
+  center,
+  displaySize,
+  intrinsicSize,
+  position,
+}: {
+  center?: boolean
+  displaySize?: CreateImageDisplaySize
+  intrinsicSize: CreateImageDisplaySize
+  position: { x: number; y: number }
+}) {
+  const width = displaySize?.width ?? intrinsicSize.width
+  const height = displaySize?.height ?? intrinsicSize.height
+  const finalPosition = center
+    ? {
+        x: position.x - width / 2,
+        y: position.y - height / 2,
+      }
+    : position
+
+  return { height, position: finalPosition, width }
+}
+
 export function uploadAsset(
   editor: Editor,
   assetStore: AssetStore,
@@ -92,7 +120,8 @@ export async function createImageFromFile(
   file: File,
   position: { x: number; y: number },
   assetStore?: AssetStore,
-  center?: boolean
+  center?: boolean,
+  displaySize?: CreateImageDisplaySize
 ): Promise<ShapeId> {
   const localBlobUrl = URL.createObjectURL(file)
   const { width, height } = await getImageDimensions(localBlobUrl)
@@ -108,14 +137,12 @@ export async function createImageFromFile(
     isAnimated: false,
   }
 
-  // Adjust position if centering is requested
-  let finalPosition = position
-  if (center) {
-    finalPosition = {
-      x: position.x - width / 2,
-      y: position.y - height / 2,
-    }
-  }
+  const geometry = resolveImageShapeGeometry({
+    center,
+    displaySize,
+    intrinsicSize: { width, height },
+    position,
+  })
 
   const shape = editor.run(() => {
     // Create asset immediately with local blob URL (optimistic)
@@ -133,10 +160,10 @@ export async function createImageFromFile(
     return editor.createShape({
       type: "image",
       props: {
-        x: finalPosition.x,
-        y: finalPosition.y,
-        width,
-        height,
+        x: geometry.position.x,
+        y: geometry.position.y,
+        width: geometry.width,
+        height: geometry.height,
         assetId,
       },
     })

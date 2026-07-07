@@ -653,6 +653,18 @@ export function useTextEdit(editor: Editor) {
     updateInputPosition,
   ])
 
+  useLayoutEffect(() => {
+    if (!(editingShapeId && isTextNodeReady)) {
+      return
+    }
+
+    if (!Number.isFinite(layoutVersion)) {
+      return
+    }
+
+    updateInputPosition()
+  }, [editingShapeId, isTextNodeReady, layoutVersion, updateInputPosition])
+
   useEffect(() => {
     if (!editingShape) {
       lastPersistedPropsRef.current = null

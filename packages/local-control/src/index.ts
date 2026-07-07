@@ -48,13 +48,41 @@ export interface InsertImageInput {
   imagePath: string
   placement?: "below" | "left" | "right"
   projectDir?: string
+  replaceShapeId?: string
   sessionId?: string
+}
+
+export interface InsertPlaceholderInput {
+  anchorShapeId?: string
+  displayHeight?: number
+  displayWidth?: number
+  projectDir?: string
+  sessionId?: string
+  text?: string
 }
 
 interface ImageDimensions {
   height: number
   width: number
 }
+
+interface Bounds {
+  height: number
+  width: number
+  x: number
+  y: number
+}
+
+interface OccupiedBounds {
+  maxX: number
+  maxY: number
+  minX: number
+  minY: number
+}
+
+const DEFAULT_CANVAS_GAP = 80
+const DEFAULT_PLACEHOLDER_SIZE = 512
+const MAX_POSITION_SCAN = 40
 
 export function resolveOpenPanelsPaths(
   projectDir?: string
@@ -345,19 +373,30 @@ export async function insertImage(input: InsertImageInput) {
     store[pageId] = { id: pageId, typeName: "page", name: "Page 1", index: 1 }
   }
 
-  const width = input.displayWidth ?? dimensions.width ?? 512
+  const replaceShape = input.replaceShapeId ? store[input.replaceShapeId] : null
+  const replaceBounds =
+    replaceShape?.typeName === "shape" ? shapeBounds(replaceShape) : null
+  const width =
+    input.displayWidth ??
+    (replaceBounds ? replaceBounds.width : undefined) ??
+    dimensions.width ??
+    512
   const height =
     input.displayHeight ??
+    (replaceBounds ? replaceBounds.height : undefined) ??
     (dimensions.width && dimensions.height && input.displayWidth
       ? Math.round((input.displayWidth * dimensions.height) / dimensions.width)
       : (dimensions.height ?? 512))
   const anchor = input.anchorShapeId ? store[input.anchorShapeId] : null
   const anchorBounds = anchor?.typeName === "shape" ? shapeBounds(anchor) : null
-  const position = placeImage(anchorBounds, width, height, input.placement)
+  const position = replaceBounds
+    ? { x: replaceBounds.x, y: replaceBounds.y }
+    : placeImage(anchorBounds, width, height, input.placement)
   const assetId = createId("asset")
   const shapeId = createId("shape")
   const assetUrl = `/api/panels/${encodeURIComponent(bootstrap.session.id)}/${encodeURIComponent(bootstrap.panel.id)}/assets/${encodeURIComponent(written.fileName)}`
   const mimeType = mimeTypeForFile(written.fileName)
+  const parentId = replaceShape?.parentId || anchor?.parentId || pageId
 
   store[assetId] = {
     id: assetId,
@@ -377,7 +416,7 @@ export async function insertImage(input: InsertImageInput) {
     id: shapeId,
     typeName: "shape",
     type: "image",
-    parentId: anchor?.parentId || pageId,
+    parentId,
     index: nextShapeIndex(store, pageId),
     props: {
       x: position.x,
@@ -386,6 +425,9 @@ export async function insertImage(input: InsertImageInput) {
       height,
       assetId,
     },
+  }
+  if (replaceShape?.typeName === "shape" && input.replaceShapeId) {
+    delete store[input.replaceShapeId]
   }
   state.store = store
   state.currentPageId = pageId
@@ -404,6 +446,72 @@ export async function insertImage(input: InsertImageInput) {
     assetRef: written.assetRef,
     assetFile: written.filePath,
     assetUrl,
+    replacedShapeId:
+      replaceShape?.typeName === "shape" ? input.replaceShapeId : null,
+    bounds: { x: position.x, y: position.y, width, height },
+  }
+}
+
+export async function insertPlaceholder(input: InsertPlaceholderInput) {
+  const context = createOpenPanelsLocalContext(input.projectDir)
+  const bootstrap = await ensureCanvasBootstrap(context, input.sessionId)
+  const state =
+    ((await context.storage.readPanelState(
+      bootstrap.session.id,
+      bootstrap.panel.id
+    )) as Record<string, any> | null) ?? emptyCanvasSnapshot()
+  const store =
+    state.store && typeof state.store === "object" ? state.store : {}
+  const pageId = state.currentPageId || findFirstPageId(store) || "page:main"
+  if (!store[pageId]) {
+    store[pageId] = { id: pageId, typeName: "page", name: "Page 1", index: 1 }
+  }
+
+  const width = input.displayWidth ?? DEFAULT_PLACEHOLDER_SIZE
+  const height = input.displayHeight ?? DEFAULT_PLACEHOLDER_SIZE
+  const anchor = input.anchorShapeId ? store[input.anchorShapeId] : null
+  const anchorBounds = anchor?.typeName === "shape" ? shapeBounds(anchor) : null
+  const position = findCanvasPlacementPosition({
+    anchorBounds,
+    height,
+    preferredPosition: { x: 160, y: 160 },
+    store,
+    width,
+  })
+  const shapeId = createId("shape")
+
+  store[shapeId] = {
+    id: shapeId,
+    typeName: "shape",
+    type: "placeholder",
+    parentId: anchor?.parentId || pageId,
+    index: nextShapeIndex(store, pageId),
+    props: {
+      cornerRadius: 0,
+      height,
+      text: input.text ?? "正在生成图片",
+      width,
+      x: position.x,
+      y: position.y,
+    },
+    meta: {
+      openpanelsGenerationPlaceholder: true,
+      createdAt: new Date().toISOString(),
+    },
+  }
+  state.store = store
+  state.currentPageId = pageId
+  state.selectedShapeIds = [shapeId]
+  await context.storage.writePanelState(
+    bootstrap.session.id,
+    bootstrap.panel.id,
+    state
+  )
+  await writeActiveSession(context, bootstrap.session.id)
+  return {
+    sessionId: bootstrap.session.id,
+    panelId: bootstrap.panel.id,
+    shapeId,
     bounds: { x: position.x, y: position.y, width, height },
   }
 }
@@ -641,7 +749,7 @@ function nextShapeIndex(store: Record<string, any>, pageId: string) {
   return max + 1
 }
 
-function shapeBounds(shape: any) {
+function shapeBounds(shape: any): Bounds {
   const props = shape.props || {}
   return {
     x: Number(props.x) || 0,
@@ -649,6 +757,157 @@ function shapeBounds(shape: any) {
     width: Number(props.width || props.w) || 160,
     height: Number(props.height || props.h) || 120,
   }
+}
+
+function toOccupiedBounds(bounds: Bounds): OccupiedBounds {
+  return {
+    maxX: bounds.x + bounds.width,
+    maxY: bounds.y + bounds.height,
+    minX: bounds.x,
+    minY: bounds.y,
+  }
+}
+
+function intersectsWithPadding(
+  left: OccupiedBounds,
+  right: OccupiedBounds,
+  padding: number
+) {
+  return !(
+    left.maxX <= right.minX - padding ||
+    left.minX >= right.maxX + padding ||
+    left.maxY <= right.minY - padding ||
+    left.minY >= right.maxY + padding
+  )
+}
+
+function hasOverlap(
+  target: OccupiedBounds,
+  occupiedBounds: OccupiedBounds[],
+  padding: number
+) {
+  return occupiedBounds.some((bounds) =>
+    intersectsWithPadding(target, bounds, padding)
+  )
+}
+
+function canvasOccupiedBounds(store: Record<string, any>): OccupiedBounds[] {
+  return Object.values(store)
+    .filter(
+      (record: any) =>
+        record?.typeName === "shape" &&
+        (record.type === "image" || record.type === "placeholder")
+    )
+    .map((record: any) => toOccupiedBounds(shapeBounds(record)))
+}
+
+function overallBounds(bounds: OccupiedBounds[]): OccupiedBounds | null {
+  const first = bounds[0]
+  if (!first) return null
+  return bounds.reduce(
+    (current, bound) => ({
+      maxX: Math.max(current.maxX, bound.maxX),
+      maxY: Math.max(current.maxY, bound.maxY),
+      minX: Math.min(current.minX, bound.minX),
+      minY: Math.min(current.minY, bound.minY),
+    }),
+    first
+  )
+}
+
+function placementBelowExistingImages(
+  occupiedBounds: OccupiedBounds[],
+  padding: number
+): { x: number; y: number } | null {
+  const overall = overallBounds(occupiedBounds)
+  if (!overall) return null
+  const bottomMost = occupiedBounds.reduce((current, bounds) => {
+    if (bounds.maxY > current.maxY) return bounds
+    if (bounds.maxY === current.maxY && bounds.minX < current.minX) {
+      return bounds
+    }
+    return current
+  }, occupiedBounds[0])
+  return { x: bottomMost.minX, y: overall.maxY + padding }
+}
+
+function scanForAvailablePosition(input: {
+  basePosition: { x: number; y: number }
+  height: number
+  occupiedBounds: OccupiedBounds[]
+  padding: number
+  width: number
+}) {
+  const initialCandidate = toOccupiedBounds({
+    x: input.basePosition.x,
+    y: input.basePosition.y,
+    width: input.width,
+    height: input.height,
+  })
+  if (!hasOverlap(initialCandidate, input.occupiedBounds, input.padding)) {
+    return input.basePosition
+  }
+
+  const stepX = Math.max(input.width + input.padding, input.padding)
+  const stepY = Math.max(input.height + input.padding, input.padding)
+  for (let row = 0; row < MAX_POSITION_SCAN; row += 1) {
+    for (let col = 0; col < MAX_POSITION_SCAN; col += 1) {
+      const x = input.basePosition.x + col * stepX
+      const y = input.basePosition.y + row * stepY
+      const candidate = toOccupiedBounds({
+        x,
+        y,
+        width: input.width,
+        height: input.height,
+      })
+      if (!hasOverlap(candidate, input.occupiedBounds, input.padding)) {
+        return { x, y }
+      }
+    }
+  }
+
+  const overall = overallBounds(input.occupiedBounds)
+  return overall
+    ? { x: overall.minX, y: overall.maxY + input.padding }
+    : input.basePosition
+}
+
+function findCanvasPlacementPosition(input: {
+  anchorBounds: Bounds | null
+  height: number
+  preferredPosition: { x: number; y: number }
+  store: Record<string, any>
+  width: number
+}) {
+  const occupiedBounds = canvasOccupiedBounds(input.store)
+  if (occupiedBounds.length === 0) return input.preferredPosition
+
+  if (input.anchorBounds) {
+    const anchorPosition = {
+      x: input.anchorBounds.x + input.anchorBounds.width + DEFAULT_CANVAS_GAP,
+      y: input.anchorBounds.y,
+    }
+    const anchorCandidate = toOccupiedBounds({
+      ...anchorPosition,
+      width: input.width,
+      height: input.height,
+    })
+    if (!hasOverlap(anchorCandidate, occupiedBounds, DEFAULT_CANVAS_GAP)) {
+      return anchorPosition
+    }
+  }
+
+  const basePosition =
+    placementBelowExistingImages(occupiedBounds, DEFAULT_CANVAS_GAP) ??
+    input.preferredPosition
+
+  return scanForAvailablePosition({
+    basePosition,
+    height: input.height,
+    occupiedBounds,
+    padding: DEFAULT_CANVAS_GAP,
+    width: input.width,
+  })
 }
 
 function placeImage(

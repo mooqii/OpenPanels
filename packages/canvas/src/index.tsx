@@ -47,6 +47,7 @@ export interface CanvasPanelProps {
   onSnapshotChange?: (snapshot: StoreSnapshot) => void
   readOnly?: boolean
   snapshot?: StoreSnapshot
+  snapshotVersion?: number
   title?: string
   titleContent?: ReactNode
   width?: number | string
@@ -66,6 +67,7 @@ export function CanvasPanel({
   height = "100%",
   initialSnapshot,
   snapshot,
+  snapshotVersion,
   title,
   titleContent,
   width = "100%",
@@ -79,6 +81,7 @@ export function CanvasPanel({
     [assetStore]
   )
   const initialSnapshotRef = useRef(snapshot ?? initialSnapshot)
+  const loadedSnapshotVersionRef = useRef<number | null>(null)
   const editor = useMemo(
     () =>
       new Editor({
@@ -92,10 +95,17 @@ export function CanvasPanel({
   usePreventBrowserZoom(editor)
 
   useEffect(() => {
-    if (initialSnapshotRef.current) {
+    if (snapshotVersion == null && initialSnapshotRef.current) {
       editor.loadSnapshot(initialSnapshotRef.current)
     }
-  }, [editor])
+  }, [editor, snapshotVersion])
+
+  useEffect(() => {
+    if (snapshotVersion == null || !snapshot) return
+    if (loadedSnapshotVersionRef.current === snapshotVersion) return
+    editor.loadSnapshot(snapshot)
+    loadedSnapshotVersionRef.current = snapshotVersion
+  }, [editor, snapshot, snapshotVersion])
 
   useEffect(() => {
     return editor.listen(() => {

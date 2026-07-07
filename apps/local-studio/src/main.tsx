@@ -67,7 +67,7 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
     null
   )
   const [sessions, setSessions] = useState<OpenPanelsSession[]>([])
-  const [canvasReloadKey, setCanvasReloadKey] = useState(0)
+  const [snapshotLoadVersion, setSnapshotLoadVersion] = useState(0)
   const isLocalSnapshotDirtyRef = useRef(false)
   const lastPersistedSnapshotJsonRef = useRef<string | null>(null)
 
@@ -90,7 +90,7 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
       lastPersistedSnapshotJsonRef.current = JSON.stringify(
         serializeSnapshot(normalized.state)
       )
-      setCanvasReloadKey((key) => key + 1)
+      setSnapshotLoadVersion((version) => version + 1)
       setSessions(data.sessions ?? (await fetchSessions(transport)))
     },
     [transport]
@@ -137,7 +137,7 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
           setSnapshot(normalizedState)
           setSessions(data.sessions ?? (await fetchSessions(transport)))
           lastPersistedSnapshotJsonRef.current = remoteSnapshotJson
-          setCanvasReloadKey((key) => key + 1)
+          setSnapshotLoadVersion((version) => version + 1)
         }
       } catch (error) {
         console.error("Failed to sync OpenPanels active project", error)
@@ -146,14 +146,17 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
     return () => window.clearInterval(timer)
   }, [appState, loadProject, transport])
 
+  const activePanelId = appState?.panel.id ?? null
+  const activeSessionId = appState?.session.id ?? null
+
   const assetStore = useMemo(() => {
-    if (!appState) return new DataUrlAssetStore()
+    if (!(activePanelId && activeSessionId)) return new DataUrlAssetStore()
     return new OpenPanelsBrowserAssetStore(
       transport.apiBase,
-      appState.session.id,
-      appState.panel.id
+      activeSessionId,
+      activePanelId
     )
-  }, [appState, transport])
+  }, [activePanelId, activeSessionId, transport.apiBase])
 
   const saveSnapshot = useCallback((nextSnapshot: StoreSnapshot) => {
     isLocalSnapshotDirtyRef.current = true
@@ -177,7 +180,7 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
     lastPersistedSnapshotJsonRef.current = JSON.stringify(
       serializeSnapshot(normalized.state)
     )
-    setCanvasReloadKey((key) => key + 1)
+    setSnapshotLoadVersion((version) => version + 1)
     setSessions(data.sessions ?? (await fetchSessions(transport)))
   }, [transport])
 
@@ -265,10 +268,11 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
       <CanvasPanel
         assetStore={assetStore}
         height="100vh"
-        key={`${appState.session.id}:${appState.panel.id}:${canvasReloadKey}`}
+        key={`${appState.session.id}:${appState.panel.id}`}
         onSelectionChange={setSelection}
         onSnapshotChange={saveSnapshot}
         snapshot={snapshot}
+        snapshotVersion={snapshotLoadVersion}
         titleContent={
           <ProjectTitleControl
             currentSession={appState.session}

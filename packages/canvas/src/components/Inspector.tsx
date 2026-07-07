@@ -1,6 +1,5 @@
 import { cn } from "@heroui/react"
 import { useCallback } from "react"
-import { INITIAL_PLACEHOLDER_FILL } from "../constants"
 import { useEditor } from "../EditorContext"
 import {
   useCurrentPageShapes,
@@ -22,7 +21,6 @@ export function Inspector() {
           y: 100 + offsetY,
           width: 200,
           height: 120,
-          fill: INITIAL_PLACEHOLDER_FILL,
           cornerRadius: 0,
           text: "Placeholder",
         },
