@@ -67,6 +67,7 @@ export function registerWidgetResource(
 
 export function openPanelsWidgetHtml({
   appHtml,
+  initialApiBase,
   initialDisplayMode = "fullscreen",
 } = {}) {
   return injectMcpHostBridge(
@@ -102,14 +103,20 @@ export function openPanelsWidgetHtml({
     <div class="status" id="openpanels-status">Opening MyOpenPanels...</div>
   </body>
 </html>`,
-    { initialDisplayMode }
+    { initialApiBase, initialDisplayMode }
   )
 }
 
-function injectMcpHostBridge(html, { initialDisplayMode = "fullscreen" } = {}) {
+function injectMcpHostBridge(
+  html,
+  { initialApiBase, initialDisplayMode = "fullscreen" } = {}
+) {
   const bridge = [
     '<script id="openpanelsInitialDisplayMode">',
     `window.__OPENPANELS_INITIAL_DISPLAY_MODE__ = ${JSON.stringify(initialDisplayMode)};`,
+    typeof initialApiBase === "string" && initialApiBase
+      ? `window.__OPENPANELS_API_BASE__ = ${JSON.stringify(initialApiBase)};`
+      : "",
     "</script>",
     '<script id="openpanelsMcpAppsBundle">',
     escapeInlineScript(mcpAppsGlobalScript()),

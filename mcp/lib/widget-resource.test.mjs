@@ -49,11 +49,15 @@ describe("registerWidgetResource", () => {
     const html = openPanelsWidgetHtml({
       appHtml:
         '<!doctype html><html><head></head><body><div id="root"></div><script>window.__OPENPANELS_APP__=true;</script></body></html>',
+      initialApiBase: "http://127.0.0.1:12345",
     })
 
     expect(html).not.toMatch(/<iframe\b/i)
     expect(html).not.toContain("window.location.replace")
     expect(html).toContain("openpanelsMcpHostBridge")
+    expect(html).toContain(
+      'window.__OPENPANELS_API_BASE__ = "http://127.0.0.1:12345";'
+    )
     expect(html).toContain('id="root"')
   })
 

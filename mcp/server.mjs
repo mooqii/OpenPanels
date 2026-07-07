@@ -41,6 +41,7 @@ const OPENPANELS_RESOURCE_DOMAINS = [
 ]
 const OPENPANELS_FRAME_DOMAINS = ["http://127.0.0.1:*", "http://localhost:*"]
 const localStudioServers = new Map()
+let latestWidgetData = null
 
 const pluginManifest = JSON.parse(
   readFileSync(new URL("../.codex-plugin/plugin.json", import.meta.url), "utf8")
@@ -104,6 +105,7 @@ function registerWidgetTool() {
     html: async () =>
       openPanelsWidgetHtml({
         appHtml: await localStudioStaticHtml(),
+        initialApiBase: latestWidgetData?.serverUrl,
         initialDisplayMode: "fullscreen",
       }),
   })
@@ -134,6 +136,7 @@ function registerWidgetTool() {
       const paths = resolvePaths(projectDir)
       await ensureSession(paths, "Agent Session")
       const localStudio = await ensureLocalStudioServer(paths.projectDir)
+      latestWidgetData = widgetData(paths, localStudio, displayMode)
       return {
         content: [
           {
@@ -141,28 +144,10 @@ function registerWidgetTool() {
             text: `Opened MyOpenPanels for ${paths.projectDir}`,
           },
         ],
-        structuredContent: {
-          version: 1,
-          widget: "myopenpanels-widget",
-          rendering: "local-studio",
-          projectDir: paths.projectDir,
-          storageDir: paths.storageDir,
-          serverUrl: localStudio.url,
-          port: localStudio.port,
-          displayMode,
-        },
+        structuredContent: latestWidgetData,
         _meta: {
           "openai/outputTemplate": OPENPANELS_WIDGET_URI,
-          widgetData: {
-            version: 1,
-            widget: "myopenpanels-widget",
-            rendering: "local-studio",
-            projectDir: paths.projectDir,
-            storageDir: paths.storageDir,
-            serverUrl: localStudio.url,
-            port: localStudio.port,
-            displayMode,
-          },
+          widgetData: latestWidgetData,
         },
       }
     }
@@ -192,6 +177,19 @@ function registerWidgetTool() {
       })
     }
   )
+}
+
+function widgetData(paths, localStudio, displayMode) {
+  return {
+    version: 1,
+    widget: "myopenpanels-widget",
+    rendering: "local-studio",
+    projectDir: paths.projectDir,
+    storageDir: paths.storageDir,
+    serverUrl: localStudio.url,
+    port: localStudio.port,
+    displayMode,
+  }
 }
 
 function registerStateTools() {
