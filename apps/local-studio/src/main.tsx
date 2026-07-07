@@ -442,9 +442,11 @@ function ProjectTitleControl({
               const canDelete = sessions.length > 1
               return (
                 <div
-                  className={`op-project-title__menu-item${
-                    isActive ? " op-project-title__menu-item--active" : ""
-                  }`}
+                  className={
+                    isActive
+                      ? "op-project-title__menu-item op-project-title__menu-item--active"
+                      : "op-project-title__menu-item"
+                  }
                   key={session.id}
                 >
                   <button
