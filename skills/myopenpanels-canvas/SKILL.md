@@ -1,6 +1,6 @@
 ---
 name: myopenpanels-canvas
-description: "Open and use the MyOpenPanels infinite canvas for visual work, image generation, image editing, reference gathering, layout exploration, and agent handoff: start the canvas, read selected visual context, use exported PNGs as references, and place generated images back onto the board."
+description: "Open and use the MyOpenPanels infinite canvas for visual work, image generation, image editing, reference gathering, layout exploration, and agent handoff: start the canvas in an in-app side browser when available, otherwise use the default browser, read selected visual context, use exported PNGs as references, and place generated images back onto the board."
 ---
 
 Use this skill when the user wants an infinite canvas for visual work, image generation, image editing, reference gathering, layout exploration, or placing generated results. It is especially useful when an agent is generating images and needs a shared board to inspect references, read the current canvas selection, use selected pixels as image context, and insert new image outputs beside the source material.
@@ -23,8 +23,8 @@ the image model:
    `$OPENPANELS_LOCAL_CLI insert-placeholder --project "$PWD" --display-width <w> --display-height <h> --anchor-shape-id <selected-shape-id> --format json`.
    Use the requested or intended output aspect ratio for `<w>` and `<h>`; when
    unspecified, use a practical square such as `1024 x 1024`.
-3. The placeholder placement follows the Moodbook canvas rule: use an 80 canvas
-   unit gap; prefer the clear space immediately to the right of the selected or
+3. Place the placeholder in nearby clear canvas space: use an 80 canvas unit
+   gap; prefer the clear space immediately to the right of the selected or
    referenced image; otherwise place below the existing image/placeholder group;
    scan right and downward in a grid using the output size plus the gap; never
    intentionally overlap existing image or placeholder shapes.
@@ -54,10 +54,14 @@ Workflow:
    local `openpanels-local` exists, continue with the local binary.
 1. If the user asks to open or activate the canvas, run
    `$OPENPANELS_LOCAL_CLI studio start --project "$PWD" --format json`, then
-   open the returned `serverUrl` in the agent's in-app Browser side panel. Make
-   the in-app Browser visible so the canvas appears on the agent's right side.
-   Do not use `$OPENPANELS_LOCAL_CLI studio open` unless the user explicitly asks
-   to open the canvas in their external/system browser.
+   open the returned `serverUrl` in the agent's in-app Browser side panel when
+   one is available; this is the preferred path. Make the in-app Browser visible
+   so the canvas appears on the agent's right side. Only when the agent
+   environment does not provide an in-app side browser, such as Hermes CLI or
+   another terminal-only agent, open the same `serverUrl` in the default/system
+   browser instead. You may use
+   `$OPENPANELS_LOCAL_CLI studio open --project "$PWD" --format json` for this
+   fallback or when the user explicitly asks to open the canvas externally.
 2. Use `$OPENPANELS_LOCAL_CLI studio status --project "$PWD" --format json` to inspect
    an existing session, and `$OPENPANELS_LOCAL_CLI studio wait --project "$PWD"
    --timeout 10 --format json` after startup if you need to verify readiness.
