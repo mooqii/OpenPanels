@@ -214,8 +214,9 @@ export async function deleteSession(
   const remainingSessions = await context.runtime.listSessions()
   const currentActiveSessionId = await readActiveSession(context)
   const nextActiveSession =
-    remainingSessions.find((session) => session.id === currentActiveSessionId) ??
-    remainingSessions[0]
+    remainingSessions.find(
+      (session) => session.id === currentActiveSessionId
+    ) ?? remainingSessions[0]
   if (!nextActiveSession) {
     throw new Error("At least one project must remain")
   }
@@ -558,6 +559,7 @@ export function emptyCanvasSnapshot(): Record<string, any> {
       schemaVersion: 1,
       recordVersions: { page: 1, shape: 1, asset: 1 },
     },
+    camera: { x: 0, y: 0, zoom: 1 },
     currentPageId: "page:main",
     openedGroupId: null,
     selectedShapeIds: [],

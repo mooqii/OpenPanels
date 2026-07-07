@@ -1,4 +1,11 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import type { CanvasSelectionSnapshot } from "./Canvas"
 import { Canvas } from "./Canvas"
 import { CanvasMenu } from "./components/CanvasMenu"
@@ -82,6 +89,7 @@ export function CanvasPanel({
   )
   const initialSnapshotRef = useRef(snapshot ?? initialSnapshot)
   const loadedSnapshotVersionRef = useRef<number | null>(null)
+  const cameraListenerCleanupRef = useRef<(() => void) | null>(null)
   const editor = useMemo(
     () =>
       new Editor({
@@ -112,6 +120,41 @@ export function CanvasPanel({
       onSnapshotChange?.(editor.getSnapshot())
     })
   }, [editor, onSnapshotChange])
+
+  const handleStageReady = useCallback(() => {
+    cameraListenerCleanupRef.current?.()
+    cameraListenerCleanupRef.current = null
+
+    const stage = editor.stage
+    if (!stage) return
+
+    let frame = 0
+    const syncCamera = () => {
+      if (frame) {
+        window.cancelAnimationFrame(frame)
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+        editor.syncCameraFromStage()
+        onSnapshotChange?.(editor.getSnapshot())
+      })
+    }
+
+    stage.on("xChange yChange scaleXChange scaleYChange", syncCamera)
+    cameraListenerCleanupRef.current = () => {
+      stage.off("xChange yChange scaleXChange scaleYChange", syncCamera)
+      if (frame) {
+        window.cancelAnimationFrame(frame)
+      }
+    }
+  }, [editor, onSnapshotChange])
+
+  useEffect(() => {
+    return () => {
+      cameraListenerCleanupRef.current?.()
+      cameraListenerCleanupRef.current = null
+    }
+  }, [])
 
   useEffect(() => {
     const node = containerRef.current
@@ -147,6 +190,7 @@ export function CanvasPanel({
           allowImagePaste
           height={dimensions.height}
           onSelectionChange={onSelectionChange}
+          onStageReady={handleStageReady}
           width={dimensions.width}
         >
           <Toolbar />

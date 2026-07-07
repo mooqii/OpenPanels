@@ -21,6 +21,12 @@ export interface Page {
   typeName: "page"
 }
 
+export interface CanvasCameraState {
+  x: number
+  y: number
+  zoom: number
+}
+
 // =============================================================================
 // Record Types
 // =============================================================================
@@ -98,6 +104,7 @@ export const DEFAULT_SCHEMA: StoreSchema = {
  * Used for save/load, export/import
  */
 export interface StoreSnapshot {
+  camera?: CanvasCameraState | null
   currentPageId: PageId | null
   openedGroupId: ShapeId | null
   /** Schema information */
@@ -114,6 +121,7 @@ export function createEmptySnapshot(): StoreSnapshot {
   return {
     store: {},
     schema: DEFAULT_SCHEMA,
+    camera: { x: 0, y: 0, zoom: 1 },
     selectedShapeIds: new Set<ShapeId>(),
     currentPageId: null,
     openedGroupId: null,

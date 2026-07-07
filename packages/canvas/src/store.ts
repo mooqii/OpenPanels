@@ -4,6 +4,7 @@ import { createStore } from "zustand/vanilla"
 import { persistCanvasTool } from "./tool-persistence"
 import type { PageId, ShapeId } from "./types/ids"
 import {
+  type CanvasCameraState,
   type CanvasRecord,
   DEFAULT_SCHEMA,
   type RecordsDiff,
@@ -46,6 +47,7 @@ interface HistoryState {
 const MAX_HISTORY_SIZE = 100
 
 export interface CanvasStoreState {
+  camera: CanvasCameraState
   canRedo: boolean
   canUndo: boolean
   currentPageId: PageId | null
@@ -95,6 +97,7 @@ export interface CanvasStoreActions {
 
   // Remove a record from the store (with history)
   remove: (id: string, options?: { skipHistory?: boolean }) => void
+  setCamera: (camera: CanvasCameraState) => void
   setCurrentPageId: (pageId: PageId | null) => void
   setOpenedGroupId: (groupId: ShapeId | null) => void
 
@@ -165,6 +168,7 @@ export const createCanvasStore = () =>
         history: initialHistory,
         canUndo: false,
         canRedo: false,
+        camera: { x: 0, y: 0, zoom: 1 },
         listeners: new Set(),
         selectedShapeIds: new Set<ShapeId>(),
         currentPageId: null,
@@ -213,12 +217,18 @@ export const createCanvasStore = () =>
         },
 
         getSnapshot: (): StoreSnapshot => {
-          const { store, selectedShapeIds, currentPageId, openedGroupId } =
-            get()
+          const {
+            store,
+            selectedShapeIds,
+            currentPageId,
+            openedGroupId,
+            camera,
+          } = get()
 
           return {
             schema: DEFAULT_SCHEMA, // Schema is not needed for our use case
             store,
+            camera,
             selectedShapeIds,
             currentPageId,
             openedGroupId,
@@ -241,6 +251,7 @@ export const createCanvasStore = () =>
             history: newHistory,
             canUndo: false,
             canRedo: false,
+            camera: normalizeCamera(snapshot.camera) ?? get().camera,
             selectedShapeIds,
             currentPageId: snapshot.currentPageId,
             openedGroupId: snapshot.openedGroupId,
@@ -390,6 +401,12 @@ export const createCanvasStore = () =>
           set({ currentPageId: pageId })
         },
 
+        setCamera: (camera: CanvasCameraState) => {
+          const current = get().camera
+          if (equalsCamera(current, camera)) return
+          set({ camera })
+        },
+
         setTool: (tool: Tool) => {
           persistCanvasTool(tool)
           set({ tool })
@@ -410,4 +427,20 @@ function equalsIdSet(setA: Set<ShapeId>, setB: Set<ShapeId>) {
   }
 
   return true
+}
+
+function equalsCamera(a: CanvasCameraState, b: CanvasCameraState) {
+  return a.x === b.x && a.y === b.y && a.zoom === b.zoom
+}
+
+function normalizeCamera(
+  camera: CanvasCameraState | null | undefined
+): CanvasCameraState | null {
+  if (!camera) return null
+  const { x, y, zoom } = camera
+  if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(zoom))) {
+    return null
+  }
+  if (zoom <= 0) return null
+  return { x, y, zoom }
 }

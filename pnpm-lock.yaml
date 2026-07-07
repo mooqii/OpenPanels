@@ -301,8 +301,6 @@ importers:
         specifier: ^4.0.18
         version: 4.1.10(@types/node@25.9.4)(vite@7.3.6(@types/node@25.9.4)(jiti@2.7.0)(lightningcss@1.32.0))
 
-  plugins/myopenpanels: {}
-
 packages:
 
   '@adobe/react-spectrum-ui@1.2.1':

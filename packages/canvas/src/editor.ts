@@ -7,6 +7,7 @@ import { type CanvasStore, createCanvasStore, type Tool } from "./store"
 import { type Asset, AssetRecordType, type AssetStore } from "./types/assets"
 import type { AssetId, PageId, ShapeId } from "./types/ids"
 import type {
+  CanvasCameraState,
   CanvasRecord,
   Page,
   RecordId,
@@ -149,6 +150,9 @@ export class Editor {
 
   set stage(newStage: Konva.Stage | null) {
     this.#stage = newStage
+    if (newStage) {
+      this.applySnapshotCamera()
+    }
   }
 
   // Subscribe to editor state changes: selectedShapes, currentTool etc.
@@ -848,6 +852,7 @@ export class Editor {
   loadSnapshot(snapshot: StoreSnapshot): void {
     this.store.getState().loadSnapshot(snapshot)
     this.initializePage()
+    this.applySnapshotCamera()
   }
 
   // Batch operations
@@ -872,6 +877,41 @@ export class Editor {
   }
 
   // Zoom operations
+  getCamera(): CanvasCameraState {
+    if (!this.stage) return this.store.getState().camera
+    return {
+      x: this.stage.x(),
+      y: this.stage.y(),
+      zoom: this.stage.scaleX(),
+    }
+  }
+
+  setCamera(camera: CanvasCameraState): void {
+    const normalizedCamera = normalizeCamera(camera)
+    if (!normalizedCamera) return
+
+    this.store.getState().setCamera(normalizedCamera)
+    if (!this.stage) return
+
+    this.stage.scale({
+      x: normalizedCamera.zoom,
+      y: normalizedCamera.zoom,
+    })
+    this.stage.position({
+      x: normalizedCamera.x,
+      y: normalizedCamera.y,
+    })
+  }
+
+  syncCameraFromStage(): void {
+    if (!this.stage) return
+    this.store.getState().setCamera(this.getCamera())
+  }
+
+  applySnapshotCamera(): void {
+    this.setCamera(this.store.getState().camera)
+  }
+
   zoomToBounds(
     bounds: Bounds,
     options?: {
@@ -1057,6 +1097,22 @@ export class Editor {
 
   canRedo(): boolean {
     return this.store.getState().canRedo
+  }
+}
+
+function normalizeCamera(
+  camera: CanvasCameraState | null | undefined
+): CanvasCameraState | null {
+  if (!camera) return null
+  const { x, y, zoom } = camera
+  if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(zoom))) {
+    return null
+  }
+  if (zoom <= 0) return null
+  return {
+    x,
+    y,
+    zoom: Math.max(CANVAS_MIN_ZOOM, Math.min(CANVAS_MAX_ZOOM, zoom)),
   }
 }
 
