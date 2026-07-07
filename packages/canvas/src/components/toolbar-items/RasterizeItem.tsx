@@ -26,6 +26,8 @@ function dataUrlToFile(dataUrl: string, name: string): File {
   return new File([bytes], name, { type: mime })
 }
 
+const RASTERIZED_SELECTION_OFFSET_RATIO = 0.2
+
 export function RasterizeItem({ editor, transformerRef }: RasterizeItemProps) {
   const { t } = useLingui()
   const shapes = useSelectedShapes(editor)
@@ -38,10 +40,14 @@ export function RasterizeItem({ editor, transformerRef }: RasterizeItemProps) {
 
     const bounds = getShapesBounds(shapes)
     const file = dataUrlToFile(dataUrl, "selection.png")
+    const position = {
+      x: bounds.x - bounds.width * RASTERIZED_SELECTION_OFFSET_RATIO,
+      y: bounds.y + bounds.height * RASTERIZED_SELECTION_OFFSET_RATIO,
+    }
     await createImageFromFile(
       editor,
       file,
-      { x: bounds.x, y: bounds.y },
+      position,
       editor.getAssetStore(),
       false,
       { height: bounds.height, width: bounds.width }

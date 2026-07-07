@@ -10,6 +10,7 @@ import {
   createOpenPanelsLocalContext,
   createLocalOpenPanelsRuntime as createRuntime,
   dataUrlToBuffer,
+  deleteSession,
   ensureCanvasBootstrap,
   readActiveSession,
   renameSession,
@@ -104,6 +105,9 @@ async function routeRequest(
       const body = (await readBody(request)) as { title?: string }
       const updated = await renameSession(context, sessionId, body.title)
       return json(response, { session: updated })
+    }
+    if (request.method === "DELETE") {
+      return json(response, await deleteSession(context, sessionId))
     }
   }
 
@@ -258,7 +262,7 @@ function setCorsHeaders(response: ServerResponse): void {
   response.setHeader("access-control-allow-origin", "*")
   response.setHeader(
     "access-control-allow-methods",
-    "GET,POST,PUT,PATCH,OPTIONS"
+    "GET,POST,PUT,PATCH,DELETE,OPTIONS"
   )
   response.setHeader("access-control-allow-headers", "content-type")
 }

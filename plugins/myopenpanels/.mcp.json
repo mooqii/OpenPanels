@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "myopenpanels_mcp": {
+      "title": "MyOpenPanels Native Widget MCP",
+      "description": "Open MyOpenPanels as a native Codex widget, with the local studio browser URL as a fallback.",
+      "command": "node",
+      "args": [
+        "./mcp/server.mjs"
+      ],
+      "cwd": "."
+    }
+  }
+}

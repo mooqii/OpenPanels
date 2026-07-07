@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   createOpenPanelsLocalContext,
+  deleteSession,
   ensureCanvasBootstrap,
   getSelection,
   insertImage,
@@ -64,6 +65,34 @@ describe("@openpanels/local-control", () => {
     expect(selection.base64).toBe(TINY_PNG.toString("base64"))
     expect(selection.mimeType).toBe("image/png")
     expect(selection.selection.selectedShapeIds).toEqual(["shape:1"])
+  })
+
+  it("deletes a project while keeping an active project", async () => {
+    const context = createOpenPanelsLocalContext(projectDir)
+    const first = await ensureCanvasBootstrap(context)
+    const secondSession = await context.runtime.createSession({
+      title: "Second",
+    })
+    await ensureCanvasBootstrap(context, secondSession.id)
+
+    const result = await deleteSession(context, first.session.id)
+
+    expect(result.deletedSessionId).toBe(first.session.id)
+    expect(result.activeSessionId).toBe(secondSession.id)
+    expect(result.sessions.map((session) => session.id)).toEqual([
+      secondSession.id,
+    ])
+    expect(await readActiveSession(context)).toBe(secondSession.id)
+    expect(await context.runtime.getSession(first.session.id)).toBeNull()
+  })
+
+  it("does not delete the last project", async () => {
+    const context = createOpenPanelsLocalContext(projectDir)
+    const bootstrap = await ensureCanvasBootstrap(context)
+
+    await expect(deleteSession(context, bootstrap.session.id)).rejects.toThrow(
+      "At least one project must remain"
+    )
   })
 
   it("inserts images and falls back to the latest image selection", async () => {

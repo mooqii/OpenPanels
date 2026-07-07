@@ -3,6 +3,7 @@ import {
   mkdir,
   readdir,
   readFile,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises"
@@ -80,6 +81,12 @@ export class LocalOpenPanelsStorage implements OpenPanelsStorage {
     const sessionDir = this.#resolve("sessions", sanitizePathPart(session.id))
     await mkdir(sessionDir, { recursive: true })
     await writeJson(join(sessionDir, "session.json"), session)
+    await this.#writeIndex()
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    const sessionDir = this.#resolve("sessions", sanitizePathPart(sessionId))
+    await rm(sessionDir, { recursive: true, force: true })
     await this.#writeIndex()
   }
 

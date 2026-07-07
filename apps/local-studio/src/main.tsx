@@ -13,7 +13,7 @@ import {
   useOpenPanelsI18n,
 } from "@openpanels/canvas"
 import type { OpenPanelsPanel, OpenPanelsSession } from "@openpanels/protocol"
-import { Check, Pencil, Plus } from "lucide-react"
+import { Pencil, Plus, Trash2 } from "lucide-react"
 import {
   StrictMode,
   useCallback,
@@ -211,6 +211,28 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
     [appState, transport]
   )
 
+  const deleteProject = useCallback(
+    async (sessionId: string) => {
+      if (!appState || sessions.length <= 1) return
+      const response = await apiFetch(
+        transport.apiBase,
+        `/api/sessions/${encodeURIComponent(sessionId)}`,
+        { method: "DELETE" }
+      )
+      const data = (await response.json()) as {
+        activeSessionId: string
+        deletedSessionId: string
+        sessions: OpenPanelsSession[]
+      }
+      if (sessionId === appState.session.id) {
+        await loadProject(data.activeSessionId)
+        return
+      }
+      setSessions(data.sessions)
+    },
+    [appState, loadProject, sessions.length, transport]
+  )
+
   useEffect(() => {
     if (!(appState && snapshot)) return
     const timer = window.setTimeout(() => {
@@ -277,6 +299,7 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
           <ProjectTitleControl
             currentSession={appState.session}
             onCreateProject={createProject}
+            onDeleteProject={deleteProject}
             onRenameProject={renameProject}
             onSwitchProject={loadProject}
             sessions={sessions}
@@ -291,11 +314,13 @@ function ProjectTitleControl({
   currentSession,
   sessions,
   onCreateProject,
+  onDeleteProject,
   onRenameProject,
   onSwitchProject,
 }: {
   currentSession: OpenPanelsSession
   onCreateProject: () => void
+  onDeleteProject: (sessionId: string) => void
   onRenameProject: (title: string) => void
   onSwitchProject: (sessionId: string) => void
   sessions: OpenPanelsSession[]
@@ -303,6 +328,8 @@ function ProjectTitleControl({
   const { t } = useOpenPanelsI18n()
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
+  const [pendingDeleteSession, setPendingDeleteSession] =
+    useState<OpenPanelsSession | null>(null)
   const [draftTitle, setDraftTitle] = useState(currentSession.title)
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -344,6 +371,13 @@ function ProjectTitleControl({
       setDraftTitle(currentSession.title)
     }
   }, [currentSession.title, draftTitle, onRenameProject])
+
+  const confirmDeleteProject = useCallback(() => {
+    if (!pendingDeleteSession) return
+    setIsMenuOpen(false)
+    onDeleteProject(pendingDeleteSession.id)
+    setPendingDeleteSession(null)
+  }, [onDeleteProject, pendingDeleteSession])
 
   if (isEditing) {
     return (
@@ -405,21 +439,50 @@ function ProjectTitleControl({
           <div className="op-project-title__menu-list">
             {sessions.map((session) => {
               const isActive = session.id === currentSession.id
+              const canDelete = sessions.length > 1
               return (
-                <button
-                  className="op-project-title__menu-item"
+                <div
+                  className={`op-project-title__menu-item${
+                    isActive ? " op-project-title__menu-item--active" : ""
+                  }`}
                   key={session.id}
-                  onClick={() => {
-                    setIsMenuOpen(false)
-                    if (!isActive) {
-                      onSwitchProject(session.id)
-                    }
-                  }}
-                  type="button"
                 >
-                  <span>{session.title}</span>
-                  {isActive ? <Check size={14} /> : null}
-                </button>
+                  <button
+                    className="op-project-title__switch-button"
+                    onClick={() => {
+                      setIsMenuOpen(false)
+                      if (!isActive) {
+                        onSwitchProject(session.id)
+                      }
+                    }}
+                    type="button"
+                  >
+                    <span>{session.title}</span>
+                  </button>
+                  <span
+                    className="op-project-title__delete-wrap"
+                    title={
+                      canDelete
+                        ? t`Delete project`
+                        : t`Keep at least one project`
+                    }
+                  >
+                    <button
+                      aria-disabled={!canDelete}
+                      aria-label={t`Delete project`}
+                      className="op-project-title__delete-button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        if (!canDelete) return
+                        setIsMenuOpen(false)
+                        setPendingDeleteSession(session)
+                      }}
+                      type="button"
+                    >
+                      <Trash2 size={14} strokeWidth={1.8} />
+                    </button>
+                  </span>
+                </div>
               )
             })}
           </div>
@@ -434,6 +497,46 @@ function ProjectTitleControl({
             <Plus size={14} />
             <span>{t`New project`}</span>
           </button>
+        </div>
+      ) : null}
+
+      {pendingDeleteSession ? (
+        <div
+          aria-labelledby="op-delete-project-title"
+          aria-modal="true"
+          className="op-project-title__confirm-backdrop"
+          role="dialog"
+        >
+          <div className="op-project-title__confirm">
+            <div
+              className="op-project-title__confirm-title"
+              id="op-delete-project-title"
+            >
+              {t`Delete project?`}
+            </div>
+            <div className="op-project-title__confirm-copy">
+              {t`This project and its canvas data will be deleted.`}
+            </div>
+            <div className="op-project-title__confirm-name">
+              {pendingDeleteSession.title}
+            </div>
+            <div className="op-project-title__confirm-actions">
+              <button
+                className="op-project-title__confirm-button"
+                onClick={() => setPendingDeleteSession(null)}
+                type="button"
+              >
+                {t`Cancel`}
+              </button>
+              <button
+                className="op-project-title__confirm-button op-project-title__confirm-button--danger"
+                onClick={confirmDeleteProject}
+                type="button"
+              >
+                {t`Delete`}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>

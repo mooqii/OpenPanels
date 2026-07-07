@@ -493,7 +493,11 @@ openpanels-local insert-image --project <dir> --image <path> --format json
 ### 7.2 Studio Behavior
 
 `openpanels-local studio start` starts the same project-backed local studio and
-returns a localhost URL for browser use.
+returns a localhost URL for browser use. Agent instructions should prefer a
+native OpenPanels panel/widget surface when the current host provides one, then
+fall back to opening this localhost URL in the agent's in-app browser side panel
+when native panels are unavailable. The `studio open` command remains reserved
+for explicitly opening the user's external/system browser.
 
 The studio session must know:
 

@@ -140,6 +140,32 @@ describe("@openpanels/local-server", () => {
     expect(third.session.title).toBe("Project 3")
   })
 
+  it("deletes projects but keeps the final project", async () => {
+    const first = await fetchJson(`${baseUrl}/api/bootstrap`)
+    const second = await fetchJson(`${baseUrl}/api/projects`, {
+      method: "POST",
+    })
+
+    const deleted = await fetchJson(
+      `${baseUrl}/api/sessions/${encodeURIComponent(first.session.id)}`,
+      { method: "DELETE" }
+    )
+    expect(deleted.deletedSessionId).toBe(first.session.id)
+    expect(deleted.activeSessionId).toBe(second.session.id)
+    expect(deleted.sessions).toHaveLength(1)
+
+    const remaining = await fetchJson(`${baseUrl}/api/sessions`)
+    expect(remaining.map((session: { id: string }) => session.id)).toEqual([
+      second.session.id,
+    ])
+
+    const lastDeleteResponse = await fetch(
+      `${baseUrl}/api/sessions/${encodeURIComponent(second.session.id)}`,
+      { method: "DELETE" }
+    )
+    expect(lastDeleteResponse.ok).toBe(false)
+  })
+
   it("allows cross-origin studio API requests", async () => {
     const optionsResponse = await fetch(`${baseUrl}/api/bootstrap`, {
       method: "OPTIONS",

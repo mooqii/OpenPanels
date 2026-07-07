@@ -1,0 +1,35 @@
+{
+  "name": "myopenpanels",
+  "version": "0.1.0",
+  "description": "Open MyOpenPanels in a native Codex widget, backed by the project-local OpenPanels studio.",
+  "author": {
+    "name": "OpenPanels"
+  },
+  "keywords": [
+    "openpanels",
+    "canvas",
+    "native-widget",
+    "visual-collaboration"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "MyOpenPanels",
+    "shortDescription": "Open the project canvas as a native Codex widget.",
+    "longDescription": "MyOpenPanels opens the project-backed OpenPanels local studio inside a native Codex widget when supported, while retaining the localhost browser workflow for agents without native widget support.",
+    "developerName": "OpenPanels",
+    "category": "Productivity",
+    "brandColor": "#2563EB",
+    "capabilities": [
+      "Native Codex widget",
+      "Project-local canvas",
+      "Browser fallback",
+      "Local studio bridge"
+    ],
+    "defaultPrompt": [
+      "Open the MyOpenPanels panel for this project.",
+      "Use MyOpenPanels to inspect the current canvas selection.",
+      "Place the generated image into MyOpenPanels."
+    ]
+  }
+}

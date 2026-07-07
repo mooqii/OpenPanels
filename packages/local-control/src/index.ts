@@ -33,6 +33,12 @@ export interface CanvasBootstrap {
   storageDir: string
 }
 
+export interface DeleteSessionResult {
+  activeSessionId: string
+  deletedSessionId: string
+  sessions: OpenPanelsSession[]
+}
+
 export interface SelectionResult {
   base64: string | null
   mimeType: string | null
@@ -190,6 +196,36 @@ export async function renameSession(
   }
   await context.storage.writeSession(updated)
   return updated
+}
+
+export async function deleteSession(
+  context: OpenPanelsLocalContext,
+  sessionId: string
+): Promise<DeleteSessionResult> {
+  const sessions = await context.runtime.listSessions()
+  if (sessions.length <= 1) {
+    throw new Error("At least one project must remain")
+  }
+  if (!sessions.some((session) => session.id === sessionId)) {
+    throw new Error(`OpenPanels session not found: ${sessionId}`)
+  }
+
+  await context.storage.deleteSession(sessionId)
+  const remainingSessions = await context.runtime.listSessions()
+  const currentActiveSessionId = await readActiveSession(context)
+  const nextActiveSession =
+    remainingSessions.find((session) => session.id === currentActiveSessionId) ??
+    remainingSessions[0]
+  if (!nextActiveSession) {
+    throw new Error("At least one project must remain")
+  }
+
+  await writeActiveSession(context, nextActiveSession.id)
+  return {
+    activeSessionId: nextActiveSession.id,
+    deletedSessionId: sessionId,
+    sessions: remainingSessions,
+  }
 }
 
 export async function savePanelState(input: {
