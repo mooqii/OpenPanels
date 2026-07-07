@@ -2,7 +2,7 @@
 
 OpenPanels is a local panel system for AI agents. It lets Codex, Claude,
 Hermes, and other MCP-capable agents open interactive panels, insert artifacts,
-and persist local panel state under the active project's `.openpanels/`
+and persist local panel state under the active project's `.myopenpanels/`
 directory.
 
 ## Development
@@ -88,6 +88,6 @@ on MyOpenPanels MCP tools such as `start_myopenpanels_studio`,
 - Panel protocol, runtime, React host, SDK, local storage, and local server packages
 - Canvas-first design workspace prepared for the Moodbook canvas migration
 - Image artifacts and editable canvas image shapes
-- Project-local `.openpanels/` persistence
+- Project-local `.myopenpanels/` persistence
 
 See [docs/specs/openpanels-v0.1-spec.md](docs/specs/openpanels-v0.1-spec.md).

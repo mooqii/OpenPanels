@@ -1,0 +1,40 @@
+{
+  "sessionId": "session:39248421-0afb-427c-b355-1c1613bdc790",
+  "panelId": "panel:da6804fe-4184-4119-a93c-a42cdcd4d46f",
+  "selectedShapeIds": [
+    "shape:a0ee828f-f96a-4eb7-b60c-38e9acd3101e"
+  ],
+  "selectedShapes": [
+    {
+      "id": "shape:a0ee828f-f96a-4eb7-b60c-38e9acd3101e",
+      "type": "text",
+      "parentId": "page:main",
+      "props": {
+        "align": "left",
+        "fill": "#ef4444",
+        "fontFamily": "Arial",
+        "fontSize": 196.9047868451159,
+        "fontStyle": "normal",
+        "height": 236.28574421413907,
+        "lineHeight": 1.2,
+        "text": "对对对",
+        "textBoxHeightMode": "auto",
+        "textBoxWidthMode": "auto",
+        "verticalAlign": "top",
+        "width": 591,
+        "wrap": "word",
+        "x": -460.0658497201057,
+        "y": -897.4508997135152
+      },
+      "bounds": {
+        "x": -460.0658497201057,
+        "y": -897.4508997135151,
+        "width": 591,
+        "height": 236.28574421413907
+      },
+      "asset": null
+    }
+  ],
+  "assetRef": null,
+  "updatedAt": "2026-07-06T13:33:01.745Z"
+}

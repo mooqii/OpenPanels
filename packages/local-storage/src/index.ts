@@ -46,7 +46,7 @@ export class LocalOpenPanelsStorage implements OpenPanelsStorage {
   constructor(options: LocalOpenPanelsStorageOptions) {
     this.projectDir = resolve(options.projectDir)
     this.rootDir = resolve(
-      options.storageDir ?? join(this.projectDir, ".openpanels")
+      options.storageDir ?? join(this.projectDir, ".myopenpanels")
     )
     assertSafeRoot(this.projectDir, this.rootDir)
   }
@@ -337,8 +337,8 @@ function sanitizeAssetPath(value: string): string {
 }
 
 function assertSafeRoot(projectDir: string, rootDir: string): void {
-  if (basename(rootDir) !== ".openpanels") {
-    throw new Error("OpenPanels local storage root must be named .openpanels")
+  if (basename(rootDir) !== ".myopenpanels") {
+    throw new Error("OpenPanels local storage root must be named .myopenpanels")
   }
   assertInside(projectDir, rootDir)
 }

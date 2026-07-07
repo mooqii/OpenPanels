@@ -13,7 +13,7 @@ In Codex, use the `render_myopenpanels_widget` MCP tool so the native widget ope
 
 In a generic MCP host that cannot render native app resources, use `start_myopenpanels_studio` and tell the user to open the returned `serverUrl` in a browser.
 
-Do not manually create `.openpanels/` files unless the MCP tools are unavailable.
+Do not manually create `.myopenpanels/` files unless the MCP tools are unavailable.
 
-The widget stores local state in the active project's `.openpanels/` directory.
-The local studio also syncs the current canvas selection to `.openpanels/` so agents can read it later with `get_myopenpanels_selection`.
+The widget stores local state in the active project's `.myopenpanels/` directory.
+The local studio also syncs the current canvas selection to `.myopenpanels/` so agents can read it later with `get_myopenpanels_selection`.

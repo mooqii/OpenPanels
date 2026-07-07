@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { access, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { OpenPanelsRuntime } from "@openpanels/runtime"
@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest"
 import { LocalOpenPanelsStorage } from "./index"
 
 describe("@openpanels/local-storage", () => {
-  it("persists sessions and panel state under .openpanels", async () => {
+  it("persists sessions and panel state under .myopenpanels", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "openpanels-"))
     try {
       const storage = new LocalOpenPanelsStorage({ projectDir })
@@ -25,12 +25,18 @@ describe("@openpanels/local-storage", () => {
       expect(await reloaded.readPanelState(session.id, panel.id)).toEqual({
         store: {},
       })
+      await expect(access(join(projectDir, ".myopenpanels"))).resolves.toBe(
+        undefined
+      )
+      await expect(
+        access(join(projectDir, ".openpanels"))
+      ).rejects.toMatchObject({ code: "ENOENT" })
     } finally {
       await rm(projectDir, { recursive: true, force: true })
     }
   })
 
-  it("rejects non .openpanels roots", async () => {
+  it("rejects non .myopenpanels roots", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "openpanels-"))
     try {
       expect(
@@ -39,7 +45,7 @@ describe("@openpanels/local-storage", () => {
             projectDir,
             storageDir: join(projectDir, "openpanels"),
           })
-      ).toThrow(/\.openpanels/)
+      ).toThrow(/\.myopenpanels/)
     } finally {
       await rm(projectDir, { recursive: true, force: true })
     }

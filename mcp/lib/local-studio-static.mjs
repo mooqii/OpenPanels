@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
-const BUILD_MARKER_FILE = ".openpanels-local-studio-build.json"
+const BUILD_MARKER_FILE = ".myopenpanels-local-studio-build.json"
 let cachedStaticHtml = ""
 let pendingStaticHtml = null
 

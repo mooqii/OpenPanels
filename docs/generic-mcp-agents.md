@@ -30,7 +30,7 @@ Add MyOpenPanels as an MCP server in your agent:
 ```
 
 If your host lets you set environment variables, set `OPENPANELS_PROJECT_DIR`
-to the project whose `.openpanels/` state should be used:
+to the project whose `.myopenpanels/` state should be used:
 
 ```json
 {

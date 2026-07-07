@@ -33,14 +33,14 @@ Agent
   -> native widget or browser local studio
   -> OpenPanels runtime
   -> registered panels
-  -> project-local .openpanels storage
+  -> project-local .myopenpanels storage
 ```
 
 ## 2. Hard Decisions For v0.1
 
 - OpenPanels v0.1 supports Codex and generic stdio MCP hosts.
 - Codex uses `render_openpanels_widget`; generic MCP hosts use `start_openpanels_studio` and open the returned `serverUrl` in a browser.
-- Local persistence uses a hidden `.openpanels/` directory in the active user project.
+- Local persistence uses a hidden `.myopenpanels/` directory in the active user project.
 - Moodbook's `react-konva + zustand + editor/store/types/hooks/renderers` canvas is the first large migrated asset.
 - The canvas is migrated into `packages/canvas/`.
 - OpenPanelsCloud must not be implemented in this spec.
@@ -278,7 +278,7 @@ The first implementation may be simple and Vite-friendly. Do not overbuild produ
 
 ### 4.7 `packages/local-storage`
 
-Implements project-local `.openpanels/` persistence.
+Implements project-local `.myopenpanels/` persistence.
 
 Must contain:
 
@@ -291,13 +291,13 @@ Must contain:
 Storage root:
 
 ```txt
-<project>/.openpanels/
+<project>/.myopenpanels/
 ```
 
 Recommended layout:
 
 ```txt
-.openpanels/
+.myopenpanels/
   sessions/
     <session-id>/
       session.json
@@ -310,7 +310,7 @@ Recommended layout:
   index.json
 ```
 
-All generated file and directory names must be sanitized. No tool may write outside `.openpanels/`.
+All generated file and directory names must be sanitized. No tool may write outside `.myopenpanels/`.
 
 ### 4.8 `packages/canvas`
 
@@ -511,7 +511,7 @@ returns a localhost URL for generic MCP clients.
 The widget must know:
 
 - active project directory
-- `.openpanels/` storage root
+- `.myopenpanels/` storage root
 - current session ID
 - local server URL or embedded widget resource
 
@@ -525,7 +525,7 @@ skills/openpanels-image/SKILL.md
 ```
 
 The skills must instruct agents to use MCP tools rather than manually editing
-`.openpanels/` files.
+`.myopenpanels/` files.
 
 ## 8. Panel Model
 
@@ -583,13 +583,13 @@ export interface CanvasArtifact {
 }
 ```
 
-`assetRef` must point to an asset managed by `.openpanels/`, not an arbitrary unsafe path.
+`assetRef` must point to an asset managed by `.myopenpanels/`, not an arbitrary unsafe path.
 
 ## 10. Storage Safety Rules
 
 All local storage code must follow these rules:
 
-- Never write outside the resolved `.openpanels/` root.
+- Never write outside the resolved `.myopenpanels/` root.
 - Reject path traversal.
 - Sanitize user-provided filenames.
 - Store JSON with stable indentation.
@@ -648,13 +648,13 @@ Acceptance:
 
 Deliver:
 
-- `.openpanels/` storage implementation
+- `.myopenpanels/` storage implementation
 - session/panel/state JSON persistence
 - asset write/read
 
 Acceptance:
 
-- inserting an artifact creates files under `.openpanels/`
+- inserting an artifact creates files under `.myopenpanels/`
 - restarting local server can read the saved session
 
 ### Milestone 4: React Host And Local Studio
@@ -753,7 +753,7 @@ OpenPanels v0.1 is done when:
 - Agents can open a canvas panel
 - canvas panel uses the migrated Moodbook canvas package
 - image artifacts can be inserted into the canvas
-- state persists under `.openpanels/`
+- state persists under `.myopenpanels/`
 - restart does not lose saved sessions
 - README documents the local workflow
 

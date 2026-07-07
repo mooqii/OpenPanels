@@ -17,4 +17,4 @@ Workflow:
 4. To place a generated or local bitmap into MyOpenPanels, prefer `insert_myopenpanels_image`.
 5. For generic image/canvas artifacts, use `write_myopenpanels_panel_asset` and `insert_myopenpanels_artifact`.
 
-Do not infer selection from screenshots or hand-write `.openpanels/` files unless the MCP tools are unavailable.
+Do not infer selection from screenshots or hand-write `.myopenpanels/` files unless the MCP tools are unavailable.

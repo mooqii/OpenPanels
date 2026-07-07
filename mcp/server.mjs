@@ -359,7 +359,7 @@ function registerStateTools() {
     {
       title: "Get MyOpenPanels Session",
       description:
-        "Read the current MyOpenPanels session from .openpanels storage.",
+        "Read the current MyOpenPanels session from .myopenpanels storage.",
       inputSchema: currentCanvasArgs,
     },
     async ({ projectDir, sessionId }) => {
@@ -444,7 +444,7 @@ function registerStateTools() {
     TOOL_SAVE_PANEL_STATE,
     {
       title: "Save MyOpenPanels Panel State",
-      description: "Persist panel state under .openpanels.",
+      description: "Persist panel state under .myopenpanels.",
       inputSchema: {
         ...projectArgs,
         sessionId: z.string(),
@@ -502,7 +502,7 @@ function registerStateTools() {
     TOOL_READ_ASSET,
     {
       title: "Read MyOpenPanels Panel Asset",
-      description: "Read a panel asset from .openpanels.",
+      description: "Read a panel asset from .myopenpanels.",
       inputSchema: {
         ...projectArgs,
         assetRef: z.string(),
@@ -536,7 +536,7 @@ function resolvePaths(projectDir) {
   const resolvedProjectDir = resolve(
     projectDir || process.env.OPENPANELS_PROJECT_DIR || process.cwd()
   )
-  const storageDir = resolve(resolvedProjectDir, ".openpanels")
+  const storageDir = resolve(resolvedProjectDir, ".myopenpanels")
   assertInside(resolvedProjectDir, storageDir)
   return { projectDir: resolvedProjectDir, storageDir }
 }
