@@ -8,11 +8,15 @@ Use this skill when the user wants an infinite canvas for visual work, image gen
 Workflow:
 
 0. Use the `openpanels-local` CLI. If `command -v openpanels-local` fails, use
+   the repository-local CLI when available:
+   `node packages/local-cli/dist/openpanels-local.mjs`. Otherwise use
    `npx -y @openpanels/local-cli@latest` in place of `openpanels-local`.
 1. If the user asks to open or activate the canvas, run
    `openpanels-local studio start --project "$PWD" --format json`, then open the
-   returned `serverUrl` or run
-   `openpanels-local studio open --project "$PWD" --format json`.
+   returned `serverUrl` in the Codex in-app Browser side panel. Make the in-app
+   Browser visible so the canvas appears on the agent's right side. Do not use
+   `openpanels-local studio open` unless the user explicitly asks to open the
+   canvas in their external/system browser.
 2. Use `openpanels-local studio status --project "$PWD" --format json` to inspect
    an existing session, and `openpanels-local studio wait --project "$PWD"
    --timeout 10 --format json` after startup if you need to verify readiness.
