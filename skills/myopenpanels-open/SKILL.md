@@ -1,19 +1,39 @@
 ---
 name: myopenpanels-open
-description: Open MyOpenPanels for the active project in Codex or a generic MCP host.
+description: Open MyOpenPanels for the active project through the openpanels-local CLI.
 ---
 
 Use this skill when the user asks to open, view, or work in MyOpenPanels.
 
-In Codex, if MyOpenPanels MCP tools are not already visible in the active tool
-list, use tool discovery/search for `render_myopenpanels_widget` or
-`start_myopenpanels_studio` before concluding that MyOpenPanels is unavailable.
+MyOpenPanels is controlled through the `openpanels-local` CLI. 
 
-In Codex, use the `render_myopenpanels_widget` MCP tool so the native widget opens inline.
+First check whether the CLI is installed:
 
-In a generic MCP host that cannot render native app resources, use `start_myopenpanels_studio` and tell the user to open the returned `serverUrl` in a browser.
+```bash
+command -v openpanels-local
+```
 
-Do not manually create `.myopenpanels/` files unless the MCP tools are unavailable.
+If it is missing, use `npx -y @openpanels/local-cli@latest` in place of
+`openpanels-local` for the commands below.
 
-The widget stores local state in the active project's `.myopenpanels/` directory.
-The local studio also syncs the current canvas selection to `.myopenpanels/` so agents can read it later with `get_myopenpanels_selection`.
+Start or reuse the local studio:
+
+```bash
+openpanels-local studio start --project "$PWD" --format json
+```
+
+Open the returned `serverUrl` for the user, or run:
+
+```bash
+openpanels-local studio open --project "$PWD" --format json
+```
+
+Use `openpanels-local studio status --project "$PWD" --format json` to inspect an
+existing session, and `openpanels-local studio wait --project "$PWD" --timeout 10
+--format json` after startup if you need to verify readiness.
+
+Do not manually create or edit `.myopenpanels/` files.
+
+The local studio stores state in the active project's `.myopenpanels/`
+directory and syncs the current canvas selection there so agents can read it
+later with `openpanels-local selection`.

@@ -28,38 +28,17 @@ import "./styles.css"
 applyOpenPanelsTheme(detectOpenPanelsTheme())
 
 const ACTIVE_SESSION_STORAGE_KEY = "openpanels.activeSessionId"
-const APP_TOOL_GET_CANVAS_STATE = "openpanels_app_get_canvas_state_v016"
-const APP_TOOL_SAVE_PANEL_STATE = "openpanels_app_save_panel_state_v016"
-const APP_TOOL_SAVE_SELECTION_STATE = "openpanels_app_save_selection_state_v016"
-const APP_TOOL_READ_ASSET = "openpanels_app_read_panel_asset_v016"
 
 type OpenPanelsHostWindow = Window &
   typeof globalThis & {
     __OPENPANELS_API_BASE__?: string
-    __OPENPANELS_BOOTSTRAP__?: BootstrapResponse
-    __OPENPANELS_PROJECT_DIR__?: string
-    __OPENPANELS_STORAGE_DIR__?: string
-    openPanelsMcp?: {
-      callServerTool?: (
-        request: { arguments?: Record<string, unknown>; name: string },
-        options?: { timeoutMs?: number }
-      ) => Promise<{
-        content?: Array<{ text?: string; type: string }>
-        isError?: boolean
-        structuredContent?: unknown
-      }>
-    }
     openai?: {
       rawToolResult?: {
         structuredContent?: {
-          bootstrap?: BootstrapResponse
           serverUrl?: string
-          projectDir?: string
         }
       }
       toolOutput?: {
-        bootstrap?: BootstrapResponse
-        projectDir?: string
         serverUrl?: string
       }
     }
@@ -74,21 +53,10 @@ interface BootstrapResponse {
 
 interface AppState extends BootstrapResponse {}
 
-type OpenPanelsTransport =
-  | {
-      apiBase: string
-      kind: "http"
-    }
-  | {
-      kind: "mcp"
-      projectDir?: string
-    }
-  | {
-      apiBase?: string
-      bootstrap: BootstrapResponse
-      kind: "embedded"
-      projectDir?: string
-    }
+type OpenPanelsTransport = {
+  apiBase: string
+  kind: "http"
+}
 
 function App({ transport }: { transport: OpenPanelsTransport }) {
   const { t } = useOpenPanelsI18n()
@@ -99,6 +67,9 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
     null
   )
   const [sessions, setSessions] = useState<OpenPanelsSession[]>([])
+  const [canvasReloadKey, setCanvasReloadKey] = useState(0)
+  const isLocalSnapshotDirtyRef = useRef(false)
+  const lastPersistedSnapshotJsonRef = useRef<string | null>(null)
 
   const loadProject = useCallback(
     async (sessionId?: string | null) => {
@@ -115,6 +86,11 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
       setSelection(null)
       setAppState(normalized)
       setSnapshot(normalized.state)
+      isLocalSnapshotDirtyRef.current = false
+      lastPersistedSnapshotJsonRef.current = JSON.stringify(
+        serializeSnapshot(normalized.state)
+      )
+      setCanvasReloadKey((key) => key + 1)
       setSessions(data.sessions ?? (await fetchSessions(transport)))
     },
     [transport]
@@ -145,24 +121,33 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
         const activeSessionId = await fetchActiveSessionId(transport)
         if (activeSessionId && activeSessionId !== appState.session.id) {
           await loadProject(activeSessionId)
+          return
+        }
+        if (!activeSessionId || isLocalSnapshotDirtyRef.current) {
+          return
+        }
+        const data = await loadBootstrap(transport, activeSessionId)
+        const normalizedState = normalizeSnapshot(data.state)
+        const remoteSnapshotJson = JSON.stringify(
+          serializeSnapshot(normalizedState)
+        )
+        if (remoteSnapshotJson !== lastPersistedSnapshotJsonRef.current) {
+          setSelection(null)
+          setAppState({ ...data, state: normalizedState })
+          setSnapshot(normalizedState)
+          setSessions(data.sessions ?? (await fetchSessions(transport)))
+          lastPersistedSnapshotJsonRef.current = remoteSnapshotJson
+          setCanvasReloadKey((key) => key + 1)
         }
       } catch (error) {
         console.error("Failed to sync OpenPanels active project", error)
       }
-    }, 1000)
+    }, 1500)
     return () => window.clearInterval(timer)
   }, [appState, loadProject, transport])
 
   const assetStore = useMemo(() => {
     if (!appState) return new DataUrlAssetStore()
-    if (transport.kind === "embedded" && transport.apiBase) {
-      return new OpenPanelsBrowserAssetStore(
-        transport.apiBase,
-        appState.session.id,
-        appState.panel.id
-      )
-    }
-    if (transport.kind !== "http") return new DataUrlAssetStore()
     return new OpenPanelsBrowserAssetStore(
       transport.apiBase,
       appState.session.id,
@@ -171,18 +156,13 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
   }, [appState, transport])
 
   const saveSnapshot = useCallback((nextSnapshot: StoreSnapshot) => {
+    isLocalSnapshotDirtyRef.current = true
     setSnapshot(nextSnapshot)
   }, [])
 
   const createProject = useCallback(async () => {
-    if (transport.kind !== "http") {
-      await loadProject(null)
-      return
-    }
     const response = await apiFetch(transport.apiBase, "/api/projects", {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: t`Untitled` }),
     })
     const data = (await response.json()) as BootstrapResponse
     window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, data.session.id)
@@ -193,13 +173,17 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
     setSelection(null)
     setAppState(normalized)
     setSnapshot(normalized.state)
+    isLocalSnapshotDirtyRef.current = false
+    lastPersistedSnapshotJsonRef.current = JSON.stringify(
+      serializeSnapshot(normalized.state)
+    )
+    setCanvasReloadKey((key) => key + 1)
     setSessions(data.sessions ?? (await fetchSessions(transport)))
-  }, [loadProject, t, transport])
+  }, [transport])
 
   const renameProject = useCallback(
     async (title: string) => {
       if (!appState) return
-      if (transport.kind !== "http") return
       const response = await apiFetch(
         transport.apiBase,
         `/api/sessions/${encodeURIComponent(appState.session.id)}`,
@@ -232,9 +216,16 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
         appState.session.id,
         appState.panel.id,
         snapshot
-      ).catch((error) => {
-        console.error("Failed to save OpenPanels canvas state", error)
-      })
+      )
+        .then(() => {
+          isLocalSnapshotDirtyRef.current = false
+          lastPersistedSnapshotJsonRef.current = JSON.stringify(
+            serializeSnapshot(snapshot)
+          )
+        })
+        .catch((error) => {
+          console.error("Failed to save OpenPanels canvas state", error)
+        })
     }, 400)
     return () => window.clearTimeout(timer)
   }, [appState, snapshot, transport])
@@ -274,7 +265,7 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
       <CanvasPanel
         assetStore={assetStore}
         height="100vh"
-        key={`${appState.session.id}:${appState.panel.id}`}
+        key={`${appState.session.id}:${appState.panel.id}:${canvasReloadKey}`}
         onSelectionChange={setSelection}
         onSnapshotChange={saveSnapshot}
         snapshot={snapshot}
@@ -535,115 +526,16 @@ function apiFetch(
   return fetch(apiUrl(apiBase, path), init)
 }
 
-async function callOpenPanelsTool<T>(
-  transport: OpenPanelsTransport,
-  name: string,
-  args: Record<string, unknown> = {}
-): Promise<T> {
-  if (transport.kind === "http") {
-    throw new Error("OpenPanels MCP transport is not active.")
-  }
-  const hostWindow = window as OpenPanelsHostWindow
-  const callServerTool = hostWindow.openPanelsMcp?.callServerTool
-  if (typeof callServerTool !== "function") {
-    throw new Error("OpenPanels host tool bridge is unavailable.")
-  }
-  const result = await callServerTool({
-    name,
-    arguments: {
-      projectDir: transport.projectDir,
-      ...args,
-    },
-  })
-  if (result?.isError) {
-    const message = result.content?.find((item) => item.type === "text")?.text
-    throw new Error(message || `OpenPanels tool failed: ${name}`)
-  }
-  if (result?.structuredContent !== undefined) {
-    return result.structuredContent as T
-  }
-  const text = result?.content?.find((item) => item.type === "text")?.text
-  if (text) {
-    return JSON.parse(text) as T
-  }
-  return result as T
-}
-
 async function loadBootstrap(
   transport: OpenPanelsTransport,
   sessionId?: string | null
 ): Promise<BootstrapResponse> {
-  if (transport.kind === "http") {
-    const url = apiUrl(transport.apiBase, "/api/bootstrap")
-    if (sessionId) {
-      url.searchParams.set("sessionId", sessionId)
-    }
-    const response = await apiFetch(transport.apiBase, url)
-    return (await response.json()) as BootstrapResponse
+  const url = apiUrl(transport.apiBase, "/api/bootstrap")
+  if (sessionId) {
+    url.searchParams.set("sessionId", sessionId)
   }
-
-  if (transport.kind === "embedded") {
-    return transport.bootstrap
-  }
-
-  const data = await callOpenPanelsTool<BootstrapResponse>(
-    transport,
-    APP_TOOL_GET_CANVAS_STATE,
-    sessionId ? { sessionId } : {}
-  )
-  return {
-    ...data,
-    state: await hydrateMcpAssets(transport, data.state),
-  }
-}
-
-async function hydrateMcpAssets(
-  transport: OpenPanelsTransport,
-  snapshot: StoreSnapshot
-): Promise<StoreSnapshot> {
-  const store =
-    snapshot.store && typeof snapshot.store === "object" ? snapshot.store : {}
-  const hydratedStore = { ...store }
-  const entries = Object.entries(hydratedStore)
-
-  await Promise.all(
-    entries.map(async ([id, record]) => {
-      if (
-        !record ||
-        typeof record !== "object" ||
-        record.typeName !== "asset" ||
-        record.type !== "image"
-      ) {
-        return
-      }
-      const assetRef = record.meta?.assetRef
-      if (typeof assetRef !== "string" || !assetRef) return
-      const src = record.props?.src
-      if (typeof src === "string" && src.startsWith("data:")) return
-
-      const asset = await callOpenPanelsTool<{ base64: string }>(
-        transport,
-        APP_TOOL_READ_ASSET,
-        { assetRef }
-      )
-      const mimeType =
-        typeof record.props?.mimeType === "string"
-          ? record.props.mimeType
-          : "image/png"
-      hydratedStore[id] = {
-        ...record,
-        props: {
-          ...record.props,
-          src: `data:${mimeType};base64,${asset.base64}`,
-        },
-      }
-    })
-  )
-
-  return {
-    ...snapshot,
-    store: hydratedStore,
-  }
+  const response = await apiFetch(transport.apiBase, url)
+  return (await response.json()) as BootstrapResponse
 }
 
 async function savePanelState(
@@ -652,39 +544,15 @@ async function savePanelState(
   panelId: string,
   snapshot: StoreSnapshot
 ) {
-  if (transport.kind === "http") {
-    await apiFetch(
-      transport.apiBase,
-      `/api/panels/${encodeURIComponent(sessionId)}/${encodeURIComponent(panelId)}/state`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(serializeSnapshot(snapshot)),
-      }
-    )
-    return
-  }
-
-  if (transport.kind === "embedded" && transport.apiBase) {
-    await apiFetch(
-      transport.apiBase,
-      `/api/panels/${encodeURIComponent(sessionId)}/${encodeURIComponent(panelId)}/state`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(serializeSnapshot(snapshot)),
-      }
-    )
-    return
-  }
-
-  if (transport.kind === "embedded" && !transport.projectDir) return
-
-  await callOpenPanelsTool(transport, APP_TOOL_SAVE_PANEL_STATE, {
-    panelId,
-    sessionId,
-    state: serializeSnapshot(snapshot),
-  })
+  await apiFetch(
+    transport.apiBase,
+    `/api/panels/${encodeURIComponent(sessionId)}/${encodeURIComponent(panelId)}/state`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(serializeSnapshot(snapshot)),
+    }
+  )
 }
 
 async function saveSelectionState(
@@ -701,39 +569,15 @@ async function saveSelectionState(
       selectedShapes: selection.selectedShapes,
     },
   }
-  if (transport.kind === "http") {
-    await apiFetch(
-      transport.apiBase,
-      `/api/panels/${encodeURIComponent(sessionId)}/${encodeURIComponent(panelId)}/selection`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      }
-    )
-    return
-  }
-
-  if (transport.kind === "embedded" && transport.apiBase) {
-    await apiFetch(
-      transport.apiBase,
-      `/api/panels/${encodeURIComponent(sessionId)}/${encodeURIComponent(panelId)}/selection`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      }
-    )
-    return
-  }
-
-  if (transport.kind === "embedded" && !transport.projectDir) return
-
-  await callOpenPanelsTool(transport, APP_TOOL_SAVE_SELECTION_STATE, {
-    panelId,
-    sessionId,
-    ...payload,
-  })
+  await apiFetch(
+    transport.apiBase,
+    `/api/panels/${encodeURIComponent(sessionId)}/${encodeURIComponent(panelId)}/selection`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  )
 }
 
 function localHttpOrigin(): string | null {
@@ -756,58 +600,19 @@ function hostServerUrl(): string | null {
   )
 }
 
-function hostProjectDir(): string | undefined {
-  const hostWindow = window as OpenPanelsHostWindow
-  return (
-    hostWindow.__OPENPANELS_PROJECT_DIR__ ??
-    hostWindow.openai?.toolOutput?.projectDir ??
-    hostWindow.openai?.rawToolResult?.structuredContent?.projectDir
-  )
-}
-
-function hostBootstrap(): BootstrapResponse | undefined {
-  const hostWindow = window as OpenPanelsHostWindow
-  return (
-    hostWindow.__OPENPANELS_BOOTSTRAP__ ??
-    hostWindow.openai?.toolOutput?.bootstrap ??
-    hostWindow.openai?.rawToolResult?.structuredContent?.bootstrap
-  )
-}
-
 function currentTransport(): OpenPanelsTransport | null {
   const localOrigin = localHttpOrigin()
   if (localOrigin) return { apiBase: localOrigin, kind: "http" }
 
-  const hostWindow = window as OpenPanelsHostWindow
-  const projectDir = hostProjectDir()
-  const bootstrap = hostBootstrap()
   const serverUrl = hostServerUrl()
-  if (bootstrap) {
-    return {
-      apiBase: serverUrl ?? undefined,
-      bootstrap,
-      kind: "embedded",
-      projectDir,
-    }
-  }
-
   if (serverUrl) return { apiBase: serverUrl, kind: "http" }
-
-  if (
-    projectDir &&
-    typeof hostWindow.openPanelsMcp?.callServerTool === "function"
-  ) {
-    return { kind: "mcp", projectDir }
-  }
 
   return null
 }
 
 function transportKey(transport: OpenPanelsTransport | null): string {
   if (!transport) return "none"
-  return transport.kind === "http"
-    ? `http:${transport.apiBase}`
-    : `${transport.kind}:${transport.projectDir ?? ""}:${transport.kind === "embedded" ? `${transport.bootstrap.session.id}:${transport.apiBase ?? ""}` : ""}`
+  return `http:${transport.apiBase}`
 }
 
 function useOpenPanelsTransport(): OpenPanelsTransport | null {
@@ -850,13 +655,11 @@ function AppBootstrap() {
 }
 
 async function fetchSessions(transport: OpenPanelsTransport) {
-  if (transport.kind !== "http") return []
   const response = await apiFetch(transport.apiBase, "/api/sessions")
   return (await response.json()) as OpenPanelsSession[]
 }
 
 async function fetchActiveSessionId(transport: OpenPanelsTransport) {
-  if (transport.kind !== "http") return null
   const response = await apiFetch(transport.apiBase, "/api/active-session")
   const data = (await response.json()) as { sessionId?: string | null }
   return data.sessionId ?? null

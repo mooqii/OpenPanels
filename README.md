@@ -1,9 +1,9 @@
 # OpenPanels
 
-OpenPanels is a local panel system for AI agents. It lets Codex, Claude,
-Hermes, and other MCP-capable agents open interactive panels, insert artifacts,
-and persist local panel state under the active project's `.myopenpanels/`
-directory.
+OpenPanels is a local panel system for shell-capable AI agents. It lets agents
+open interactive panels, insert artifacts, and persist local panel state under
+the active project's `.myopenpanels/` directory through the `openpanels-local`
+CLI.
 
 ## Development
 
@@ -12,79 +12,61 @@ pnpm install
 pnpm dev
 ```
 
-The local studio runs from `apps/local-studio`.
+The local studio runs from `apps/local-studio`. The publishable agent CLI lives
+in `packages/local-cli`.
 
-## Install in Codex
+## Install
 
-MyOpenPanels can be installed from this repository as a Codex plugin marketplace:
-
-```bash
-codex plugin marketplace add mooqii/OpenPanels
-```
-
-To pin a stable release, install a tagged ref:
+Install the CLI globally:
 
 ```bash
-codex plugin marketplace add mooqii/OpenPanels --ref v0.1.2
+npm install -g @openpanels/local-cli
 ```
 
-After adding the marketplace, restart Codex, open the plugin directory, choose
-the MyOpenPanels marketplace, and install the MyOpenPanels plugin. Start a new
-thread after installation so Codex can load the bundled skills and MCP tools.
+Or use npx without a global install:
 
-## Use with Generic MCP Agents
-
-MyOpenPanels also works with MCP clients that do not support Codex plugins or
-native Codex widgets. Configure the MCP server with this repository as its
-working directory:
-
-```json
-{
-  "mcpServers": {
-    "myopenpanels": {
-      "command": "node",
-      "args": ["/absolute/path/to/OpenPanels/scripts/start-mcp.mjs"],
-      "cwd": "/absolute/path/to/OpenPanels"
-    }
-  }
-}
+```bash
+npx -y @openpanels/local-cli@latest studio start --project /path/to/project --format json
 ```
 
-For Claude Desktop, put that server entry in the app's MCP configuration. For
-Hermes or another generic MCP host, add the same stdio server command wherever
-that host accepts MCP servers.
+The agent-facing instructions live in `skills/`. Add those skill files to any
+agent environment that supports local skills, or use the CLI commands directly
+from a shell-capable agent.
 
-Generic MCP hosts should call `start_myopenpanels_studio` first. It starts the
-local studio and returns a `serverUrl` such as `http://127.0.0.1:49231`. Open
-that URL in a browser and keep the MCP session running while using the canvas.
-Agents can then use the same project-backed tools:
+## Use with Shell Agents
 
-- `get_myopenpanels_selection`
-- `read_myopenpanels_selection_asset`
-- `insert_myopenpanels_image`
-- `write_myopenpanels_panel_asset`
-- `insert_myopenpanels_artifact`
+MyOpenPanels works in any local agent that can run shell commands. Start the
+studio and open the returned `serverUrl`:
 
-## Codex Plugin
+```bash
+openpanels-local studio start --project /path/to/project --format json
+openpanels-local studio open --project /path/to/project --format json
+```
 
-MyOpenPanels is packaged as a Codex plugin for the best Codex experience. The plugin installs both parts that Codex agents need:
+Agents can then use project-backed CLI commands:
 
-- `skills/` tells Codex when and how to use MyOpenPanels.
-- `.mcp.json` registers the MCP server that provides the actual tools and widget.
+```bash
+openpanels-local canvas-state --project /path/to/project --format json
+openpanels-local selection --project /path/to/project --format json
+openpanels-local selection --project /path/to/project --include-image-base64 --format json
+openpanels-local read-selection-asset --project /path/to/project --output /tmp/selection.png --format json
+openpanels-local insert-image --project /path/to/project --image /tmp/result.png --placement right --format json
+```
 
-The repository includes `.agents/plugins/marketplace.json`, which exposes this
-repo root as an installable Codex plugin source.
+## Skills
 
-The plugin manifest lives at `.codex-plugin/plugin.json`. When installed in Codex, it exposes the `myopenpanels` MCP server through `scripts/start-mcp.mjs`, which prepares dependencies when needed, starts the MCP server, and opens the local studio in a native widget through `render_myopenpanels_widget`.
+MyOpenPanels is distributed as portable skill instructions plus the
+`openpanels-local` CLI. There is no plugin manifest or agent-specific runtime
+registration required.
 
-For agents that do not support plugins, configure the MCP server directly as
-shown above. Installing only a skill is not enough because the workflow depends
-on MyOpenPanels MCP tools such as `start_myopenpanels_studio`,
-`get_myopenpanels_selection`, and `insert_myopenpanels_image`.
+- `skills/myopenpanels-open/SKILL.md` teaches agents how to start and open the
+  local studio.
+- `skills/myopenpanels-image/SKILL.md` teaches agents how to read the current
+  canvas selection and insert generated images.
 
 ## v0.1 Scope
 
-- Local workflow for Codex and generic MCP agents
+- Local workflow for generic shell agents
 - Panel protocol, runtime, React host, SDK, local storage, and local server packages
 - Canvas-first design workspace prepared for the Moodbook canvas migration
 - Image artifacts and editable canvas image shapes

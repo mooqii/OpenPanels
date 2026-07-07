@@ -10,10 +10,8 @@
     "test": "vitest --run --passWithNoTests"
   },
   "dependencies": {
-    "@openpanels/core": "workspace:*",
-    "@openpanels/local-storage": "workspace:*",
-    "@openpanels/protocol": "workspace:*",
-    "@openpanels/runtime": "workspace:*"
+    "@openpanels/local-control": "workspace:*",
+    "@openpanels/protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.3.5",

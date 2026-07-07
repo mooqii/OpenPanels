@@ -1,0 +1,80 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import {
+  createOpenPanelsLocalContext,
+  ensureCanvasBootstrap,
+  getSelection,
+  insertImage,
+  readActiveSession,
+  saveSelectionState,
+} from "./index"
+
+const TINY_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64"
+)
+const TINY_PNG_DATA_URL = `data:image/png;base64,${TINY_PNG.toString("base64")}`
+
+describe("@openpanels/local-control", () => {
+  let projectDir: string
+
+  beforeEach(async () => {
+    projectDir = await mkdtemp(join(tmpdir(), "openpanels-control-"))
+  })
+
+  afterEach(async () => {
+    await rm(projectDir, { recursive: true, force: true })
+  })
+
+  it("bootstraps an empty project with a canvas panel", async () => {
+    const context = createOpenPanelsLocalContext(projectDir)
+    const bootstrap = await ensureCanvasBootstrap(context)
+
+    expect(bootstrap.session.title).toBe("Project 1")
+    expect(bootstrap.panel.kind).toBe("canvas")
+    expect(await readActiveSession(context)).toBe(bootstrap.session.id)
+    expect(bootstrap.state).toMatchObject({
+      currentPageId: "page:main",
+    })
+  })
+
+  it("persists selection data and optional image base64", async () => {
+    const context = createOpenPanelsLocalContext(projectDir)
+    const bootstrap = await ensureCanvasBootstrap(context)
+
+    await saveSelectionState({
+      projectDir,
+      sessionId: bootstrap.session.id,
+      panelId: bootstrap.panel.id,
+      selection: {
+        selectedShapeIds: ["shape:1"],
+        selectedShapes: [{ id: "shape:1", type: "geo" }],
+      },
+      imageDataUrl: TINY_PNG_DATA_URL,
+    })
+
+    const selection = await getSelection({
+      projectDir,
+      includeImageBase64: true,
+    })
+
+    expect(selection.base64).toBe(TINY_PNG.toString("base64"))
+    expect(selection.mimeType).toBe("image/png")
+    expect(selection.selection.selectedShapeIds).toEqual(["shape:1"])
+  })
+
+  it("inserts images and falls back to the latest image selection", async () => {
+    const imagePath = join(projectDir, "image.png")
+    await writeFile(imagePath, TINY_PNG)
+
+    const inserted = await insertImage({ projectDir, imagePath })
+    const selection = await getSelection({ projectDir })
+
+    expect(inserted.assetRef).toContain("image.png")
+    expect(inserted.bounds).toEqual({ x: 160, y: 160, width: 1, height: 1 })
+    expect(selection.selection.fallback).toBe("last-image")
+    expect(selection.selection.selectedShapeIds).toEqual([inserted.shapeId])
+  })
+})

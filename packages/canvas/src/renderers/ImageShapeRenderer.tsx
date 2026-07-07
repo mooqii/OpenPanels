@@ -59,8 +59,8 @@ export function ImageShapeRenderer({
   const height = props.height ?? 100
   const assetId = props.assetId
   const resolvedSrc =
-    asset?.props?.src ??
-    (assetId ? resolveAsset?.(assetId as string) : undefined)
+    (assetId ? resolveAsset?.(assetId as string) : undefined) ??
+    asset?.props?.src
   const src = resolvedSrc ?? ""
 
   const [image, setImage] = useState<HTMLImageElement | null>(null)

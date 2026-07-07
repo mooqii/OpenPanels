@@ -16,7 +16,7 @@
       "**/vite.config.js",
       "**/vite.config.ts",
       "**/scripts/**/*",
-      "**/mcp/**/*",
+      "!**/.openpanels/**/*",
       "!**/dist/**/*"
     ]
   },

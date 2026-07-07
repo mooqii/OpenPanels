@@ -8,13 +8,13 @@ Out of scope: OpenPanelsCloud, accounts, billing, team sync, hosted AI services
 ## 1. Product Goal
 
 OpenPanels v0.1 is a local, open-source panel system for Codex and generic
-MCP-capable agents.
+shell-capable agents.
 
 The first release must let agents open a panel workspace, send artifacts into
 panels, render an interactive canvas panel migrated from Moodbook, and persist
-all local state under the current project directory. Codex gets a native widget;
-generic MCP hosts such as Claude Desktop or Hermes get a browser URL for the
-same local studio.
+all local state under the current project directory. Agents use the
+`openpanels-local` CLI to start a browser-based local studio and exchange canvas
+state with the project-local storage.
 
 The v0.1 product is not only an SDK. It must be a complete runnable repository:
 
@@ -29,8 +29,8 @@ The initial user experience should be close to Cowart's product shape:
 
 ```txt
 Agent
-  -> OpenPanels MCP tools
-  -> native widget or browser local studio
+  -> openpanels-local CLI
+  -> browser local studio
   -> OpenPanels runtime
   -> registered panels
   -> project-local .myopenpanels storage
@@ -38,8 +38,8 @@ Agent
 
 ## 2. Hard Decisions For v0.1
 
-- OpenPanels v0.1 supports Codex and generic stdio MCP hosts.
-- Codex uses `render_openpanels_widget`; generic MCP hosts use `start_openpanels_studio` and open the returned `serverUrl` in a browser.
+- OpenPanels v0.1 supports Codex and generic shell-capable agents.
+- Agents use `openpanels-local studio start` and open the returned `serverUrl` in a browser.
 - Local persistence uses a hidden `.myopenpanels/` directory in the active user project.
 - Moodbook's `react-konva + zustand + editor/store/types/hooks/renderers` canvas is the first large migrated asset.
 - The canvas is migrated into `packages/canvas/`.
@@ -63,18 +63,16 @@ OpenPanels/
     react/
     sdk/
     canvas/
+    local-control/
     local-server/
     local-storage/
+    cli/
 
   panels/
     image/
     diff/
     preview/
     files/
-
-  mcp/
-    server.mjs
-    lib/
 
   skills/
     openpanels-open/
@@ -104,7 +102,7 @@ For v0.1, `panels/` can stay thin. The real canvas implementation lives in `pack
 
 ### 4.1 `packages/protocol`
 
-Defines stable serializable contracts shared by MCP tools, runtime, SDK, and panels.
+Defines stable serializable contracts shared by the CLI, runtime, SDK, and panels.
 
 Must contain:
 
@@ -184,7 +182,7 @@ Must not contain:
 
 - React
 - Vite
-- Codex MCP server code
+- Codex or CLI integration code
 - filesystem persistence
 
 ### 4.3 `packages/runtime`
@@ -234,14 +232,14 @@ Must contain:
 Must not contain:
 
 - local storage implementation
-- Codex MCP tool logic
+- Codex or CLI integration logic
 - Moodbook-specific application code
 
 ### 4.5 `packages/sdk`
 
 Provides a small agent-facing client.
 
-For v0.1, SDK can be a local TypeScript client used by examples and tests. Codex primarily enters through MCP tools.
+For v0.1, SDK can be a local TypeScript client used by examples and tests. Codex primarily enters through the `openpanels-local` CLI.
 
 Initial API:
 
@@ -265,7 +263,7 @@ await client.insertArtifact({
 
 ### 4.6 `packages/local-server`
 
-Runs the local OpenPanels service used by `apps/local-studio` and MCP tools.
+Runs the local OpenPanels service used by `apps/local-studio` and the CLI.
 
 Must contain:
 
@@ -463,57 +461,47 @@ It does not need:
 - cloud sync
 - admin screens
 
-## 7. MCP Server And Codex Plugin
+## 7. CLI And Codex Skills
 
-OpenPanels v0.1 must include a generic MCP server and a Codex plugin wrapper.
+OpenPanels v0.1 must include a publishable `@openpanels/local-cli` package with
+an `openpanels-local` binary and a Codex skill wrapper. The CLI is the
+agent-facing control surface.
 
-Use Cowart as the product reference:
+### 7.1 Required CLI Commands
 
-```txt
-/Users/mooqii/Code/OpenPanelsProject/Cowart/.codex-plugin
-/Users/mooqii/Code/OpenPanelsProject/Cowart/mcp
-/Users/mooqii/Code/OpenPanelsProject/Cowart/skills
-```
-
-Do not copy Cowart names directly. Use OpenPanels names.
-
-### 7.1 Required MCP Tools
-
-Required tools:
+Required commands:
 
 ```txt
-render_openpanels_widget
-start_openpanels_studio
-get_openpanels_session
-open_openpanels_panel
-insert_openpanels_artifact
-save_openpanels_panel_state
-read_openpanels_panel_asset
-write_openpanels_panel_asset
+openpanels-local studio start
+openpanels-local studio status
+openpanels-local studio open
+openpanels-local studio wait
+openpanels-local studio stop
+openpanels-local canvas-state
+openpanels-local selection
+openpanels-local read-selection-asset
+openpanels-local insert-image
 ```
 
 The first working path can be:
 
 ```txt
-render_openpanels_widget or start_openpanels_studio
-open_openpanels_panel(kind="canvas")
-insert_openpanels_artifact(kind="image" or "canvas")
+openpanels-local studio start --project <dir> --format json
+openpanels-local selection --project <dir> --format json
+openpanels-local insert-image --project <dir> --image <path> --format json
 ```
 
-### 7.2 Widget Behavior
+### 7.2 Studio Behavior
 
-`render_openpanels_widget` opens the OpenPanels native widget for clients that
-support app resources.
+`openpanels-local studio start` starts the same project-backed local studio and
+returns a localhost URL for browser use.
 
-`start_openpanels_studio` starts the same project-backed local studio and
-returns a localhost URL for generic MCP clients.
-
-The widget must know:
+The studio session must know:
 
 - active project directory
 - `.myopenpanels/` storage root
 - current session ID
-- local server URL or embedded widget resource
+- local server URL
 
 ### 7.3 Skills
 
@@ -524,7 +512,7 @@ skills/openpanels-open/SKILL.md
 skills/openpanels-image/SKILL.md
 ```
 
-The skills must instruct agents to use MCP tools rather than manually editing
+The skills must instruct agents to use CLI commands rather than manually editing
 `.myopenpanels/` files.
 
 ## 8. Panel Model
@@ -687,20 +675,20 @@ Acceptance:
 - package typechecks independently
 - canvas state round-trips through OpenPanels runtime storage
 
-### Milestone 6: MCP Tools And Codex Plugin
+### Milestone 6: CLI And Codex Skills
 
 Deliver:
 
 - `.codex-plugin/plugin.json`
-- `mcp/server.mjs`
-- generic MCP setup docs
-- required MCP tools
+- `packages/local-cli`
+- CLI agent setup docs
+- required CLI commands
 - skills
 
 Acceptance:
 
-- Codex can open OpenPanels widget
-- Generic MCP agents can start OpenPanels studio and receive a browser URL
+- Codex can open OpenPanels through the CLI-guided skill
+- Shell-capable agents can start OpenPanels studio and receive a browser URL
 - Codex can open a canvas panel
 - Codex can insert an image asset into the canvas
 
@@ -735,11 +723,11 @@ When an AI agent starts implementing this spec, follow this order:
 5. Implement `apps/local-studio` as a canvas-first design workspace.
 6. Migrate Moodbook canvas into `packages/canvas`.
 7. Register canvas as the first real OpenPanels panel.
-8. Add MCP server, generic MCP docs, and Codex plugin.
+8. Add CLI, CLI agent docs, and Codex skills.
 9. Add skills.
 10. Update README with clone/install/dev/plugin instructions.
 
-Do not start from Cloud. Do not start from billing/auth. Do not start by publishing npm packages.
+Do not start from Cloud. Do not start from billing/auth.
 
 ## 14. Definition Of Done For v0.1
 
@@ -748,7 +736,7 @@ OpenPanels v0.1 is done when:
 - repository installs with pnpm
 - local studio runs
 - Codex can open OpenPanels
-- Generic MCP agents can start OpenPanels and receive a browser URL
+- Shell-capable agents can start OpenPanels and receive a browser URL
 - Agents can create or show a session
 - Agents can open a canvas panel
 - canvas panel uses the migrated Moodbook canvas package

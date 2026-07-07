@@ -1,19 +1,27 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http"
-import { extname, join, resolve } from "node:path"
-import { LocalOpenPanelsStorage } from "@openpanels/local-storage"
+import { extname, relative, resolve, sep } from "node:path"
+import {
+  createCanvasProject,
+  createOpenPanelsLocalContext,
+  createLocalOpenPanelsRuntime as createRuntime,
+  dataUrlToBuffer,
+  ensureCanvasBootstrap,
+  readActiveSession,
+  renameSession,
+  savePanelState,
+  saveSelectionState,
+  writeActiveSession,
+} from "@openpanels/local-control"
 import type {
   CreateSessionInput,
   InsertArtifactInput,
   OpenPanelInput,
-  OpenPanelsPanel,
-  OpenPanelsSession,
 } from "@openpanels/protocol"
-import { OpenPanelsRuntime } from "@openpanels/runtime"
 
 export interface CreateLocalServerOptions {
   projectDir: string
@@ -21,18 +29,15 @@ export interface CreateLocalServerOptions {
 }
 
 export function createLocalOpenPanelsRuntime(projectDir: string) {
-  return new OpenPanelsRuntime({
-    storage: new LocalOpenPanelsStorage({ projectDir }),
-  })
+  return createRuntime(projectDir)
 }
 
 export function createLocalOpenPanelsServer(options: CreateLocalServerOptions) {
-  const runtime = createLocalOpenPanelsRuntime(options.projectDir)
-  const storage = new LocalOpenPanelsStorage({ projectDir: options.projectDir })
+  const context = createOpenPanelsLocalContext(options.projectDir)
 
   return createServer(async (request, response) => {
     try {
-      await routeRequest(request, response, runtime, storage, options.staticDir)
+      await routeRequest(request, response, context, options.staticDir)
     } catch (error) {
       response.statusCode = 500
       response.setHeader("content-type", "application/json")
@@ -48,8 +53,7 @@ export function createLocalOpenPanelsServer(options: CreateLocalServerOptions) {
 async function routeRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  runtime: OpenPanelsRuntime,
-  storage: LocalOpenPanelsStorage,
+  context: ReturnType<typeof createOpenPanelsLocalContext>,
   staticDir?: string
 ) {
   const url = new URL(request.url ?? "/", "http://localhost")
@@ -63,8 +67,7 @@ async function routeRequest(
 
   if (request.method === "GET" && url.pathname === "/api/bootstrap") {
     const bootstrap = await ensureCanvasBootstrap(
-      runtime,
-      storage,
+      context,
       url.searchParams.get("sessionId")
     )
     return json(response, bootstrap)
@@ -72,26 +75,25 @@ async function routeRequest(
 
   if (request.method === "POST" && url.pathname === "/api/projects") {
     const body = (await readBody(request)) as { title?: string }
-    const bootstrap = await createCanvasProject(runtime, body.title)
-    await writeActiveSession(storage, bootstrap.session.id)
+    const bootstrap = await createCanvasProject(context, body.title)
     return json(response, bootstrap)
   }
 
   if (request.method === "GET" && url.pathname === "/api/sessions") {
-    return json(response, await runtime.listSessions())
+    return json(response, await context.runtime.listSessions())
   }
 
   if (request.method === "GET" && url.pathname === "/api/active-session") {
-    return json(response, { sessionId: await readActiveSession(storage) })
+    return json(response, { sessionId: await readActiveSession(context) })
   }
 
   if (request.method === "PUT" && url.pathname === "/api/active-session") {
     const body = (await readBody(request)) as { sessionId?: string }
     const sessionId = body.sessionId?.trim()
-    if (!(sessionId && (await runtime.getSession(sessionId)))) {
+    if (!(sessionId && (await context.runtime.getSession(sessionId)))) {
       throw new Error(`OpenPanels session not found: ${sessionId}`)
     }
-    await writeActiveSession(storage, sessionId)
+    await writeActiveSession(context, sessionId)
     return json(response, { sessionId })
   }
 
@@ -100,7 +102,7 @@ async function routeRequest(
     const sessionId = decodeURIComponent(sessionMatch[1])
     if (request.method === "PATCH") {
       const body = (await readBody(request)) as { title?: string }
-      const updated = await renameSession(storage, sessionId, body.title)
+      const updated = await renameSession(context, sessionId, body.title)
       return json(response, { session: updated })
     }
   }
@@ -108,7 +110,7 @@ async function routeRequest(
   if (request.method === "POST" && url.pathname === "/api/sessions") {
     return json(
       response,
-      await runtime.createSession(
+      await context.runtime.createSession(
         (await readBody(request)) as CreateSessionInput
       )
     )
@@ -117,14 +119,16 @@ async function routeRequest(
   if (request.method === "POST" && url.pathname === "/api/panels") {
     return json(
       response,
-      await runtime.openPanel((await readBody(request)) as OpenPanelInput)
+      await context.runtime.openPanel(
+        (await readBody(request)) as OpenPanelInput
+      )
     )
   }
 
   if (request.method === "POST" && url.pathname === "/api/artifacts") {
     return json(
       response,
-      await runtime.insertArtifact(
+      await context.runtime.insertArtifact(
         (await readBody(request)) as InsertArtifactInput
       )
     )
@@ -140,7 +144,12 @@ async function routeRequest(
 
     if (request.method === "PUT" && tail === "state") {
       const body = await readBody(request)
-      await runtime.savePanelState(sessionId, panelId, body)
+      await savePanelState({
+        projectDir: context.paths.projectDir,
+        sessionId,
+        panelId,
+        state: body,
+      })
       return json(response, { saved: true, sessionId, panelId })
     }
 
@@ -149,33 +158,14 @@ async function routeRequest(
         imageDataUrl?: string | null
         selection?: Record<string, unknown>
       }
-      let assetRef =
-        (body.selection?.assetRef as string | null | undefined) ?? null
-      if (body.imageDataUrl) {
-        const image = dataUrlToBuffer(body.imageDataUrl)
-        const written = await storage.writeAssetFromBuffer({
-          sessionId,
-          panelId,
-          buffer: image.buffer,
-          requestedName: "__selection/current.png",
-          overwrite: true,
-        })
-        assetRef = written.assetRef
-      }
-      const selection = {
+      const saved = await saveSelectionState({
+        projectDir: context.paths.projectDir,
         sessionId,
         panelId,
-        selectedShapeIds: Array.isArray(body.selection?.selectedShapeIds)
-          ? (body.selection?.selectedShapeIds as string[])
-          : [],
-        selectedShapes: Array.isArray(body.selection?.selectedShapes)
-          ? (body.selection?.selectedShapes as unknown[])
-          : [],
-        assetRef,
-        updatedAt: new Date().toISOString(),
-      }
-      await storage.writePanelSelection(selection)
-      return json(response, { saved: true, selection })
+        selection: body.selection,
+        imageDataUrl: body.imageDataUrl,
+      })
+      return json(response, saved)
     }
 
     if (request.method === "POST" && tail === "assets") {
@@ -185,7 +175,7 @@ async function routeRequest(
         mimeType?: string
       }
       const image = dataUrlToBuffer(body.dataUrl)
-      const written = await storage.writeAssetFromBuffer({
+      const written = await context.storage.writeAssetFromBuffer({
         sessionId,
         panelId,
         buffer: image.buffer,
@@ -212,7 +202,7 @@ async function routeRequest(
         "assets",
         ...assetName.split("/"),
       ].join("/")
-      const file = await storage.readAsset(assetRef)
+      const file = await context.storage.readAsset(assetRef)
       response.statusCode = 200
       response.setHeader("content-type", contentType(assetName))
       response.end(file)
@@ -221,8 +211,7 @@ async function routeRequest(
   }
 
   if (staticDir && request.method === "GET") {
-    const path = url.pathname === "/" ? "/index.html" : url.pathname
-    const filePath = join(staticDir, path)
+    const filePath = staticFilePath(staticDir, url.pathname)
     const file = await readFile(filePath)
     response.statusCode = 200
     response.setHeader("content-type", contentType(filePath))
@@ -235,8 +224,7 @@ async function routeRequest(
 }
 
 export function createOpenPanelsApiMiddleware(projectDir: string) {
-  const runtime = createLocalOpenPanelsRuntime(projectDir)
-  const storage = new LocalOpenPanelsStorage({ projectDir })
+  const context = createOpenPanelsLocalContext(projectDir)
   return async (
     request: IncomingMessage,
     response: ServerResponse,
@@ -244,127 +232,11 @@ export function createOpenPanelsApiMiddleware(projectDir: string) {
   ) => {
     if (!request.url?.startsWith("/api/")) return next()
     try {
-      await routeRequest(request, response, runtime, storage)
+      await routeRequest(request, response, context)
     } catch (error) {
       next(error)
     }
   }
-}
-
-async function ensureCanvasBootstrap(
-  runtime: OpenPanelsRuntime,
-  storage: LocalOpenPanelsStorage,
-  requestedSessionId?: string | null
-) {
-  const sessions = await runtime.listSessions()
-  const activeSessionId = await readActiveSession(storage)
-  const session =
-    (requestedSessionId
-      ? await runtime.getSession(requestedSessionId)
-      : null) ??
-    (activeSessionId ? await runtime.getSession(activeSessionId) : null) ??
-    sessions[0] ??
-    (await runtime.createSession({ title: "Untitled" }))
-  const bootstrap = await ensureCanvasForSession(runtime, session)
-  await writeActiveSession(storage, bootstrap.session.id)
-  return bootstrap
-}
-
-async function createCanvasProject(
-  runtime: OpenPanelsRuntime,
-  title = "Untitled"
-) {
-  const session = await runtime.createSession({
-    title: title.trim() || "Untitled",
-  })
-  return ensureCanvasForSession(runtime, session)
-}
-
-async function ensureCanvasForSession(
-  runtime: OpenPanelsRuntime,
-  session: OpenPanelsSession
-) {
-  let currentSession = session
-  let panel: OpenPanelsPanel | null = null
-  for (const panelId of currentSession.panelIds) {
-    const candidate = await runtime.getPanel(currentSession.id, panelId)
-    if (candidate?.kind === "canvas") {
-      panel = candidate
-      break
-    }
-  }
-  if (!panel) {
-    panel = await runtime.openPanel({
-      sessionId: session.id,
-      kind: "canvas",
-      title: "Design canvas",
-      initialState: emptyCanvasSnapshot(),
-    })
-    currentSession =
-      (await runtime.getSession(currentSession.id)) ?? currentSession
-  }
-  const state =
-    (await runtime.readPanelState(currentSession.id, panel.id)) ??
-    emptyCanvasSnapshot()
-  return {
-    session: currentSession,
-    panel,
-    sessions: await runtime.listSessions(),
-    state: normalizeSerializableSnapshot(state),
-  }
-}
-
-async function renameSession(
-  storage: LocalOpenPanelsStorage,
-  sessionId: string,
-  title: string | undefined
-) {
-  const session = await storage.readSession(sessionId)
-  if (!session) throw new Error(`OpenPanels session not found: ${sessionId}`)
-  const nextTitle = title?.trim()
-  if (!nextTitle) throw new Error("Project title is required")
-  const updated = {
-    ...session,
-    title: nextTitle,
-    updatedAt: new Date().toISOString(),
-  }
-  await storage.writeSession(updated)
-  return updated
-}
-
-async function readActiveSession(
-  storage: LocalOpenPanelsStorage
-): Promise<string | null> {
-  try {
-    const active = JSON.parse(
-      await readFile(activeSessionPath(storage), "utf8")
-    )
-    return typeof active?.sessionId === "string" ? active.sessionId : null
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
-    throw error
-  }
-}
-
-async function writeActiveSession(
-  storage: LocalOpenPanelsStorage,
-  sessionId: string
-): Promise<void> {
-  const filePath = activeSessionPath(storage)
-  await mkdir(resolve(filePath, ".."), { recursive: true })
-  await writeFile(
-    filePath,
-    `${JSON.stringify(
-      { sessionId, updatedAt: new Date().toISOString() },
-      null,
-      2
-    )}\n`,
-    "utf8"
-  )
-}
-
-function activeSessionPath(storage: LocalOpenPanelsStorage): string {
-  return join(storage.rootDir, "active-session.json")
 }
 
 async function readBody(request: IncomingMessage): Promise<unknown> {
@@ -395,59 +267,20 @@ function jsonReplacer(_key: string, value: unknown) {
   return value instanceof Set ? [...value] : value
 }
 
-function normalizeSerializableSnapshot(value: unknown): unknown {
-  if (
-    value &&
-    typeof value === "object" &&
-    "selectedShapeIds" in value &&
-    !Array.isArray((value as { selectedShapeIds?: unknown }).selectedShapeIds)
-  ) {
-    return {
-      ...(value as Record<string, unknown>),
-      selectedShapeIds:
-        (value as { selectedShapeIds?: unknown }).selectedShapeIds instanceof
-        Set
-          ? [...(value as { selectedShapeIds: Set<string> }).selectedShapeIds]
-          : [],
-    }
-  }
-  return value
+function staticFilePath(staticDir: string, pathname: string): string {
+  const root = resolve(staticDir)
+  const decodedPath = decodeURIComponent(pathname)
+  const relativePath =
+    decodedPath === "/" ? "index.html" : decodedPath.replace(/^\/+/, "")
+  const filePath = resolve(root, relativePath)
+  assertInside(root, filePath)
+  return filePath
 }
 
-function dataUrlToBuffer(dataUrl: string): {
-  buffer: Buffer
-  mimeType: string
-} {
-  const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/)
-  if (!match) throw new Error("Expected a data URL")
-  const mimeType = match[1] || "application/octet-stream"
-  const isBase64 = Boolean(match[2])
-  const data = match[3] || ""
-  return {
-    mimeType,
-    buffer: isBase64
-      ? Buffer.from(data, "base64")
-      : Buffer.from(decodeURIComponent(data), "utf8"),
-  }
-}
-
-function emptyCanvasSnapshot() {
-  return {
-    schema: {
-      schemaVersion: 1,
-      recordVersions: { page: 1, shape: 1, asset: 1 },
-    },
-    currentPageId: "page:main",
-    openedGroupId: null,
-    selectedShapeIds: [],
-    store: {
-      "page:main": {
-        id: "page:main",
-        typeName: "page",
-        name: "Page 1",
-        index: 1,
-      },
-    },
+function assertInside(parent: string, child: string) {
+  const rel = relative(parent, child)
+  if (rel.startsWith("..") || rel.includes(`..${sep}`)) {
+    throw new Error(`Path escapes OpenPanels static root: ${child}`)
   }
 }
 

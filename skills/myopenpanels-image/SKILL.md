@@ -7,14 +7,19 @@ Use this skill when the user wants to use, edit, generate from, or place images 
 
 Workflow:
 
-0. In Codex, if MyOpenPanels MCP tools are not already visible in the active tool
-   list, use tool discovery/search for `get_myopenpanels_selection`,
-   `read_myopenpanels_selection_asset`, or `insert_myopenpanels_image` before
-   concluding that MyOpenPanels is unavailable.
-1. If the user refers to the current canvas selection, call `get_myopenpanels_selection` with the active project directory.
-2. If the task needs visual pixels, call `read_myopenpanels_selection_asset` or call `get_myopenpanels_selection` with `includeImageBase64: true`.
-3. Use `selection.selectedShapes` for IDs, bounds, type, and image metadata. If no object is selected, `get_myopenpanels_selection` falls back to the latest image shape and returns `selection.fallback: "last-image"` when available.
-4. To place a generated or local bitmap into MyOpenPanels, prefer `insert_myopenpanels_image`.
-5. For generic image/canvas artifacts, use `write_myopenpanels_panel_asset` and `insert_myopenpanels_artifact`.
+0. Use the `openpanels-local` CLI. If `command -v openpanels-local` fails, use
+   `npx -y @openpanels/local-cli@latest` in place of `openpanels-local`.
+1. If the user refers to the current canvas selection, run
+   `openpanels-local selection --project "$PWD" --format json`.
+2. If the task needs visual pixels, run
+   `openpanels-local selection --project "$PWD" --include-image-base64 --format json`
+   or `openpanels-local read-selection-asset --project "$PWD" --output <path>
+   --format json`.
+3. Use `selection.selectedShapes` for IDs, bounds, type, and image metadata. If no object is selected, `openpanels-local selection` falls back to the latest image shape and returns `selection.fallback: "last-image"` when available.
+4. To place a generated or local bitmap into MyOpenPanels, run
+   `openpanels-local insert-image --project "$PWD" --image <path> --placement right
+   --format json`.
+5. Run `openpanels-local studio start --project "$PWD" --format json` if the user
+   needs to view the canvas.
 
-Do not infer selection from screenshots or hand-write `.myopenpanels/` files unless the MCP tools are unavailable.
+Do not infer selection from screenshots or hand-write `.myopenpanels/` files.

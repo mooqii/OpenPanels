@@ -1,5 +1,5 @@
 {
-  "name": "openpanels",
+  "name": "openpanels-monorepo",
   "version": "0.1.6",
   "private": true,
   "type": "module",
@@ -10,15 +10,8 @@
     "format": "ultracite fix",
     "lint": "ultracite check",
     "typecheck": "pnpm -r typecheck",
-    "test": "vitest run mcp/**/*.test.mjs && pnpm -r test",
-    "check:mcp": "node --check mcp/server.mjs",
+    "test": "pnpm -r test",
     "check": "pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/ext-apps": "^1.7.4",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^4.4.3",
-    "zod-to-json-schema": "^3.25.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.6",

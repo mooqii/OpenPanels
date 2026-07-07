@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -23,9 +23,7 @@ describe("@openpanels/local-server", () => {
   })
 
   afterEach(async () => {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()))
-    })
+    await closeServer(server)
     await rm(projectDir, { recursive: true, force: true })
   })
 
@@ -128,7 +126,21 @@ describe("@openpanels/local-server", () => {
     expect(current.session.id).toBe(second.session.id)
   })
 
-  it("allows cross-origin widget API requests", async () => {
+  it("assigns sequential default project names", async () => {
+    const first = await fetchJson(`${baseUrl}/api/bootstrap`)
+    const second = await fetchJson(`${baseUrl}/api/projects`, {
+      method: "POST",
+    })
+    const third = await fetchJson(`${baseUrl}/api/projects`, {
+      method: "POST",
+    })
+
+    expect(first.session.title).toBe("Project 1")
+    expect(second.session.title).toBe("Project 2")
+    expect(third.session.title).toBe("Project 3")
+  })
+
+  it("allows cross-origin studio API requests", async () => {
     const optionsResponse = await fetch(`${baseUrl}/api/bootstrap`, {
       method: "OPTIONS",
       headers: {
@@ -148,10 +160,42 @@ describe("@openpanels/local-server", () => {
       "*"
     )
   })
+
+  it("does not serve static files outside the configured static directory", async () => {
+    await closeServer(server)
+    const staticDir = join(projectDir, "static")
+    await mkdir(staticDir)
+    await writeFile(join(staticDir, "index.html"), "<h1>OpenPanels</h1>")
+    await writeFile(join(projectDir, "secret.txt"), "outside-value")
+    server = createLocalOpenPanelsServer({ projectDir, staticDir })
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve)
+    })
+    const address = server.address()
+    if (!address || typeof address === "string") {
+      throw new Error("Expected local server address")
+    }
+    baseUrl = `http://127.0.0.1:${address.port}`
+
+    const indexResponse = await fetch(`${baseUrl}/`)
+    expect(indexResponse.status).toBe(200)
+
+    const traversalResponse = await fetch(`${baseUrl}/%2e%2e%2fsecret.txt`)
+    expect(traversalResponse.status).not.toBe(200)
+    expect(await traversalResponse.text()).not.toContain("outside-value")
+  })
 })
 
 async function fetchJson(url: string, init?: RequestInit): Promise<any> {
   const response = await fetch(url, init)
   expect(response.ok).toBe(true)
   return response.json()
+}
+
+async function closeServer(
+  server: ReturnType<typeof createLocalOpenPanelsServer>
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()))
+  })
 }
