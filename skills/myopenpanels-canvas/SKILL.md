@@ -20,7 +20,7 @@ the image model:
 1. Read the current selection first. If a selected shape exists and is useful as
    the reference or anchor, keep its shape id.
 2. Insert a placeholder with
-   `openpanels-local insert-placeholder --project "$PWD" --display-width <w> --display-height <h> --anchor-shape-id <selected-shape-id> --format json`.
+   `$OPENPANELS_LOCAL_CLI insert-placeholder --project "$PWD" --display-width <w> --display-height <h> --anchor-shape-id <selected-shape-id> --format json`.
    Use the requested or intended output aspect ratio for `<w>` and `<h>`; when
    unspecified, use a practical square such as `1024 x 1024`.
 3. The placeholder placement follows the Moodbook canvas rule: use an 80 canvas
@@ -32,7 +32,7 @@ the image model:
 5. Resolve the exact local bitmap produced by this generation call. Do not use a
    stale file from a previous generation.
 6. Replace the placeholder with the generated bitmap:
-   `openpanels-local insert-image --project "$PWD" --image <generated-path> --replace-shape-id <placeholder-shape-id> --format json`.
+   `$OPENPANELS_LOCAL_CLI insert-image --project "$PWD" --image <generated-path> --replace-shape-id <placeholder-shape-id> --format json`.
    This replacement step is required; do not merely show the generated image in
    chat.
 7. Do not reload the in-app Browser after inserting or replacing canvas content.
@@ -41,27 +41,36 @@ the image model:
 
 Workflow:
 
-0. Use the `openpanels-local` CLI. If `command -v openpanels-local` fails, use
-   `npx -y @openpanels/local-cli@latest` in place of `openpanels-local`.
+0. Prefer a local/global `openpanels-local` binary, but do one lightweight
+   version check before the first CLI call in a task. Compare
+   `openpanels-local --version` with
+   `npm view @openpanels/local-cli version`; if the installed version is older,
+   run `npm install -g @openpanels/local-cli@latest`. If `openpanels-local` is missing, run
+   `npm install -g @openpanels/local-cli@latest` when possible; if global install
+   is unavailable, set `OPENPANELS_LOCAL_CLI="npx -y @openpanels/local-cli@latest"`.
+   Otherwise set `OPENPANELS_LOCAL_CLI="openpanels-local"`.
+   After this check, reuse the chosen command for the rest of the task without
+   repeating the npm version lookup. If npm/network access is unavailable and a
+   local `openpanels-local` exists, continue with the local binary.
 1. If the user asks to open or activate the canvas, run
-   `openpanels-local studio start --project "$PWD" --format json`, then open the
-   returned `serverUrl` in the agent's in-app Browser side panel. Make the
-   in-app Browser visible so the canvas appears on the agent's right side. Do
-   not use `openpanels-local studio open` unless the user explicitly asks to
-   open the canvas in their external/system browser.
-2. Use `openpanels-local studio status --project "$PWD" --format json` to inspect
-   an existing session, and `openpanels-local studio wait --project "$PWD"
+   `$OPENPANELS_LOCAL_CLI studio start --project "$PWD" --format json`, then
+   open the returned `serverUrl` in the agent's in-app Browser side panel. Make
+   the in-app Browser visible so the canvas appears on the agent's right side.
+   Do not use `$OPENPANELS_LOCAL_CLI studio open` unless the user explicitly asks
+   to open the canvas in their external/system browser.
+2. Use `$OPENPANELS_LOCAL_CLI studio status --project "$PWD" --format json` to inspect
+   an existing session, and `$OPENPANELS_LOCAL_CLI studio wait --project "$PWD"
    --timeout 10 --format json` after startup if you need to verify readiness.
 3. If the user refers to the current canvas selection, run
-   `openpanels-local selection --project "$PWD" --format json`.
+   `$OPENPANELS_LOCAL_CLI selection --project "$PWD" --format json`.
 4. If the task needs visual pixels, run
-   `openpanels-local selection --project "$PWD" --include-image-base64 --format json`
-   or `openpanels-local read-selection-asset --project "$PWD" --output <path>
+   `$OPENPANELS_LOCAL_CLI selection --project "$PWD" --include-image-base64 --format json`
+   or `$OPENPANELS_LOCAL_CLI read-selection-asset --project "$PWD" --output <path>
    --format json`.
-5. Use `selection.selectedShapes` for IDs, bounds, type, and image metadata. If no object is selected, `openpanels-local selection` falls back to the latest image shape and returns `selection.fallback: "last-image"` when available.
+5. Use `selection.selectedShapes` for IDs, bounds, type, and image metadata. If no object is selected, `$OPENPANELS_LOCAL_CLI selection` falls back to the latest image shape and returns `selection.fallback: "last-image"` when available.
 6. To place a generated or local bitmap into MyOpenPanels without a placeholder,
    run
-   `openpanels-local insert-image --project "$PWD" --image <path> --placement right
+   `$OPENPANELS_LOCAL_CLI insert-image --project "$PWD" --image <path> --placement right
    --format json`.
 
 Do not infer selection from screenshots or hand-write `.myopenpanels/` files.

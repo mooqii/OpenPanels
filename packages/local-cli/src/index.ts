@@ -19,6 +19,7 @@ import {
   resolveOpenPanelsPaths,
 } from "@openpanels/local-control"
 import { createLocalOpenPanelsServer } from "@openpanels/local-server"
+import packageJson from "../package.json"
 
 interface CliIo {
   stderr: NodeJS.WritableStream
@@ -41,6 +42,7 @@ interface StudioSession {
 }
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000
+const CLI_VERSION = packageJson.version
 
 export async function runOpenPanelsCli(
   argv = process.argv.slice(2),
@@ -49,6 +51,11 @@ export async function runOpenPanelsCli(
   try {
     const parsed = parseArgs(argv)
     const [command, subcommand] = parsed.positionals
+
+    if (parsed.flags.version || command === "version") {
+      writeResult(io, parsed, { version: CLI_VERSION }, CLI_VERSION)
+      return 0
+    }
 
     if (!command || command === "help" || parsed.flags.help) {
       writeText(io.stdout, helpText())
@@ -616,6 +623,7 @@ Commands:
 Options:
   --project <dir>           Project directory (default: cwd or OPENPANELS_PROJECT_DIR)
   --format json             Emit stable JSON output
+  --version                 Print the CLI version
 `
 }
 

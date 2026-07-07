@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Writable } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import packageJson from "../package.json"
 import { runOpenPanelsCli } from "./index"
 
 const TINY_PNG = Buffer.from(
@@ -19,6 +20,13 @@ describe("openpanels-local CLI", () => {
 
   afterEach(async () => {
     await rm(projectDir, { recursive: true, force: true })
+  })
+
+  it("reports the CLI version", async () => {
+    const output = await runCli(["--version"])
+
+    expect(output.exitCode).toBe(0)
+    expect(output.stdout).toBe(`${packageJson.version}\n`)
   })
 
   it("reports missing studio status as JSON", async () => {
