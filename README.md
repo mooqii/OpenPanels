@@ -59,10 +59,9 @@ MyOpenPanels is distributed as portable skill instructions plus the
 `openpanels-local` CLI. There is no plugin manifest or agent-specific runtime
 registration required.
 
-- `skills/myopenpanels-open/SKILL.md` teaches agents how to start and open the
-  local studio.
-- `skills/myopenpanels-image/SKILL.md` teaches agents how to read the current
-  canvas selection and insert generated images.
+- `skills/myopenpanels-canvas/SKILL.md` teaches agents how to use the infinite
+  canvas as visual context for image generation, start/open the local studio,
+  read selections, and insert generated images.
 
 ## v0.1 Scope
 

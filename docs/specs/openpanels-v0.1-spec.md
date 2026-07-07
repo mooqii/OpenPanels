@@ -75,8 +75,7 @@ OpenPanels/
     files/
 
   skills/
-    openpanels-open/
-    openpanels-image/
+    openpanels-canvas/
 
   .codex-plugin/
     plugin.json
@@ -508,8 +507,7 @@ The studio session must know:
 Create at least:
 
 ```txt
-skills/openpanels-open/SKILL.md
-skills/openpanels-image/SKILL.md
+skills/openpanels-canvas/SKILL.md
 ```
 
 The skills must instruct agents to use CLI commands rather than manually editing
