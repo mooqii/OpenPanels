@@ -51,6 +51,23 @@ export function createDefaultPanelRegistry(): OpenPanelsPanelRegistry {
   const registry = new OpenPanelsPanelRegistry()
 
   registry.register({
+    kind: "wiki",
+    title: "文档库",
+    canHandleArtifact: () => false,
+    createInitialState: () => ({
+      schemaVersion: 2,
+      rawDocuments: [],
+      ruleSets: [],
+      wikiSpaces: [],
+      activeRawDocumentId: null,
+      activeWikiSpaceId: null,
+      activeWikiPagePath: null,
+      agentProcesses: [],
+      tasks: [],
+    }),
+  })
+
+  registry.register({
     kind: "image",
     title: "Images",
     canHandleArtifact: (artifact) => artifact.kind === "image",
@@ -93,6 +110,8 @@ function isImagePanelState(
 
 export function defaultTitleForPanel(kind: OpenPanelsPanelKind): string {
   switch (kind) {
+    case "wiki":
+      return "文档库"
     case "canvas":
       return "Canvas"
     case "image":

@@ -7,12 +7,17 @@ const CLI_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const ROOT_DIR = resolve(CLI_DIR, "../..")
 const STUDIO_DIST = join(ROOT_DIR, "apps", "local-studio", "dist")
 const TARGET_DIR = join(CLI_DIR, "dist", "studio")
+const GUIDES_DIR = join(ROOT_DIR, "agent-guides")
+const GUIDES_TARGET_DIR = join(CLI_DIR, "dist", "agent-guides")
 const BIN_PATH = join(CLI_DIR, "dist", "openpanels-local.mjs")
 
 await ensureStudioDist()
 await rm(TARGET_DIR, { force: true, recursive: true })
 await mkdir(TARGET_DIR, { recursive: true })
 await cp(STUDIO_DIST, TARGET_DIR, { recursive: true })
+await rm(GUIDES_TARGET_DIR, { force: true, recursive: true })
+await mkdir(GUIDES_TARGET_DIR, { recursive: true })
+await cp(GUIDES_DIR, GUIDES_TARGET_DIR, { recursive: true })
 await chmod(BIN_PATH, 0o755)
 
 async function ensureStudioDist() {

@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 export const panelKindSchema = z.enum([
+  "wiki",
   "canvas",
   "image",
   "diff",

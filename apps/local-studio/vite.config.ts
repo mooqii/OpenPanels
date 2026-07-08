@@ -9,7 +9,7 @@ export default defineConfig({
     cors: true,
     headers: {
       "Access-Control-Allow-Headers": "content-type",
-      "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,OPTIONS",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
       "Access-Control-Allow-Origin": "*",
     },
   },

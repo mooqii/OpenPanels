@@ -10,11 +10,11 @@
   top: 22px;
   left: calc(
     var(--main-layout-sidebar-offset, var(--home-main-offset, 0px)) +
-    0.75rem
+    1rem
   );
   z-index: 40;
   display: inline-flex;
-  gap: 12px;
+  gap: 8px;
   align-items: center;
   height: 24px;
   font-size: 14px;

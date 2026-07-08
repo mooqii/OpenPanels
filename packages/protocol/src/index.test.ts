@@ -30,4 +30,13 @@ describe("@openpanels/protocol", () => {
       }).kind
     ).toBe("canvas")
   })
+
+  it("accepts wiki panels", () => {
+    expect(
+      openPanelInputSchema.parse({
+        sessionId: "session:1",
+        kind: "wiki",
+      }).kind
+    ).toBe("wiki")
+  })
 })

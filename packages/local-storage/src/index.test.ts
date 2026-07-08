@@ -51,6 +51,25 @@ describe("@openpanels/local-storage", () => {
     }
   })
 
+  it("allows .myopenpanels roots outside the project directory", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "openpanels-project-"))
+    const storageParent = await mkdtemp(join(tmpdir(), "openpanels-global-"))
+    try {
+      const storageDir = join(storageParent, ".myopenpanels")
+      const storage = new LocalOpenPanelsStorage({ projectDir, storageDir })
+      const runtime = new OpenPanelsRuntime({ storage })
+      const session = await runtime.createSession({ title: "Shared" })
+
+      expect(await storage.readSession(session.id)).toMatchObject({
+        title: "Shared",
+      })
+      await expect(access(storageDir)).resolves.toBe(undefined)
+    } finally {
+      await rm(projectDir, { recursive: true, force: true })
+      await rm(storageParent, { recursive: true, force: true })
+    }
+  })
+
   it("persists panel selection and fixed selection assets", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "openpanels-"))
     try {

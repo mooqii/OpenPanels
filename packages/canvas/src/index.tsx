@@ -22,6 +22,7 @@ import type { StoreSnapshot } from "./types/records"
 
 export type { CanvasSelectionSnapshot } from "./Canvas"
 export { Canvas } from "./Canvas"
+export { CanvasMenu } from "./components/CanvasMenu"
 export { Editor } from "./editor"
 export {
   DEFAULT_OPENPANELS_LOCALE,
@@ -56,6 +57,7 @@ export interface CanvasPanelProps {
   snapshot?: StoreSnapshot
   snapshotVersion?: number
   title?: string
+  titleChromeContent?: ReactNode
   titleContent?: ReactNode
   width?: number | string
 }
@@ -76,6 +78,7 @@ export function CanvasPanel({
   snapshot,
   snapshotVersion,
   title,
+  titleChromeContent,
   titleContent,
   width = "100%",
   onSnapshotChange,
@@ -179,11 +182,15 @@ export function CanvasPanel({
     >
       <EditorProvider editor={editor} toolbarConfig={DEFAULT_TOOLBAR_CONFIG}>
         <div className="op-canvas-title">
-          <CanvasMenu />
-          {typeof displayTitle === "string" ? (
-            <span>{displayTitle}</span>
-          ) : (
-            displayTitle
+          {titleChromeContent ?? (
+            <>
+              <CanvasMenu />
+              {typeof displayTitle === "string" ? (
+                <span>{displayTitle}</span>
+              ) : (
+                displayTitle
+              )}
+            </>
           )}
         </div>
         <Canvas

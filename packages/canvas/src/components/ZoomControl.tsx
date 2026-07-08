@@ -89,7 +89,7 @@ export function ZoomControl() {
 
   return (
     <div
-      className="fixed bottom-2 flex items-center gap-1 rounded-full bg-canvas-toolbar p-1.5 px-2 py-1 shadow backdrop-blur-lg"
+      className="fixed bottom-2 flex items-center gap-0.5 rounded-full bg-canvas-toolbar px-1 py-0.5 shadow backdrop-blur-lg"
       style={{
         left: "calc(var(--main-layout-sidebar-offset, var(--home-main-offset, 0px)) + 0.5rem)",
       }}
@@ -105,8 +105,12 @@ export function ZoomControl() {
       </Button>
 
       <Dropdown>
-        <Button className="min-w-12 cursor-pointer" variant="ghost">
-          <span className="min-w-12">{zoomPercentage}%</span>
+        <Button
+          className="w-14 min-w-14 cursor-pointer px-2"
+          size="sm"
+          variant="ghost"
+        >
+          <span className="min-w-10">{zoomPercentage}%</span>
         </Button>
         <Dropdown.Popover>
           <Dropdown.Menu onAction={handleMenuAction}>

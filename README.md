@@ -9,18 +9,21 @@ CLI.
 
 MyOpenPanels is distributed from the
 [`mooqii/OpenPanels`](https://github.com/mooqii/OpenPanels) repository as a
-portable skill instruction file:
-`skills/myopenpanels-canvas/SKILL.md`.
+portable entry skill:
+`skills/myopenpanels/SKILL.md`.
 
 Paste this into your agent to install the skill:
 
 ```text
 Please install the MyOpenPanels skill from GitHub repo `mooqii/OpenPanels`,
-using the skill at `skills/myopenpanels-canvas`.
+using the skill at `skills/myopenpanels`.
 ```
 
-The skill description controls when the agent should use it, and the skill file
-contains the environment setup and CLI workflow the agent needs.
+The entry skill keeps itself small and stable. It uses the latest
+`@openpanels/local-cli` package, then asks the CLI for `agent context`, which is
+the source of truth for wiki, canvas, and future panel workflows. The compact
+context includes state and the full command capability set; longer workflow
+guides live in top-level `agent-guides/` markdown files and load on demand.
 
 ## Development
 
@@ -49,8 +52,10 @@ npx -y @openpanels/local-cli@latest studio start --project /path/to/project --fo
 ## Use with Shell Agents
 
 MyOpenPanels works in any local agent that can run shell commands. Start the
-studio and open the returned `serverUrl` in the agent's in-app Browser side
-panel:
+studio and open the returned `browserUrl` in the agent's in-app Browser side
+panel. `serverUrl` remains the localhost URL for direct use on the same
+computer; `browserUrl` may use a LAN address so a browser on another device can
+reach the same agent host:
 
 ```bash
 openpanels-local studio start --project /path/to/project --format json
@@ -62,6 +67,12 @@ browser instead of the agent side panel.
 Agents can then use project-backed CLI commands:
 
 ```bash
+openpanels-local agent context --project /path/to/project
+openpanels-local agent guides --project /path/to/project
+openpanels-local agent guide canvas.image-generation --project /path/to/project
+openpanels-local panels --project /path/to/project --format json
+openpanels-local active-panel --project /path/to/project --kind wiki --format json
+openpanels-local panel-state --project /path/to/project --kind wiki --format json
 openpanels-local canvas-state --project /path/to/project --format json
 openpanels-local selection --project /path/to/project --format json
 openpanels-local selection --project /path/to/project --include-image-base64 --format json
@@ -73,6 +84,6 @@ openpanels-local insert-image --project /path/to/project --image /tmp/result.png
 
 - Local workflow for generic shell agents
 - Panel protocol, runtime, React host, SDK, local storage, and local server packages
-- Canvas-first design workspace prepared for the Moodbook canvas migration
+- Multi-panel project workspace with wiki and canvas panels
 - Image artifacts and editable canvas image shapes
 - Project-local `.myopenpanels/` persistence

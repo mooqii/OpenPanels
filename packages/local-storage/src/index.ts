@@ -49,7 +49,7 @@ export class LocalOpenPanelsStorage implements OpenPanelsStorage {
     this.rootDir = resolve(
       options.storageDir ?? join(this.projectDir, ".myopenpanels")
     )
-    assertSafeRoot(this.projectDir, this.rootDir)
+    assertSafeRoot(this.rootDir)
   }
 
   async listSessions(): Promise<OpenPanelsSession[]> {
@@ -343,11 +343,10 @@ function sanitizeAssetPath(value: string): string {
     .join("/")
 }
 
-function assertSafeRoot(projectDir: string, rootDir: string): void {
+function assertSafeRoot(rootDir: string): void {
   if (basename(rootDir) !== ".myopenpanels") {
     throw new Error("OpenPanels local storage root must be named .myopenpanels")
   }
-  assertInside(projectDir, rootDir)
 }
 
 function assertInside(parent: string, child: string): void {

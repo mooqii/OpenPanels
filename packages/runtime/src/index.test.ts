@@ -16,6 +16,24 @@ describe("@openpanels/runtime", () => {
     expect((await runtime.getSession(session.id))?.panelIds).toContain(panel.id)
   })
 
+  it("creates wiki panels with default registry state", async () => {
+    const runtime = new OpenPanelsRuntime({
+      storage: new InMemoryOpenPanelsStorage(),
+    })
+    const session = await runtime.createSession({ title: "Demo" })
+    const panel = await runtime.openPanel({
+      sessionId: session.id,
+      kind: "wiki",
+    })
+
+    expect(panel.kind).toBe("wiki")
+    expect(await runtime.readPanelState(session.id, panel.id)).toMatchObject({
+      schemaVersion: 2,
+      rawDocuments: [],
+      activeWikiSpaceId: null,
+    })
+  })
+
   it("inserts image artifacts and creates a panel when missing", async () => {
     const runtime = new OpenPanelsRuntime({
       storage: new InMemoryOpenPanelsStorage(),
