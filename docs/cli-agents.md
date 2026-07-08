@@ -7,22 +7,28 @@ canvas selection and image insertion.
 
 ## Install
 
-Install the CLI globally:
+Install the Rust-native `openpanels-local` CLI from GitHub Releases, then verify
+it:
 
 ```bash
-npm install -g @openpanels/local-cli
+openpanels-local --version
 ```
 
-Or use npx without a global install:
+Check for and install release updates:
 
 ```bash
-npx -y @openpanels/local-cli@latest studio start --project /absolute/path/to/project --format json
+openpanels-local update check
+openpanels-local update
 ```
 
-The recommended agent skill uses `npx -y @openpanels/local-cli@latest` as the
-stable entry point. Panel-specific instructions are returned by the CLI through
-`agent context`, so users do not need to keep separate canvas/wiki skills
-manually updated.
+The recommended agent skill uses the installed `openpanels-local` binary as the
+stable entry point. The CLI may check GitHub Releases for updates at most once
+every 24 hours on normal text-mode commands, and `openpanels-local update`
+performs an explicit self-update. Agents should not install updates or restart
+the studio unless the user asks them to; the studio UI can surface an update
+button for user-confirmed install and restart. Panel-specific instructions are
+returned by the CLI through `agent context`, so users do not need to keep
+separate canvas/wiki skills manually updated.
 
 The compact context renderer lives in `packages/local-cli/src/agent-context.ts`,
 the command capability manifest lives in

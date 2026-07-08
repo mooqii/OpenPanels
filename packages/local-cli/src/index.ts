@@ -833,6 +833,11 @@ async function serveStudio(parsed: ParsedArgs) {
   }
 
   const server = createLocalOpenPanelsServer({
+    buildInfo: {
+      channel: "release",
+      label: `v${CLI_VERSION}`,
+      version: CLI_VERSION,
+    },
     projectDir,
     staticDir,
     storageDir,

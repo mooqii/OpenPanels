@@ -246,10 +246,14 @@ export function Canvas({
         const summarizedShapes = selectedShapes.map((shape) =>
           summarizeSelectionShape(editor, shape)
         )
-        const imageDataUrl =
-          selectedShapes.length > 0
-            ? captureTransformer(transform.transformerRef.current)
-            : null
+        let imageDataUrl: string | null = null
+        if (selectedShapes.length > 0) {
+          try {
+            imageDataUrl = captureTransformer(transform.transformerRef.current)
+          } catch (error) {
+            console.warn("Failed to capture canvas selection preview", error)
+          }
+        }
         onSelectionChange({
           assetRef:
             summarizedShapes.find((shape) => shape.asset?.assetRef)?.asset

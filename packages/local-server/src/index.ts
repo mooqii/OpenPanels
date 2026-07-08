@@ -54,10 +54,40 @@ import type {
 } from "@openpanels/protocol"
 
 export interface CreateLocalServerOptions {
+  buildInfo?: OpenPanelsServerBuildInfo
   contextId?: string
   projectDir: string
   staticDir?: string
   storageDir?: string
+  updateController?: OpenPanelsUpdateController
+}
+
+export interface OpenPanelsServerBuildInfo {
+  buildTime?: string
+  channel: "development" | "release"
+  label: string
+  version: string
+}
+
+export interface OpenPanelsUpdateStatus {
+  assetAvailable?: boolean
+  cached?: boolean
+  checkedAtUnix?: number
+  currentVersion: string
+  downloaded?: boolean
+  latestVersion?: string | null
+  readyToInstall?: boolean
+  target?: string
+  updateAvailable: boolean
+}
+
+export interface OpenPanelsUpdateController {
+  check: () => Promise<OpenPanelsUpdateStatus>
+  download?: () => Promise<OpenPanelsUpdateStatus>
+  installAndRestart?: () => Promise<{
+    ok: true
+    restarting: true
+  }>
 }
 
 export function createLocalOpenPanelsRuntime(
@@ -72,7 +102,14 @@ export function createLocalOpenPanelsServer(options: CreateLocalServerOptions) {
 
   return createServer(async (request, response) => {
     try {
-      await routeRequest(request, response, context, options.staticDir)
+      await routeRequest(
+        request,
+        response,
+        context,
+        options.staticDir,
+        options.buildInfo,
+        options.updateController
+      )
     } catch (error) {
       response.statusCode = 500
       response.setHeader("content-type", "application/json")
@@ -89,7 +126,9 @@ async function routeRequest(
   request: IncomingMessage,
   response: ServerResponse,
   context: ReturnType<typeof createOpenPanelsLocalContext>,
-  staticDir?: string
+  staticDir?: string,
+  buildInfo?: OpenPanelsServerBuildInfo,
+  updateController?: OpenPanelsUpdateController
 ) {
   const url = new URL(request.url ?? "/", "http://localhost")
   setCorsHeaders(response)
@@ -109,13 +148,17 @@ async function routeRequest(
       panelKind: panelKindParam(url.searchParams.get("panelKind")),
       panelId: url.searchParams.get("panelId"),
     })
-    return json(response, bootstrap)
+    return json(response, withBuildInfo(bootstrap, buildInfo))
   }
 
   if (request.method === "POST" && url.pathname === "/api/projects") {
     const body = (await readBody(request)) as { title?: string }
     const bootstrap = await createCanvasProject(context, body.title)
-    return json(response, bootstrap)
+    return json(response, withBuildInfo(bootstrap, buildInfo))
+  }
+
+  if (url.pathname.startsWith("/api/update")) {
+    return routeUpdateRequest(request, response, url, updateController)
   }
 
   if (request.method === "GET" && url.pathname === "/api/sessions") {
@@ -649,9 +692,48 @@ async function routeWikiRequest(
   response.end("Not found")
 }
 
+async function routeUpdateRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  updateController?: OpenPanelsUpdateController
+) {
+  if (!updateController) {
+    response.statusCode = 404
+    response.end("Not found")
+    return
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/update/status") {
+    return json(response, await updateController.check())
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/update/download") {
+    if (!updateController.download) {
+      throw new Error("Update download is not available.")
+    }
+    return json(response, await updateController.download())
+  }
+
+  if (
+    request.method === "POST" &&
+    url.pathname === "/api/update/install-restart"
+  ) {
+    if (!updateController.installAndRestart) {
+      throw new Error("Update install and restart is not available.")
+    }
+    return json(response, await updateController.installAndRestart())
+  }
+
+  response.statusCode = 404
+  response.end("Not found")
+}
+
 export function createOpenPanelsApiMiddleware(
   projectDir: string,
-  options: OpenPanelsLocalContextOptions = {}
+  options: OpenPanelsLocalContextOptions & {
+    buildInfo?: OpenPanelsServerBuildInfo
+  } = {}
 ) {
   const context = createOpenPanelsLocalContext(projectDir, options)
   return async (
@@ -661,7 +743,14 @@ export function createOpenPanelsApiMiddleware(
   ) => {
     if (!request.url?.startsWith("/api/")) return next()
     try {
-      await routeRequest(request, response, context)
+      await routeRequest(
+        request,
+        response,
+        context,
+        undefined,
+        options.buildInfo,
+        undefined
+      )
     } catch (error) {
       next(error)
     }
@@ -683,6 +772,13 @@ function json(response: ServerResponse, data: unknown): void {
   response.statusCode = 200
   response.setHeader("content-type", "application/json")
   response.end(JSON.stringify(data, jsonReplacer))
+}
+
+function withBuildInfo<T extends object>(
+  data: T,
+  buildInfo?: OpenPanelsServerBuildInfo
+): T & { buildInfo?: OpenPanelsServerBuildInfo } {
+  return buildInfo ? { ...data, buildInfo } : data
 }
 
 function contentDispositionInline(fileName: string): string {

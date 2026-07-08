@@ -3,6 +3,9 @@ import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 import { createOpenPanelsApiMiddleware } from "../../packages/local-server/src/index"
+import packageJson from "./package.json"
+
+const DEV_BUILD_TIME = new Date().toISOString()
 
 export default defineConfig({
   server: {
@@ -20,7 +23,15 @@ export default defineConfig({
         server.middlewares.use(
           createOpenPanelsApiMiddleware(
             process.env.OPENPANELS_PROJECT_DIR ??
-              path.resolve(import.meta.dirname, "../..")
+              path.resolve(import.meta.dirname, "../.."),
+            {
+              buildInfo: {
+                buildTime: DEV_BUILD_TIME,
+                channel: "development",
+                label: "dev",
+                version: packageJson.version,
+              },
+            }
           )
         )
       },

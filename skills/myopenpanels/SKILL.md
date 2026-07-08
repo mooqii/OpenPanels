@@ -1,29 +1,53 @@
 ---
 name: myopenpanels
-description: "Use MyOpenPanels through the latest local CLI: install or run @openpanels/local-cli@latest, start the studio, fetch current agent context, and follow CLI-provided capabilities and on-demand guides for wiki, canvas, and future panels."
+description: "Use MyOpenPanels when the user wants a local wiki for preparing, organizing, and refining project documents, or an infinite canvas for drawing, visual planning, image work, and richer agent-user collaboration around diagrams and visual artifacts."
 ---
 
-Use this skill when the user wants to use MyOpenPanels, open the studio, work
-with a MyOpenPanels project, or interact with any MyOpenPanels panel such as
-wiki or canvas.
+Use this skill when the user wants to use MyOpenPanels, prepare or organize
+documents in a local wiki, open an infinite canvas, draw diagrams, work with
+visual artifacts, or collaborate with an agent through wiki or canvas panels.
 
-The skill itself is only a stable entry point. The latest MyOpenPanels CLI is
-the source of truth for available panels, commands, and panel-specific
+The skill itself is only a stable entry point. The installed `openpanels-local`
+CLI is the source of truth for available panels, commands, and panel-specific
 workflows.
 
 Workflow:
 
-1. Prefer the latest CLI for every task:
+1. Use the local CLI:
 
    ```bash
-   OPENPANELS_LOCAL_CLI="npx -y @openpanels/local-cli@latest"
+   if [ -x "$PWD/scripts/openpanels-local-dev" ]; then
+     OPENPANELS_LOCAL_CLI="${OPENPANELS_LOCAL_CLI:-$PWD/scripts/openpanels-local-dev}"
+   else
+     OPENPANELS_LOCAL_CLI="${OPENPANELS_LOCAL_CLI:-openpanels-local}"
+   fi
+   $OPENPANELS_LOCAL_CLI --version
    ```
 
-   If a local/global `openpanels-local` binary is required by the environment,
-   use it only after checking it is current. Otherwise use the `npx` command
-   above so panel instructions follow the latest published CLI.
+   In this repository, prefer `scripts/openpanels-local-dev` automatically so
+   agents test the current checkout even when an older installed
+   `openpanels-local` is on PATH.
 
-2. Start or reuse the local studio:
+   If `openpanels-local` is missing, ask the user to install the CLI for their
+   platform before continuing. Do not fall back to the legacy npm wrapper unless
+   the user explicitly asks for it.
+
+2. Let the CLI manage update freshness:
+
+   ```bash
+   $OPENPANELS_LOCAL_CLI update check
+   $OPENPANELS_LOCAL_CLI update
+   ```
+
+   The CLI may also perform an opportunistic update check at most once every
+   24 hours on normal text-mode commands. Do not build your own polling loop.
+   If `update check` reports an available update, do not install and restart
+   unless the user explicitly asks you to. The studio may show an update button
+   so the user can install and restart from the UI. If the binary is managed by
+   a package manager and self-update is refused, follow the CLI's message or ask
+   the user to update that package-manager install.
+
+3. Start or reuse the local studio:
 
    ```bash
    $OPENPANELS_LOCAL_CLI studio start --project "$PWD" --format json
@@ -33,13 +57,13 @@ Workflow:
    available. Use the system browser only when no in-app Browser is available or
    the user explicitly asks for it.
 
-3. Before interacting with any panel, fetch the current CLI-provided context:
+4. Before interacting with any panel, fetch the current CLI-provided context:
 
    ```bash
    $OPENPANELS_LOCAL_CLI agent context --project "$PWD"
    ```
 
-4. Follow the returned state summary and capability commands. For complex
+5. Follow the returned state summary and capability commands. For complex
    workflows, list and load the relevant guide:
 
    ```bash

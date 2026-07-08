@@ -23,4 +23,3 @@ impl CliError {
         &self.message
     }
 }
-

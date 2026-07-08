@@ -75,6 +75,7 @@ type OpenPanelsHostWindow = Window &
 interface BootstrapResponse {
   activePanelId: string
   activePanelKind: OpenPanelsPanelKind
+  buildInfo?: OpenPanelsBuildInfo
   panel: OpenPanelsPanel
   panels: PanelStateSnapshot[]
   session: OpenPanelsSession
@@ -83,6 +84,22 @@ interface BootstrapResponse {
 }
 
 interface AppState extends BootstrapResponse {}
+
+interface OpenPanelsBuildInfo {
+  buildTime?: string
+  channel: "development" | "release"
+  label: string
+  version: string
+}
+
+interface OpenPanelsUpdateStatus {
+  assetAvailable?: boolean
+  currentVersion: string
+  downloaded?: boolean
+  latestVersion?: string | null
+  readyToInstall?: boolean
+  updateAvailable: boolean
+}
 
 interface PanelStateSnapshot {
   panel: OpenPanelsPanel
@@ -176,7 +193,14 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
   )
   const [sessions, setSessions] = useState<OpenPanelsSession[]>([])
   const [snapshotLoadVersion, setSnapshotLoadVersion] = useState(0)
+  const [updateStatus, setUpdateStatus] =
+    useState<OpenPanelsUpdateStatus | null>(null)
+  const [updateAction, setUpdateAction] = useState<
+    "checking" | "downloading" | "installing" | null
+  >(null)
+  const [updateError, setUpdateError] = useState<string | null>(null)
   const isLocalSnapshotDirtyRef = useRef(false)
+  const autoDownloadVersionRef = useRef<string | null>(null)
   const lastPersistedSnapshotJsonRef = useRef<string | null>(null)
   const lastPersistedBootstrapJsonRef = useRef<string | null>(null)
 
@@ -254,6 +278,67 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
     }, 1500)
     return () => window.clearInterval(timer)
   }, [appState, loadProject, transport])
+
+  const refreshUpdateStatus = useCallback(async () => {
+    setUpdateAction("checking")
+    setUpdateError(null)
+    try {
+      const status = await fetchUpdateStatus(transport)
+      setUpdateStatus(status)
+    } catch (error) {
+      if (!isNotFoundError(error)) {
+        console.error("Failed to check OpenPanels update status", error)
+        setUpdateError(String(error instanceof Error ? error.message : error))
+      }
+    } finally {
+      setUpdateAction(null)
+    }
+  }, [transport])
+
+  useEffect(() => {
+    refreshUpdateStatus()
+  }, [refreshUpdateStatus])
+
+  const downloadUpdate = useCallback(async () => {
+    setUpdateAction("downloading")
+    setUpdateError(null)
+    try {
+      setUpdateStatus(await requestUpdateDownload(transport))
+    } catch (error) {
+      console.error("Failed to download OpenPanels update", error)
+      setUpdateError(String(error instanceof Error ? error.message : error))
+    } finally {
+      setUpdateAction(null)
+    }
+  }, [transport])
+
+  useEffect(() => {
+    if (
+      !updateStatus?.updateAvailable ||
+      updateStatus.downloaded ||
+      updateStatus.readyToInstall ||
+      updateAction
+    ) {
+      return
+    }
+    const version = updateStatus.latestVersion ?? "unknown"
+    if (autoDownloadVersionRef.current === version) return
+    autoDownloadVersionRef.current = version
+    downloadUpdate()
+  }, [downloadUpdate, updateAction, updateStatus])
+
+  const installUpdate = useCallback(async () => {
+    setUpdateAction("installing")
+    setUpdateError(null)
+    try {
+      await requestUpdateInstallRestart(transport)
+      window.setTimeout(() => window.location.reload(), 1400)
+    } catch (error) {
+      console.error("Failed to install OpenPanels update", error)
+      setUpdateError(String(error instanceof Error ? error.message : error))
+      setUpdateAction(null)
+    }
+  }, [transport])
 
   const canvasPanel = useMemo(
     () =>
@@ -499,8 +584,132 @@ function App({ transport }: { transport: OpenPanelsTransport }) {
         onSwitchPanel={switchPanel}
         panels={appState.panels.map(({ panel }) => panel)}
       />
+      {appState.buildInfo ? (
+        <BuildVersionBadge info={appState.buildInfo} />
+      ) : null}
+      <UpdatePrompt
+        action={updateAction}
+        error={updateError}
+        onDownload={downloadUpdate}
+        onInstall={installUpdate}
+        onRefresh={refreshUpdateStatus}
+        status={updateStatus}
+      />
     </main>
   )
+}
+
+function UpdatePrompt({
+  action,
+  error,
+  onDownload,
+  onInstall,
+  onRefresh,
+  status,
+}: {
+  action: "checking" | "downloading" | "installing" | null
+  error: string | null
+  onDownload: () => void
+  onInstall: () => void
+  onRefresh: () => void
+  status: OpenPanelsUpdateStatus | null
+}) {
+  const visible = Boolean(status?.updateAvailable || error)
+  if (!visible) return null
+
+  const latest = status?.latestVersion ?? "new"
+  const downloaded = Boolean(status?.downloaded || status?.readyToInstall)
+  const busy = action !== null
+  const primaryLabel =
+    action === "downloading"
+      ? "Downloading"
+      : action === "installing"
+        ? "Installing"
+        : downloaded
+          ? "Install and restart"
+          : "Download"
+
+  return (
+    <div className="op-update-prompt">
+      <div className="op-update-prompt__copy">
+        <strong>{error ? "Update check failed" : `Version ${latest}`}</strong>
+        <span>
+          {error ?? (downloaded ? "Ready to install" : "Update available")}
+        </span>
+      </div>
+      <div className="op-update-prompt__actions">
+        <button
+          aria-label="Refresh update status"
+          disabled={busy}
+          onClick={onRefresh}
+          type="button"
+        >
+          <RefreshCw size={15} strokeWidth={1.8} />
+        </button>
+        {status?.updateAvailable ? (
+          <Button
+            className="op-update-prompt__primary"
+            isDisabled={busy}
+            onPress={downloaded ? onInstall : onDownload}
+            size="sm"
+          >
+            {primaryLabel}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function BuildVersionBadge({ info }: { info: OpenPanelsBuildInfo }) {
+  const localBuildTime = info.buildTime
+    ? formatLocalBuildTime(info.buildTime)
+    : null
+  const label =
+    info.channel === "development" && localBuildTime
+      ? `dev ${localBuildTime}`
+      : info.label
+  const title =
+    info.channel === "development" && localBuildTime
+      ? `Development build ${localBuildTime}`
+      : `CLI package ${info.version}`
+  return (
+    <div className="op-build-badge" title={title}>
+      {label}
+    </div>
+  )
+}
+
+function formatLocalBuildTime(value: string): string | null {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  const datePart = [
+    date.getFullYear(),
+    padDatePart(date.getMonth() + 1),
+    padDatePart(date.getDate()),
+  ].join("-")
+  const timePart = [
+    padDatePart(date.getHours()),
+    padDatePart(date.getMinutes()),
+    padDatePart(date.getSeconds()),
+  ].join(":")
+  const timeZoneName = localTimeZoneName(date)
+  return timeZoneName
+    ? `${datePart} ${timePart} ${timeZoneName}`
+    : `${datePart} ${timePart}`
+}
+
+function localTimeZoneName(date: Date): string {
+  const part = new Intl.DateTimeFormat(undefined, {
+    timeZoneName: "short",
+  })
+    .formatToParts(date)
+    .find((item) => item.type === "timeZoneName")
+  return part?.value ?? ""
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, "0")
 }
 
 function WikiPanel({
@@ -2200,6 +2409,22 @@ function apiFetch(
   return fetch(apiUrl(apiBase, path), init)
 }
 
+async function apiJson<T>(
+  apiBase: string,
+  path: string | URL,
+  init?: RequestInit
+): Promise<T> {
+  const response = await apiFetch(apiBase, path, init)
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return (await response.json()) as T
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return error instanceof Error && error.message === "HTTP 404"
+}
+
 async function loadBootstrap(
   transport: OpenPanelsTransport,
   sessionId?: string | null
@@ -2210,6 +2435,28 @@ async function loadBootstrap(
   }
   const response = await apiFetch(transport.apiBase, url)
   return (await response.json()) as BootstrapResponse
+}
+
+function fetchUpdateStatus(
+  transport: OpenPanelsTransport
+): Promise<OpenPanelsUpdateStatus> {
+  return apiJson(transport.apiBase, "/api/update/status")
+}
+
+function requestUpdateDownload(
+  transport: OpenPanelsTransport
+): Promise<OpenPanelsUpdateStatus> {
+  return apiJson(transport.apiBase, "/api/update/download", {
+    method: "POST",
+  })
+}
+
+function requestUpdateInstallRestart(
+  transport: OpenPanelsTransport
+): Promise<{ ok: true; restarting: true }> {
+  return apiJson(transport.apiBase, "/api/update/install-restart", {
+    method: "POST",
+  })
 }
 
 async function savePanelState(

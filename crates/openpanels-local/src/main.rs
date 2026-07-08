@@ -3,4 +3,3 @@ fn main() {
     let exit_code = openpanels_local::run_cli(&argv);
     std::process::exit(exit_code);
 }
-

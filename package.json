@@ -6,11 +6,13 @@
   "packageManager": "pnpm@10.26.2",
   "scripts": {
     "dev": "pnpm --filter @openpanels/local-studio dev",
+    "op": "node scripts/openpanels-local-dev.mjs",
     "build": "pnpm -r build",
     "format": "ultracite fix",
     "lint": "ultracite check",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
+    "check:release": "node scripts/check-release-constraints.mjs",
     "check": "pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
   },
   "devDependencies": {

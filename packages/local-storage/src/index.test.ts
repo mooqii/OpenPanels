@@ -30,7 +30,7 @@ describe("@openpanels/local-storage", () => {
         undefined
       )
       await expect(
-        access(join(projectDir, ".myopenpanels", "myopenpanels.sqlite3"))
+        access(join(projectDir, ".myopenpanels", "main.sqlite3"))
       ).resolves.toBe(undefined)
       await expect(
         access(

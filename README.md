@@ -19,11 +19,12 @@ Please install the MyOpenPanels skill from GitHub repo `mooqii/OpenPanels`,
 using the skill at `skills/myopenpanels`.
 ```
 
-The entry skill keeps itself small and stable. It uses the latest
-`@openpanels/local-cli` package, then asks the CLI for `agent context`, which is
-the source of truth for wiki, canvas, and future panel workflows. The compact
-context includes state and the full command capability set; longer workflow
-guides live in top-level `agent-guides/` markdown files and load on demand.
+The entry skill keeps itself small and stable. It uses the Rust-native
+`openpanels-local` CLI from GitHub Releases, then asks the CLI for
+`agent context`, which is the source of truth for wiki, canvas, and future panel
+workflows. The compact context includes state and the full command capability
+set; longer workflow guides live in top-level `agent-guides/` markdown files
+and load on demand.
 
 ## Development
 
@@ -37,17 +38,21 @@ in `packages/local-cli`.
 
 ## Install
 
-Install the CLI globally:
+Install the Rust-native CLI from GitHub Releases, then verify it:
 
 ```bash
-npm install -g @openpanels/local-cli
+openpanels-local --version
 ```
 
-Or use npx without a global install:
+Check for and install release updates:
 
 ```bash
-npx -y @openpanels/local-cli@latest studio start --project /path/to/project --format json
+openpanels-local update check
+openpanels-local update
 ```
+
+GitHub Releases are the update source. Release constraints and manifest
+requirements live in [docs/release.md](docs/release.md).
 
 ## Use with Shell Agents
 

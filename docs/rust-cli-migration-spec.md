@@ -24,7 +24,7 @@ release 构建时产出静态资源并嵌入 Rust binary。
 1. 交付一个 Rust 原生 `openpanels-local` binary，覆盖当前 npm CLI 的用户可见命令。
 2. 用户运行 CLI 不需要本机安装 Node.js。
 3. `studio start` 启动 Rust 内置 HTTP server，托管嵌入的 studio 静态资源。
-4. 保持现有 `.myopenpanels/myopenpanels.sqlite3` 数据格式和文件资产布局可读写。
+4. 保持现有 `.myopenpanels/main.sqlite3` 数据格式和文件资产布局可读写。
 5. 保持当前 agent-facing stdout/stderr、JSON 字段、exit code 语义稳定。
 6. 保留 `apps/local-studio`、`packages/canvas`、`packages/react` 等前端/React 包。
 7. 使用 GitHub Releases 发布多平台二进制。
@@ -441,7 +441,7 @@ Rust 需要迁移 `resolveOpenPanelsPaths`：
 继续使用：
 
 ```text
-<storageDir>/myopenpanels.sqlite3
+<storageDir>/main.sqlite3
 ```
 
 保留同一组表：
@@ -627,6 +627,28 @@ openpanels-local-x86_64-unknown-linux-gnu.tar.gz
 openpanels-local-aarch64-unknown-linux-gnu.tar.gz
 openpanels-local-x86_64-pc-windows-msvc.zip
 ```
+
+发布约束、manifest schema、自更新缓存策略以 `docs/release.md` 为准。release tag、
+Rust crate version、root package version 和兼容 npm wrapper version 必须保持一致；
+CLI 自更新只读取 GitHub Releases，不依赖 OpenPanels 云服务。
+
+### 自更新
+
+Rust CLI 提供：
+
+```text
+openpanels-local update check
+openpanels-local update download
+openpanels-local update
+```
+
+`update check` 读取 GitHub Releases latest manifest 并缓存结果。普通 text-mode 命令
+最多每 24 小时做一次 opportunistic check；发现新版本时只向 stderr 输出简短提示。
+`--format json` 不做 opportunistic check，避免污染稳定 JSON 输出。`update download`
+下载并缓存当前平台 release asset，校验 SHA-256，但不安装。`update` 优先复用已缓存
+asset，运行新 binary 的 `--version` 验证版本，然后替换当前 executable。studio UI
+可以在右下角显示更新入口；预下载可以后台完成，但安装和重启必须由用户点击或明确
+授权 agent 后触发。开发构建和 Homebrew 等包管理器路径默认拒绝自替换。
 
 ### 安装脚本
 

@@ -23,8 +23,17 @@ import {
 import type { OpenPanelsStorage } from "@openpanels/runtime"
 import { migrationChecksum, migrations } from "./migrations/index.ts"
 
-const DATABASE_FILE_NAME = "myopenpanels.sqlite3"
+const DATABASE_FILE_NAME = "main.sqlite3"
 const require = createRequire(import.meta.url)
+const ACCEPTED_MIGRATION_CHECKSUMS: Record<string, string[]> = {
+  // 0001 originally used Function#toString in the checksum, which changed
+  // between TypeScript source and bundled CLI builds even when the SQL schema
+  // was identical. Keep the shipped checksum readable so dev rebuilds do not
+  // strand existing local databases.
+  "0001_initial": [
+    "1271255098e102e2e83ab3ad2f21507e70329341b3008751a1aaef2284c47abb",
+  ],
+}
 
 type SQLiteRow = Record<string, unknown>
 
@@ -442,7 +451,11 @@ function migrate(db: DatabaseSync): void {
     const checksum = migrationChecksum(migration)
     const appliedChecksum = applied.get(migration.id)
     if (appliedChecksum) {
-      if (appliedChecksum !== checksum) {
+      const acceptedChecksums = new Set([
+        checksum,
+        ...(ACCEPTED_MIGRATION_CHECKSUMS[migration.id] ?? []),
+      ])
+      if (!acceptedChecksums.has(appliedChecksum)) {
         throw new Error(`SQLite migration checksum mismatch: ${migration.id}`)
       }
       continue
