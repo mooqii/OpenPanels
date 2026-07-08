@@ -128,5 +128,5 @@ export function defaultTitleForPanel(kind: OpenPanelsPanelKind): string {
 }
 
 export function panelStateRef(panel: OpenPanelsPanel): string {
-  return `sessions/${panel.sessionId}/panels/${panel.id}/state.json`
+  return `sqlite:panel-states/${panel.sessionId}/${panel.id}`
 }

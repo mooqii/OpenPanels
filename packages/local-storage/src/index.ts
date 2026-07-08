@@ -1,13 +1,15 @@
+import { mkdirSync } from "node:fs"
 import {
   copyFile,
   mkdir,
-  readdir,
   readFile,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { basename, extname, join, relative, resolve, sep } from "node:path"
+import type { DatabaseSync } from "node:sqlite"
 import type {
   OpenPanelsArtifact,
   OpenPanelsPanel,
@@ -19,6 +21,12 @@ import {
   sessionSchema,
 } from "@openpanels/protocol"
 import type { OpenPanelsStorage } from "@openpanels/runtime"
+import { migrationChecksum, migrations } from "./migrations/index.ts"
+
+const DATABASE_FILE_NAME = "myopenpanels.sqlite3"
+const require = createRequire(import.meta.url)
+
+type SQLiteRow = Record<string, unknown>
 
 export interface LocalOpenPanelsStorageOptions {
   projectDir: string
@@ -41,8 +49,10 @@ export interface PanelSelectionState {
 }
 
 export class LocalOpenPanelsStorage implements OpenPanelsStorage {
+  readonly databasePath: string
   readonly projectDir: string
   readonly rootDir: string
+  readonly #db: DatabaseSync
 
   constructor(options: LocalOpenPanelsStorageOptions) {
     this.projectDir = resolve(options.projectDir)
@@ -50,69 +60,125 @@ export class LocalOpenPanelsStorage implements OpenPanelsStorage {
       options.storageDir ?? join(this.projectDir, ".myopenpanels")
     )
     assertSafeRoot(this.rootDir)
+    mkdirSync(this.rootDir, { recursive: true })
+    this.databasePath = join(this.rootDir, DATABASE_FILE_NAME)
+    this.#db = openDatabase(this.databasePath)
+    migrate(this.#db)
   }
 
   async listSessions(): Promise<OpenPanelsSession[]> {
-    const sessionsDir = this.#resolve("sessions")
-    try {
-      const entries = await readdir(sessionsDir, { withFileTypes: true })
-      const sessions = await Promise.all(
-        entries
-          .filter((entry) => entry.isDirectory())
-          .map((entry) => this.readSession(entry.name))
+    const rows = this.#db
+      .prepare(
+        `SELECT session_json
+          FROM sessions
+          ORDER BY updated_at DESC, id ASC`
       )
-      return sessions
-        .filter((session): session is OpenPanelsSession => Boolean(session))
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
-      throw error
-    }
-  }
-
-  async readSession(sessionId: string): Promise<OpenPanelsSession | null> {
-    return readJson(
-      this.#resolve("sessions", sanitizePathPart(sessionId), "session.json"),
-      sessionSchema
+      .all() as SQLiteRow[]
+    return rows.map((row) =>
+      sessionSchema.parse(parseJsonColumn(row, "session_json"))
     )
   }
 
+  async readSession(sessionId: string): Promise<OpenPanelsSession | null> {
+    const row = this.#db
+      .prepare("SELECT session_json FROM sessions WHERE id = ?")
+      .get(sessionId) as SQLiteRow | undefined
+    if (!row) return null
+    return sessionSchema.parse(parseJsonColumn(row, "session_json"))
+  }
+
   async writeSession(session: OpenPanelsSession): Promise<void> {
-    const sessionDir = this.#resolve("sessions", sanitizePathPart(session.id))
-    await mkdir(sessionDir, { recursive: true })
-    await writeJson(join(sessionDir, "session.json"), session)
-    await this.#writeIndex()
+    const parsed = sessionSchema.parse(session)
+    this.#db
+      .prepare(
+        `INSERT INTO sessions (
+          id, title, created_at, updated_at, panel_ids_json, session_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          title = excluded.title,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at,
+          panel_ids_json = excluded.panel_ids_json,
+          session_json = excluded.session_json`
+      )
+      .run(
+        parsed.id,
+        parsed.title,
+        parsed.createdAt,
+        parsed.updatedAt,
+        JSON.stringify(parsed.panelIds),
+        JSON.stringify(parsed)
+      )
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    const sessionDir = this.#resolve("sessions", sanitizePathPart(sessionId))
-    await rm(sessionDir, { recursive: true, force: true })
-    await this.#writeIndex()
+    runInTransaction(this.#db, () => {
+      this.#db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId)
+    })
+    await rm(this.#resolve("sessions", sanitizePathPart(sessionId)), {
+      recursive: true,
+      force: true,
+    })
   }
 
   async readPanel(
     sessionId: string,
     panelId: string
   ): Promise<OpenPanelsPanel | null> {
-    return readJson(
-      this.#panelFile(sessionId, panelId, "panel.json"),
-      panelSchema
-    )
+    const row = this.#db
+      .prepare(
+        `SELECT panel_json
+          FROM panels
+          WHERE session_id = ? AND id = ?`
+      )
+      .get(sessionId, panelId) as SQLiteRow | undefined
+    if (!row) return null
+    return panelSchema.parse(parseJsonColumn(row, "panel_json"))
   }
 
   async writePanel(panel: OpenPanelsPanel): Promise<void> {
-    const panelDir = this.#panelDir(panel.sessionId, panel.id)
-    await mkdir(panelDir, { recursive: true })
-    await writeJson(join(panelDir, "panel.json"), panel)
+    const parsed = panelSchema.parse(panel)
+    this.#db
+      .prepare(
+        `INSERT INTO panels (
+          id, session_id, kind, title, created_at, updated_at, state_ref,
+          panel_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id, id) DO UPDATE SET
+          kind = excluded.kind,
+          title = excluded.title,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at,
+          state_ref = excluded.state_ref,
+          panel_json = excluded.panel_json`
+      )
+      .run(
+        parsed.id,
+        parsed.sessionId,
+        parsed.kind,
+        parsed.title,
+        parsed.createdAt,
+        parsed.updatedAt,
+        parsed.stateRef ?? null,
+        JSON.stringify(parsed)
+      )
   }
 
   async readPanelState<TState = unknown>(
     sessionId: string,
     panelId: string
   ): Promise<TState | null> {
-    return readJson(
-      this.#panelFile(sessionId, panelId, "state.json")
-    ) as Promise<TState | null>
+    const row = this.#db
+      .prepare(
+        `SELECT state_json
+          FROM panel_states
+          WHERE session_id = ? AND panel_id = ?`
+      )
+      .get(sessionId, panelId) as SQLiteRow | undefined
+    if (!row) return null
+    return parseJsonColumn(row, "state_json") as TState
   }
 
   async writePanelState(
@@ -120,27 +186,55 @@ export class LocalOpenPanelsStorage implements OpenPanelsStorage {
     panelId: string,
     state: unknown
   ): Promise<void> {
-    const panelDir = this.#panelDir(sessionId, panelId)
-    await mkdir(panelDir, { recursive: true })
-    await writeJson(join(panelDir, "state.json"), state)
+    const stateJson = JSON.stringify(state)
+    const updatedAt = new Date().toISOString()
+    runInTransaction(this.#db, () => {
+      this.#db
+        .prepare(
+          `INSERT INTO panel_states (
+            session_id, panel_id, schema_version, state_json, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(session_id, panel_id) DO UPDATE SET
+            schema_version = excluded.schema_version,
+            state_json = excluded.state_json,
+            updated_at = excluded.updated_at`
+        )
+        .run(
+          sessionId,
+          panelId,
+          extractSchemaVersion(state),
+          stateJson,
+          updatedAt
+        )
+      syncWikiTasks(this.#db, sessionId, panelId, state)
+    })
   }
 
   async listArtifacts(
     sessionId: string,
     panelId?: string
   ): Promise<OpenPanelsArtifact[]> {
-    const artifactsPath = this.#resolve(
-      "sessions",
-      sanitizePathPart(sessionId),
-      "artifacts.json"
+    const rows = panelId
+      ? (this.#db
+          .prepare(
+            `SELECT artifact_json
+              FROM artifacts
+              WHERE session_id = ? AND panel_id = ?
+              ORDER BY created_at ASC, id ASC`
+          )
+          .all(sessionId, panelId) as SQLiteRow[])
+      : (this.#db
+          .prepare(
+            `SELECT artifact_json
+              FROM artifacts
+              WHERE session_id = ?
+              ORDER BY created_at ASC, id ASC`
+          )
+          .all(sessionId) as SQLiteRow[])
+    return rows.map((row) =>
+      artifactSchema.parse(parseJsonColumn(row, "artifact_json"))
     )
-    const artifacts = (await readJson(artifactsPath)) as
-      | OpenPanelsArtifact[]
-      | null
-    const list = artifacts ?? []
-    return panelId
-      ? list.filter((artifact) => artifact.panelId === panelId)
-      : list
   }
 
   async writeArtifact(
@@ -148,25 +242,67 @@ export class LocalOpenPanelsStorage implements OpenPanelsStorage {
     artifact: OpenPanelsArtifact
   ): Promise<void> {
     const parsed = artifactSchema.parse(artifact)
-    const sessionDir = this.#resolve("sessions", sanitizePathPart(sessionId))
-    await mkdir(sessionDir, { recursive: true })
-    const artifactsPath = join(sessionDir, "artifacts.json")
-    const artifacts =
-      ((await readJson(artifactsPath)) as OpenPanelsArtifact[] | null) ?? []
-    await writeJson(artifactsPath, [...artifacts, parsed])
+    this.#db
+      .prepare(
+        `INSERT INTO artifacts (
+          id, session_id, panel_id, kind, title, created_at, artifact_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id, id) DO UPDATE SET
+          panel_id = excluded.panel_id,
+          kind = excluded.kind,
+          title = excluded.title,
+          created_at = excluded.created_at,
+          artifact_json = excluded.artifact_json`
+      )
+      .run(
+        parsed.id,
+        sessionId,
+        parsed.panelId ?? null,
+        parsed.kind,
+        parsed.title ?? null,
+        parsed.createdAt,
+        JSON.stringify(parsed)
+      )
   }
 
   async readPanelSelection(
     sessionId: string,
     panelId: string
   ): Promise<PanelSelectionState | null> {
-    return readJson(this.#panelFile(sessionId, panelId, "selection.json"))
+    const row = this.#db
+      .prepare(
+        `SELECT selection_json
+          FROM panel_selections
+          WHERE session_id = ? AND panel_id = ?`
+      )
+      .get(sessionId, panelId) as SQLiteRow | undefined
+    if (!row) return null
+    return parseJsonColumn(row, "selection_json") as PanelSelectionState
   }
 
   async writePanelSelection(selection: PanelSelectionState): Promise<void> {
-    const panelDir = this.#panelDir(selection.sessionId, selection.panelId)
-    await mkdir(panelDir, { recursive: true })
-    await writeJson(join(panelDir, "selection.json"), selection)
+    this.#db
+      .prepare(
+        `INSERT INTO panel_selections (
+          session_id, panel_id, asset_ref, selected_shape_ids_json,
+          selection_json, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id, panel_id) DO UPDATE SET
+          asset_ref = excluded.asset_ref,
+          selected_shape_ids_json = excluded.selected_shape_ids_json,
+          selection_json = excluded.selection_json,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        selection.sessionId,
+        selection.panelId,
+        selection.assetRef ?? null,
+        JSON.stringify(selection.selectedShapeIds),
+        JSON.stringify(selection),
+        selection.updatedAt
+      )
   }
 
   async writeAssetFromFile(input: {
@@ -239,6 +375,10 @@ export class LocalOpenPanelsStorage implements OpenPanelsStorage {
     return this.#resolve(...parts)
   }
 
+  close(): void {
+    this.#db.close()
+  }
+
   #panelDir(sessionId: string, panelId: string): string {
     return this.#resolve(
       "sessions",
@@ -257,19 +397,6 @@ export class LocalOpenPanelsStorage implements OpenPanelsStorage {
     assertInside(this.rootDir, target)
     return target
   }
-
-  async #writeIndex(): Promise<void> {
-    const sessions = await this.listSessions()
-    await mkdir(this.rootDir, { recursive: true })
-    await writeJson(join(this.rootDir, "index.json"), {
-      schemaVersion: 1,
-      sessions: sessions.map(({ id, title, updatedAt }) => ({
-        id,
-        title,
-        updatedAt,
-      })),
-    })
-  }
 }
 
 export function sanitizePathPart(value: string): string {
@@ -282,23 +409,153 @@ export function sanitizePathPart(value: string): string {
   return safe
 }
 
-async function readJson<T>(
-  filePath: string,
-  schema?: { parse: (value: unknown) => T }
-): Promise<T | null> {
+function openDatabase(databasePath: string): DatabaseSync {
+  const { DatabaseSync } =
+    require("node:sqlite") as typeof import("node:sqlite")
+  const db = new DatabaseSync(databasePath)
+  db.exec("PRAGMA journal_mode = WAL")
+  db.exec("PRAGMA foreign_keys = ON")
+  db.exec("PRAGMA busy_timeout = 5000")
+  return db
+}
+
+function migrate(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id TEXT PRIMARY KEY NOT NULL,
+      description TEXT NOT NULL,
+      checksum TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    )
+  `)
+  const appliedRows = db
+    .prepare("SELECT id, checksum FROM schema_migrations")
+    .all() as SQLiteRow[]
+  const applied = new Map(
+    appliedRows.map((row) => [
+      stringColumn(row, "id"),
+      stringColumn(row, "checksum"),
+    ])
+  )
+
+  for (const migration of migrations) {
+    const checksum = migrationChecksum(migration)
+    const appliedChecksum = applied.get(migration.id)
+    if (appliedChecksum) {
+      if (appliedChecksum !== checksum) {
+        throw new Error(`SQLite migration checksum mismatch: ${migration.id}`)
+      }
+      continue
+    }
+    runInTransaction(db, () => {
+      migration.up(db)
+      db.prepare(
+        `INSERT INTO schema_migrations (id, description, checksum, applied_at)
+          VALUES (?, ?, ?, ?)`
+      ).run(
+        migration.id,
+        migration.description,
+        checksum,
+        new Date().toISOString()
+      )
+    })
+  }
+}
+
+function runInTransaction(db: DatabaseSync, callback: () => void): void {
+  db.exec("BEGIN")
   try {
-    const raw = await readFile(filePath, "utf8")
-    const data = JSON.parse(raw)
-    return schema ? schema.parse(data) : (data as T)
+    callback()
+    db.exec("COMMIT")
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    db.exec("ROLLBACK")
     throw error
   }
 }
 
-async function writeJson(filePath: string, data: unknown): Promise<void> {
-  await mkdir(resolve(filePath, ".."), { recursive: true })
-  await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8")
+function parseJsonColumn(row: SQLiteRow, column: string): unknown {
+  return JSON.parse(stringColumn(row, column))
+}
+
+function stringColumn(row: SQLiteRow, column: string): string {
+  const value = row[column]
+  if (typeof value !== "string") {
+    throw new Error(`Expected SQLite column ${column} to be a string`)
+  }
+  return value
+}
+
+function extractSchemaVersion(state: unknown): number | null {
+  if (!isRecord(state)) return null
+  if (typeof state.schemaVersion === "number") return state.schemaVersion
+  const schema = state.schema
+  if (isRecord(schema) && typeof schema.schemaVersion === "number") {
+    return schema.schemaVersion
+  }
+  return null
+}
+
+function syncWikiTasks(
+  db: DatabaseSync,
+  sessionId: string,
+  panelId: string,
+  state: unknown
+): void {
+  if (!(isRecord(state) && Array.isArray(state.tasks))) return
+  db.prepare(
+    "DELETE FROM wiki_tasks WHERE session_id = ? AND panel_id = ?"
+  ).run(sessionId, panelId)
+  const insert = db.prepare(
+    `INSERT INTO wiki_tasks (
+      id, session_id, panel_id, type, status, target_id, document_id,
+      wiki_space_id, markdown_version, claimed_by_process_id, created_at,
+      updated_at, task_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  for (const task of state.tasks) {
+    if (!isRecord(task)) continue
+    const id = optionalString(task.id)
+    const type = optionalString(task.type)
+    const status = optionalString(task.status)
+    const targetId = optionalString(task.targetId)
+    const createdAt = optionalString(task.createdAt)
+    const updatedAt = optionalString(task.updatedAt)
+    if (!(id && type && status && targetId && createdAt && updatedAt)) {
+      continue
+    }
+    insert.run(
+      id,
+      sessionId,
+      panelId,
+      type,
+      status,
+      targetId,
+      nullableString(task.documentId),
+      nullableString(task.wikiSpaceId),
+      nullableInteger(task.markdownVersion),
+      nullableString(task.claimedByProcessId),
+      createdAt,
+      updatedAt,
+      JSON.stringify(task)
+    )
+  }
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null
+}
+
+function nullableInteger(value: unknown): number | null {
+  return Number.isInteger(value) ? (value as number) : null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
 }
 
 async function uniqueFileName(

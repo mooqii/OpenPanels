@@ -1,0 +1,19 @@
+[package]
+name = "openpanels-local"
+version = "0.1.9"
+edition = "2021"
+default-run = "openpanels-local"
+
+[lib]
+name = "openpanels_local"
+path = "src/lib.rs"
+
+[[bin]]
+name = "openpanels-local"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+

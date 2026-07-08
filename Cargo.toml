@@ -1,0 +1,4 @@
+[workspace]
+members = ["crates/openpanels-local"]
+resolver = "2"
+

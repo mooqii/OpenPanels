@@ -2171,21 +2171,12 @@ function createWikiRebuildIndexTask(
 }
 
 async function saveWikiTask(
-  context: OpenPanelsLocalContext,
-  sessionId: string,
-  panelId: string,
-  task: WikiTask
+  _context: OpenPanelsLocalContext,
+  _sessionId: string,
+  _panelId: string,
+  _task: WikiTask
 ) {
-  await writeJson(
-    wikiPanelPath(
-      context,
-      sessionId,
-      panelId,
-      "tasks",
-      `${safePart(task.id)}.json`
-    ),
-    task
-  )
+  // Wiki task rows are synced from wiki panel state into SQLite storage.
 }
 
 async function saveProcess(
