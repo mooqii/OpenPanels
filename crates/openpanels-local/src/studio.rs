@@ -428,7 +428,26 @@ fn process_exists(pid: u32) -> bool {
             .map(|status| status.success())
             .unwrap_or(false)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let pid_text = pid.to_string();
+        let filter = format!("PID eq {pid}");
+        let output = Command::new("tasklist")
+            .args(["/FI", &filter, "/NH"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        let Ok(output) = output else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.split_whitespace().any(|part| part == pid_text))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         false
     }
@@ -455,6 +474,15 @@ fn terminate_process(pid: u32) {
         let _ = Command::new("kill")
             .arg("-KILL")
             .arg(pid.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let pid_text = pid.to_string();
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid_text, "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
