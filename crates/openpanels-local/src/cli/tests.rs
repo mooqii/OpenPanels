@@ -38,6 +38,22 @@ fn fake_studio_server(request_count: usize) -> (u16, thread::JoinHandle<()>) {
     (port, server)
 }
 
+fn create_cli_project(project_dir: &Path, storage_dir: &Path) {
+    let (code, stdout, stderr) = run(&[
+        "project",
+        "create",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+}
+
 #[test]
 fn cli_trace_url_falls_back_to_running_studio_session() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -74,7 +90,9 @@ fn cli_trace_url_falls_back_to_running_studio_session() {
     .expect("studio session");
 
     let argv = vec![
+        "canvas".to_owned(),
         "selection".to_owned(),
+        "read".to_owned(),
         "--project".to_owned(),
         project_dir.to_str().unwrap().to_owned(),
         "--storage-dir".to_owned(),
@@ -159,6 +177,63 @@ fn studio_start_json_reuses_same_project_studio() {
 }
 
 #[test]
+fn panel_commands_follow_borrowed_running_studio_context() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    let owner_paths = resolve_openpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("owner"),
+    )
+    .expect("owner paths");
+    let borrower_paths = resolve_openpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("borrower"),
+    )
+    .expect("borrower paths");
+    let (port, server) = fake_studio_server(1);
+    let server_url = format!("http://127.0.0.1:{port}");
+    write_studio_session(
+        &borrower_paths,
+        &StudioSession {
+            browser_url: Some(server_url.clone()),
+            context_dir: owner_paths.context_dir.display().to_string(),
+            context_id: owner_paths.context_id.clone(),
+            context_id_source: owner_paths.context_id_source.clone(),
+            host: Some("127.0.0.1".to_owned()),
+            lan_server_urls: Some(Vec::new()),
+            local_server_url: Some(server_url.clone()),
+            log_path: owner_paths
+                .context_dir
+                .join("studio.log")
+                .display()
+                .to_string(),
+            pid: std::process::id(),
+            port,
+            project_dir: owner_paths.project_dir.display().to_string(),
+            server_url,
+            started_at: "2026-07-09T00:00:00.000Z".to_owned(),
+            storage_dir: owner_paths.storage_dir.display().to_string(),
+        },
+    )
+    .expect("borrowed studio session");
+
+    let resolved =
+        resolve_panel_paths_for_active_studio(borrower_paths.clone(), false).expect("resolved");
+    assert_eq!(resolved.context_id, "owner");
+    assert_eq!(resolved.context_dir, owner_paths.context_dir);
+
+    let explicit =
+        resolve_panel_paths_for_active_studio(borrower_paths.clone(), true).expect("explicit");
+    assert_eq!(explicit.context_id, "borrower");
+    assert_eq!(explicit.context_dir, borrower_paths.context_dir);
+    server.join().expect("server thread");
+}
+
+#[test]
 fn studio_serve_reuses_existing_studio_without_foreground_server() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
@@ -224,9 +299,11 @@ fn project_read_commands_bootstrap_project() {
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
     fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
 
     let (code, stdout, stderr) = run(&[
-        "panels",
+        "panel",
+        "list",
         "--project",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -252,7 +329,8 @@ fn project_read_commands_bootstrap_project() {
     assert_eq!(stderr, "");
 
     let (code, stdout, stderr) = run(&[
-        "active-panel",
+        "panel",
+        "switch",
         "--project",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -277,9 +355,11 @@ fn agent_commands_emit_context_guides_and_capabilities() {
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
     fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
 
     let (code, stdout, stderr) = run(&[
-        "agent-context",
+        "agent",
+        "context",
         "--project",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -299,7 +379,10 @@ fn agent_commands_emit_context_guides_and_capabilities() {
         .as_array()
         .expect("capabilities")
         .iter()
-        .any(|capability| capability["intent"] == "canvas.placeholder.create"));
+        .any(
+            |capability| capability["intent"] == "canvas.placeholder.create"
+                && capability["target"] == "current_user_project.current_canvas"
+        ));
     assert!(payload["availableGuides"]
         .as_array()
         .expect("available guides")
@@ -373,11 +456,34 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
     let image_path = project_dir.join("image.png");
+    let metadata_path = project_dir.join("image-metadata.json");
     fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
     fs::write(&image_path, tiny_png()).expect("image");
+    fs::write(
+        &metadata_path,
+        serde_json::to_string_pretty(&json!({
+            "generateOptions": {
+                "prompt": "Soft editorial product photo",
+                "model": "test-image-model",
+                "referenceImages": [
+                    {
+                        "source": "local_path",
+                        "path": image_path.to_str().unwrap(),
+                        "role": "reference"
+                    }
+                ]
+            },
+            "generatedBy": "agent"
+        }))
+        .unwrap(),
+    )
+    .expect("metadata");
 
     let (code, stdout, stderr) = run(&[
-        "insert-image",
+        "canvas",
+        "image",
+        "insert",
         "--project",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -390,6 +496,8 @@ fn canvas_write_commands_insert_and_replace_shapes() {
         "512",
         "--display-height",
         "512",
+        "--metadata-file",
+        metadata_path.to_str().unwrap(),
         "--format",
         "json",
     ]);
@@ -401,7 +509,9 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     );
 
     let (code, stdout, stderr) = run(&[
-        "insert-placeholder",
+        "canvas",
+        "placeholder",
+        "create",
         "--project",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -425,7 +535,9 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     );
 
     let (code, stdout, stderr) = run(&[
-        "insert-image",
+        "canvas",
+        "image",
+        "insert",
         "--project",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -445,15 +557,14 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     assert_eq!(replaced["bounds"], placeholder["bounds"]);
 
     let (code, stdout, stderr) = run(&[
-        "panel-state",
+        "canvas",
+        "state",
         "--project",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
         "--context-id",
         "ctx",
-        "--kind",
-        "canvas",
         "--format",
         "json",
     ]);
@@ -461,6 +572,67 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     let state = serde_json::from_str::<Value>(&stdout).expect("json")["state"].clone();
     assert_eq!(state["selectedShapeIds"], json!([replaced["shapeId"]]));
     assert!(state["store"][placeholder["shapeId"].as_str().unwrap()].is_null());
+    let inserted_asset_id = inserted["assetId"].as_str().unwrap();
+    assert_eq!(
+        state["store"][inserted_asset_id]["meta"]["generateOptions"]["prompt"],
+        "Soft editorial product photo"
+    );
+    assert_eq!(
+        state["store"][inserted_asset_id]["meta"]["generateOptions"]["referenceImages"][0]["path"],
+        image_path.to_str().unwrap()
+    );
+    assert!(state["store"][inserted_asset_id]["meta"]["assetRef"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("sessions/")));
+
+    let (code, stdout, stderr) = run(&[
+        "canvas",
+        "image",
+        "insert",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--image",
+        image_path.to_str().unwrap(),
+        "--replace-shape-id",
+        "shape:missing-placeholder",
+        "--display-width",
+        "256",
+        "--display-height",
+        "128",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let fallback_insert = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert!(fallback_insert["replacedShapeId"].is_null());
+    assert_eq!(
+        fallback_insert["bounds"],
+        json!({ "x": 160.0, "y": 752.0, "width": 256.0, "height": 128.0 })
+    );
+
+    let (code, stdout, stderr) = run(&[
+        "canvas",
+        "state",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let state = serde_json::from_str::<Value>(&stdout).expect("json")["state"].clone();
+    assert_eq!(
+        state["selectedShapeIds"],
+        json!([fallback_insert["shapeId"]])
+    );
+    assert!(state["store"][fallback_insert["shapeId"].as_str().unwrap()].is_object());
 }
 
 #[test]
@@ -469,11 +641,12 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
     fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
 
     let (code, stdout, stderr) = run(&[
         "wiki",
-        "raw",
-        "new-markdown",
+        "documents",
+        "create-markdown",
         "--project",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -514,6 +687,27 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let next = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(next["task"]["type"], "ingest_markdown_into_wiki");
     let task_id = next["task"]["id"].as_str().unwrap();
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "list",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let project_tasks = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(project_tasks["pendingCount"], 1);
+    assert_eq!(project_tasks["tasks"][0]["queue"], "wiki");
+    assert_eq!(project_tasks["tasks"][0]["id"], task_id);
+    assert_eq!(
+        project_tasks["tasks"][0]["type"],
+        "ingest_markdown_into_wiki"
+    );
     assert!(storage_dir
         .join("contexts")
         .join("ctx")
@@ -546,7 +740,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "wiki",
         "pages",
-        "create",
+        "write",
         "--project",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -617,6 +811,21 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         complete["state"]["rawDocuments"][0]["ingestionByWikiSpace"]["wiki:default"]["status"],
         "ingested"
     );
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "list",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let project_tasks = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(project_tasks["pendingCount"], 1);
 
     let db = Connection::open(storage_dir.join("main.sqlite3")).expect("db");
     let stored_status: String = db
@@ -627,12 +836,20 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         )
         .expect("wiki task row");
     assert_eq!(stored_status, "succeeded");
+    let stored_project_status: String = db
+        .query_row(
+            "SELECT status FROM project_tasks WHERE id = ? AND queue = 'wiki'",
+            params![task_id],
+            |row| row.get(0),
+        )
+        .expect("project task row");
+    assert_eq!(stored_project_status, "succeeded");
 
     let binary_path = project_dir.join("archive.bin");
     fs::write(&binary_path, [1_u8, 2, 3]).expect("binary");
     let (code, stdout, stderr) = run(&[
         "wiki",
-        "raw",
+        "documents",
         "add",
         "--project",
         project_dir.to_str().unwrap(),
@@ -793,7 +1010,9 @@ fn selection_reads_sqlite_panel_selection() {
     .expect("active session");
 
     let (code, stdout, stderr) = run(&[
+        "canvas",
         "selection",
+        "read",
         "--project",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -810,8 +1029,143 @@ fn selection_reads_sqlite_panel_selection() {
         payload["selection"]["selectedShapeIds"],
         serde_json::json!(["shape:1"])
     );
+    assert_eq!(payload["selection"]["isExplicitSelection"], true);
     assert_eq!(payload["contextId"], "ctx");
     assert_eq!(stderr, "");
+}
+
+#[test]
+fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    let context_dir = storage_dir.join("contexts").join("ctx");
+    let asset_dir = storage_dir
+        .join("sessions")
+        .join("session:1")
+        .join("panels")
+        .join("panel:canvas")
+        .join("assets");
+    fs::create_dir_all(&context_dir).expect("context dir");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    fs::create_dir_all(&asset_dir).expect("asset dir");
+    fs::write(asset_dir.join("fallback.png"), tiny_png()).expect("asset");
+    seed_selection_database(
+        &storage_dir,
+        "session:1",
+        "panel:canvas",
+        serde_json::json!({
+            "sessionId": "session:1",
+            "panelId": "panel:canvas",
+            "selectedShapeIds": [],
+            "selectedShapes": [],
+            "assetRef": null,
+            "updatedAt": "2026-07-08T00:00:00.000Z"
+        }),
+        Some(serde_json::json!({
+            "schema": { "schemaVersion": 1, "recordVersions": {} },
+            "currentPageId": "page:main",
+            "selectedShapeIds": [],
+            "store": {
+                "page:main": { "id": "page:main", "typeName": "page", "name": "Page 1", "index": 1 },
+                "asset:fallback": {
+                    "id": "asset:fallback",
+                    "typeName": "asset",
+                    "type": "image",
+                    "props": {
+                        "name": "fallback.png",
+                        "src": "/api/panels/session:1/panel:canvas/assets/fallback.png",
+                        "w": 1,
+                        "h": 1,
+                        "mimeType": "image/png",
+                        "isAnimated": false
+                    },
+                    "meta": {
+                        "assetRef": "sessions/session:1/panels/panel:canvas/assets/fallback.png"
+                    }
+                },
+                "shape:fallback": {
+                    "id": "shape:fallback",
+                    "typeName": "shape",
+                    "type": "image",
+                    "parentId": "page:main",
+                    "index": 1,
+                    "props": {
+                        "assetId": "asset:fallback",
+                        "x": 1,
+                        "y": 2,
+                        "width": 3,
+                        "height": 4
+                    }
+                }
+            }
+        })),
+    );
+    fs::write(
+        context_dir.join("active-session.json"),
+        r#"{"sessionId":"session:1"}"#,
+    )
+    .expect("active session");
+
+    let (code, stdout, stderr) = run(&[
+        "canvas",
+        "selection",
+        "read",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let payload = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(payload["selection"]["isExplicitSelection"], false);
+    assert_eq!(payload["selection"]["fallback"], "last-image");
+    assert_eq!(
+        payload["selection"]["assetRef"],
+        "sessions/session:1/panels/panel:canvas/assets/fallback.png"
+    );
+
+    let output_path = temp.path().join("out.png");
+    let (code, _stdout, stderr) = run(&[
+        "canvas",
+        "selection",
+        "export",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--output",
+        output_path.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("No explicit MyOpenPanels selection asset is available"));
+
+    let (code, stdout, stderr) = run(&[
+        "canvas",
+        "selection",
+        "export",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--output",
+        output_path.to_str().unwrap(),
+        "--allow-fallback",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let payload = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(payload["outputPath"], output_path.to_str().unwrap());
+    assert!(output_path.exists());
 }
 
 #[test]
@@ -839,7 +1193,7 @@ fn help_prints_current_command_map() {
     assert_eq!(code, 0);
     assert!(stdout.contains("openpanels-local <command> [options]"));
     assert!(stdout.contains("studio start"));
-    assert!(stdout.contains("insert-image"));
+    assert!(stdout.contains("canvas image insert"));
     assert!(stdout.contains("update check"));
     assert_eq!(stderr, "");
 }

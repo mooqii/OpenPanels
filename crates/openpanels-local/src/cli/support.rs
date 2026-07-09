@@ -113,19 +113,6 @@ pub(super) fn should_check_for_updates(parsed: &ParsedArgs, command: Option<&str
 
     matches!(
         command,
-        Some(
-            "studio"
-                | "agent"
-                | "agent-context"
-                | "panels"
-                | "active-panel"
-                | "panel-state"
-                | "canvas-state"
-                | "selection"
-                | "read-selection-asset"
-                | "insert-placeholder"
-                | "insert-image"
-                | "wiki"
-        )
+        Some("studio" | "agent" | "project" | "panel" | "canvas" | "tasks" | "wiki")
     )
 }

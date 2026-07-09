@@ -11,9 +11,12 @@ export interface BootstrapResponse {
   buildInfo?: OpenPanelsBuildInfo
   panel: OpenPanelsPanel
   panels: PanelStateSnapshot[]
+  pendingTaskCount?: number
+  revision: number
   session: OpenPanelsSession
   sessions?: OpenPanelsSession[]
   state: unknown
+  tasks?: ProjectTask[]
 }
 
 export interface AppState extends BootstrapResponse {}
@@ -61,8 +64,23 @@ export interface TraceSnapshotResponse {
   nextSeq: number
 }
 
+export interface ProjectTask {
+  createdAt: string
+  id: string
+  panelId: string
+  panelKind: OpenPanelsPanelKind | string
+  queue: string
+  sessionId: string
+  status: string
+  targetId: string
+  task?: unknown
+  type: string
+  updatedAt: string
+}
+
 export interface PanelStateSnapshot {
   panel: OpenPanelsPanel
+  revision: number
   state: unknown
 }
 

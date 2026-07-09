@@ -12,3 +12,31 @@
   `OPENPANELS_LOCAL_CLI="$PWD/scripts/openpanels-local-dev" scripts/openpanels-local-dev studio serve --project "$PWD" --local-only --format json`
 - Do not run broad `rg` searches before starting MyOpenPanels unless the CLI
   command fails.
+- For MyOpenPanels work after the Studio is running, use only the current
+  agent-facing commands advertised by
+  `scripts/openpanels-local-dev agent capabilities --format json`.
+- Canvas, panel, wiki, and task commands target the current user-visible
+  Project automatically. Do not pass context/session/panel ids unless you are
+  explicitly debugging the CLI internals.
+- Do not create a Project unless the user explicitly asks. Project creation is
+  done with `scripts/openpanels-local-dev project create`.
+- After changing anything that affects the local CLI or bundled Studio server
+  (Rust CLI/server code, local-studio UI assets, or embedded guides/assets),
+  rebuild the latest checkout-local CLI with `scripts/openpanels-local-dev`,
+  then stop and restart any running development Studio service before checking
+  the browser. Do not assume an already-running service picked up the new CLI.
+- Before publishing a new CLI release, follow this workflow:
+  bump the version in `crates/openpanels-local/Cargo.toml`, `Cargo.lock`,
+  root `package.json`, and `apps/local-studio/package.json`; run
+  `corepack pnpm run check:release`, `corepack pnpm run lint`,
+  `corepack pnpm run typecheck`, `corepack pnpm run test`, and
+  `corepack pnpm run build`; rebuild the checkout-local CLI with
+  `scripts/openpanels-local-dev`; commit the release changes; create and push
+  the `v<version>` tag so `.github/workflows/release-openpanels-local.yml`
+  publishes the GitHub Release assets.
+- When changing Studio live sync, storage events, tasks, or canvas selection
+  persistence, do not let non-`panel_state` changes rebuild the canvas editor,
+  clear canvas selection, or bump the canvas `snapshotVersion`. Only a real
+  canvas panel revision increase, project/session switch, panel switch, or
+  explicit reload should reload the canvas snapshot; add/update regression
+  tests for this behavior.

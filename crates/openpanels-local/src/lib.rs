@@ -8,6 +8,7 @@ pub mod selection;
 pub mod server;
 pub mod storage;
 pub mod studio;
+pub mod tasks;
 pub mod trace;
 pub mod types;
 pub mod update;

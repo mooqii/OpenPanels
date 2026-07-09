@@ -6,7 +6,10 @@ use crate::control::{
 use crate::error::CliError;
 use crate::paths::OpenPanelsPaths;
 use crate::storage::Storage;
-use crate::studio::{spawn_studio_server_process, write_studio_session, StudioSession};
+use crate::studio::{
+    record_current_studio, spawn_studio_server_process, write_studio_session, StudioSession,
+};
+use crate::tasks;
 use crate::trace::{self, TraceEventInput};
 use crate::types::PanelKind;
 use crate::update::{check_for_update, download_update, install_update};
@@ -31,6 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
@@ -39,6 +43,7 @@ mod wiki_api;
 use wiki_api::*;
 
 static STUDIO_DIST: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../apps/local-studio/dist");
+const PROJECT_EVENT_POLL_INTERVAL_MS: u64 = 350;
 
 #[derive(Clone)]
 struct AppState {
@@ -116,6 +121,7 @@ fn build_router(
         .allow_headers(tower_http::cors::Any);
     Router::new()
         .route("/api/bootstrap", get(api_bootstrap))
+        .route("/api/studio/focus", post(api_studio_focus))
         .route("/api/projects", post(api_projects_create))
         .route("/api/update/status", get(api_update_status))
         .route("/api/update/download", post(api_update_download))
@@ -126,6 +132,8 @@ fn build_router(
         .route("/api/trace/snapshot", get(api_trace_snapshot))
         .route("/api/trace/stream", get(api_trace_stream))
         .route("/api/trace/events", post(api_trace_events))
+        .route("/api/events", get(api_project_events))
+        .route("/api/tasks", get(api_tasks))
         .route("/api/sessions", get(api_sessions).post(api_create_session))
         .route(
             "/api/sessions/{session_id}",
@@ -253,6 +261,7 @@ async fn api_bootstrap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<BootstrapQuery>,
 ) -> Response {
+    let _ = record_current_studio(&state.paths, &studio_session_for_state(&state));
     let request = BootstrapRequest {
         requested_panel_id: query.panel_id,
         requested_panel_kind: query.panel_kind.as_deref().and_then(PanelKind::parse),
@@ -260,6 +269,13 @@ async fn api_bootstrap(
     };
     match ensure_project_bootstrap(&state.paths, request) {
         Ok(bootstrap) => json_response(StatusCode::OK, &with_build_info(bootstrap, &state)),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_studio_focus(State(state): State<Arc<AppState>>) -> Response {
+    match record_current_studio(&state.paths, &studio_session_for_state(&state)) {
+        Ok(()) => json_response(StatusCode::OK, &json!({ "ok": true })),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
 }
@@ -323,6 +339,69 @@ async fn api_trace_events(Json(body): Json<Value>) -> Response {
         recorded.push(trace::record(input));
     }
     json_response(StatusCode::OK, &json!({ "events": recorded }))
+}
+
+async fn api_tasks(State(state): State<Arc<AppState>>) -> Response {
+    match tasks::list_tasks(&state.paths) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_project_events(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let paths = state.paths.clone();
+    let (sender, receiver) = mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
+
+    tokio::spawn(async move {
+        let mut last_seq = read_storage_change_seq(&paths).unwrap_or(0);
+        let mut interval =
+            tokio::time::interval(Duration::from_millis(PROJECT_EVENT_POLL_INTERVAL_MS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+            let next_seq = match read_storage_change_seq(&paths) {
+                Ok(seq) => seq,
+                Err(error) => {
+                    let payload = json!({
+                        "kind": "error",
+                        "message": error.message(),
+                    });
+                    if sender
+                        .send(Ok(Event::default()
+                            .event("error")
+                            .data(payload.to_string())))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            if next_seq == last_seq {
+                continue;
+            }
+            last_seq = next_seq;
+            let payload = json!({
+                "kind": "storage",
+                "revision": next_seq,
+            });
+            if sender
+                .send(Ok(Event::default()
+                    .event("project")
+                    .data(payload.to_string())))
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    Sse::new(UnboundedReceiverStream::new(receiver)).keep_alive(KeepAlive::default())
+}
+
+fn read_storage_change_seq(paths: &OpenPanelsPaths) -> Result<i64, CliError> {
+    Storage::open(paths).and_then(|storage| storage.read_change_seq())
 }
 
 async fn api_sessions(State(state): State<Arc<AppState>>) -> Response {
@@ -604,6 +683,7 @@ async fn api_set_active_panel(
             "activePanelId": bootstrap.active_panel_id,
             "activePanelKind": bootstrap.active_panel_kind,
             "panel": bootstrap.panel,
+            "revision": bootstrap.revision,
             "state": bootstrap.state,
         })
     });
@@ -616,15 +696,42 @@ async fn api_set_active_panel(
 async fn api_save_panel_state(
     State(state): State<Arc<AppState>>,
     Path((session_id, panel_id)): Path<(String, String)>,
-    Json(panel_state): Json<Value>,
+    Json(body): Json<Value>,
 ) -> Response {
+    let base_revision = body.get("baseRevision").and_then(Value::as_i64);
+    let panel_state = body.get("state").cloned().unwrap_or_else(|| body.clone());
     let result = Storage::open(&state.paths).and_then(|storage| {
-        storage.write_panel_state(&session_id, &panel_id, &panel_state)?;
-        write_active_session_id(&state.paths, &session_id)?;
-        Ok(json!({ "saved": true, "sessionId": session_id, "panelId": panel_id }))
+        storage
+            .write_panel_state_if_current(&session_id, &panel_id, &panel_state, base_revision)
+            .map(|result| {
+                result.map(|revision| {
+                    json!({
+                        "saved": true,
+                        "sessionId": session_id,
+                        "panelId": panel_id,
+                        "revision": revision,
+                    })
+                })
+            })
     });
     match result {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Ok(Ok(payload)) => {
+            if let Err(error) = write_active_session_id(&state.paths, &session_id) {
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message());
+            }
+            json_response(StatusCode::OK, &payload)
+        }
+        Ok(Err(conflict)) => json_response(
+            StatusCode::CONFLICT,
+            &json!({
+                "saved": false,
+                "error": "Canvas state is stale.",
+                "baseRevision": conflict.base_revision,
+                "currentRevision": conflict.current_revision,
+                "sessionId": session_id,
+                "panelId": panel_id,
+            }),
+        ),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
 }
@@ -827,6 +934,31 @@ fn with_build_info(payload: impl Serialize, state: &AppState) -> Value {
         );
     }
     value
+}
+
+fn studio_session_for_state(state: &AppState) -> StudioSession {
+    let local_server_url = format!("http://127.0.0.1:{}", state.port);
+    StudioSession {
+        browser_url: Some(local_server_url.clone()),
+        context_dir: state.paths.context_dir.display().to_string(),
+        context_id: state.paths.context_id.clone(),
+        context_id_source: state.paths.context_id_source.clone(),
+        host: Some(state.host.clone()),
+        lan_server_urls: Some(Vec::new()),
+        local_server_url: Some(local_server_url.clone()),
+        log_path: state
+            .paths
+            .context_dir
+            .join("studio.log")
+            .display()
+            .to_string(),
+        pid: std::process::id(),
+        port: state.port,
+        project_dir: state.paths.project_dir.display().to_string(),
+        server_url: local_server_url,
+        started_at: now_iso(),
+        storage_dir: state.paths.storage_dir.display().to_string(),
+    }
 }
 
 fn current_build_info() -> StudioBuildInfo {

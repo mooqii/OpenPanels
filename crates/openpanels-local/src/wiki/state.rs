@@ -16,7 +16,7 @@ pub(super) struct WikiSpaceValue {
 pub(super) fn get_wiki_bootstrap(paths: &OpenPanelsPaths) -> Result<WikiBootstrapValue, CliError> {
     let mut request = BootstrapRequest::new();
     request.requested_panel_kind = Some(PanelKind::Wiki);
-    let bootstrap = ensure_project_bootstrap(paths, request)?;
+    let bootstrap = read_project_bootstrap(paths, request)?;
     ensure_default_wiki_files(
         paths,
         &bootstrap.session.id,
@@ -36,7 +36,14 @@ pub(super) fn save_wiki_state(
 ) -> Result<(), CliError> {
     let storage = Storage::open(paths)?;
     storage.write_panel_state(&wiki.session.id, &wiki.panel.id, &wiki.state)?;
-    storage.sync_wiki_tasks(&wiki.session.id, &wiki.panel.id, &wiki.state)
+    storage.sync_wiki_tasks(&wiki.session.id, &wiki.panel.id, &wiki.state)?;
+    storage.sync_project_tasks_from_panel(
+        &wiki.session.id,
+        &wiki.panel.id,
+        wiki.panel.kind.as_str(),
+        "wiki",
+        &wiki.state,
+    )
 }
 
 pub(super) fn ensure_default_wiki_files(

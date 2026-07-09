@@ -91,7 +91,10 @@ export function CanvasPanel({
     [assetStore]
   )
   const initialSnapshotRef = useRef(snapshot ?? initialSnapshot)
-  const loadedSnapshotVersionRef = useRef<number | null>(null)
+  const loadedSnapshotRef = useRef<{
+    editor: Editor
+    version: number | null
+  } | null>(null)
   const cameraListenerCleanupRef = useRef<(() => void) | null>(null)
   const editor = useMemo(
     () =>
@@ -107,15 +110,29 @@ export function CanvasPanel({
 
   useEffect(() => {
     if (snapshotVersion == null && initialSnapshotRef.current) {
+      const loadedSnapshot = loadedSnapshotRef.current
+      if (
+        loadedSnapshot?.editor === editor &&
+        loadedSnapshot.version === null
+      ) {
+        return
+      }
       editor.loadSnapshot(initialSnapshotRef.current)
+      loadedSnapshotRef.current = { editor, version: null }
     }
   }, [editor, snapshotVersion])
 
   useEffect(() => {
     if (snapshotVersion == null || !snapshot) return
-    if (loadedSnapshotVersionRef.current === snapshotVersion) return
+    const loadedSnapshot = loadedSnapshotRef.current
+    if (
+      loadedSnapshot?.editor === editor &&
+      loadedSnapshot.version === snapshotVersion
+    ) {
+      return
+    }
     editor.loadSnapshot(snapshot)
-    loadedSnapshotVersionRef.current = snapshotVersion
+    loadedSnapshotRef.current = { editor, version: snapshotVersion }
   }, [editor, snapshot, snapshotVersion])
 
   useEffect(() => {

@@ -41,6 +41,13 @@ pub struct StudioStatusPayload {
     pub storage_dir: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentStudioRecord {
+    pub focused_at: String,
+    pub session: StudioSession,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StudioServerStatus {
@@ -227,6 +234,76 @@ pub fn studio_status(paths: &OpenPanelsPaths) -> Result<StudioStatusPayload, Cli
     })
 }
 
+pub fn record_current_studio(
+    paths: &OpenPanelsPaths,
+    session: &StudioSession,
+) -> Result<(), CliError> {
+    fs::create_dir_all(&paths.storage_dir).map_err(to_cli_error)?;
+    let record = CurrentStudioRecord {
+        focused_at: crate::control::now_iso(),
+        session: session.clone(),
+    };
+    fs::write(
+        current_studio_path(paths),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&record).map_err(to_cli_error)?
+        ),
+    )
+    .map_err(to_cli_error)
+}
+
+pub fn resolve_current_studio_session(
+    paths: &OpenPanelsPaths,
+) -> Result<Option<StudioSession>, CliError> {
+    if let Some(record) = read_current_studio_record(paths)? {
+        if same_project(paths, &record.session)
+            && process_exists(record.session.pid)
+            && is_studio_healthy(&record.session)
+        {
+            return Ok(Some(record.session));
+        }
+    }
+
+    let candidates = running_project_studios(paths)?;
+    match candidates.as_slice() {
+        [] => Ok(None),
+        [session] => Ok(Some(session.clone())),
+        _ => Err(CliError::with_code(
+            "ambiguous_current_project",
+            format!(
+                "Multiple running MyOpenPanels studios are available for this project: {}. Focus one Studio window or stop the extra Studio service.",
+                candidates
+                    .iter()
+                    .map(studio_candidate_label)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+pub fn running_project_studios(paths: &OpenPanelsPaths) -> Result<Vec<StudioSession>, CliError> {
+    let mut candidates = Vec::new();
+    for path in studio_session_paths(paths)? {
+        let Some(session) = read_studio_session_file(&path)? else {
+            continue;
+        };
+        if !same_project(paths, &session) {
+            continue;
+        }
+        if !process_exists(session.pid) {
+            remove_file_if_exists(&path)?;
+            continue;
+        }
+        if is_studio_healthy(&session) {
+            candidates.push(session);
+        }
+    }
+    candidates.sort_by(|left, right| right.started_at.cmp(&left.started_at));
+    Ok(candidates)
+}
+
 pub fn wait_for_existing_studio(
     paths: &OpenPanelsPaths,
     timeout: Duration,
@@ -303,28 +380,26 @@ fn studio_session_path(paths: &OpenPanelsPaths) -> PathBuf {
     paths.context_dir.join("studio-session.json")
 }
 
-fn find_running_project_studio(paths: &OpenPanelsPaths) -> Result<Option<StudioSession>, CliError> {
-    let mut candidates = Vec::new();
-    for path in studio_session_paths(paths)? {
-        if path == studio_session_path(paths) {
-            continue;
-        }
-        let Some(session) = read_studio_session_file(&path)? else {
-            continue;
-        };
-        if !same_project(paths, &session) {
-            continue;
-        }
-        if !process_exists(session.pid) {
-            remove_file_if_exists(&path)?;
-            continue;
-        }
-        if is_studio_healthy(&session) {
-            candidates.push(session);
-        }
+fn current_studio_path(paths: &OpenPanelsPaths) -> PathBuf {
+    paths.storage_dir.join("current-studio.json")
+}
+
+fn read_current_studio_record(
+    paths: &OpenPanelsPaths,
+) -> Result<Option<CurrentStudioRecord>, CliError> {
+    let path = current_studio_path(paths);
+    if !path.exists() {
+        return Ok(None);
     }
-    candidates.sort_by(|left, right| right.started_at.cmp(&left.started_at));
-    Ok(candidates.into_iter().next())
+    let content = fs::read_to_string(path).map_err(to_cli_error)?;
+    match serde_json::from_str::<CurrentStudioRecord>(&content) {
+        Ok(record) => Ok(Some(record)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn find_running_project_studio(paths: &OpenPanelsPaths) -> Result<Option<StudioSession>, CliError> {
+    Ok(running_project_studios(paths)?.into_iter().next())
 }
 
 fn studio_session_paths(paths: &OpenPanelsPaths) -> Result<Vec<PathBuf>, CliError> {
@@ -390,6 +465,15 @@ fn is_studio_healthy(session: &StudioSession) -> bool {
         .call()
         .map(|response| (200..300).contains(&response.status()))
         .unwrap_or(false)
+}
+
+fn studio_candidate_label(session: &StudioSession) -> String {
+    let url = session
+        .browser_url
+        .as_deref()
+        .or(session.local_server_url.as_deref())
+        .unwrap_or(&session.server_url);
+    format!("{} ({url})", session.context_id)
 }
 
 fn wait_for_studio(server_url: &str, timeout: Duration) -> Result<(), CliError> {

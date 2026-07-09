@@ -16,6 +16,7 @@ export function normalizeBootstrap(data: BootstrapResponse): AppState {
   const panels =
     data.panels?.map((snapshot) => ({
       panel: snapshot.panel,
+      revision: snapshot.revision ?? 0,
       state: normalizePanelState(snapshot.panel.kind, snapshot.state),
     })) ?? []
   const activePanel =
@@ -27,10 +28,23 @@ export function normalizeBootstrap(data: BootstrapResponse): AppState {
   )
     ? panels.map((snapshot) =>
         snapshot.panel.id === activePanel.id
-          ? { panel: activePanel, state: activeState }
+          ? {
+              panel: activePanel,
+              revision:
+                snapshot.revision ??
+                (activePanel.id === data.panel.id ? data.revision : 0),
+              state: activeState,
+            }
           : snapshot
       )
-    : [{ panel: activePanel, state: activeState }, ...panels]
+    : [
+        {
+          panel: activePanel,
+          revision: activePanel.id === data.panel.id ? data.revision : 0,
+          state: activeState,
+        },
+        ...panels,
+      ]
 
   return {
     ...data,
@@ -38,7 +52,9 @@ export function normalizeBootstrap(data: BootstrapResponse): AppState {
     activePanelKind: activePanel.kind,
     panel: activePanel,
     panels: normalizedPanels,
+    pendingTaskCount: data.pendingTaskCount ?? 0,
     state: activeState,
+    tasks: data.tasks ?? [],
   }
 }
 
@@ -62,6 +78,14 @@ export function canvasSnapshotFromState(
     ({ panel }) => panel.kind === "canvas"
   )?.state
   return snapshot ? normalizeSnapshot(snapshot as StoreSnapshot) : null
+}
+
+export function canvasRevisionFromState(appState: AppState): number {
+  return (
+    appState.panels.find(({ panel }) => panel.kind === "canvas")?.revision ??
+    appState.revision ??
+    0
+  )
 }
 
 export function wikiStateFromAppState(appState: AppState): WikiState {
@@ -100,6 +124,7 @@ export function serializeBootstrapForCompare(appState: AppState): string {
     activePanelId: appState.activePanelId,
     activePanelKind: appState.activePanelKind,
     panelIds: appState.panels.map(({ panel }) => panel.id),
+    pendingTaskCount: appState.pendingTaskCount ?? 0,
     session: appState.session,
     states: appState.panels.map(({ panel, state }) => ({
       id: panel.id,
@@ -111,6 +136,7 @@ export function serializeBootstrapForCompare(appState: AppState): string {
             )
           : state,
     })),
+    tasks: appState.tasks ?? [],
   })
 }
 
@@ -301,17 +327,25 @@ export async function savePanelState(
   transport: OpenPanelsTransport,
   sessionId: string,
   panelId: string,
-  snapshot: StoreSnapshot
-) {
-  await apiFetch(
+  snapshot: StoreSnapshot,
+  baseRevision: number
+): Promise<{ revision: number }> {
+  const response = await apiFetch(
     transport.apiBase,
     `/api/panels/${encodeURIComponent(sessionId)}/${encodeURIComponent(panelId)}/state`,
     {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(serializeSnapshot(snapshot)),
+      body: JSON.stringify({
+        baseRevision,
+        state: serializeSnapshot(snapshot),
+      }),
     }
   )
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return (await response.json()) as { revision: number }
 }
 
 export async function saveSelectionState(

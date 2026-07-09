@@ -491,7 +491,18 @@ export function WikiPanel({
                         {hasMarkdown && indexStatus.kind !== "done" ? (
                           <WikiIndexStatus status={indexStatus} />
                         ) : null}
-                        <WikiStatus document={document} />
+                        <WikiStatus
+                          document={document}
+                          isDisabled={isBusy || !hasMarkdown}
+                          onOpenMarkdown={() => {
+                            openMarkdown(document).catch((error) => {
+                              console.error(
+                                "Failed to open wiki markdown",
+                                error
+                              )
+                            })
+                          }}
+                        />
                         <Dropdown>
                           <Dropdown.Trigger>
                             <Button

@@ -95,6 +95,7 @@
 }
 
 .op-trace-toggle {
+  position: relative;
   display: inline-flex;
   gap: 4px;
   align-items: center;
@@ -109,6 +110,57 @@
   border-radius: 999px;
   box-shadow: var(--op-toolbar-shadow);
   backdrop-filter: blur(14px);
+}
+
+.op-trace-toggle__dot {
+  position: absolute;
+  top: -7px;
+  right: -6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 17px;
+  color: white;
+  text-align: center;
+  background: var(--danger);
+  border: 1px solid color-mix(in oklab, white 70%, var(--danger));
+  border-radius: 999px;
+  box-shadow: 0 6px 16px color-mix(in oklab, var(--danger) 34%, transparent);
+}
+
+.op-task-status-button {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  z-index: 61;
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: 34px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1;
+  color: white;
+  cursor: pointer;
+  background: var(--danger);
+  border: 1px solid color-mix(in oklab, white 58%, var(--danger));
+  border-radius: 999px;
+  box-shadow:
+    0 8px 22px color-mix(in oklab, var(--danger) 32%, transparent),
+    var(--op-toolbar-shadow);
+}
+
+.op-task-status-button:hover,
+.op-task-status-button:focus-visible {
+  color: white;
+  outline: none;
+  background: color-mix(in oklab, var(--danger) 88%, black);
 }
 
 .op-trace-toggle:hover,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   CanvasPanel,
   type CanvasSelectionSnapshot,
@@ -12,15 +12,19 @@ import {
   ProjectChrome,
 } from "./components/project/ProjectChrome"
 import {
+  AgentPanel,
+  type AgentPanelTab,
+  AgentToggleButton,
   BuildVersionBadge,
-  TracePanel,
-  TraceToggleButton,
+  TaskStatusButton,
 } from "./components/trace/TracePanel"
 import { UpdatePrompt } from "./components/update/UpdatePrompt"
 import { WikiPanel } from "./components/wiki/WikiPanel"
 import { ACTIVE_SESSION_STORAGE_KEY } from "./constants"
 import {
   apiFetch,
+  apiUrl,
+  canvasRevisionFromState,
   canvasSnapshotFromState,
   fetchActiveSessionId,
   fetchSessions,
@@ -36,6 +40,7 @@ import {
   saveSelectionState,
   wikiStateFromAppState,
 } from "./lib/api"
+import { mergeLiveProjectBootstrap } from "./lib/app-sync"
 import type {
   OpenPanelsPanel,
   OpenPanelsPanelKind,
@@ -66,6 +71,40 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
     "checking" | "downloading" | "installing" | null
   >(null)
   const [isTraceOpen, setIsTraceOpen] = useState(false)
+  const [agentPanelTab, setAgentPanelTab] = useState<AgentPanelTab>("tasks")
+  const appStateRef = useRef<AppState | null>(null)
+  const canvasSnapshotRef = useRef<StoreSnapshot | null>(null)
+  const canvasRevisionRef = useRef(0)
+  const skipNextCanvasSaveRef = useRef(false)
+
+  useEffect(() => {
+    appStateRef.current = appState
+  }, [appState])
+
+  useEffect(() => {
+    canvasSnapshotRef.current = canvasSnapshot
+  }, [canvasSnapshot])
+
+  useEffect(() => {
+    if (transport.kind !== "http") return
+    let cancelled = false
+    const markFocused = () => {
+      if (cancelled) return
+      apiFetch(transport.apiBase, "/api/studio/focus", {
+        method: "POST",
+      }).catch((error) => {
+        console.error("Failed to update OpenPanels Studio focus", error)
+      })
+    }
+    markFocused()
+    window.addEventListener("focus", markFocused)
+    document.addEventListener("visibilitychange", markFocused)
+    return () => {
+      cancelled = true
+      window.removeEventListener("focus", markFocused)
+      document.removeEventListener("visibilitychange", markFocused)
+    }
+  }, [transport])
 
   const loadProject = useCallback(
     async (sessionId?: string | null) => {
@@ -76,9 +115,13 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
         ACTIVE_SESSION_STORAGE_KEY,
         normalized.session.id
       )
+      const nextCanvasSnapshot = canvasSnapshotFromState(normalized)
+      appStateRef.current = normalized
+      canvasSnapshotRef.current = nextCanvasSnapshot
+      canvasRevisionRef.current = canvasRevisionFromState(normalized)
+      skipNextCanvasSaveRef.current = true
       setSelection(null)
       setAppState(normalized)
-      const nextCanvasSnapshot = canvasSnapshotFromState(normalized)
       setCanvasSnapshot(nextCanvasSnapshot)
       setSnapshotLoadVersion((version) => version + 1)
       setSessions(data.sessions ?? (await fetchSessions(transport)))
@@ -123,6 +166,71 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
     }, 5000)
     return () => window.clearInterval(timer)
   }, [activeAppSessionId, loadProject, transport])
+
+  useEffect(() => {
+    if (transport.kind !== "http") return
+    let cancelled = false
+    let syncing = false
+    let pending = false
+
+    const syncProject = async () => {
+      if (syncing) {
+        pending = true
+        return
+      }
+      syncing = true
+      try {
+        while (!cancelled) {
+          pending = false
+          const current = appStateRef.current
+          if (!current) return
+          const data = await loadBootstrap(transport, current.session.id)
+          if (cancelled) return
+
+          const latest = appStateRef.current ?? current
+          const merged = mergeLiveProjectBootstrap({
+            current: latest,
+            currentCanvasRevision: canvasRevisionRef.current,
+            currentCanvasSnapshot: canvasSnapshotRef.current,
+            remote: data,
+          })
+          canvasRevisionRef.current = merged.canvasRevision
+          if (data.sessions) {
+            setSessions(data.sessions)
+          }
+          if (merged.changed) {
+            appStateRef.current = merged.appState
+            canvasSnapshotRef.current = merged.canvasSnapshot
+            skipNextCanvasSaveRef.current = merged.shouldReloadCanvas
+            if (merged.shouldReloadCanvas) {
+              setSelection(null)
+            }
+            setAppState(merged.appState)
+            setCanvasSnapshot(merged.canvasSnapshot)
+            if (merged.shouldReloadCanvas) {
+              setSnapshotLoadVersion((version) => version + 1)
+            }
+          }
+          if (!pending) return
+        }
+      } catch (error) {
+        console.error("Failed to sync OpenPanels project changes", error)
+      } finally {
+        syncing = false
+      }
+    }
+
+    const source = new EventSource(
+      apiUrl(transport.apiBase, "/api/events").toString()
+    )
+    source.addEventListener("project", () => {
+      syncProject()
+    })
+    return () => {
+      cancelled = true
+      source.close()
+    }
+  }, [transport])
 
   const refreshUpdateStatus = useCallback(async () => {
     setUpdateAction("checking")
@@ -203,20 +311,22 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
     [appState]
   )
   const activeSessionId = appState?.session.id ?? null
+  const canvasPanelId = canvasPanel?.id ?? null
 
   const assetStore = useMemo(() => {
-    if (!(canvasPanel && activeSessionId)) return new DataUrlAssetStore()
+    if (!(canvasPanelId && activeSessionId)) return new DataUrlAssetStore()
     return new OpenPanelsBrowserAssetStore(
       transport.apiBase,
       activeSessionId,
-      canvasPanel.id
+      canvasPanelId
     )
-  }, [canvasPanel, activeSessionId, transport.apiBase])
+  }, [activeSessionId, canvasPanelId, transport.apiBase])
 
   const saveSnapshot = useCallback((nextSnapshot: StoreSnapshot) => {
+    canvasSnapshotRef.current = nextSnapshot
     setCanvasSnapshot(nextSnapshot)
-    setAppState((current) =>
-      current
+    setAppState((current) => {
+      const next = current
         ? {
             ...current,
             panels: current.panels.map((snapshot) =>
@@ -228,7 +338,9 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
               current.panel.kind === "canvas" ? nextSnapshot : current.state,
           }
         : current
-    )
+      appStateRef.current = next
+      return next
+    })
   }, [])
 
   const createProject = useCallback(async () => {
@@ -238,9 +350,13 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
     const data = (await response.json()) as BootstrapResponse
     window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, data.session.id)
     const normalized = normalizeBootstrap(data)
+    const nextCanvasSnapshot = canvasSnapshotFromState(normalized)
+    appStateRef.current = normalized
+    canvasSnapshotRef.current = nextCanvasSnapshot
+    canvasRevisionRef.current = canvasRevisionFromState(normalized)
+    skipNextCanvasSaveRef.current = true
     setSelection(null)
     setAppState(normalized)
-    const nextCanvasSnapshot = canvasSnapshotFromState(normalized)
     setCanvasSnapshot(nextCanvasSnapshot)
     setSnapshotLoadVersion((version) => version + 1)
     setSessions(data.sessions ?? (await fetchSessions(transport)))
@@ -310,6 +426,7 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
         activePanelId: string
         activePanelKind: OpenPanelsPanelKind
         panel: OpenPanelsPanel
+        revision?: number
         state: unknown
       }
       const normalizedState = normalizePanelState(data.panel.kind, data.state)
@@ -322,12 +439,15 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
           snapshot.panel.id === data.panel.id
             ? {
                 panel: data.panel,
+                revision: data.revision ?? snapshot.revision,
                 state: normalizedState,
               }
             : snapshot
         ),
+        revision: data.revision ?? appState.revision,
         state: normalizedState,
       }
+      appStateRef.current = nextAppState
       setSelection(null)
       setAppState((current) =>
         current && current.session.id === appState.session.id
@@ -338,6 +458,9 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
         const nextCanvasSnapshot = normalizeSnapshot(
           normalizedState as StoreSnapshot
         )
+        canvasSnapshotRef.current = nextCanvasSnapshot
+        canvasRevisionRef.current = data.revision ?? canvasRevisionRef.current
+        skipNextCanvasSaveRef.current = true
         setCanvasSnapshot(nextCanvasSnapshot)
       }
     },
@@ -351,18 +474,36 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
 
   useEffect(() => {
     if (!(appState && canvasPanel && canvasSnapshot)) return
+    if (skipNextCanvasSaveRef.current) {
+      skipNextCanvasSaveRef.current = false
+      return
+    }
     const timer = window.setTimeout(() => {
       savePanelState(
         transport,
         appState.session.id,
         canvasPanel.id,
-        canvasSnapshot
-      ).catch((error) => {
-        console.error("Failed to save OpenPanels canvas state", error)
-      })
+        canvasSnapshot,
+        canvasRevisionRef.current
+      )
+        .then((payload) => {
+          canvasRevisionRef.current = payload.revision
+        })
+        .catch((error) => {
+          if (error instanceof Error && error.message === "HTTP 409") {
+            loadProject(appState.session.id).catch((reloadError) => {
+              console.error(
+                "Failed to reload stale OpenPanels canvas",
+                reloadError
+              )
+            })
+            return
+          }
+          console.error("Failed to save OpenPanels canvas state", error)
+        })
     }, 400)
     return () => window.clearTimeout(timer)
-  }, [appState, canvasPanel, canvasSnapshot, transport])
+  }, [appState, canvasPanel, canvasSnapshot, loadProject, transport])
 
   useEffect(() => {
     if (!(appState && canvasPanel && selection)) return
@@ -442,11 +583,19 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
               onCheckUpdate={checkUpdateFromBadge}
             />
           ) : null}
-          <TraceToggleButton
+          <AgentToggleButton
             isOpen={isTraceOpen}
             onToggle={() => setIsTraceOpen((value) => !value)}
+            pendingCount={appState.pendingTaskCount ?? 0}
           />
         </div>
+        <TaskStatusButton
+          count={appState.pendingTaskCount ?? 0}
+          onPress={() => {
+            setAgentPanelTab("tasks")
+            setIsTraceOpen(true)
+          }}
+        />
         <UpdatePrompt
           action={updateAction}
           onRefresh={refreshUpdateStatus}
@@ -454,9 +603,12 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
           status={updateStatus}
         />
       </section>
-      <TracePanel
+      <AgentPanel
+        activeTab={agentPanelTab}
         buildInfo={appState.buildInfo}
         isOpen={isTraceOpen}
+        onTabChange={setAgentPanelTab}
+        tasks={appState.tasks ?? []}
         transport={transport}
       />
     </main>

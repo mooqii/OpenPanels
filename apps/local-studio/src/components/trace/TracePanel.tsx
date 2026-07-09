@@ -5,6 +5,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  ListTodo,
+  MessageSquare,
   Pause,
   Play,
   Trash2,
@@ -19,6 +21,7 @@ import {
 import type {
   OpenPanelsBuildInfo,
   OpenPanelsTransport,
+  ProjectTask,
   TraceCategory,
   TraceEvent,
 } from "../../types"
@@ -32,17 +35,21 @@ const TRACE_CATEGORIES: TraceCategory[] = [
   "error",
 ]
 
-export function TraceToggleButton({
+export type AgentPanelTab = "tasks" | "communication"
+
+export function AgentToggleButton({
   isOpen,
+  pendingCount,
   onToggle,
 }: {
   isOpen: boolean
+  pendingCount: number
   onToggle: () => void
 }) {
   return (
     <Button
       aria-expanded={isOpen}
-      aria-label={isOpen ? "折叠通信面板" : "展开通信面板"}
+      aria-label={isOpen ? "折叠 Agent 面板" : "展开 Agent 面板"}
       className={`op-trace-toggle ${isOpen ? "op-trace-toggle--active" : ""}`}
       isIconOnly
       onPress={onToggle}
@@ -51,17 +58,51 @@ export function TraceToggleButton({
     >
       <Activity size={14} />
       {isOpen ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+      {pendingCount > 0 ? (
+        <span className="op-trace-toggle__dot">
+          {formatTaskCount(pendingCount)}
+        </span>
+      ) : null}
     </Button>
   )
 }
 
-export function TracePanel({
+export function TaskStatusButton({
+  count,
+  onPress,
+}: {
+  count: number
+  onPress: () => void
+}) {
+  if (count <= 0) return null
+  return (
+    <Button
+      aria-label={`${count} pending OpenPanels task${count === 1 ? "" : "s"}`}
+      className="op-task-status-button"
+      isIconOnly
+      onPress={onPress}
+      size="sm"
+      variant="danger"
+    >
+      <ListTodo size={13} />
+      <span>{formatTaskCount(count)}</span>
+    </Button>
+  )
+}
+
+export function AgentPanel({
+  activeTab,
   buildInfo,
   isOpen,
+  onTabChange,
+  tasks,
   transport,
 }: {
+  activeTab: AgentPanelTab
   buildInfo?: OpenPanelsBuildInfo
   isOpen: boolean
+  onTabChange: (tab: AgentPanelTab) => void
+  tasks: ProjectTask[]
   transport: OpenPanelsTransport
 }) {
   const isDevelopment = buildInfo?.channel === "development"
@@ -147,82 +188,128 @@ export function TracePanel({
 
   return (
     <aside
-      aria-label="OpenPanels communication stream"
+      aria-label="OpenPanels Agent panel"
       className={`op-trace-panel ${isOpen ? "op-trace-panel--open" : ""}`}
     >
       <div className="op-trace-panel__body">
         <header className="op-trace-panel__header">
           <div>
-            <strong>
-              {isDevelopment ? "Communication Trace" : "Activity"}
-            </strong>
-            <span>{formatTraceConnection(connectionState)}</span>
+            <strong>Agent</strong>
+            <span>
+              {activeTab === "communication"
+                ? formatTraceConnection(connectionState)
+                : `${pendingTaskCount(tasks)} pending task${pendingTaskCount(tasks) === 1 ? "" : "s"}`}
+            </span>
           </div>
           <div className="op-trace-panel__actions">
-            <Button
-              aria-label={
-                isPaused
-                  ? "Resume communication stream"
-                  : "Pause communication stream"
-              }
-              isIconOnly
-              onPress={() => setIsPaused((value) => !value)}
-              size="sm"
-              variant="ghost"
-            >
-              {isPaused ? <Play size={15} /> : <Pause size={15} />}
-            </Button>
-            <Button
-              aria-label="Clear communication view"
-              isIconOnly
-              onPress={() => setEvents([])}
-              size="sm"
-              variant="ghost"
-            >
-              <Trash2 size={15} />
-            </Button>
+            {activeTab === "communication" ? (
+              <>
+                <Button
+                  aria-label={
+                    isPaused
+                      ? "Resume communication stream"
+                      : "Pause communication stream"
+                  }
+                  isIconOnly
+                  onPress={() => setIsPaused((value) => !value)}
+                  size="sm"
+                  variant="ghost"
+                >
+                  {isPaused ? <Play size={15} /> : <Pause size={15} />}
+                </Button>
+                <Button
+                  aria-label="Clear communication view"
+                  isIconOnly
+                  onPress={() => setEvents([])}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <Trash2 size={15} />
+                </Button>
+              </>
+            ) : null}
           </div>
         </header>
 
-        <div
-          className="op-trace-panel__events"
-          onScroll={onScroll}
-          ref={scrollRef}
-        >
-          {visibleEvents.length ? (
-            visibleEvents.map((event) => (
-              <TraceEventRow
-                event={event}
-                isDevelopment={isDevelopment}
-                key={event.id}
-              />
-            ))
-          ) : (
-            <div className="op-trace-panel__empty">
-              {isDevelopment
-                ? "No communication events in this view."
-                : "No agent activity yet."}
-            </div>
-          )}
+        <div className="op-agent-panel__tabs" role="tablist">
+          <button
+            aria-selected={activeTab === "tasks"}
+            className={
+              activeTab === "tasks"
+                ? "op-agent-panel__tab op-agent-panel__tab--active"
+                : "op-agent-panel__tab"
+            }
+            onClick={() => onTabChange("tasks")}
+            role="tab"
+            type="button"
+          >
+            <ListTodo size={14} />
+            Tasks
+            {pendingTaskCount(tasks) > 0 ? (
+              <span>{formatTaskCount(pendingTaskCount(tasks))}</span>
+            ) : null}
+          </button>
+          <button
+            aria-selected={activeTab === "communication"}
+            className={
+              activeTab === "communication"
+                ? "op-agent-panel__tab op-agent-panel__tab--active"
+                : "op-agent-panel__tab"
+            }
+            onClick={() => onTabChange("communication")}
+            role="tab"
+            type="button"
+          >
+            <MessageSquare size={14} />
+            Communication
+          </button>
         </div>
 
-        {!isFollowing && visibleEvents.length ? (
-          <Button
-            className="op-trace-panel__jump"
-            onPress={() => {
-              setIsFollowing(true)
-              const element = scrollRef.current
-              if (element) element.scrollTop = element.scrollHeight
-            }}
-            size="sm"
-            variant="secondary"
-          >
-            <ArrowDown size={15} />
-            Latest
-          </Button>
-        ) : null}
+        {activeTab === "tasks" ? (
+          <TaskList tasks={tasks} />
+        ) : (
+          <>
+            <div
+              className="op-trace-panel__events"
+              onScroll={onScroll}
+              ref={scrollRef}
+            >
+              {visibleEvents.length ? (
+                visibleEvents.map((event) => (
+                  <TraceEventRow
+                    event={event}
+                    isDevelopment={isDevelopment}
+                    key={event.id}
+                  />
+                ))
+              ) : (
+                <div className="op-trace-panel__empty">
+                  {isDevelopment
+                    ? "No communication events in this view."
+                    : "No agent activity yet."}
+                </div>
+              )}
+            </div>
 
-        {isDevelopment ? (
+            {!isFollowing && visibleEvents.length ? (
+              <Button
+                className="op-trace-panel__jump"
+                onPress={() => {
+                  setIsFollowing(true)
+                  const element = scrollRef.current
+                  if (element) element.scrollTop = element.scrollHeight
+                }}
+                size="sm"
+                variant="secondary"
+              >
+                <ArrowDown size={15} />
+                Latest
+              </Button>
+            ) : null}
+          </>
+        )}
+
+        {activeTab === "communication" && isDevelopment ? (
           <footer className="op-trace-panel__filters">
             {TRACE_CATEGORIES.map((category) => (
               <Button
@@ -244,6 +331,45 @@ export function TracePanel({
         ) : null}
       </div>
     </aside>
+  )
+}
+
+function TaskList({ tasks }: { tasks: ProjectTask[] }) {
+  if (!tasks.length) {
+    return (
+      <div className="op-agent-tasks">
+        <div className="op-trace-panel__empty">No project tasks yet.</div>
+      </div>
+    )
+  }
+  return (
+    <div className="op-agent-tasks">
+      {tasks.map((task) => (
+        <article
+          className={`op-agent-task op-agent-task--${taskStatusTone(task.status)}`}
+          key={task.id}
+        >
+          <div className="op-agent-task__topline">
+            <Chip
+              className="op-agent-task__queue"
+              color={taskStatusColor(task.status)}
+              size="sm"
+              variant="soft"
+            >
+              {task.queue}
+            </Chip>
+            <span>{formatTaskTime(task.updatedAt)}</span>
+          </div>
+          <strong>{formatTaskType(task.type)}</strong>
+          <div className="op-agent-task__meta">
+            <span>{task.status}</span>
+            <span>{task.panelKind}</span>
+            <span>{task.targetId || task.id}</span>
+          </div>
+          <code>{task.id}</code>
+        </article>
+      ))}
+    </div>
   )
 }
 
@@ -332,6 +458,60 @@ export function BuildVersionBadge({
       {isChecking ? "checking..." : label}
     </Button>
   )
+}
+
+function pendingTaskCount(tasks: ProjectTask[]): number {
+  return tasks.filter(
+    (task) => task.status === "queued" || task.status === "failed"
+  ).length
+}
+
+function formatTaskCount(count: number): string {
+  return count > 99 ? "99+" : String(count)
+}
+
+function formatTaskType(type: string): string {
+  return type
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+}
+
+function formatTaskTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+    day: "numeric",
+  }).format(date)
+}
+
+function taskStatusTone(status: string): string {
+  if (status === "failed") return "danger"
+  if (status === "queued") return "warning"
+  if (["running", "claimed", "converting", "indexing"].includes(status)) {
+    return "active"
+  }
+  if (status === "succeeded") return "success"
+  return "muted"
+}
+
+function taskStatusColor(status: string) {
+  switch (taskStatusTone(status)) {
+    case "danger":
+      return "danger"
+    case "warning":
+      return "warning"
+    case "success":
+      return "success"
+    case "active":
+      return "accent"
+    default:
+      return "default"
+  }
 }
 
 function traceCategoryColor(category: TraceCategory) {

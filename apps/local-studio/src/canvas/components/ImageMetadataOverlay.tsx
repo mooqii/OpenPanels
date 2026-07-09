@@ -10,19 +10,64 @@ type ParsedImageMetadata = {
     height: number | null
     width: number | null
   }
+  generation: {
+    model: string | null
+    prompt: string | null
+    references: string[]
+  }
   mimeType: string | null
   name: string | null
 }
 
 export function parseImageMetadata(asset: Asset): ParsedImageMetadata {
+  const generation = parseGenerationMetadata(asset.meta)
   return {
     dimensions: {
       width: "w" in asset.props ? asset.props.w : null,
       height: "h" in asset.props ? asset.props.h : null,
     },
+    generation,
     mimeType: "mimeType" in asset.props ? asset.props.mimeType : null,
     name: "name" in asset.props ? asset.props.name : null,
   }
+}
+
+function parseGenerationMetadata(
+  meta: unknown
+): ParsedImageMetadata["generation"] {
+  const generateOptions =
+    meta && typeof meta === "object" && !Array.isArray(meta)
+      ? (meta as { generateOptions?: unknown }).generateOptions
+      : null
+  const options =
+    generateOptions &&
+    typeof generateOptions === "object" &&
+    !Array.isArray(generateOptions)
+      ? (generateOptions as Record<string, unknown>)
+      : {}
+  return {
+    model: typeof options.model === "string" ? options.model : null,
+    prompt: typeof options.prompt === "string" ? options.prompt : null,
+    references: parseReferenceImages(options.referenceImages),
+  }
+}
+
+function parseReferenceImages(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => {
+      if (typeof item === "string") return item
+      if (!(item && typeof item === "object" && !Array.isArray(item))) {
+        return null
+      }
+      const record = item as Record<string, unknown>
+      for (const key of ["path", "assetRef", "url", "shapeId", "id"]) {
+        const value = record[key]
+        if (typeof value === "string" && value.trim()) return value
+      }
+      return null
+    })
+    .filter((item): item is string => Boolean(item))
 }
 
 function stopWheelPropagation(event: WheelEvent<HTMLElement>) {
@@ -60,6 +105,16 @@ export function ImageMetadataTooltipContent({ asset }: { asset: Asset }) {
         <MetadataRow label={t`Name`} value={parsed.name} />
         <MetadataRow label={t`Dimensions`} value={dimensionsLabel} />
         <MetadataRow label={t`Type`} value={parsed.mimeType} />
+        <MetadataRow label={t`Prompt`} value={parsed.generation.prompt} />
+        <MetadataRow label={t`Model`} value={parsed.generation.model} />
+        <MetadataRow
+          label={t`References`}
+          value={
+            parsed.generation.references.length
+              ? parsed.generation.references.join("\n")
+              : null
+          }
+        />
       </dl>
     </div>
   )

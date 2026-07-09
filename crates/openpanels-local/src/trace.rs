@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 const TRACE_LIMIT: usize = 500;
 const TEXT_LIMIT: usize = 8000;
 const RELEASE_TEXT_LIMIT: usize = 360;
+const DEFAULT_RELEASE_SUMMARY: &str = "OpenPanels activity";
 
 static TRACE_HUB: OnceLock<TraceHub> = OnceLock::new();
 
@@ -129,14 +130,14 @@ pub fn event_for_audience(event: &Value, audience: &str) -> Option<Value> {
         return Some(event.clone());
     }
     let category = event.get("category").and_then(Value::as_str).unwrap_or("");
-    if !matches!(category, "task" | "system" | "error") {
-        return None;
-    }
     let release_summary = event
         .get("releaseSummary")
         .and_then(Value::as_str)
         .or_else(|| event.get("summary").and_then(Value::as_str))
-        .unwrap_or("OpenPanels activity");
+        .unwrap_or(DEFAULT_RELEASE_SUMMARY);
+    if !is_release_visible_event(category, release_summary) {
+        return None;
+    }
     Some(json!({
         "id": event.get("id").cloned().unwrap_or(Value::Null),
         "seq": event.get("seq").cloned().unwrap_or(Value::Null),
@@ -215,8 +216,16 @@ fn release_summary_for(category: &str, summary: &str) -> String {
     if matches!(category, "task" | "system" | "error") {
         truncate_text(summary, RELEASE_TEXT_LIMIT)
     } else {
-        "OpenPanels activity".to_owned()
+        DEFAULT_RELEASE_SUMMARY.to_owned()
     }
+}
+
+fn is_release_visible_event(category: &str, release_summary: &str) -> bool {
+    if matches!(category, "task" | "system" | "error") {
+        return true;
+    }
+
+    matches!(category, "agent") && release_summary != DEFAULT_RELEASE_SUMMARY
 }
 
 fn sanitize_value(value: Value, depth: usize) -> Value {
@@ -419,6 +428,28 @@ mod tests {
         });
         record(TraceEventInput {
             audience: None,
+            category: Some("agent".to_owned()),
+            detail: Some(json!({ "stdout": "raw agent output" })),
+            direction: Some("stdout".to_owned()),
+            release_summary: None,
+            run_id: None,
+            source: Some("test".to_owned()),
+            summary: Some("agent stdout raw".to_owned()),
+            task_id: Some("task:raw".to_owned()),
+        });
+        record(TraceEventInput {
+            audience: None,
+            category: Some("agent".to_owned()),
+            detail: Some(json!({ "stdin": "raw worker prompt" })),
+            direction: Some("spawn".to_owned()),
+            release_summary: Some("Started local agent worker".to_owned()),
+            run_id: None,
+            source: Some("test".to_owned()),
+            summary: Some("Spawning local agent worker".to_owned()),
+            task_id: Some("task:visible".to_owned()),
+        });
+        record(TraceEventInput {
+            audience: None,
             category: Some("task".to_owned()),
             detail: Some(json!({ "prompt": "raw" })),
             direction: None,
@@ -430,10 +461,14 @@ mod tests {
         });
         let snapshot = snapshot("release");
         let events = snapshot["events"].as_array().unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         let serialized = serde_json::to_string(&events[0]).unwrap();
+        assert!(serialized.contains("Started local agent worker"));
+        assert!(!serialized.contains("raw worker prompt"));
+        let serialized = serde_json::to_string(&events[1]).unwrap();
         assert!(serialized.contains("Document indexed"));
         assert!(!serialized.contains("prompt"));
         assert!(!serialized.contains("raw cli output"));
+        assert!(!serialized.contains("raw agent output"));
     }
 }

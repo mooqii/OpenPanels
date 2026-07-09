@@ -2,7 +2,8 @@ use crate::error::CliError;
 use crate::paths::{sanitize_path_part, OpenPanelsPaths};
 use crate::types::{Panel, Session};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -11,6 +12,12 @@ pub const DATABASE_FILE_NAME: &str = "main.sqlite3";
 pub struct Storage {
     connection: Connection,
     root_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PanelStateWriteConflict {
+    pub base_revision: i64,
+    pub current_revision: i64,
 }
 
 impl Storage {
@@ -87,6 +94,7 @@ impl Storage {
                 ],
             )
             .map_err(to_cli_error)?;
+        self.record_change("session", Some(&session.id), None)?;
         Ok(())
     }
 
@@ -107,6 +115,7 @@ impl Storage {
                 }
             })
             .map_err(to_cli_error)?;
+        self.record_change("session", Some(session_id), None)?;
         Ok(())
     }
 
@@ -151,6 +160,7 @@ impl Storage {
                 ],
             )
             .map_err(to_cli_error)?;
+        self.record_change("panel", Some(&panel.session_id), Some(&panel.id))?;
         Ok(())
     }
 
@@ -176,7 +186,7 @@ impl Storage {
         session_id: &str,
         panel_id: &str,
         state: &Value,
-    ) -> Result<(), CliError> {
+    ) -> Result<i64, CliError> {
         self.connection
             .execute(
                 r#"
@@ -198,7 +208,26 @@ impl Storage {
                 ],
             )
             .map_err(to_cli_error)?;
-        Ok(())
+        self.record_change("panel_state", Some(session_id), Some(panel_id))
+    }
+
+    pub fn write_panel_state_if_current(
+        &self,
+        session_id: &str,
+        panel_id: &str,
+        state: &Value,
+        base_revision: Option<i64>,
+    ) -> Result<Result<i64, PanelStateWriteConflict>, CliError> {
+        if let Some(base_revision) = base_revision {
+            let current_revision = self.read_panel_state_revision(session_id, panel_id)?;
+            if base_revision < current_revision {
+                return Ok(Err(PanelStateWriteConflict {
+                    base_revision,
+                    current_revision,
+                }));
+            }
+        }
+        self.write_panel_state(session_id, panel_id, state).map(Ok)
     }
 
     pub fn sync_wiki_tasks(
@@ -277,6 +306,150 @@ impl Storage {
         Ok(())
     }
 
+    pub fn sync_project_tasks_from_panel(
+        &self,
+        session_id: &str,
+        panel_id: &str,
+        panel_kind: &str,
+        queue: &str,
+        state: &Value,
+    ) -> Result<(), CliError> {
+        let existing_task_times = self.read_project_task_times(session_id, panel_id, queue)?;
+        self.connection
+            .execute(
+                "DELETE FROM project_tasks WHERE session_id = ? AND panel_id = ? AND queue = ?",
+                params![session_id, panel_id, queue],
+            )
+            .map_err(to_cli_error)?;
+        for task in state
+            .get("tasks")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let id = task
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| CliError::new("Project task id is required."))?;
+            let existing_times = existing_task_times.get(id);
+            let created_at = task
+                .get("createdAt")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| existing_times.map(|(created_at, _)| created_at.clone()))
+                .unwrap_or_else(crate::control::now_iso);
+            let updated_at = task
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| existing_times.map(|(_, updated_at)| updated_at.clone()))
+                .unwrap_or_else(|| created_at.clone());
+            self.connection
+                .execute(
+                    r#"
+                    INSERT INTO project_tasks (
+                      id, queue, session_id, panel_id, panel_kind, type, status,
+                      target_id, created_at, updated_at, task_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                      queue = excluded.queue,
+                      session_id = excluded.session_id,
+                      panel_id = excluded.panel_id,
+                      panel_kind = excluded.panel_kind,
+                      type = excluded.type,
+                      status = excluded.status,
+                      target_id = excluded.target_id,
+                      created_at = excluded.created_at,
+                      updated_at = excluded.updated_at,
+                      task_json = excluded.task_json
+                    "#,
+                    params![
+                        id,
+                        queue,
+                        session_id,
+                        panel_id,
+                        panel_kind,
+                        task.get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown"),
+                        task.get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("queued"),
+                        task.get("targetId").and_then(Value::as_str).unwrap_or(""),
+                        created_at,
+                        updated_at,
+                        serde_json::to_string(task).map_err(to_cli_error)?,
+                    ],
+                )
+                .map_err(to_cli_error)?;
+        }
+        Ok(())
+    }
+
+    fn read_project_task_times(
+        &self,
+        session_id: &str,
+        panel_id: &str,
+        queue: &str,
+    ) -> Result<HashMap<String, (String, String)>, CliError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"
+                SELECT id, created_at, updated_at
+                FROM project_tasks
+                WHERE session_id = ? AND panel_id = ? AND queue = ?
+                "#,
+            )
+            .map_err(to_cli_error)?;
+        let rows = statement
+            .query_map(params![session_id, panel_id, queue], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (row.get::<_, String>(1)?, row.get::<_, String>(2)?),
+                ))
+            })
+            .map_err(to_cli_error)?;
+        rows.map(|row| row.map_err(to_cli_error)).collect()
+    }
+
+    pub fn list_project_tasks(&self, session_id: &str) -> Result<Vec<Value>, CliError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"
+                SELECT
+                  id, queue, session_id, panel_id, panel_kind, type, status,
+                  target_id, created_at, updated_at, task_json
+                FROM project_tasks
+                WHERE session_id = ?
+                ORDER BY updated_at DESC, id ASC
+                "#,
+            )
+            .map_err(to_cli_error)?;
+        let rows = statement
+            .query_map(params![session_id], |row| {
+                let task_json: String = row.get(10)?;
+                let task = serde_json::from_str::<Value>(&task_json).unwrap_or_else(|_| json!({}));
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "queue": row.get::<_, String>(1)?,
+                    "sessionId": row.get::<_, String>(2)?,
+                    "panelId": row.get::<_, String>(3)?,
+                    "panelKind": row.get::<_, String>(4)?,
+                    "type": row.get::<_, String>(5)?,
+                    "status": row.get::<_, String>(6)?,
+                    "targetId": row.get::<_, String>(7)?,
+                    "createdAt": row.get::<_, String>(8)?,
+                    "updatedAt": row.get::<_, String>(9)?,
+                    "task": task,
+                }))
+            })
+            .map_err(to_cli_error)?;
+        rows.map(|row| row.map_err(to_cli_error)).collect()
+    }
+
     pub fn write_artifact(&self, session_id: &str, artifact: &Value) -> Result<(), CliError> {
         let id = artifact
             .get("id")
@@ -314,6 +487,7 @@ impl Storage {
                 ],
             )
             .map_err(to_cli_error)?;
+        self.record_change("artifact", Some(session_id), None)?;
         Ok(())
     }
 
@@ -356,6 +530,7 @@ impl Storage {
                 ],
             )
             .map_err(to_cli_error)?;
+        self.record_change("panel_selection", Some(session_id), Some(panel_id))?;
         Ok(())
     }
 
@@ -425,6 +600,52 @@ impl Storage {
             .join(sanitize_path_part(session_id))
             .join("panels")
             .join(sanitize_path_part(panel_id))
+    }
+
+    pub fn read_change_seq(&self) -> Result<i64, CliError> {
+        self.connection
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM storage_changes",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(to_cli_error)
+    }
+
+    pub fn read_panel_state_revision(
+        &self,
+        session_id: &str,
+        panel_id: &str,
+    ) -> Result<i64, CliError> {
+        self.connection
+            .query_row(
+                r#"
+                SELECT COALESCE(MAX(seq), 0)
+                FROM storage_changes
+                WHERE kind = 'panel_state' AND session_id = ? AND panel_id = ?
+                "#,
+                params![session_id, panel_id],
+                |row| row.get(0),
+            )
+            .map_err(to_cli_error)
+    }
+
+    fn record_change(
+        &self,
+        kind: &str,
+        session_id: Option<&str>,
+        panel_id: Option<&str>,
+    ) -> Result<i64, CliError> {
+        self.connection
+            .execute(
+                r#"
+                INSERT INTO storage_changes (kind, session_id, panel_id, created_at)
+                VALUES (?, ?, ?, ?)
+                "#,
+                params![kind, session_id, panel_id, crate::control::now_iso()],
+            )
+            .map_err(to_cli_error)?;
+        Ok(self.connection.last_insert_rowid())
     }
 }
 
@@ -576,6 +797,29 @@ fn migrate(connection: &Connection) -> Result<(), CliError> {
             CREATE INDEX IF NOT EXISTS wiki_tasks_panel_status_idx
               ON wiki_tasks(session_id, panel_id, status, updated_at ASC);
 
+            CREATE TABLE IF NOT EXISTS project_tasks (
+              id TEXT PRIMARY KEY NOT NULL,
+              queue TEXT NOT NULL,
+              session_id TEXT NOT NULL,
+              panel_id TEXT NOT NULL,
+              panel_kind TEXT NOT NULL,
+              type TEXT NOT NULL,
+              status TEXT NOT NULL,
+              target_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              task_json TEXT NOT NULL,
+              FOREIGN KEY (session_id, panel_id)
+                REFERENCES panels(session_id, id)
+                ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS project_tasks_session_updated_idx
+              ON project_tasks(session_id, updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS project_tasks_session_status_idx
+              ON project_tasks(session_id, status, updated_at DESC);
+
             CREATE TABLE IF NOT EXISTS key_values (
               namespace TEXT NOT NULL,
               key TEXT NOT NULL,
@@ -583,6 +827,17 @@ fn migrate(connection: &Connection) -> Result<(), CliError> {
               updated_at TEXT NOT NULL,
               PRIMARY KEY (namespace, key)
             );
+
+            CREATE TABLE IF NOT EXISTS storage_changes (
+              seq INTEGER PRIMARY KEY AUTOINCREMENT,
+              kind TEXT NOT NULL,
+              session_id TEXT,
+              panel_id TEXT,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS storage_changes_seq_idx
+              ON storage_changes(seq);
             "#,
         )
         .map_err(to_cli_error)?;
@@ -596,9 +851,193 @@ fn migrate(connection: &Connection) -> Result<(), CliError> {
             params![crate::control::now_iso()],
         )
         .map_err(to_cli_error)?;
+    connection
+        .execute(
+            r#"
+            INSERT OR IGNORE INTO schema_migrations (id, description, checksum, applied_at)
+            VALUES ('0002_project_tasks', 'Add generic project task queue index', 'rust-project-tasks-v1', ?)
+            "#,
+            params![crate::control::now_iso()],
+        )
+        .map_err(to_cli_error)?;
     Ok(())
 }
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {
     CliError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::OpenPanelsPaths;
+    use crate::types::{Panel, PanelKind, Session};
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    fn paths_for(storage_dir: PathBuf) -> OpenPanelsPaths {
+        OpenPanelsPaths {
+            context_dir: storage_dir.join("contexts").join("test"),
+            context_id: "test".to_owned(),
+            context_id_source: "test".to_owned(),
+            project_dir: storage_dir.join("project"),
+            storage_dir,
+        }
+    }
+
+    #[test]
+    fn storage_writes_advance_change_seq() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+
+        assert_eq!(storage.read_change_seq().expect("initial seq"), 0);
+
+        let session = Session {
+            id: "session:test".to_owned(),
+            title: "Test".to_owned(),
+            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            panel_ids: vec!["panel:canvas".to_owned()],
+        };
+        storage.write_session(&session).expect("write session");
+        let after_session = storage.read_change_seq().expect("session seq");
+        assert!(after_session > 0);
+
+        let panel = Panel {
+            id: "panel:canvas".to_owned(),
+            session_id: session.id.clone(),
+            kind: PanelKind::Canvas,
+            title: "Canvas".to_owned(),
+            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            state_ref: None,
+        };
+        storage.write_panel(&panel).expect("write panel");
+        let after_panel = storage.read_change_seq().expect("panel seq");
+        assert!(after_panel > after_session);
+
+        storage
+            .write_panel_state(
+                &session.id,
+                &panel.id,
+                &json!({ "schemaVersion": 1, "store": {} }),
+            )
+            .expect("write state");
+        let after_state = storage.read_change_seq().expect("state seq");
+        assert!(after_state > after_panel);
+        assert_eq!(
+            storage
+                .read_panel_state_revision(&session.id, &panel.id)
+                .expect("state revision"),
+            after_state
+        );
+
+        let stale_write = storage
+            .write_panel_state_if_current(
+                &session.id,
+                &panel.id,
+                &json!({ "schemaVersion": 1, "store": { "stale": true } }),
+                Some(after_panel),
+            )
+            .expect("stale write");
+        assert_eq!(
+            stale_write,
+            Err(PanelStateWriteConflict {
+                base_revision: after_panel,
+                current_revision: after_state,
+            })
+        );
+
+        storage
+            .write_panel_selection(&session.id, &panel.id, &json!({ "selectedShapeIds": [] }))
+            .expect("write selection");
+        let after_selection = storage.read_change_seq().expect("selection seq");
+        assert!(after_selection > after_state);
+    }
+
+    #[test]
+    fn storage_records_project_tasks_migration() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+
+        let migration_count: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE id IN ('0001_initial', '0002_project_tasks')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration count");
+        assert_eq!(migration_count, 2);
+
+        let table_count: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'project_tasks'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("project_tasks table");
+        assert_eq!(table_count, 1);
+    }
+
+    #[test]
+    fn project_task_sync_preserves_existing_times_when_task_omits_them() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        let session = Session {
+            id: "session:test".to_owned(),
+            title: "Test".to_owned(),
+            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            panel_ids: vec!["panel:wiki".to_owned()],
+        };
+        storage.write_session(&session).expect("write session");
+        let panel = Panel {
+            id: "panel:wiki".to_owned(),
+            session_id: session.id.clone(),
+            kind: PanelKind::Wiki,
+            title: "Wiki".to_owned(),
+            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            state_ref: None,
+        };
+        storage.write_panel(&panel).expect("write panel");
+        let state = json!({
+            "tasks": [{
+                "id": "task:missing-times",
+                "type": "demo",
+                "status": "queued",
+                "targetId": "target",
+            }],
+        });
+
+        storage
+            .sync_project_tasks_from_panel(&session.id, &panel.id, "wiki", "wiki", &state)
+            .expect("initial sync");
+        storage
+            .connection
+            .execute(
+                r#"
+                UPDATE project_tasks
+                SET created_at = 'created:stable', updated_at = 'updated:stable'
+                WHERE id = 'task:missing-times'
+                "#,
+                [],
+            )
+            .expect("seed stable times");
+        storage
+            .sync_project_tasks_from_panel(&session.id, &panel.id, "wiki", "wiki", &state)
+            .expect("repeat sync");
+
+        let tasks = storage
+            .list_project_tasks(&session.id)
+            .expect("project tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["createdAt"], json!("created:stable"));
+        assert_eq!(tasks[0]["updatedAt"], json!("updated:stable"));
+    }
 }

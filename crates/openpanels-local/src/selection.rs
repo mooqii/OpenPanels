@@ -83,8 +83,19 @@ pub fn read_selection_asset_to_file(
     paths: &OpenPanelsPaths,
     requested_session_id: Option<&str>,
     output_path: &str,
+    allow_fallback: bool,
 ) -> Result<SelectionAssetPayload, CliError> {
     let selection = read_selection(paths, requested_session_id, true)?;
+    let is_explicit_selection = selection
+        .selection
+        .get("isExplicitSelection")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !is_explicit_selection && !allow_fallback {
+        return Err(CliError::new(
+            "No explicit MyOpenPanels selection asset is available. Re-select the image or pass --allow-fallback to use the fallback image.",
+        ));
+    }
     let asset_ref = selection
         .selection
         .get("assetRef")
@@ -230,11 +241,15 @@ fn with_last_image_fallback(selection: Value, state: Option<Value>) -> Value {
         .map(|items| !items.is_empty())
         .unwrap_or(false);
     if selected_shapes {
-        return selection;
+        let mut next = selection.as_object().cloned().unwrap_or_default();
+        next.insert("isExplicitSelection".to_owned(), json!(true));
+        return Value::Object(next);
     }
 
     let Some(fallback) = find_last_image_selection_shape(state.as_ref()) else {
-        return selection;
+        let mut next = selection.as_object().cloned().unwrap_or_default();
+        next.insert("isExplicitSelection".to_owned(), json!(false));
+        return Value::Object(next);
     };
     let mut next = selection.as_object().cloned().unwrap_or_default();
     let fallback_id = fallback
@@ -250,6 +265,7 @@ fn with_last_image_fallback(selection: Value, state: Option<Value>) -> Value {
     next.insert("selectedShapeIds".to_owned(), json!([fallback_id]));
     next.insert("selectedShapes".to_owned(), json!([fallback]));
     next.insert("assetRef".to_owned(), asset_ref);
+    next.insert("isExplicitSelection".to_owned(), json!(false));
     next.insert(
         "fallback".to_owned(),
         Value::String("last-image".to_owned()),

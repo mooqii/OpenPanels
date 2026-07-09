@@ -1,9 +1,17 @@
-import { Chip } from "@heroui/react"
+import { Button, Chip } from "@heroui/react"
 import { FileText } from "lucide-react"
 import { type OpenPanelsLocale, useOpenPanelsI18n } from "../../canvas"
 import type { WikiRawDocument } from "../../types"
 
-export function WikiStatus({ document }: { document: WikiRawDocument }) {
+export function WikiStatus({
+  document,
+  isDisabled,
+  onOpenMarkdown,
+}: {
+  document: WikiRawDocument
+  isDisabled?: boolean
+  onOpenMarkdown?: () => void
+}) {
   const { t } = useOpenPanelsI18n()
   if (document.conversion.status === "failed") {
     return (
@@ -23,9 +31,16 @@ export function WikiStatus({ document }: { document: WikiRawDocument }) {
     )
   }
   return (
-    <Chip aria-label={t`Ready`} color="success" size="sm" variant="soft">
+    <Button
+      aria-label={t`Open Markdown`}
+      isDisabled={isDisabled}
+      isIconOnly
+      onPress={onOpenMarkdown}
+      size="sm"
+      variant="ghost"
+    >
       <FileText size={15} />
-    </Chip>
+    </Button>
   )
 }
 

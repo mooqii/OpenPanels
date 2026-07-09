@@ -1,4 +1,4 @@
-use crate::control::{ensure_project_bootstrap, now_iso, BootstrapRequest};
+use crate::control::{now_iso, read_project_bootstrap, BootstrapRequest};
 use crate::error::CliError;
 use crate::paths::{sanitize_path_part, OpenPanelsPaths};
 use crate::storage::Storage;

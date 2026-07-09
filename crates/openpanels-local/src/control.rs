@@ -1,6 +1,7 @@
 use crate::error::CliError;
 use crate::paths::OpenPanelsPaths;
 use crate::storage::Storage;
+use crate::tasks::pending_task_count;
 use crate::types::{Panel, PanelKind, ProjectBootstrap, ProjectPanelSnapshot, Session};
 use rand::Rng;
 use serde_json::{json, Value};
@@ -48,6 +49,19 @@ pub fn ensure_project_bootstrap(
     }
 
     let panels = read_panel_snapshots(&storage, &session)?;
+    for snapshot in &panels {
+        if snapshot.panel.kind == PanelKind::Wiki {
+            storage.sync_project_tasks_from_panel(
+                &session.id,
+                &snapshot.panel.id,
+                snapshot.panel.kind.as_str(),
+                "wiki",
+                &snapshot.state,
+            )?;
+        }
+    }
+    let tasks = storage.list_project_tasks(&session.id)?;
+    let pending_task_count = pending_task_count(&tasks);
     let active_panel = read_active_panel(paths)?;
     let preferred_kind = request
         .requested_panel_kind
@@ -92,10 +106,98 @@ pub fn ensure_project_bootstrap(
             .display()
             .to_string(),
         panels,
+        pending_task_count,
+        revision: snapshot.revision,
         session,
         sessions: storage.list_sessions()?,
         state: snapshot.state.clone(),
         storage_dir: paths.storage_dir.display().to_string(),
+        tasks,
+    })
+}
+
+pub fn read_project_bootstrap(
+    paths: &OpenPanelsPaths,
+    request: BootstrapRequest,
+) -> Result<ProjectBootstrap, CliError> {
+    let storage = Storage::open(paths)?;
+    let sessions = storage.list_sessions()?;
+    let active_session_id = read_active_session(paths)?;
+    let session =
+        requested_or_active_session(&storage, &request, active_session_id.as_deref())?
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "no_current_project",
+                    "No current MyOpenPanels project is available. Create a project explicitly with `openpanels-local project create`.",
+                )
+            })?;
+
+    let panels = read_panel_snapshots(&storage, &session)?;
+    for snapshot in &panels {
+        if snapshot.panel.kind == PanelKind::Wiki {
+            storage.sync_project_tasks_from_panel(
+                &session.id,
+                &snapshot.panel.id,
+                snapshot.panel.kind.as_str(),
+                "wiki",
+                &snapshot.state,
+            )?;
+        }
+    }
+    let tasks = storage.list_project_tasks(&session.id)?;
+    let pending_task_count = pending_task_count(&tasks);
+    let active_panel = read_active_panel(paths)?;
+    let preferred_kind = request
+        .requested_panel_kind
+        .or_else(|| {
+            active_panel.as_ref().and_then(|active| {
+                if active.session_id.as_deref() == Some(&session.id) {
+                    active.kind
+                } else {
+                    None
+                }
+            })
+        })
+        .or_else(|| active_panel.as_ref().and_then(|active| active.kind));
+
+    let snapshot = request
+        .requested_panel_id
+        .as_deref()
+        .and_then(|panel_id| panels.iter().find(|item| item.panel.id == panel_id))
+        .or_else(|| {
+            preferred_kind.and_then(|kind| panels.iter().find(|item| item.panel.kind == kind))
+        })
+        .or_else(|| {
+            panels
+                .iter()
+                .find(|item| item.panel.kind == DEFAULT_ACTIVE_PANEL_KIND)
+        })
+        .or_else(|| panels.first())
+        .ok_or_else(|| CliError::new(format!("OpenPanels project has no panels: {}", session.id)))?
+        .clone();
+
+    write_active_session(paths, &session.id)?;
+    write_active_panel(paths, &snapshot.panel)?;
+
+    Ok(ProjectBootstrap {
+        active_panel_id: snapshot.panel.id.clone(),
+        active_panel_kind: snapshot.panel.kind,
+        context_dir: paths.context_dir.display().to_string(),
+        context_id: paths.context_id.clone(),
+        context_id_source: paths.context_id_source.clone(),
+        panel: snapshot.panel.clone(),
+        panel_dir: storage
+            .panel_dir(&session.id, &snapshot.panel.id)
+            .display()
+            .to_string(),
+        panels,
+        pending_task_count,
+        revision: snapshot.revision,
+        session,
+        sessions,
+        state: snapshot.state.clone(),
+        storage_dir: paths.storage_dir.display().to_string(),
+        tasks,
     })
 }
 
@@ -322,8 +424,10 @@ fn read_panel_snapshots(
             continue;
         };
         let raw_state = storage.read_panel_state(&session.id, &panel.id)?;
+        let revision = storage.read_panel_state_revision(&session.id, &panel.id)?;
         snapshots.push(ProjectPanelSnapshot {
             state: normalize_panel_state(panel.kind, raw_state),
+            revision,
             panel,
         });
     }

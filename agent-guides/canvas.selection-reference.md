@@ -20,9 +20,16 @@ Workflow:
 1. Read selection metadata with `canvas.selection.read`.
 2. Use `selectedShapes`, bounds, shape ids, and image metadata from the CLI
    result. Do not infer selection from screenshots.
-3. If pixels are needed, use `canvas.selection.asset.read` or selection with
+3. If `isExplicitSelection` is false, stop and tell the user there is no
+   reliable current selection. Do not treat `fallback` as the selected image
+   unless the user explicitly asks to use the fallback.
+4. If pixels are needed, use `canvas.selection.asset.read` or selection with
    image base64.
-4. If there is no explicit selection, the CLI may return a fallback such as the
+5. When the selection is used as an image-generation reference, carry its
+   available reference information into the new image metadata: selected shape
+   id, source asset ref, exported local path, and any existing generation prompt
+   metadata on the source asset.
+6. If there is no explicit selection, the CLI may return a fallback such as the
    latest image. Treat fallback context as useful but not user-confirmed
    selection.
 

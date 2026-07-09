@@ -63,6 +63,7 @@ pub struct Panel {
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectPanelSnapshot {
     pub panel: Panel,
+    pub revision: i64,
     pub state: Value,
 }
 
@@ -77,8 +78,11 @@ pub struct ProjectBootstrap {
     pub panel: Panel,
     pub panel_dir: String,
     pub panels: Vec<ProjectPanelSnapshot>,
+    pub pending_task_count: usize,
+    pub revision: i64,
     pub session: Session,
     pub sessions: Vec<Session>,
     pub state: Value,
     pub storage_dir: String,
+    pub tasks: Vec<Value>,
 }

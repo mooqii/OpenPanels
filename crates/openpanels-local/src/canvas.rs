@@ -1,6 +1,4 @@
-use crate::control::{
-    ensure_project_bootstrap, now_iso, write_active_session_id, BootstrapRequest,
-};
+use crate::control::{now_iso, read_project_bootstrap, write_active_session_id, BootstrapRequest};
 use crate::error::CliError;
 use crate::paths::OpenPanelsPaths;
 use crate::storage::Storage;
@@ -30,6 +28,7 @@ pub struct InsertImageInput<'a> {
     pub display_width: Option<f64>,
     pub file_name: Option<&'a str>,
     pub image_path: &'a str,
+    pub metadata: Option<Value>,
     pub placement: Option<&'a str>,
     pub replace_shape_id: Option<&'a str>,
 }
@@ -47,6 +46,7 @@ pub struct CanvasBounds {
 pub struct InsertPlaceholderPayload {
     pub session_id: String,
     pub panel_id: String,
+    pub revision: i64,
     pub shape_id: String,
     pub bounds: CanvasBounds,
 }
@@ -56,6 +56,7 @@ pub struct InsertPlaceholderPayload {
 pub struct InsertImagePayload {
     pub session_id: String,
     pub panel_id: String,
+    pub revision: i64,
     pub asset_id: String,
     pub shape_id: String,
     pub asset_ref: String,
@@ -112,7 +113,7 @@ pub fn insert_placeholder(
             },
         }),
     );
-    write_canvas_state(
+    let revision = write_canvas_state(
         &storage,
         paths,
         &bootstrap.session.id,
@@ -125,6 +126,7 @@ pub fn insert_placeholder(
     Ok(InsertPlaceholderPayload {
         session_id: bootstrap.session.id,
         panel_id: bootstrap.panel.id,
+        revision,
         shape_id,
         bounds: CanvasBounds {
             x: position.x,
@@ -141,6 +143,15 @@ pub fn insert_image(
 ) -> Result<InsertImagePayload, CliError> {
     let bootstrap = canvas_bootstrap(paths)?;
     let storage = Storage::open(paths)?;
+    let mut asset_meta = match input.metadata {
+        Some(Value::Object(object)) => object,
+        Some(_) => {
+            return Err(CliError::new(
+                "Expected image metadata to be a JSON object.",
+            ))
+        }
+        None => Map::new(),
+    };
     let source = Path::new(input.image_path);
     let image = fs::read(source).map_err(to_cli_error)?;
     let dimensions = read_image_dimensions(&image);
@@ -190,8 +201,9 @@ pub fn insert_image(
         .and_then(|shape_id| store.get(shape_id))
         .filter(|shape| shape.get("typeName").and_then(Value::as_str) == Some("shape"));
     let anchor_bounds = anchor.map(shape_bounds);
-    let position = replace_bounds
-        .unwrap_or_else(|| place_image(anchor_bounds, width, input.placement.unwrap_or("right")));
+    let position = replace_bounds.unwrap_or_else(|| {
+        find_image_placement_position(&store, anchor_bounds, width, height, input.placement)
+    });
     let parent_id = replace_shape
         .as_ref()
         .or(anchor)
@@ -207,6 +219,7 @@ pub fn insert_image(
     let mime_type = mime_guess::from_path(&written.file_name)
         .first_raw()
         .unwrap_or("application/octet-stream");
+    asset_meta.insert("assetRef".to_owned(), json!(written.asset_ref));
     store.insert(
         asset_id.clone(),
         json!({
@@ -221,7 +234,7 @@ pub fn insert_image(
                 "mimeType": mime_type,
                 "isAnimated": false,
             },
-            "meta": { "assetRef": written.asset_ref },
+            "meta": Value::Object(asset_meta),
         }),
     );
     store.insert(
@@ -248,7 +261,7 @@ pub fn insert_image(
     if let Some(shape_id) = replaced_shape_id.as_deref() {
         store.remove(shape_id);
     }
-    write_canvas_state(
+    let revision = write_canvas_state(
         &storage,
         paths,
         &bootstrap.session.id,
@@ -261,6 +274,7 @@ pub fn insert_image(
     Ok(InsertImagePayload {
         session_id: bootstrap.session.id,
         panel_id: bootstrap.panel.id,
+        revision,
         asset_id,
         shape_id,
         asset_ref: written.asset_ref,
@@ -279,7 +293,7 @@ pub fn insert_image(
 fn canvas_bootstrap(paths: &OpenPanelsPaths) -> Result<crate::types::ProjectBootstrap, CliError> {
     let mut request = BootstrapRequest::new();
     request.requested_panel_kind = Some(PanelKind::Canvas);
-    ensure_project_bootstrap(paths, request)
+    read_project_bootstrap(paths, request)
 }
 
 fn state_store(state: &Value) -> Map<String, Value> {
@@ -320,13 +334,13 @@ fn write_canvas_state(
     store: Map<String, Value>,
     page_id: &str,
     selected_shape_id: &str,
-) -> Result<(), CliError> {
+) -> Result<i64, CliError> {
     ensure_state_object(state).insert("store".to_owned(), Value::Object(store));
     ensure_state_object(state).insert("currentPageId".to_owned(), json!(page_id));
     ensure_state_object(state).insert("selectedShapeIds".to_owned(), json!([selected_shape_id]));
-    storage.write_panel_state(session_id, panel_id, state)?;
+    let revision = storage.write_panel_state(session_id, panel_id, state)?;
     write_active_session_id(paths, session_id)?;
-    Ok(())
+    Ok(revision)
 }
 
 fn ensure_state_object(state: &mut Value) -> &mut Map<String, Value> {
@@ -455,6 +469,28 @@ fn find_canvas_placement_position(
         height,
     });
     scan_for_available_position(base, width, height, &occupied, DEFAULT_CANVAS_GAP)
+}
+
+fn find_image_placement_position(
+    store: &Map<String, Value>,
+    anchor_bounds: Option<CanvasBounds>,
+    width: f64,
+    height: f64,
+    placement: Option<&str>,
+) -> CanvasBounds {
+    if let (Some(placement), Some(_)) = (placement, anchor_bounds) {
+        let mut candidate = place_image(anchor_bounds, width, placement);
+        candidate.width = width;
+        candidate.height = height;
+        if !has_overlap(
+            to_occupied(candidate),
+            &canvas_occupied_bounds(store),
+            DEFAULT_CANVAS_GAP,
+        ) {
+            return candidate;
+        }
+    }
+    find_canvas_placement_position(store, anchor_bounds, width, height)
 }
 
 fn placement_below_existing(bounds: &[OccupiedBounds], padding: f64) -> Option<CanvasBounds> {

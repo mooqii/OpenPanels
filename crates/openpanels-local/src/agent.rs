@@ -1,4 +1,4 @@
-use crate::control::{ensure_project_bootstrap, BootstrapRequest};
+use crate::control::{read_project_bootstrap, BootstrapRequest};
 use crate::error::CliError;
 use crate::paths::OpenPanelsPaths;
 use crate::selection::read_selection;
@@ -44,7 +44,7 @@ pub fn agent_context(
 ) -> Result<(Value, String), CliError> {
     let mut request = BootstrapRequest::new();
     request.requested_panel_kind = panel_kind;
-    let bootstrap = ensure_project_bootstrap(paths, request)?;
+    let bootstrap = read_project_bootstrap(paths, request)?;
     let guides = list_agent_guides()?;
     let selection = read_selection(paths, None, false).ok();
     let payload = agent_context_payload(&bootstrap, cli_version, &guides, selection.as_ref());
@@ -68,7 +68,7 @@ pub fn read_agent_guide(
         .into_iter()
         .find(|guide| guide.metadata.id == guide_id)
         .ok_or_else(|| CliError::new(format!("OpenPanels agent guide not found: {guide_id}")))?;
-    let bootstrap = ensure_project_bootstrap(paths, BootstrapRequest::new())?;
+    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let selection = read_selection(paths, None, false).ok();
     let markdown = render_agent_guide(&guide, &bootstrap, selection.as_ref(), task_id)?;
     Ok(AgentGuideReadPayload {
@@ -78,47 +78,371 @@ pub fn read_agent_guide(
 }
 
 pub fn capabilities() -> Vec<Value> {
-    [
-        ("agent.context.read", "Read the compact OpenPanels agent context, current state, capabilities, and available guides.", "openpanels-local agent context --project \"$PWD\"", "Markdown agent context."),
-        ("agent.guides.list", "List built-in agent guides that can be loaded on demand.", "openpanels-local agent guides --project \"$PWD\"", "Markdown guide table."),
-        ("agent.guide.read", "Read one full guide, optionally enriched with task context.", "openpanels-local agent guide <guide-id> --project \"$PWD\" --task-id <task-id>", "Markdown guide body with dynamic context."),
-        ("studio.start", "Start or reuse the local OpenPanels studio.", "openpanels-local studio start --project \"$PWD\" --format json", "Studio process and browser URL metadata."),
-        ("studio.status", "Read local studio process status.", "openpanels-local studio status --project \"$PWD\" --format json", "Studio status metadata."),
-        ("studio.stop", "Stop the conversation-local studio process.", "openpanels-local studio stop --project \"$PWD\" --format json", "Stop confirmation."),
-        ("panel.list", "List panels in the current OpenPanels project.", "openpanels-local panels --project \"$PWD\" --format json", "Panel list and active panel metadata."),
-        ("panel.switch", "Switch the active panel by kind.", "openpanels-local active-panel --project \"$PWD\" --kind <kind> --format json", "Active panel metadata."),
-        ("panel.state.read", "Read panel state by kind.", "openpanels-local panel-state --project \"$PWD\" --kind <kind> --format json", "Panel state payload."),
-        ("canvas.state.read", "Read the current canvas project, panel, and state.", "openpanels-local canvas-state --project \"$PWD\" --format json", "Canvas bootstrap payload."),
-        ("canvas.selection.read", "Read current canvas selection summary.", "openpanels-local selection --project \"$PWD\" --format json", "Canvas selection payload."),
-        ("canvas.selection.asset.read", "Write selected canvas pixels or fallback image asset to a file.", "openpanels-local read-selection-asset --project \"$PWD\" --output <path> --format json", "Written asset path and metadata."),
-        ("canvas.placeholder.create", "Create a generation placeholder on the canvas.", "openpanels-local insert-placeholder --project \"$PWD\" --display-width <w> --display-height <h> --format json", "Placeholder shape id and placement metadata."),
-        ("canvas.image.insert", "Insert or replace a local image in the canvas.", "openpanels-local insert-image --project \"$PWD\" --image <path> --placement right --format json", "Inserted image shape id and metadata."),
-        ("wiki.context.read", "Read compact agent context with wiki prioritized.", "openpanels-local wiki context --project \"$PWD\"", "Markdown agent context."),
-        ("wiki.task.list", "List wiki tasks.", "openpanels-local wiki tasks list --project \"$PWD\" --format json", "Wiki task list."),
-        ("wiki.task.next", "Read the next queued or failed wiki task.", "openpanels-local wiki tasks next --project \"$PWD\" --format json", "Next wiki task or null."),
-        ("wiki.task.claim", "Claim a wiki task before working on it.", "openpanels-local wiki tasks claim --project \"$PWD\" --task-id <task-id> --format json", "Claimed task and process context."),
-        ("wiki.task.complete", "Mark a wiki task complete.", "openpanels-local wiki tasks complete --project \"$PWD\" --task-id <task-id> --format json", "Completed task payload."),
-        ("wiki.task.fail", "Mark a wiki task failed with a message.", "openpanels-local wiki tasks fail --project \"$PWD\" --task-id <task-id> --message <message> --format json", "Failed task payload."),
-        ("wiki.raw.add", "Add a raw source document to the wiki panel.", "openpanels-local wiki raw add --project \"$PWD\" --file <path> --format json", "Raw document metadata and queued tasks."),
-        ("wiki.source.read", "Read markdown for a raw wiki document.", "openpanels-local wiki markdown read --project \"$PWD\" --document-id <document-id> --format json", "Raw document markdown."),
-        ("wiki.source.write", "Write markdown for a raw wiki document.", "openpanels-local wiki markdown write --project \"$PWD\" --document-id <document-id> --file <path> --task-id <task-id> --format json", "Updated raw document metadata and queued tasks."),
-        ("wiki.page.list", "List pages in a wiki space.", "openpanels-local wiki pages list --project \"$PWD\" --wiki-space-id <wiki-space-id> --format json", "Wiki page index items."),
-        ("wiki.page.read", "Read one wiki page.", "openpanels-local wiki pages read --project \"$PWD\" --wiki-space-id <wiki-space-id> --path <page-path> --format json", "Wiki page markdown."),
-        ("wiki.page.write", "Create or update one wiki page from a markdown file.", "openpanels-local wiki pages write --project \"$PWD\" --wiki-space-id <wiki-space-id> --path <page-path> --file <md-file> --task-id <task-id> --format json", "Written page metadata and queued tasks."),
-        ("wiki.space.list", "List wiki spaces.", "openpanels-local wiki spaces list --project \"$PWD\" --format json", "Wiki spaces."),
-        ("wiki.space.switch", "Switch the active wiki space.", "openpanels-local wiki spaces active --project \"$PWD\" --wiki-space-id <wiki-space-id> --format json", "Updated wiki state."),
+    vec![
+        capability(
+            "agent.context.read",
+            "Read current agent context",
+            "openpanels-local agent context",
+            "current_user_project",
+            false,
+            vec![],
+        ),
+        capability(
+            "agent.guides.list",
+            "List loadable agent guides",
+            "openpanels-local agent guides",
+            "none",
+            false,
+            vec![],
+        ),
+        capability(
+            "agent.guide.read",
+            "Read one full agent guide",
+            "openpanels-local agent guide <guide-id>",
+            "current_user_project",
+            false,
+            vec![arg("taskId", "--task-id", "string", false)],
+        ),
+        capability(
+            "project.current.read",
+            "Read the current user-visible project",
+            "openpanels-local project current",
+            "current_user_project",
+            false,
+            vec![],
+        ),
+        capability(
+            "project.list",
+            "List available projects",
+            "openpanels-local project list",
+            "current_studio_or_storage",
+            false,
+            vec![],
+        ),
+        capability(
+            "project.create",
+            "Create a project explicitly",
+            "openpanels-local project create",
+            "storage",
+            true,
+            vec![arg("title", "--title", "string", false)],
+        ),
+        capability(
+            "panel.list",
+            "List panels in the current project",
+            "openpanels-local panel list",
+            "current_user_project",
+            false,
+            vec![],
+        ),
+        capability(
+            "panel.current.read",
+            "Read the current panel",
+            "openpanels-local panel current",
+            "current_user_project.current_panel",
+            false,
+            vec![],
+        ),
+        capability(
+            "panel.switch",
+            "Switch the current panel by kind",
+            "openpanels-local panel switch",
+            "current_user_project",
+            false,
+            vec![enum_arg(
+                "kind",
+                "--kind",
+                true,
+                &["wiki", "canvas", "image", "diff", "preview", "files"],
+                None,
+            )],
+        ),
+        capability(
+            "canvas.state.read",
+            "Read current canvas state",
+            "openpanels-local canvas state",
+            "current_user_project.current_canvas",
+            false,
+            vec![],
+        ),
+        capability(
+            "canvas.selection.read",
+            "Read current canvas selection",
+            "openpanels-local canvas selection read",
+            "current_user_project.current_canvas",
+            false,
+            vec![],
+        ),
+        capability(
+            "canvas.selection.asset.read",
+            "Export selected canvas pixels to a file",
+            "openpanels-local canvas selection export",
+            "current_user_project.current_canvas",
+            false,
+            vec![
+                arg("output", "--output", "path", true),
+                arg("allowFallback", "--allow-fallback", "bool", false),
+            ],
+        ),
+        capability(
+            "canvas.placeholder.create",
+            "Insert a generation placeholder",
+            "openpanels-local canvas placeholder create",
+            "current_user_project.current_canvas",
+            false,
+            vec![
+                arg("displayWidth", "--display-width", "number", true),
+                arg("displayHeight", "--display-height", "number", true),
+                arg("text", "--text", "string", false),
+            ],
+        ),
+        capability(
+            "canvas.image.insert",
+            "Insert a local image into the current canvas",
+            "openpanels-local canvas image insert",
+            "current_user_project.current_canvas",
+            false,
+            vec![
+                arg("image", "--image", "path", true),
+                enum_arg(
+                    "placement",
+                    "--placement",
+                    false,
+                    &["auto", "right", "below", "left"],
+                    Some("auto"),
+                ),
+                arg("metadataFile", "--metadata-file", "path", false),
+                arg("replaceShapeId", "--replace-shape-id", "string", false),
+            ],
+        ),
+        capability(
+            "tasks.list",
+            "List project tasks across panels",
+            "openpanels-local tasks list",
+            "current_user_project",
+            false,
+            vec![],
+        ),
+        capability(
+            "wiki.context.read",
+            "Read current wiki context",
+            "openpanels-local wiki context",
+            "current_user_project.current_wiki",
+            false,
+            vec![],
+        ),
+        capability(
+            "wiki.document.list",
+            "List raw wiki documents",
+            "openpanels-local wiki documents list",
+            "current_user_project.current_wiki",
+            false,
+            vec![],
+        ),
+        capability(
+            "wiki.document.add",
+            "Add a raw wiki document",
+            "openpanels-local wiki documents add",
+            "current_user_project.current_wiki",
+            false,
+            vec![
+                arg("file", "--file", "path", true),
+                arg("title", "--title", "string", false),
+            ],
+        ),
+        capability(
+            "wiki.document.createMarkdown",
+            "Create a markdown raw document",
+            "openpanels-local wiki documents create-markdown",
+            "current_user_project.current_wiki",
+            false,
+            vec![
+                arg("title", "--title", "string", true),
+                arg("file", "--file", "path", false),
+                arg("content", "--content", "string", false),
+            ],
+        ),
+        capability(
+            "wiki.markdown.read",
+            "Read markdown for a raw document",
+            "openpanels-local wiki markdown read",
+            "current_user_project.current_wiki",
+            false,
+            vec![arg("documentId", "--document-id", "string", true)],
+        ),
+        capability(
+            "wiki.markdown.write",
+            "Write markdown for a raw document",
+            "openpanels-local wiki markdown write",
+            "current_user_project.current_wiki",
+            false,
+            vec![
+                arg("documentId", "--document-id", "string", true),
+                arg("file", "--file", "path", true),
+                arg("taskId", "--task-id", "string", false),
+            ],
+        ),
+        capability(
+            "wiki.task.list",
+            "List wiki tasks",
+            "openpanels-local wiki tasks list",
+            "current_user_project.current_wiki",
+            false,
+            vec![],
+        ),
+        capability(
+            "wiki.task.next",
+            "Read the next wiki task",
+            "openpanels-local wiki tasks next",
+            "current_user_project.current_wiki",
+            false,
+            vec![],
+        ),
+        capability(
+            "wiki.task.claim",
+            "Claim a wiki task",
+            "openpanels-local wiki tasks claim",
+            "current_user_project.current_wiki",
+            false,
+            vec![arg("taskId", "--task-id", "string", true)],
+        ),
+        capability(
+            "wiki.task.complete",
+            "Complete a wiki task",
+            "openpanels-local wiki tasks complete",
+            "current_user_project.current_wiki",
+            false,
+            vec![arg("taskId", "--task-id", "string", true)],
+        ),
+        capability(
+            "wiki.task.fail",
+            "Fail a wiki task",
+            "openpanels-local wiki tasks fail",
+            "current_user_project.current_wiki",
+            false,
+            vec![
+                arg("taskId", "--task-id", "string", true),
+                arg("message", "--message", "string", true),
+            ],
+        ),
+        capability(
+            "wiki.space.list",
+            "List wiki spaces",
+            "openpanels-local wiki spaces list",
+            "current_user_project.current_wiki",
+            false,
+            vec![],
+        ),
+        capability(
+            "wiki.space.switch",
+            "Switch active wiki space",
+            "openpanels-local wiki spaces switch",
+            "current_user_project.current_wiki",
+            false,
+            vec![arg("wikiSpaceId", "--wiki-space-id", "string", true)],
+        ),
+        capability(
+            "wiki.page.list",
+            "List pages in a wiki space",
+            "openpanels-local wiki pages list",
+            "current_user_project.current_wiki",
+            false,
+            vec![arg("wikiSpaceId", "--wiki-space-id", "string", true)],
+        ),
+        capability(
+            "wiki.page.read",
+            "Read one wiki page",
+            "openpanels-local wiki pages read",
+            "current_user_project.current_wiki",
+            false,
+            vec![
+                arg("wikiSpaceId", "--wiki-space-id", "string", true),
+                arg("path", "--path", "path", true),
+            ],
+        ),
+        capability(
+            "wiki.page.write",
+            "Write one wiki page",
+            "openpanels-local wiki pages write",
+            "current_user_project.current_wiki",
+            false,
+            vec![
+                arg("wikiSpaceId", "--wiki-space-id", "string", true),
+                arg("path", "--path", "path", true),
+                arg("file", "--file", "path", true),
+                arg("taskId", "--task-id", "string", false),
+            ],
+        ),
+        capability(
+            "studio.start",
+            "Start or reuse the local Studio",
+            "openpanels-local studio start",
+            "project_directory",
+            false,
+            vec![],
+        ),
+        capability(
+            "studio.status",
+            "Read local Studio process status",
+            "openpanels-local studio status",
+            "project_directory",
+            false,
+            vec![],
+        ),
+        capability(
+            "studio.stop",
+            "Stop the local Studio binding",
+            "openpanels-local studio stop",
+            "project_directory",
+            false,
+            vec![],
+        ),
     ]
-    .into_iter()
-    .map(|(intent, description, command, output)| {
-        json!({
-            "intent": intent,
-            "description": description,
-            "command": command,
-            "args": [],
-            "output": output,
-        })
+}
+
+fn capability(
+    intent: &str,
+    title: &str,
+    command: &str,
+    target: &str,
+    creates_project: bool,
+    args: Vec<Value>,
+) -> Value {
+    json!({
+        "intent": intent,
+        "title": title,
+        "command": command,
+        "target": target,
+        "createsProject": creates_project,
+        "args": args,
+        "output": "json",
     })
-    .collect()
+}
+
+fn arg(name: &str, flag: &str, value_type: &str, required: bool) -> Value {
+    json!({
+        "name": name,
+        "flag": flag,
+        "type": value_type,
+        "required": required,
+    })
+}
+
+fn enum_arg(
+    name: &str,
+    flag: &str,
+    required: bool,
+    values: &[&str],
+    default: Option<&str>,
+) -> Value {
+    let mut value = arg(name, flag, "enum", required);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("values".to_owned(), json!(values));
+        if let Some(default) = default {
+            object.insert("default".to_owned(), json!(default));
+        }
+    }
+    value
 }
 
 pub fn render_agent_guides_markdown(guides: &[AgentGuideMetadata]) -> String {
@@ -195,7 +519,7 @@ fn agent_context_markdown(
             format!(
                 "### `{}`\n\n{}\n\nCommand:\n\n```bash\n{}\n```\n\nOutput:\n\n- {}",
                 capability["intent"].as_str().unwrap_or(""),
-                capability["description"].as_str().unwrap_or(""),
+                capability["title"].as_str().unwrap_or(""),
                 capability["command"].as_str().unwrap_or(""),
                 capability["output"].as_str().unwrap_or("")
             )
@@ -421,6 +745,10 @@ fn wiki_summary(bootstrap: &ProjectBootstrap) -> Value {
 }
 
 fn canvas_summary(selection: Option<&crate::selection::SelectionPayload>) -> Value {
+    let is_explicit_selection = selection
+        .and_then(|selection| selection.selection.get("isExplicitSelection"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let selected_shapes = selection
         .and_then(|selection| selection.selection.get("selectedShapes"))
         .and_then(Value::as_array)
@@ -433,22 +761,23 @@ fn canvas_summary(selection: Option<&crate::selection::SelectionPayload>) -> Val
         .unwrap_or(0);
     json!({
         "fallback": selection.and_then(|selection| selection.selection.get("fallback")).and_then(Value::as_str),
-        "hasSelectedImageAsset": selection.and_then(|selection| selection.selection.get("assetRef")).and_then(Value::as_str).is_some(),
-        "hasSelection": selected_shapes > 0 || selected_ids > 0,
-        "selectedShapeCount": if selected_shapes > 0 { selected_shapes } else { selected_ids },
+        "hasSelectedImageAsset": is_explicit_selection && selection.and_then(|selection| selection.selection.get("assetRef")).and_then(Value::as_str).is_some(),
+        "hasSelection": is_explicit_selection && (selected_shapes > 0 || selected_ids > 0),
+        "isExplicitSelection": is_explicit_selection,
+        "selectedShapeCount": if is_explicit_selection { if selected_shapes > 0 { selected_shapes } else { selected_ids } } else { 0 },
     })
 }
 
 fn suggested_commands(bootstrap: &ProjectBootstrap, guides: &[AgentGuideMetadata]) -> Vec<Value> {
     let mut commands = vec![json!({
         "intent": "agent.context.read",
-        "command": "openpanels-local agent context --project \"$PWD\"",
+        "command": "openpanels-local agent context --format json",
     })];
     let wiki = wiki_summary(bootstrap);
     if let Some(task) = wiki.get("nextTask").filter(|value| !value.is_null()) {
         commands.push(json!({
             "intent": "wiki.task.next",
-            "command": "openpanels-local wiki tasks next --project \"$PWD\" --format json",
+            "command": "openpanels-local wiki tasks next --format json",
         }));
         if let Some(task_type) = task.get("type").and_then(Value::as_str) {
             if let Some(guide) = guides.iter().find(|guide| {
@@ -460,7 +789,7 @@ fn suggested_commands(bootstrap: &ProjectBootstrap, guides: &[AgentGuideMetadata
                 if let Some(task_id) = task.get("id").and_then(Value::as_str) {
                     commands.push(json!({
                         "intent": "agent.guide.read",
-                        "command": format!("openpanels-local agent guide {} --project \"$PWD\" --task-id {}", guide.id, task_id),
+                        "command": format!("openpanels-local agent guide {} --task-id {} --format json", guide.id, task_id),
                     }));
                 }
             }
@@ -468,7 +797,7 @@ fn suggested_commands(bootstrap: &ProjectBootstrap, guides: &[AgentGuideMetadata
     } else if bootstrap.active_panel_kind == PanelKind::Canvas {
         commands.push(json!({
             "intent": "canvas.selection.read",
-            "command": "openpanels-local selection --project \"$PWD\" --format json",
+            "command": "openpanels-local canvas selection read --format json",
         }));
     }
     commands
@@ -543,7 +872,7 @@ fn render_guide_commands(guide: &AgentGuide, task: Option<&Value>) -> String {
         let document_id = task["documentId"].as_str().unwrap_or("<document-id>");
         let wiki_space_id = task["wikiSpaceId"].as_str().unwrap_or("<wiki-space-id>");
         return format!(
-            "```bash\nopenpanels-local wiki tasks claim --project \"$PWD\" --task-id {task_id} --format json\nopenpanels-local wiki markdown read --project \"$PWD\" --document-id {document_id} --format json\nopenpanels-local wiki pages write --project \"$PWD\" --wiki-space-id {wiki_space_id} --path <page-path> --file <md-file> --task-id {task_id} --format json\nopenpanels-local wiki tasks complete --project \"$PWD\" --task-id {task_id} --format json\n```"
+            "```bash\nopenpanels-local wiki tasks claim --task-id {task_id} --format json\nopenpanels-local wiki markdown read --document-id {document_id} --format json\nopenpanels-local wiki pages write --wiki-space-id {wiki_space_id} --path <page-path> --file <md-file> --task-id {task_id} --format json\nopenpanels-local wiki tasks complete --task-id {task_id} --format json\n```"
         );
     }
     if guide
@@ -552,7 +881,7 @@ fn render_guide_commands(guide: &AgentGuide, task: Option<&Value>) -> String {
         .iter()
         .any(|value| value == "canvas")
     {
-        return "```bash\nopenpanels-local selection --project \"$PWD\" --format json\nopenpanels-local insert-placeholder --project \"$PWD\" --display-width <w> --display-height <h> --format json\nopenpanels-local insert-image --project \"$PWD\" --image <generated-path> --replace-shape-id <placeholder-shape-id> --format json\n```".to_owned();
+        return "```bash\nopenpanels-local canvas selection read --format json\nopenpanels-local canvas placeholder create --display-width <w> --display-height <h> --format json\nopenpanels-local canvas image insert --image <generated-path> --replace-shape-id <placeholder-shape-id> --format json\n```".to_owned();
     }
     "- No task-specific commands.".to_owned()
 }
