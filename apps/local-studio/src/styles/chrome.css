@@ -302,6 +302,88 @@
   font-weight: 650;
 }
 
+.op-update-prompt__dismiss {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  color: var(--op-text-tertiary);
+}
+
+.op-update-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: color-mix(in oklab, var(--op-bg-default) 62%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.op-update-overlay__panel {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  width: min(440px, 100%);
+  padding: 14px;
+  background: color-mix(in oklab, var(--op-canvas-toolbar) 96%, transparent);
+  border: 1px solid var(--op-toolbar-border);
+  border-radius: 8px;
+  box-shadow: var(--op-toolbar-shadow);
+}
+
+.op-update-overlay__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--op-border-default);
+  border-radius: 8px;
+}
+
+.op-update-overlay__icon--busy {
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+}
+
+.op-update-overlay__icon--busy svg {
+  animation: op-build-menu-spin 900ms linear infinite;
+}
+
+.op-update-overlay__icon--failed {
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 12%, transparent);
+}
+
+.op-update-overlay__copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.op-update-overlay__copy strong {
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.25;
+  color: var(--op-text-primary);
+}
+
+.op-update-overlay__copy span {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--op-text-tertiary);
+}
+
+.op-update-overlay__actions {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 2;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .op-project-title {
   position: relative;
   display: inline-flex;

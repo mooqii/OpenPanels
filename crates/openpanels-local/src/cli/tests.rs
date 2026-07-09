@@ -6,7 +6,10 @@ use std::fs;
 use std::io::Read;
 use std::net::TcpListener;
 use std::path::Path;
+use std::sync::Mutex;
 use std::thread;
+
+static TRACE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn run(args: &[&str]) -> (i32, String, String) {
     let argv = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
@@ -95,6 +98,7 @@ fn create_cli_project(project_dir: &Path, storage_dir: &Path) {
 
 #[test]
 fn cli_trace_url_falls_back_to_running_studio_session() {
+    let _lock = TRACE_ENV_LOCK.lock().expect("trace env lock");
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -1679,6 +1683,25 @@ fn version_prints_json() {
     assert_eq!(code, 0);
     assert_eq!(stdout, format!("{{\n  \"version\": \"{VERSION}\"\n}}\n"));
     assert_eq!(stderr, "");
+}
+
+#[test]
+fn version_ignores_inherited_trace_url() {
+    let _lock = TRACE_ENV_LOCK.lock().expect("trace env lock");
+    let previous = std::env::var_os("OPENPANELS_TRACE_URL");
+    std::env::set_var(
+        "OPENPANELS_TRACE_URL",
+        "http://127.0.0.1:9/api/trace/events",
+    );
+    let argv = vec!["--version".to_owned()];
+
+    assert_eq!(trace_url_for_cli(&argv), None);
+
+    if let Some(previous) = previous {
+        std::env::set_var("OPENPANELS_TRACE_URL", previous);
+    } else {
+        std::env::remove_var("OPENPANELS_TRACE_URL");
+    }
 }
 
 #[test]

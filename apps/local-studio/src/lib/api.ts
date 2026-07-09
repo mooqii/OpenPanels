@@ -3,7 +3,9 @@ import type { OpenPanelsPanelKind, OpenPanelsSession } from "../protocol"
 import type {
   AppState,
   BootstrapResponse,
+  OpenPanelsHealth,
   OpenPanelsTransport,
+  OpenPanelsUpdateInstallRestartResponse,
   OpenPanelsUpdateStatus,
   OriginalPreviewKind,
   TraceEvent,
@@ -275,6 +277,20 @@ export function apiFetch(
   return fetch(apiUrl(apiBase, path), init)
 }
 
+export function apiFetchWithTimeout(
+  apiBase: string,
+  path: string | URL,
+  init?: RequestInit,
+  timeoutMs = 30_000
+): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+  return fetch(apiUrl(apiBase, path), {
+    ...init,
+    signal: init?.signal ?? controller.signal,
+  }).finally(() => window.clearTimeout(timeout))
+}
+
 export async function apiJson<T>(
   apiBase: string,
   path: string | URL,
@@ -282,13 +298,50 @@ export async function apiJson<T>(
 ): Promise<T> {
   const response = await apiFetch(apiBase, path, init)
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
+    throw new Error(await apiErrorMessage(response))
   }
   return (await response.json()) as T
 }
 
+export async function apiJsonWithTimeout<T>(
+  apiBase: string,
+  path: string | URL,
+  init?: RequestInit,
+  timeoutMs?: number
+): Promise<T> {
+  const response = await apiFetchWithTimeout(apiBase, path, init, timeoutMs)
+  if (!response.ok) {
+    throw new Error(await apiErrorMessage(response))
+  }
+  return (await response.json()) as T
+}
+
+async function apiErrorMessage(response: Response): Promise<string> {
+  try {
+    const data = (await response.json()) as { error?: unknown }
+    if (typeof data.error === "string" && data.error.trim()) {
+      return data.error
+    }
+  } catch {
+    // Fall back to the HTTP status below.
+  }
+  return `HTTP ${response.status}`
+}
+
 export function isNotFoundError(error: unknown): boolean {
   return error instanceof Error && error.message === "HTTP 404"
+}
+
+export function fetchStudioHealth(
+  transport: OpenPanelsTransport,
+  options?: { timeoutMs?: number }
+): Promise<OpenPanelsHealth> {
+  return apiJsonWithTimeout(
+    transport.apiBase,
+    "/api/health",
+    undefined,
+    options?.timeoutMs ?? 1200
+  )
 }
 
 export async function loadBootstrap(
@@ -316,17 +369,27 @@ export function fetchUpdateStatus(
 export function requestUpdateDownload(
   transport: OpenPanelsTransport
 ): Promise<OpenPanelsUpdateStatus> {
-  return apiJson(transport.apiBase, "/api/update/download", {
-    method: "POST",
-  })
+  return apiJsonWithTimeout(
+    transport.apiBase,
+    "/api/update/download",
+    {
+      method: "POST",
+    },
+    120_000
+  )
 }
 
 export function requestUpdateInstallRestart(
   transport: OpenPanelsTransport
-): Promise<{ ok: true; restarting: true }> {
-  return apiJson(transport.apiBase, "/api/update/install-restart", {
-    method: "POST",
-  })
+): Promise<OpenPanelsUpdateInstallRestartResponse> {
+  return apiJsonWithTimeout(
+    transport.apiBase,
+    "/api/update/install-restart",
+    {
+      method: "POST",
+    },
+    120_000
+  )
 }
 
 export async function savePanelState(

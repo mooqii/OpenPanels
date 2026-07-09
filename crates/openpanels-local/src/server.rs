@@ -122,6 +122,7 @@ fn build_router(
         ])
         .allow_headers(tower_http::cors::Any);
     Router::new()
+        .route("/api/health", get(api_health))
         .route("/api/bootstrap", get(api_bootstrap))
         .route("/api/studio/focus", post(api_studio_focus))
         .route("/api/projects", post(api_projects_create))
@@ -267,6 +268,17 @@ struct TasksQuery {
     pending: Option<bool>,
     queue: Option<String>,
     status: Option<String>,
+}
+
+async fn api_health(State(state): State<Arc<AppState>>) -> Response {
+    json_response(
+        StatusCode::OK,
+        &json!({
+            "ok": true,
+            "version": state.build_info.version,
+            "contextId": state.paths.context_id.clone(),
+        }),
+    )
 }
 
 async fn api_bootstrap(
@@ -622,6 +634,7 @@ async fn api_update_install_restart(State(state): State<Arc<AppState>>) -> Respo
                 "ok": true,
                 "restarting": false,
                 "update": install,
+                "message": "OpenPanels is already up to date.",
             }),
         );
     }
@@ -636,6 +649,7 @@ async fn api_update_install_restart(State(state): State<Arc<AppState>>) -> Respo
                     "restarting": true,
                     "session": session,
                     "update": install,
+                    "message": "Restarting OpenPanels Studio.",
                 }),
             )
         }
@@ -976,7 +990,8 @@ fn serve_file_from_dir(static_dir: &std::path::Path, path: &str) -> Option<Respo
 async fn trace_api_middleware(request: axum::http::Request<Body>, next: Next) -> Response {
     let method = request.method().to_string();
     let path = request.uri().path().to_owned();
-    let should_trace = path.starts_with("/api/") && !path.starts_with("/api/trace/");
+    let should_trace =
+        path.starts_with("/api/") && !path.starts_with("/api/trace/") && path != "/api/health";
     let started = Instant::now();
     let response = next.run(request).await;
     if should_trace {
@@ -1186,6 +1201,7 @@ fn to_cli_error(error: impl std::fmt::Display) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::resolve_openpanels_paths;
 
     #[test]
     fn update_status_query_can_bypass_cached_checks() {
@@ -1200,5 +1216,30 @@ mod tests {
             ..UpdateStatusQuery::default()
         }
         .bypass_cache());
+    }
+
+    #[tokio::test]
+    async fn health_returns_ok() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_openpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let state = Arc::new(AppState {
+            build_info: current_build_info(),
+            host: "127.0.0.1".to_owned(),
+            paths,
+            port: 0,
+            static_dir: None,
+        });
+
+        let response = api_health(State(state)).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

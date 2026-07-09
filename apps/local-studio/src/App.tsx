@@ -28,6 +28,7 @@ import {
   canvasSnapshotFromState,
   fetchActiveSessionId,
   fetchSessions,
+  fetchStudioHealth,
   fetchUpdateStatus,
   isNotFoundError,
   loadBootstrap,
@@ -53,6 +54,14 @@ import type {
   OpenPanelsUpdateStatus,
 } from "./types"
 
+type UpdateAction =
+  | "checking"
+  | "downloading"
+  | "installing"
+  | "restarting"
+  | "failed"
+  | null
+
 export function App({ transport }: { transport: OpenPanelsTransport }) {
   const { t } = useOpenPanelsI18n()
   const [appState, setAppState] = useState<AppState | null>(null)
@@ -67,9 +76,8 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
   const [snapshotLoadVersion, setSnapshotLoadVersion] = useState(0)
   const [updateStatus, setUpdateStatus] =
     useState<OpenPanelsUpdateStatus | null>(null)
-  const [updateAction, setUpdateAction] = useState<
-    "checking" | "downloading" | "installing" | null
-  >(null)
+  const [updateAction, setUpdateAction] = useState<UpdateAction>(null)
+  const [updateError, setUpdateError] = useState<string | null>(null)
   const [isTraceOpen, setIsTraceOpen] = useState(false)
   const [agentPanelTab, setAgentPanelTab] = useState<AgentPanelTab>("tasks")
   const [agentTaskFilter, setAgentTaskFilter] = useState<TaskFilter>("pending")
@@ -236,6 +244,7 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
   const refreshUpdateStatus = useCallback(
     async (options?: { refresh?: boolean }) => {
       setUpdateAction("checking")
+      setUpdateError(null)
       try {
         const status = await fetchUpdateStatus(transport, options)
         setUpdateStatus(status)
@@ -244,7 +253,7 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
           console.error("Failed to check OpenPanels update status", error)
         }
       } finally {
-        setUpdateAction(null)
+        setUpdateAction((current) => (current === "checking" ? null : current))
       }
     },
     [transport]
@@ -254,53 +263,117 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
     refreshUpdateStatus()
   }, [refreshUpdateStatus])
 
+  const waitForStudioRestart = useCallback(
+    async (expectedVersion?: string | null) => {
+      const started = Date.now()
+      const timeoutMs = 30_000
+      while (Date.now() - started < timeoutMs) {
+        try {
+          const health = await fetchStudioHealth(transport, { timeoutMs: 900 })
+          if (
+            health.ok &&
+            (!expectedVersion || health.version === expectedVersion)
+          ) {
+            return true
+          }
+        } catch {
+          // The server is expected to disappear briefly while the new binary starts.
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 500))
+      }
+      return false
+    },
+    [transport]
+  )
+
   const downloadUpdate = useCallback(async () => {
     setUpdateAction("downloading")
+    setUpdateError(null)
     try {
-      return await requestUpdateDownload(transport)
+      const status = await requestUpdateDownload(transport)
+      setUpdateAction((current) => (current === "downloading" ? null : current))
+      return status
     } catch (error) {
       console.error("Failed to download OpenPanels update", error)
+      setUpdateError(
+        "更新下载失败。请稍后重试，或让 agent 重新打开 MyOpenPanels 面板。"
+      )
+      setUpdateAction("failed")
       return null
-    } finally {
-      setUpdateAction(null)
     }
   }, [transport])
 
-  const installUpdate = useCallback(async () => {
+  const installAndRestartUpdate = useCallback(async () => {
     setUpdateAction("installing")
+    setUpdateError(null)
     try {
-      await requestUpdateInstallRestart(transport)
-      window.setTimeout(() => window.location.reload(), 1400)
+      const result = await requestUpdateInstallRestart(transport)
+      const expectedVersion =
+        result.update.latestVersion ?? updateStatus?.latestVersion ?? null
+      if (!result.restarting) {
+        setUpdateAction(null)
+        await refreshUpdateStatus({ refresh: true })
+        return
+      }
+      setUpdateAction("restarting")
+      const restored = await waitForStudioRestart(expectedVersion)
+      if (restored) {
+        window.location.reload()
+        return
+      }
+      setUpdateError(
+        "更新可能已安装，但 Studio 没有自动恢复。请让 agent 重新打开 MyOpenPanels 面板。"
+      )
+      setUpdateAction("failed")
     } catch (error) {
       console.error("Failed to install OpenPanels update", error)
-      setUpdateAction(null)
+      setUpdateError(
+        error instanceof Error && error.message
+          ? error.message
+          : "更新安装失败。请稍后重试，或让 agent 重新打开 MyOpenPanels 面板。"
+      )
+      setUpdateAction("failed")
     }
-  }, [transport])
+  }, [refreshUpdateStatus, transport, updateStatus, waitForStudioRestart])
+
+  const retryUpdateReconnect = useCallback(async () => {
+    setUpdateAction("restarting")
+    setUpdateError(null)
+    const restored = await waitForStudioRestart(
+      updateStatus?.latestVersion ?? null
+    )
+    if (restored) {
+      window.location.reload()
+      return
+    }
+    setUpdateError(
+      "仍然无法连接到新版 Studio。请让 agent 重新打开 MyOpenPanels 面板。"
+    )
+    setUpdateAction("failed")
+  }, [updateStatus, waitForStudioRestart])
+
+  const dismissUpdateError = useCallback(() => {
+    setUpdateAction(null)
+    setUpdateError(null)
+  }, [])
 
   const updateNow = useCallback(async () => {
     if (!(updateStatus?.updateAvailable || updateStatus?.readyToInstall)) {
       return
     }
-    if (updateAction) return
+    if (updateAction && updateAction !== "failed") return
     const downloaded = Boolean(
       updateStatus.downloaded || updateStatus.readyToInstall
     )
     if (downloaded) {
-      installUpdate()
+      installAndRestartUpdate()
       return
     }
     const status = await downloadUpdate()
     if (!(status?.downloaded || status?.readyToInstall)) return
     setUpdateStatus(status)
-    setUpdateAction("installing")
-    try {
-      await requestUpdateInstallRestart(transport)
-      window.setTimeout(() => window.location.reload(), 1400)
-    } catch (error) {
-      console.error("Failed to install OpenPanels update", error)
-      setUpdateAction(null)
-    }
-  }, [downloadUpdate, installUpdate, transport, updateAction, updateStatus])
+    installAndRestartUpdate()
+  }, [downloadUpdate, installAndRestartUpdate, updateAction, updateStatus])
 
   const checkUpdateFromBadge = useCallback(
     (options?: { refresh?: boolean }) => {
@@ -612,7 +685,10 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
         </div>
         <UpdatePrompt
           action={updateAction}
+          errorMessage={updateError}
+          onDismissError={dismissUpdateError}
           onRefresh={refreshUpdateNow}
+          onRetryConnect={retryUpdateReconnect}
           onUpdate={updateNow}
           status={updateStatus}
         />

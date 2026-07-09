@@ -160,12 +160,6 @@ pub fn run_cli(argv: &[String]) -> i32 {
 }
 
 fn trace_url_for_cli(argv: &[String]) -> Option<String> {
-    if let Ok(url) = std::env::var("OPENPANELS_TRACE_URL") {
-        if !url.is_empty() {
-            return Some(url);
-        }
-    }
-
     let parsed = parse_args(argv);
     let command = parsed.positionals.first().map(String::as_str);
     if command.is_none()
@@ -175,6 +169,12 @@ fn trace_url_for_cli(argv: &[String]) -> Option<String> {
         || has_flag(&parsed, "version")
     {
         return None;
+    }
+
+    if let Ok(url) = std::env::var("OPENPANELS_TRACE_URL") {
+        if !url.is_empty() {
+            return Some(url);
+        }
     }
 
     let paths = parsed_paths(&parsed).ok()?;

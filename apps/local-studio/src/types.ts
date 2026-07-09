@@ -50,6 +50,27 @@ export interface OpenPanelsUpdateStatus {
   updateAvailable: boolean
 }
 
+export interface OpenPanelsHealth {
+  contextId: string
+  ok: boolean
+  version: string
+}
+
+export interface OpenPanelsUpdateInstallRestartResponse {
+  message?: string
+  ok: true
+  restarting: boolean
+  session?: unknown
+  update: {
+    currentVersion: string
+    installedPath?: string | null
+    latestVersion?: string | null
+    manifestUrl?: string
+    target?: string
+    updated: boolean
+  }
+}
+
 export type TraceCategory =
   | "agent"
   | "api"

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 const TRACE_LIMIT: usize = 500;
@@ -156,7 +157,11 @@ pub fn emit_cli_event(input: TraceEventInput) {
         return;
     };
     let payload = normalize_external_event(input);
-    let _ = ureq::post(&url)
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_millis(600))
+        .build();
+    let _ = agent
+        .post(&url)
         .set("content-type", "application/json")
         .send_json(payload);
 }

@@ -11,12 +11,15 @@ use std::io::{Cursor, Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_MANIFEST_URL: &str =
     "https://github.com/mooqii/OpenPanels/releases/latest/download/openpanels-local-manifest.json";
 pub const UPDATE_CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+const UPDATE_HTTP_TIMEOUT_SECS: u64 = 60;
+const VERSION_CHECK_TIMEOUT_SECS: u64 = 5;
 
 const BINARY_NAME: &str = if cfg!(windows) {
     "openpanels-local.exe"
@@ -286,7 +289,8 @@ fn check_from_manifest(
 }
 
 fn fetch_manifest(manifest_url: &str) -> Result<UpdateManifest, CliError> {
-    ureq::get(manifest_url)
+    update_http_agent()
+        .get(manifest_url)
         .set(
             "User-Agent",
             concat!("openpanels-local/", env!("CARGO_PKG_VERSION")),
@@ -298,7 +302,8 @@ fn fetch_manifest(manifest_url: &str) -> Result<UpdateManifest, CliError> {
 }
 
 fn download_bytes(url: &str) -> Result<Vec<u8>, CliError> {
-    let response = ureq::get(url)
+    let response = update_http_agent()
+        .get(url)
         .set(
             "User-Agent",
             concat!("openpanels-local/", env!("CARGO_PKG_VERSION")),
@@ -453,10 +458,26 @@ fn verify_candidate_version(
     let Some(latest_version) = latest_version else {
         return Err(CliError::new("Update manifest does not include a version."));
     };
-    let output = Command::new(candidate)
-        .arg("--version")
-        .output()
+    let mut child = candidate_version_command(candidate)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(to_cli_error)?;
+    let started = Instant::now();
+    loop {
+        if child.try_wait().map_err(to_cli_error)?.is_some() {
+            break;
+        }
+        if started.elapsed() >= Duration::from_secs(VERSION_CHECK_TIMEOUT_SECS) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(CliError::new(
+                "Downloaded update binary timed out while running `--version`.",
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    let output = child.wait_with_output().map_err(to_cli_error)?;
     if !output.status.success() {
         return Err(CliError::new(
             "Downloaded update binary failed `--version`.",
@@ -470,6 +491,17 @@ fn verify_candidate_version(
         )));
     }
     Ok(())
+}
+
+fn candidate_version_command(candidate: &Path) -> Command {
+    let mut command = Command::new(candidate);
+    command
+        .arg("--version")
+        .env_remove("OPENPANELS_TRACE_URL")
+        .env_remove("OPENPANELS_TRACE_AUDIENCE")
+        .env_remove("OPENPANELS_TRACE_RUN_ID")
+        .env("OPENPANELS_DISABLE_UPDATE_CHECK", "1");
+    command
 }
 
 fn verify_sha256(bytes: &[u8], expected_hex: &str) -> Result<(), CliError> {
@@ -597,6 +629,12 @@ fn update_cache_dir() -> Result<PathBuf, CliError> {
     Ok(base.join("openpanels-local"))
 }
 
+fn update_http_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(UPDATE_HTTP_TIMEOUT_SECS))
+        .build()
+}
+
 fn home_dir() -> Result<PathBuf, CliError> {
     env::var_os("HOME")
         .map(PathBuf::from)
@@ -696,5 +734,27 @@ mod tests {
             "aarch64-apple-darwin",
             "0.1.10"
         ));
+    }
+
+    #[test]
+    fn candidate_version_command_removes_trace_environment() {
+        let command = candidate_version_command(Path::new("openpanels-local"));
+        let envs = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().to_string(),
+                    value.map(|value| value.to_string_lossy().to_string()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(envs.get("OPENPANELS_TRACE_URL"), Some(&None));
+        assert_eq!(envs.get("OPENPANELS_TRACE_AUDIENCE"), Some(&None));
+        assert_eq!(envs.get("OPENPANELS_TRACE_RUN_ID"), Some(&None));
+        assert_eq!(
+            envs.get("OPENPANELS_DISABLE_UPDATE_CHECK"),
+            Some(&Some("1".to_owned()))
+        );
     }
 }

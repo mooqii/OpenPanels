@@ -8,6 +8,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const STUDIO_HEALTH_REQUEST_TIMEOUT_MS: u64 = 700;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioSession {
@@ -460,11 +462,27 @@ fn is_studio_healthy(session: &StudioSession) -> bool {
         .local_server_url
         .as_deref()
         .unwrap_or(&session.server_url);
-    let url = format!("{}/api/bootstrap", server_url.trim_end_matches('/'));
-    ureq::get(&url)
+    is_studio_url_healthy(server_url)
+}
+
+fn is_studio_url_healthy(server_url: &str) -> bool {
+    match studio_get(server_url, "/api/health") {
+        Ok(response) => (200..300).contains(&response.status()),
+        Err(ureq::Error::Status(404, _)) => match studio_get(server_url, "/api/bootstrap") {
+            Ok(response) => (200..300).contains(&response.status()),
+            Err(_) => false,
+        },
+        Err(_) => false,
+    }
+}
+
+fn studio_get(server_url: &str, path: &str) -> Result<ureq::Response, ureq::Error> {
+    let url = format!("{}{}", server_url.trim_end_matches('/'), path);
+    ureq::AgentBuilder::new()
+        .timeout(Duration::from_millis(STUDIO_HEALTH_REQUEST_TIMEOUT_MS))
+        .build()
+        .get(&url)
         .call()
-        .map(|response| (200..300).contains(&response.status()))
-        .unwrap_or(false)
 }
 
 fn studio_candidate_label(session: &StudioSession) -> String {
@@ -480,14 +498,16 @@ fn wait_for_studio(server_url: &str, timeout: Duration) -> Result<(), CliError> 
     let started = Instant::now();
     let mut last_error = "not ready".to_owned();
     while started.elapsed() < timeout {
-        match ureq::get(&format!(
-            "{}/api/bootstrap",
-            server_url.trim_end_matches('/')
-        ))
-        .call()
-        {
+        match studio_get(server_url, "/api/health") {
             Ok(response) if (200..300).contains(&response.status()) => return Ok(()),
             Ok(response) => last_error = format!("Studio responded with {}", response.status()),
+            Err(ureq::Error::Status(404, _)) => match studio_get(server_url, "/api/bootstrap") {
+                Ok(response) if (200..300).contains(&response.status()) => return Ok(()),
+                Ok(response) => {
+                    last_error = format!("Studio responded with {}", response.status());
+                }
+                Err(error) => last_error = error.to_string(),
+            },
             Err(error) => last_error = error.to_string(),
         }
         thread::sleep(Duration::from_millis(250));
@@ -684,6 +704,29 @@ mod tests {
             }
         });
         (port, handle)
+    }
+
+    #[test]
+    fn wait_for_studio_does_not_hang_on_unresponsive_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let port = listener.local_addr().expect("local addr").port();
+        let server = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buffer = [0_u8; 1024];
+                let _ = stream.read(&mut buffer);
+                thread::sleep(Duration::from_secs(2));
+            }
+        });
+
+        let started = Instant::now();
+        let result = wait_for_studio(
+            &format!("http://127.0.0.1:{port}"),
+            Duration::from_millis(50),
+        );
+
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        server.join().expect("server thread");
     }
 
     fn studio_session(paths: &OpenPanelsPaths, port: u16) -> StudioSession {

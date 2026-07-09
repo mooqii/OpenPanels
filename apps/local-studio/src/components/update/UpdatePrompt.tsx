@@ -1,29 +1,106 @@
 import { Button } from "@heroui/react"
-import { RefreshCw } from "lucide-react"
+import { AlertTriangle, LoaderCircle, RefreshCw, X } from "lucide-react"
+import { useState } from "react"
 import type { OpenPanelsUpdateStatus } from "../../types"
+
+export type UpdateAction =
+  | "checking"
+  | "downloading"
+  | "installing"
+  | "restarting"
+  | "failed"
+  | null
 
 export function UpdatePrompt({
   action,
+  errorMessage,
+  onDismissError,
   onRefresh,
+  onRetryConnect,
   onUpdate,
   status,
 }: {
-  action: "checking" | "downloading" | "installing" | null
+  action: UpdateAction
+  errorMessage: string | null
+  onDismissError: () => void
   onRefresh: () => void
+  onRetryConnect: () => void
   onUpdate: () => void
   status: OpenPanelsUpdateStatus | null
 }) {
-  const visible = Boolean(status?.updateAvailable || status?.readyToInstall)
-  if (!visible) return null
-
   const latest = status?.latestVersion ?? "new"
+  const visible = Boolean(status?.updateAvailable || status?.readyToInstall)
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(null)
+  const recoveryCommand =
+    'openpanels-local studio start --project "$PWD" --format json --no-open'
+
+  if (
+    action === "installing" ||
+    action === "restarting" ||
+    action === "failed"
+  ) {
+    return (
+      <div
+        className="op-update-overlay"
+        role={action === "failed" ? "alert" : "status"}
+      >
+        <div className="op-update-overlay__panel">
+          <span
+            className={`op-update-overlay__icon ${
+              action === "failed"
+                ? "op-update-overlay__icon--failed"
+                : "op-update-overlay__icon--busy"
+            }`}
+          >
+            {action === "failed" ? (
+              <AlertTriangle size={18} strokeWidth={1.8} />
+            ) : (
+              <LoaderCircle size={18} strokeWidth={1.8} />
+            )}
+          </span>
+          <div className="op-update-overlay__copy">
+            <strong>
+              {action === "failed"
+                ? "更新没有自动恢复"
+                : action === "restarting"
+                  ? "正在切换到新版 Studio"
+                  : "正在安装 OpenPanels 更新"}
+            </strong>
+            <span>
+              {action === "failed"
+                ? (errorMessage ??
+                  "请让 agent 重新打开 MyOpenPanels 面板，或稍后重新连接。")
+                : action === "restarting"
+                  ? "完成后会自动恢复当前面板。"
+                  : "请保持此页面打开，安装完成后会自动重启。"}
+            </span>
+          </div>
+          {action === "failed" ? (
+            <div className="op-update-overlay__actions">
+              <Button onPress={onRetryConnect} size="sm" variant="ghost">
+                重新连接
+              </Button>
+              <Button
+                onPress={() => navigator.clipboard?.writeText(recoveryCommand)}
+                size="sm"
+                variant="ghost"
+              >
+                复制命令
+              </Button>
+              <Button onPress={onDismissError} size="sm">
+                关闭
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
+
+  if (!visible || dismissedVersion === latest) return null
+
   const busy = action !== null
-  const primaryLabel =
-    action === "downloading"
-      ? "正在下载"
-      : action === "installing"
-        ? "正在更新"
-        : "立即更新"
+  const primaryLabel = action === "downloading" ? "正在下载" : "立即更新"
 
   return (
     <div className="op-update-prompt">
@@ -49,6 +126,16 @@ export function UpdatePrompt({
           size="sm"
         >
           {primaryLabel}
+        </Button>
+        <Button
+          aria-label="关闭更新提示"
+          className="op-update-prompt__dismiss"
+          isIconOnly
+          onPress={() => setDismissedVersion(latest)}
+          size="sm"
+          variant="ghost"
+        >
+          <X size={15} strokeWidth={1.8} />
         </Button>
       </div>
     </div>
