@@ -1042,9 +1042,9 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
     let context_dir = storage_dir.join("contexts").join("ctx");
     let asset_dir = storage_dir
         .join("sessions")
-        .join("session:1")
+        .join(crate::paths::sanitize_path_part("session:1"))
         .join("panels")
-        .join("panel:canvas")
+        .join(crate::paths::sanitize_path_part("panel:canvas"))
         .join("assets");
     fs::create_dir_all(&context_dir).expect("context dir");
     fs::create_dir_all(&project_dir).expect("project dir");
