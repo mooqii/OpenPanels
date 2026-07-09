@@ -294,13 +294,15 @@ function ProjectTitleControl({
             if (!isOpen) setPendingDeleteSession(null)
           }}
         >
-          <Modal.Container>
-            <Modal.Dialog>
+          <Modal.Container placement="center">
+            <Modal.Dialog className="op-project-delete-dialog">
               <Modal.Header>
                 <Modal.Heading>{t`Delete project?`}</Modal.Heading>
               </Modal.Header>
               <Modal.Body>
-                <p>{t`This project and its canvas data will be deleted.`}</p>
+                <p>
+                  {t`Deleting this project removes all content in the current project, including every Wiki page and everything on the canvas. This cannot be undone.`}
+                </p>
                 <div className="op-project-title__confirm-name">
                   {pendingDeleteSession.title}
                 </div>

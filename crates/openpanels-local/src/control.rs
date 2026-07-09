@@ -1,7 +1,7 @@
 use crate::error::CliError;
-use crate::paths::OpenPanelsPaths;
+use crate::paths::{sanitize_path_part, OpenPanelsPaths};
 use crate::storage::Storage;
-use crate::tasks::pending_task_count;
+use crate::tasks::{annotate_tasks, pending_task_count};
 use crate::types::{Panel, PanelKind, ProjectBootstrap, ProjectPanelSnapshot, Session};
 use rand::Rng;
 use serde_json::{json, Value};
@@ -60,7 +60,7 @@ pub fn ensure_project_bootstrap(
             )?;
         }
     }
-    let tasks = storage.list_project_tasks(&session.id)?;
+    let tasks = annotate_tasks(storage.list_project_tasks(&session.id)?);
     let pending_task_count = pending_task_count(&tasks);
     let active_panel = read_active_panel(paths)?;
     let preferred_kind = request
@@ -144,7 +144,7 @@ pub fn read_project_bootstrap(
             )?;
         }
     }
-    let tasks = storage.list_project_tasks(&session.id)?;
+    let tasks = annotate_tasks(storage.list_project_tasks(&session.id)?);
     let pending_task_count = pending_task_count(&tasks);
     let active_panel = read_active_panel(paths)?;
     let preferred_kind = request
@@ -424,9 +424,14 @@ fn read_panel_snapshots(
             continue;
         };
         let raw_state = storage.read_panel_state(&session.id, &panel.id)?;
-        let revision = storage.read_panel_state_revision(&session.id, &panel.id)?;
+        let migrated_state = migrate_panel_state(storage, session, &panel, raw_state)?;
+        let revision = if migrated_state.changed {
+            storage.write_panel_state(&session.id, &panel.id, &migrated_state.state)?
+        } else {
+            storage.read_panel_state_revision(&session.id, &panel.id)?
+        };
         snapshots.push(ProjectPanelSnapshot {
-            state: normalize_panel_state(panel.kind, raw_state),
+            state: migrated_state.state,
             revision,
             panel,
         });
@@ -435,27 +440,219 @@ fn read_panel_snapshots(
     Ok(snapshots)
 }
 
-fn normalize_panel_state(kind: PanelKind, state: Option<Value>) -> Value {
-    match kind {
-        PanelKind::Canvas => state.unwrap_or_else(empty_canvas_snapshot),
-        PanelKind::Wiki => normalize_wiki_state(state),
-        _ => state.unwrap_or_else(|| json!({})),
+struct PanelStateMigrationResult {
+    state: Value,
+    changed: bool,
+}
+
+fn migrate_panel_state(
+    storage: &Storage,
+    session: &Session,
+    panel: &Panel,
+    state: Option<Value>,
+) -> Result<PanelStateMigrationResult, CliError> {
+    match panel.kind {
+        PanelKind::Canvas => migrate_canvas_state(state),
+        PanelKind::Wiki => migrate_wiki_state(storage, session, panel, state),
+        _ => {
+            let changed = state.is_none();
+            Ok(PanelStateMigrationResult {
+                state: state.unwrap_or_else(|| json!({})),
+                changed,
+            })
+        }
     }
 }
 
-fn normalize_wiki_state(state: Option<Value>) -> Value {
+fn migrate_canvas_state(state: Option<Value>) -> Result<PanelStateMigrationResult, CliError> {
     let Some(state) = state else {
-        return empty_wiki_state();
+        return Ok(PanelStateMigrationResult {
+            state: empty_canvas_snapshot(),
+            changed: true,
+        });
     };
-    if state.get("schemaVersion").and_then(Value::as_i64) == Some(2)
-        && state.get("rawDocuments").is_some_and(Value::is_array)
+    match state
+        .get("schema")
+        .and_then(|schema| schema.get("schemaVersion"))
+        .and_then(Value::as_i64)
+    {
+        Some(1) => Ok(PanelStateMigrationResult {
+            state,
+            changed: false,
+        }),
+        Some(version) => Err(CliError::new(format!(
+            "Unsupported future canvas panel state schemaVersion: {version}"
+        ))),
+        None => Err(CliError::new(
+            "Malformed canvas panel state: missing schema.schemaVersion.",
+        )),
+    }
+}
+
+fn migrate_wiki_state(
+    storage: &Storage,
+    session: &Session,
+    panel: &Panel,
+    state: Option<Value>,
+) -> Result<PanelStateMigrationResult, CliError> {
+    let Some(state) = state else {
+        return Ok(PanelStateMigrationResult {
+            state: empty_wiki_state(),
+            changed: true,
+        });
+    };
+    match state.get("schemaVersion").and_then(Value::as_i64) {
+        Some(2) => {
+            if is_wiki_state_v2(&state) {
+                Ok(PanelStateMigrationResult {
+                    state,
+                    changed: false,
+                })
+            } else {
+                Err(CliError::new(
+                    "Malformed wiki panel state: schemaVersion 2 is missing required arrays.",
+                ))
+            }
+        }
+        Some(1) => Ok(PanelStateMigrationResult {
+            state: migrate_wiki_state_v1_to_v2(storage, session, panel, &state)?,
+            changed: true,
+        }),
+        Some(version) => Err(CliError::new(format!(
+            "Unsupported future wiki panel state schemaVersion: {version}"
+        ))),
+        None => Err(CliError::new(
+            "Malformed wiki panel state: missing schemaVersion.",
+        )),
+    }
+}
+
+fn is_wiki_state_v2(state: &Value) -> bool {
+    state.get("rawDocuments").is_some_and(Value::is_array)
         && state.get("ruleSets").is_some_and(Value::is_array)
         && state.get("wikiSpaces").is_some_and(Value::is_array)
         && state.get("tasks").is_some_and(Value::is_array)
-    {
-        return state;
+}
+
+fn migrate_wiki_state_v1_to_v2(
+    storage: &Storage,
+    session: &Session,
+    panel: &Panel,
+    state: &Value,
+) -> Result<Value, CliError> {
+    let pages = state
+        .get("pages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CliError::new("Malformed wiki v1 state: pages must be an array."))?;
+    let active_page_id = state.get("activePageId").and_then(Value::as_str);
+    let panel_dir = storage.panel_dir(&session.id, &panel.id);
+    let mut migrated = empty_wiki_state();
+    let mut page_index = Vec::new();
+    let mut first_page_path = None;
+    let mut active_page_path = None;
+
+    for page in pages {
+        let page_object = page
+            .as_object()
+            .ok_or_else(|| CliError::new("Malformed wiki v1 state: page must be an object."))?;
+        let page_path = page_object
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| CliError::new("Malformed wiki v1 state: page.path is required."))?;
+        let title = page_object
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::trim)
+            .unwrap_or_else(|| wiki_title_from_path(page_path));
+        let markdown = page_object
+            .get("markdown")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let updated_at = page_object
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(now_iso);
+
+        let page_file = wiki_page_file_path(&panel_dir, page_path)?;
+        if let Some(parent) = page_file.parent() {
+            fs::create_dir_all(parent).map_err(to_cli_error)?;
+        }
+        fs::write(&page_file, markdown).map_err(to_cli_error)?;
+
+        if first_page_path.is_none() {
+            first_page_path = Some(page_path.to_owned());
+        }
+        if active_page_path.is_none()
+            && active_page_id.is_some()
+            && page_object.get("id").and_then(Value::as_str) == active_page_id
+        {
+            active_page_path = Some(page_path.to_owned());
+        }
+        page_index.push(json!({
+            "path": page_path,
+            "title": title,
+            "type": if page_path == "index.md" { "overview" } else { "page" },
+            "summary": first_markdown_paragraph(markdown),
+            "tags": [],
+            "sourceDocumentIds": [],
+            "updatedAt": updated_at,
+        }));
     }
-    empty_wiki_state()
+
+    let active_path = active_page_path
+        .or(first_page_path)
+        .unwrap_or_else(|| "index.md".to_owned());
+    if let Some(space) = migrated
+        .get_mut("wikiSpaces")
+        .and_then(Value::as_array_mut)
+        .and_then(|spaces| spaces.first_mut())
+        .and_then(Value::as_object_mut)
+    {
+        space.insert("pageIndex".to_owned(), Value::Array(page_index));
+    }
+    if let Some(object) = migrated.as_object_mut() {
+        object.insert("activeWikiPagePath".to_owned(), json!(active_path));
+    }
+    Ok(migrated)
+}
+
+fn wiki_page_file_path(panel_dir: &Path, page_path: &str) -> Result<std::path::PathBuf, CliError> {
+    let pages_dir = panel_dir
+        .join("wikis")
+        .join(sanitize_path_part(DEFAULT_WIKI_SPACE_ID))
+        .join("pages");
+    let mut path = pages_dir.clone();
+    for part in page_path.split('/') {
+        path.push(sanitize_path_part(part));
+    }
+    if !path.starts_with(&pages_dir) {
+        return Err(CliError::new(
+            "Resolved wiki page path escapes pages directory.",
+        ));
+    }
+    Ok(path)
+}
+
+fn wiki_title_from_path(path: &str) -> &str {
+    path.rsplit('/')
+        .next()
+        .and_then(|file_name| file_name.strip_suffix(".md").or(Some(file_name)))
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Untitled")
+}
+
+fn first_markdown_paragraph(markdown: &str) -> String {
+    markdown
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .unwrap_or("")
+        .chars()
+        .take(240)
+        .collect()
 }
 
 fn initial_panel_state(kind: PanelKind) -> Value {
@@ -703,5 +900,186 @@ mod tests {
         assert_eq!(first.session.title, "Project 1");
         assert_eq!(second.session.title, "Project 2");
         assert_eq!(first.session.id, first_again.session.id);
+    }
+
+    #[test]
+    fn bootstrap_migrates_wiki_v1_state_to_v2_without_clearing_pages() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_openpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let bootstrap =
+            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let wiki_panel = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
+            .expect("wiki panel")
+            .panel
+            .clone();
+        let storage = Storage::open(&paths).expect("storage");
+        storage
+            .write_panel_state(
+                &bootstrap.session.id,
+                &wiki_panel.id,
+                &json!({
+                    "schemaVersion": 1,
+                    "pages": [{
+                        "id": "page:notes",
+                        "title": "Research Notes",
+                        "path": "research/notes.md",
+                        "markdown": "# Research Notes\n\nKept during migration.",
+                        "createdAt": "2026-01-01T00:00:00.000Z",
+                        "updatedAt": "2026-01-02T00:00:00.000Z"
+                    }],
+                    "activePageId": "page:notes"
+                }),
+            )
+            .expect("write v1 state");
+        let panel_dir = storage.panel_dir(&bootstrap.session.id, &wiki_panel.id);
+        drop(storage);
+
+        let migrated = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("migrated");
+        assert_eq!(migrated.state["schemaVersion"], json!(2));
+        assert_eq!(
+            migrated.state["activeWikiPagePath"],
+            json!("research/notes.md")
+        );
+        assert_eq!(
+            migrated.state["wikiSpaces"][0]["pageIndex"][0]["path"],
+            json!("research/notes.md")
+        );
+        assert_eq!(
+            fs::read_to_string(
+                panel_dir
+                    .join("wikis")
+                    .join(sanitize_path_part(DEFAULT_WIKI_SPACE_ID))
+                    .join("pages")
+                    .join("research")
+                    .join("notes.md")
+            )
+            .expect("migrated markdown"),
+            "# Research Notes\n\nKept during migration."
+        );
+    }
+
+    #[test]
+    fn bootstrap_rejects_malformed_wiki_state_instead_of_clearing_it() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_openpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let bootstrap =
+            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let wiki_panel = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
+            .expect("wiki panel")
+            .panel
+            .clone();
+        let storage = Storage::open(&paths).expect("storage");
+        storage
+            .write_panel_state(
+                &bootstrap.session.id,
+                &wiki_panel.id,
+                &json!({ "schemaVersion": 2, "rawDocuments": [] }),
+            )
+            .expect("write malformed state");
+        drop(storage);
+
+        let error = match read_project_bootstrap(&paths, BootstrapRequest::new()) {
+            Ok(_) => panic!("malformed"),
+            Err(error) => error,
+        };
+        assert!(error.message().contains("Malformed wiki panel state"));
+    }
+
+    #[test]
+    fn bootstrap_rejects_future_wiki_state_version() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_openpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let bootstrap =
+            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let wiki_panel = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
+            .expect("wiki panel")
+            .panel
+            .clone();
+        let storage = Storage::open(&paths).expect("storage");
+        storage
+            .write_panel_state(
+                &bootstrap.session.id,
+                &wiki_panel.id,
+                &json!({ "schemaVersion": 3, "rawDocuments": [] }),
+            )
+            .expect("write future wiki state");
+        drop(storage);
+
+        let error = match read_project_bootstrap(&paths, BootstrapRequest::new()) {
+            Ok(_) => panic!("future wiki"),
+            Err(error) => error,
+        };
+        assert!(error.message().contains("Unsupported future wiki"));
+    }
+
+    #[test]
+    fn bootstrap_rejects_future_canvas_state_version() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_openpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let bootstrap =
+            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let canvas_panel = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Canvas)
+            .expect("canvas panel")
+            .panel
+            .clone();
+        let storage = Storage::open(&paths).expect("storage");
+        storage
+            .write_panel_state(
+                &bootstrap.session.id,
+                &canvas_panel.id,
+                &json!({ "schema": { "schemaVersion": 2 }, "store": {} }),
+            )
+            .expect("write future canvas state");
+        drop(storage);
+
+        let error = match read_project_bootstrap(&paths, BootstrapRequest::new()) {
+            Ok(_) => panic!("future canvas"),
+            Err(error) => error,
+        };
+        assert!(error.message().contains("Unsupported future canvas"));
     }
 }

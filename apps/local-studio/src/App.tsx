@@ -16,7 +16,7 @@ import {
   type AgentPanelTab,
   AgentToggleButton,
   BuildVersionBadge,
-  TaskStatusButton,
+  type TaskFilter,
 } from "./components/trace/TracePanel"
 import { UpdatePrompt } from "./components/update/UpdatePrompt"
 import { WikiPanel } from "./components/wiki/WikiPanel"
@@ -72,6 +72,7 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
   >(null)
   const [isTraceOpen, setIsTraceOpen] = useState(false)
   const [agentPanelTab, setAgentPanelTab] = useState<AgentPanelTab>("tasks")
+  const [agentTaskFilter, setAgentTaskFilter] = useState<TaskFilter>("pending")
   const appStateRef = useRef<AppState | null>(null)
   const canvasSnapshotRef = useRef<StoreSnapshot | null>(null)
   const canvasRevisionRef = useRef(0)
@@ -232,19 +233,22 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
     }
   }, [transport])
 
-  const refreshUpdateStatus = useCallback(async () => {
-    setUpdateAction("checking")
-    try {
-      const status = await fetchUpdateStatus(transport)
-      setUpdateStatus(status)
-    } catch (error) {
-      if (!isNotFoundError(error)) {
-        console.error("Failed to check OpenPanels update status", error)
+  const refreshUpdateStatus = useCallback(
+    async (options?: { refresh?: boolean }) => {
+      setUpdateAction("checking")
+      try {
+        const status = await fetchUpdateStatus(transport, options)
+        setUpdateStatus(status)
+      } catch (error) {
+        if (!isNotFoundError(error)) {
+          console.error("Failed to check OpenPanels update status", error)
+        }
+      } finally {
+        setUpdateAction(null)
       }
-    } finally {
-      setUpdateAction(null)
-    }
-  }, [transport])
+    },
+    [transport]
+  )
 
   useEffect(() => {
     refreshUpdateStatus()
@@ -298,11 +302,18 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
     }
   }, [downloadUpdate, installUpdate, transport, updateAction, updateStatus])
 
-  const checkUpdateFromBadge = useCallback(() => {
-    if (!updateAction) {
-      refreshUpdateStatus()
-    }
-  }, [refreshUpdateStatus, updateAction])
+  const checkUpdateFromBadge = useCallback(
+    (options?: { refresh?: boolean }) => {
+      if (!updateAction) {
+        refreshUpdateStatus(options)
+      }
+    },
+    [refreshUpdateStatus, updateAction]
+  )
+
+  const refreshUpdateNow = useCallback(() => {
+    refreshUpdateStatus({ refresh: true })
+  }, [refreshUpdateStatus])
 
   const canvasPanel = useMemo(
     () =>
@@ -346,6 +357,8 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
   const createProject = useCallback(async () => {
     const response = await apiFetch(transport.apiBase, "/api/projects", {
       method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
     })
     const data = (await response.json()) as BootstrapResponse
     window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, data.session.id)
@@ -581,24 +594,25 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
               info={appState.buildInfo}
               isChecking={updateAction === "checking"}
               onCheckUpdate={checkUpdateFromBadge}
+              onUpdate={updateNow}
+              status={updateStatus}
             />
           ) : null}
           <AgentToggleButton
             isOpen={isTraceOpen}
-            onToggle={() => setIsTraceOpen((value) => !value)}
+            onToggle={() => {
+              if (!isTraceOpen) {
+                setAgentPanelTab("tasks")
+                setAgentTaskFilter("pending")
+              }
+              setIsTraceOpen((value) => !value)
+            }}
             pendingCount={appState.pendingTaskCount ?? 0}
           />
         </div>
-        <TaskStatusButton
-          count={appState.pendingTaskCount ?? 0}
-          onPress={() => {
-            setAgentPanelTab("tasks")
-            setIsTraceOpen(true)
-          }}
-        />
         <UpdatePrompt
           action={updateAction}
-          onRefresh={refreshUpdateStatus}
+          onRefresh={refreshUpdateNow}
           onUpdate={updateNow}
           status={updateStatus}
         />
@@ -608,8 +622,11 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
         buildInfo={appState.buildInfo}
         isOpen={isTraceOpen}
         onTabChange={setAgentPanelTab}
+        onTaskFilterChange={setAgentTaskFilter}
+        taskFilter={agentTaskFilter}
         tasks={appState.tasks ?? []}
         transport={transport}
+        workerStatus={appState.agentWorker}
       />
     </main>
   )

@@ -37,50 +37,26 @@
 }
 
 .op-agent-panel__tabs {
-  display: flex;
-  gap: 4px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--op-border-default);
+}
+
+.op-agent-panel__tabs .tabs__list {
+  width: 100%;
 }
 
 .op-agent-panel__tab {
   display: inline-flex;
   flex: 1 1 0;
-  gap: 6px;
+  gap: 7px;
   align-items: center;
   justify-content: center;
   min-width: 0;
-  height: 30px;
-  padding: 0 9px;
-  font-size: 12px;
-  font-weight: 750;
-  color: var(--op-text-tertiary);
-  cursor: pointer;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  letter-spacing: 0;
 }
 
 .op-agent-panel__tab svg {
   flex: 0 0 auto;
-}
-
-.op-agent-panel__tab span {
-  min-width: 18px;
-  padding: 1px 5px;
-  font-size: 10px;
-  line-height: 16px;
-  color: white;
-  text-align: center;
-  background: var(--danger);
-  border-radius: 999px;
-}
-
-.op-agent-panel__tab:hover,
-.op-agent-panel__tab--active {
-  color: var(--op-text-primary);
-  background: color-mix(in oklab, var(--op-bg-muted) 76%, transparent);
-  border-color: var(--op-border-default);
 }
 
 .op-agent-tasks {
@@ -92,6 +68,112 @@
   overflow: auto;
 }
 
+.op-agent-task-filters {
+  position: sticky;
+  top: -10px;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 0 0 2px;
+  background: color-mix(in oklab, var(--op-bg-base) 94%, transparent);
+}
+
+.op-agent-worker {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 9px;
+  color: var(--op-text-secondary);
+  background: color-mix(in oklab, var(--op-bg-elevated) 92%, transparent);
+  border: 1px solid var(--op-border-default);
+  border-left: 3px solid var(--success);
+  border-radius: 8px;
+}
+
+.op-agent-worker--active {
+  border-left-color: var(--accent);
+}
+
+.op-agent-worker--danger {
+  border-left-color: var(--danger);
+}
+
+.op-agent-worker span {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.op-agent-worker strong,
+.op-agent-worker small,
+.op-agent-worker em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--op-text-tertiary);
+  white-space: nowrap;
+}
+
+.op-agent-worker em {
+  grid-column: 1 / -1;
+  font-style: normal;
+  color: var(--danger);
+}
+
+.op-agent-task-filter {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 5px 4px;
+  color: var(--op-text-tertiary);
+  text-align: center;
+  background: color-mix(in oklab, var(--op-bg-muted) 42%, transparent);
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.op-agent-task-filter span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.op-agent-task-filter__count {
+  justify-self: center;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.op-agent-task-filter__count--danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  color: white;
+  background: var(--danger);
+  border-radius: 999px;
+}
+
+.op-agent-task-filter:hover,
+.op-agent-task-filter--active {
+  color: var(--op-text-primary);
+  background: color-mix(in oklab, var(--op-bg-muted) 80%, transparent);
+  border-color: var(--op-border-default);
+}
+
 .op-agent-task {
   display: grid;
   gap: 7px;
@@ -100,6 +182,17 @@
   border: 1px solid var(--op-border-default);
   border-left: 3px solid var(--muted);
   border-radius: 8px;
+}
+
+.op-agent-task__summary {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
 }
 
 .op-agent-task--danger {
@@ -162,10 +255,75 @@
   border-radius: 6px;
 }
 
+.op-agent-task__meta .op-agent-task__state--ready {
+  color: var(--success);
+}
+
+.op-agent-task__meta .op-agent-task__state--blocked {
+  color: var(--warning);
+}
+
+.op-agent-task__note {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--op-text-tertiary);
+  white-space: nowrap;
+}
+
 .op-agent-task code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 10px;
   color: var(--op-text-tertiary);
+}
+
+.op-agent-task__detail {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.op-agent-task__command,
+.op-agent-task__json {
+  position: relative;
+  display: grid;
+  gap: 6px;
+}
+
+.op-agent-task__command > span {
+  font-size: 10px;
+  font-weight: 750;
+  color: var(--op-text-tertiary);
+}
+
+.op-agent-task__command button,
+.op-agent-task__json button {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 24px;
+  height: 24px;
+}
+
+.op-agent-task__command code,
+.op-agent-task__json pre {
+  max-height: 220px;
+  padding: 9px;
+  padding-right: 34px;
+  margin: 0;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--op-text-secondary);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  background: var(--op-canvas-background);
+  border: 1px solid var(--op-border-default);
+  border-radius: 8px;
 }
 
 .op-trace-panel__header {

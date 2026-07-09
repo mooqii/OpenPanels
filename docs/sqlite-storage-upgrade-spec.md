@@ -129,26 +129,17 @@ PRAGMA busy_timeout = 5000;
 2. 按顺序执行未应用 migration。
 3. 每个 migration 在事务里执行。
 4. 成功后记录 migration id、checksum、applied_at。
+5. 已应用 migration 启动时必须校验 checksum。
 
 ## Migration 机制
 
-新增目录：
+当前 Rust 实现在 `crates/openpanels-local/src/storage.rs` 内维护 migration registry。
+每条 migration 包含：
 
-```text
-crates/openpanels-local/src/storage.rs migrations
-  0001_initial.ts
-  0002_wiki_task_indexes.ts
-```
-
-Migration 类型：
-
-```ts
-export interface SQLiteMigration {
-  id: string
-  description: string
-  up(db: Database.Database): void
-}
-```
+- `id`
+- `description`
+- `checksum_material`
+- `up(tx)`
 
 Migration 表：
 
@@ -167,7 +158,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 - 已发布 migration 不允许重写；需要新增 migration。
 - migration 必须幂等到“只执行一次”的级别，即依赖 `schema_migrations` 控制，不依赖重复执行。
 - 所有应用代码只支持迁移到最新 schema，不支持降级。
-- 测试必须覆盖空库初始化、migration 重入、至少一个模拟升级路径。
+- 启动时如果发现未知 migration、非连续历史或 checksum mismatch，必须明确报错。
+- 当前项目尚未上线，`0001_initial` 定义当前完整 SQLite schema；不写旧库或
+  占位 checksum 兼容逻辑。
+- 测试必须覆盖空库初始化、migration 重入、checksum mismatch、未知 migration
+  和失败回滚。
 
 ## 初始 Schema
 
@@ -496,6 +491,7 @@ openpanels-local storage migrate --project "$PWD" --format json
 2. 已执行 migration 不重复执行。
 3. migration 中途失败会回滚。
 4. checksum 或重复 id 异常能明确报错。
+5. 未知未来 migration 和非连续 migration 历史会阻止启动。
 
 ### control / server
 
@@ -528,6 +524,7 @@ openpanels-local storage migrate --project "$PWD" --format json
 - 实现 wiki v1/v2 migrator 测试。
 - canvas state 进入 migration registry。
 - 禁止未知未来版本静默 fallback。
+- wiki/canvas state malformed 时明确报错，不能 normalize 成空 state。
 
 ### Phase 4: Maintenance Tools
 

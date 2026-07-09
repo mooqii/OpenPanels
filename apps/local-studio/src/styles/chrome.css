@@ -94,13 +94,111 @@
   opacity: 0.72;
 }
 
+.op-build-badge-wrap {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.op-build-menu {
+  position: absolute;
+  right: 0;
+  bottom: 32px;
+  z-index: 64;
+  display: grid;
+  gap: 10px;
+  width: min(300px, calc(100vw - 20px));
+  padding: 10px;
+  background: color-mix(in oklab, var(--op-canvas-toolbar) 96%, transparent);
+  border: 1px solid var(--op-toolbar-border);
+  border-radius: 8px;
+  box-shadow: var(--op-toolbar-shadow);
+  backdrop-filter: blur(14px);
+}
+
+.op-build-menu__status {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+}
+
+.op-build-menu__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--op-text-secondary);
+  background: color-mix(in oklab, var(--op-bg-muted) 70%, transparent);
+  border: 1px solid var(--op-border-default);
+  border-radius: 8px;
+}
+
+.op-build-menu__icon--checking svg {
+  animation: op-build-menu-spin 900ms linear infinite;
+}
+
+.op-build-menu__icon--current {
+  color: var(--success);
+}
+
+.op-build-menu__icon--update {
+  color: var(--accent);
+}
+
+.op-build-menu__status div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.op-build-menu__status strong,
+.op-build-menu__status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-build-menu__status strong {
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.25;
+  color: var(--op-text-primary);
+}
+
+.op-build-menu__status span {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--op-text-tertiary);
+}
+
+.op-build-menu__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.op-build-menu__primary {
+  min-width: 96px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+@keyframes op-build-menu-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .op-trace-toggle {
   position: relative;
   display: inline-flex;
-  gap: 4px;
   align-items: center;
   justify-content: center;
-  width: 42px;
+  width: 24px;
   height: 24px;
   padding: 0;
   color: var(--op-text-tertiary);
@@ -128,39 +226,6 @@
   border: 1px solid color-mix(in oklab, white 70%, var(--danger));
   border-radius: 999px;
   box-shadow: 0 6px 16px color-mix(in oklab, var(--danger) 34%, transparent);
-}
-
-.op-task-status-button {
-  position: absolute;
-  bottom: 10px;
-  left: 10px;
-  z-index: 61;
-  display: inline-flex;
-  gap: 5px;
-  align-items: center;
-  justify-content: center;
-  width: auto;
-  min-width: 34px;
-  height: 24px;
-  padding: 0 8px;
-  font-size: 11px;
-  font-weight: 850;
-  line-height: 1;
-  color: white;
-  cursor: pointer;
-  background: var(--danger);
-  border: 1px solid color-mix(in oklab, white 58%, var(--danger));
-  border-radius: 999px;
-  box-shadow:
-    0 8px 22px color-mix(in oklab, var(--danger) 32%, transparent),
-    var(--op-toolbar-shadow);
-}
-
-.op-task-status-button:hover,
-.op-task-status-button:focus-visible {
-  color: white;
-  outline: none;
-  background: color-mix(in oklab, var(--danger) 88%, black);
 }
 
 .op-trace-toggle:hover,
@@ -347,6 +412,8 @@
 .op-project-title__switch-button {
   display: flex;
   flex: 1;
+  justify-content: flex-start;
+  width: 100%;
   min-width: 0;
   padding: 0;
   color: inherit;
@@ -434,4 +501,23 @@
   color: var(--op-text-primary);
   background: var(--op-bg-muted);
   border-radius: 8px;
+}
+
+.op-project-delete-dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 22px;
+  border: 1px solid
+    color-mix(in oklab, var(--danger) 22%, var(--op-border-default));
+  border-radius: 14px;
+}
+
+.op-project-delete-dialog p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--op-text-secondary);
+}
+
+.op-project-delete-dialog .op-project-title__confirm-name {
+  margin-top: 12px;
 }

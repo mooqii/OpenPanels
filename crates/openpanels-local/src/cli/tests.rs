@@ -20,6 +20,37 @@ fn run(args: &[&str]) -> (i32, String, String) {
     )
 }
 
+fn update_task_in_panel_state(storage_dir: &Path, task_id: &str, fields: &[(&str, Value)]) {
+    let connection = Connection::open(storage_dir.join("main.sqlite3")).expect("db");
+    let raw: String = connection
+        .query_row(
+            "SELECT state_json FROM panel_states WHERE state_json LIKE '%\"tasks\"%' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("panel state");
+    let mut state = serde_json::from_str::<Value>(&raw).expect("state json");
+    let task = state
+        .get_mut("tasks")
+        .and_then(Value::as_array_mut)
+        .and_then(|tasks| {
+            tasks
+                .iter_mut()
+                .find(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
+        })
+        .expect("task");
+    let object = task.as_object_mut().expect("task object");
+    for (key, value) in fields {
+        object.insert((*key).to_owned(), value.clone());
+    }
+    connection
+        .execute(
+            "UPDATE panel_states SET state_json = ? WHERE state_json LIKE '%\"tasks\"%'",
+            [serde_json::to_string(&state).expect("state string")],
+        )
+        .expect("update panel state");
+}
+
 fn fake_studio_server(request_count: usize) -> (u16, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
     let port = listener.local_addr().expect("local addr").port();
@@ -702,12 +733,272 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(code, 0, "{stderr}");
     let project_tasks = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(project_tasks["pendingCount"], 1);
+    assert_eq!(project_tasks["readyCount"], 1);
+    assert_eq!(project_tasks["blockedCount"], 0);
     assert_eq!(project_tasks["tasks"][0]["queue"], "wiki");
     assert_eq!(project_tasks["tasks"][0]["id"], task_id);
+    assert_eq!(project_tasks["tasks"][0]["ready"], true);
     assert_eq!(
         project_tasks["tasks"][0]["type"],
         "ingest_markdown_into_wiki"
     );
+    assert_eq!(
+        project_tasks["tasks"][0]["capability"],
+        "wiki.ingestMarkdown"
+    );
+    assert_eq!(
+        project_tasks["tasks"][0]["input"]["documentId"],
+        raw["document"]["id"]
+    );
+    assert_eq!(
+        project_tasks["tasks"][0]["source"]["wikiSpaceId"],
+        "wiki:default"
+    );
+    assert_eq!(project_tasks["tasks"][0]["attempt"], 0);
+    assert_eq!(project_tasks["tasks"][0]["maxAttempts"], 3);
+    assert!(project_tasks["tasks"][0]["lease"]["owner"].is_null());
+    assert!(project_tasks["tasks"][0]["retryAfter"].is_null());
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "list",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--status",
+        "queued",
+        "--pending",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let filtered_project_tasks = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(filtered_project_tasks["pendingCount"], 1);
+    assert_eq!(filtered_project_tasks["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered_project_tasks["tasks"][0]["id"], task_id);
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "next",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let project_next = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(project_next["task"]["id"], task_id);
+    assert_eq!(project_next["task"]["ready"], true);
+
+    let future = (chrono::Utc::now() + chrono::Duration::minutes(10))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let past = (chrono::Utc::now() - chrono::Duration::minutes(10))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    update_task_in_panel_state(
+        &storage_dir,
+        task_id,
+        &[
+            ("leaseOwner", json!("agent:test")),
+            ("leaseExpiresAt", json!(future)),
+        ],
+    );
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "next",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let leased_next = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert!(leased_next["task"].is_null());
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "list",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--pending",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let leased_list = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(leased_list["readyCount"], 0);
+    assert_eq!(leased_list["blockedCount"], 1);
+    assert_eq!(leased_list["tasks"][0]["blockedReason"], "leased");
+    update_task_in_panel_state(&storage_dir, task_id, &[("leaseExpiresAt", json!(past))]);
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "next",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let expired_lease_next = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(expired_lease_next["task"]["id"], task_id);
+    update_task_in_panel_state(
+        &storage_dir,
+        task_id,
+        &[
+            ("leaseOwner", Value::Null),
+            ("leaseExpiresAt", Value::Null),
+            ("retryAfter", json!(future)),
+        ],
+    );
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "next",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let retry_next = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert!(retry_next["task"].is_null());
+    update_task_in_panel_state(
+        &storage_dir,
+        task_id,
+        &[
+            ("retryAfter", Value::Null),
+            ("status", json!("failed")),
+            ("attempt", json!(3)),
+            ("maxAttempts", json!(3)),
+        ],
+    );
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "next",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let attempts_next = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert!(attempts_next["task"].is_null());
+    update_task_in_panel_state(
+        &storage_dir,
+        task_id,
+        &[
+            ("status", json!("queued")),
+            ("attempt", json!(0)),
+            ("maxAttempts", json!(3)),
+        ],
+    );
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bridge",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--once",
+        "--command",
+        "printf \"$OPENPANELS_TASK_ID\"",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let bridge = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(bridge["ran"], true);
+    assert_eq!(bridge["task"]["id"], task_id);
+    assert_eq!(bridge["stdout"], task_id);
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bridge",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--once",
+        "--timeout-ms",
+        "50",
+        "--command",
+        "sleep 1",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let timed_out_bridge = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(timed_out_bridge["timedOut"], true);
+    assert_eq!(timed_out_bridge["success"], false);
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bridge",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--once",
+        "--command",
+        "yes x | head -c 70000",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let truncated_bridge = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert!(truncated_bridge["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("output truncated"));
+
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "inspect",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--task-id",
+        task_id,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let inspected_task = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(inspected_task["task"]["id"], task_id);
+    assert_eq!(inspected_task["task"]["task"]["id"], task_id);
+
     assert!(storage_dir
         .join("contexts")
         .join("ctx")
@@ -783,6 +1074,10 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(code, 0, "{stderr}");
     let claim = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(claim["task"]["status"], "claimed");
+    assert_eq!(claim["task"]["attempt"], 1);
+    assert_eq!(claim["task"]["leaseOwner"], claim["process"]["id"]);
+    assert!(claim["task"]["leaseExpiresAt"].is_string());
+    assert!(claim["task"]["lastHeartbeatAt"].is_string());
     assert_eq!(
         claim["state"]["rawDocuments"][0]["ingestionByWikiSpace"]["wiki:default"]["status"],
         "ingesting"
@@ -945,6 +1240,198 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
             ["status"],
         "queued"
     );
+}
+
+#[test]
+fn agent_bridge_builtin_wiki_executor_completes_ready_tasks() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+
+    let (code, stdout, stderr) = run(&[
+        "wiki",
+        "documents",
+        "create-markdown",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--title",
+        "Bridge Source",
+        "--file-name",
+        "bridge-source.md",
+        "--content",
+        "# Bridge Source\n\nContent imported by the built-in worker.",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let created = serde_json::from_str::<Value>(&stdout).expect("json");
+    let document_id = created["document"]["id"].as_str().unwrap();
+    let task_id = created["document"]["ingestionByWikiSpace"]["wiki:default"]["taskId"]
+        .as_str()
+        .unwrap();
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bridge",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--once",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let bridge = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(bridge["ran"], true);
+    assert_eq!(bridge["success"], true);
+    assert_eq!(bridge["result"]["executor"], "builtin-wiki");
+    assert_eq!(bridge["result"]["documentId"], document_id);
+    assert_eq!(bridge["task"]["id"], task_id);
+    assert_eq!(bridge["task"]["status"], "succeeded");
+    let page_path = bridge["result"]["pagePath"].as_str().unwrap();
+    assert_eq!(page_path, "imports/Bridge_Source.md");
+
+    let (code, stdout, stderr) = run(&[
+        "wiki",
+        "pages",
+        "read",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--wiki-space-id",
+        "wiki:default",
+        "--path",
+        page_path,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let page = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert!(page["markdown"].as_str().unwrap().contains(document_id));
+    assert!(page["markdown"]
+        .as_str()
+        .unwrap()
+        .contains("Content imported by the built-in worker."));
+
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "list",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--pending",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let pending = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(pending["pendingCount"], 0);
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bridge",
+        "status",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let status = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(status["status"], "idle");
+    assert_eq!(status["lastTask"]["success"], true);
+}
+
+#[test]
+fn agent_bridge_builtin_wiki_executor_fails_empty_markdown() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+
+    let (code, stdout, stderr) = run(&[
+        "wiki",
+        "documents",
+        "create-markdown",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--title",
+        "Empty Source",
+        "--file-name",
+        "empty-source.md",
+        "--content",
+        "   ",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let created = serde_json::from_str::<Value>(&stdout).expect("json");
+    let task_id = created["document"]["ingestionByWikiSpace"]["wiki:default"]["taskId"]
+        .as_str()
+        .unwrap();
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bridge",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--once",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let bridge = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(bridge["success"], false);
+    assert_eq!(bridge["task"]["id"], task_id);
+    assert_eq!(bridge["task"]["status"], "failed");
+    assert_eq!(bridge["error"], "Source markdown is empty.");
+
+    let (code, stdout, stderr) = run(&[
+        "tasks",
+        "list",
+        "--project",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--pending",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let pending = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(pending["pendingCount"], 1);
+    assert_eq!(pending["tasks"][0]["status"], "failed");
+    assert_eq!(pending["tasks"][0]["attempt"], 1);
 }
 
 #[test]

@@ -458,7 +458,7 @@ pub fn claim_task(
     let mut wiki = get_wiki_bootstrap(paths)?;
     let task = task_mut(&mut wiki.state, task_id)?;
     let status = task.get("status").and_then(Value::as_str).unwrap_or("");
-    if status != "queued" && status != "failed" {
+    if status != "queued" && status != "failed" && !task_lease_expired(task) {
         return Err(CliError::new(format!(
             "Wiki task is not claimable: {task_id}"
         )));
@@ -472,6 +472,14 @@ pub fn claim_task(
         "claimed"
     });
     task["claimedByProcessId"] = json!(process_id);
+    task["attempt"] = json!(task.get("attempt").and_then(Value::as_i64).unwrap_or(0) + 1);
+    if task.get("maxAttempts").and_then(Value::as_i64).is_none() {
+        task["maxAttempts"] = json!(3);
+    }
+    task["leaseOwner"] = json!(process_id);
+    task["leaseExpiresAt"] = json!(lease_expires_at(15));
+    task["lastHeartbeatAt"] = json!(now);
+    task["retryAfter"] = Value::Null;
     task["updatedAt"] = json!(now);
     let task_snapshot = task.clone();
     let process = json!({
@@ -576,6 +584,10 @@ pub fn complete_task(
         task["status"] = json!("succeeded");
         task["error"] = Value::Null;
         task["result"] = result.unwrap_or(Value::Null);
+        task["leaseOwner"] = Value::Null;
+        task["leaseExpiresAt"] = Value::Null;
+        task["lastHeartbeatAt"] = Value::Null;
+        task["retryAfter"] = Value::Null;
         task["updatedAt"] = json!(now);
         task.clone()
     };
@@ -697,6 +709,10 @@ pub fn fail_task(paths: &OpenPanelsPaths, task_id: &str, message: &str) -> Resul
         let task = task_mut(&mut wiki.state, task_id)?;
         task["status"] = json!("failed");
         task["error"] = json!(message);
+        task["leaseOwner"] = Value::Null;
+        task["leaseExpiresAt"] = Value::Null;
+        task["lastHeartbeatAt"] = Value::Null;
+        task["retryAfter"] = Value::Null;
         task["updatedAt"] = json!(now);
         task.clone()
     };
@@ -755,6 +771,20 @@ pub fn fail_task(paths: &OpenPanelsPaths, task_id: &str, message: &str) -> Resul
         Some(format!("Task failed: {message}")),
     );
     Ok(json!({ "task": task_snapshot, "state": wiki.state }))
+}
+
+fn lease_expires_at(minutes: i64) -> String {
+    (chrono::Utc::now() + chrono::Duration::minutes(minutes))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn task_lease_expired(task: &Value) -> bool {
+    let Some(expires_at) = task.get("leaseExpiresAt").and_then(Value::as_str) else {
+        return false;
+    };
+    chrono::DateTime::parse_from_rfc3339(expires_at)
+        .map(|expires_at| expires_at.with_timezone(&chrono::Utc) <= chrono::Utc::now())
+        .unwrap_or(false)
 }
 
 pub fn read_markdown(paths: &OpenPanelsPaths, document_id: &str) -> Result<Value, CliError> {

@@ -50,6 +50,7 @@ export function normalizeBootstrap(data: BootstrapResponse): AppState {
     ...data,
     activePanelId: activePanel.id,
     activePanelKind: activePanel.kind,
+    agentWorker: data.agentWorker ?? { status: "idle" },
     panel: activePanel,
     panels: normalizedPanels,
     pendingTaskCount: data.pendingTaskCount ?? 0,
@@ -125,6 +126,7 @@ export function serializeBootstrapForCompare(appState: AppState): string {
     activePanelKind: appState.activePanelKind,
     panelIds: appState.panels.map(({ panel }) => panel.id),
     pendingTaskCount: appState.pendingTaskCount ?? 0,
+    agentWorker: appState.agentWorker ?? { status: "idle" },
     session: appState.session,
     states: appState.panels.map(({ panel, state }) => ({
       id: panel.id,
@@ -302,9 +304,13 @@ export async function loadBootstrap(
 }
 
 export function fetchUpdateStatus(
-  transport: OpenPanelsTransport
+  transport: OpenPanelsTransport,
+  options?: { refresh?: boolean }
 ): Promise<OpenPanelsUpdateStatus> {
-  return apiJson(transport.apiBase, "/api/update/status")
+  const path = options?.refresh
+    ? "/api/update/status?refresh=1"
+    : "/api/update/status"
+  return apiJson(transport.apiBase, path)
 }
 
 export function requestUpdateDownload(

@@ -1,6 +1,7 @@
 use crate::agent::{
     agent_context, capabilities, list_agent_guides, read_agent_guide, render_agent_guides_markdown,
 };
+use crate::bridge::{read_bridge_status, run_bridge, BridgeOptions};
 use crate::canvas::{insert_image, insert_placeholder, InsertImageInput, InsertPlaceholderInput};
 use crate::control::{create_project, read_project_bootstrap, BootstrapRequest};
 use crate::error::CliError;
@@ -43,6 +44,7 @@ pub const HELP_TEXT: &str = concat!(
     "Commands:\n",
     "  agent context             Read current agent context and instructions\n",
     "  agent capabilities        List the current agent-facing command set\n",
+    "  agent bridge              Run a generic task bridge command\n",
     "  agent guides              List loadable agent guides\n",
     "  agent guide <id>          Print one full agent guide\n",
     "  project current           Read the current user-visible project\n",
@@ -56,7 +58,7 @@ pub const HELP_TEXT: &str = concat!(
     "  canvas selection export   Export selected canvas pixels to a file\n",
     "  canvas placeholder create Insert a generation placeholder\n",
     "  canvas image insert       Insert a local image into the current canvas\n",
-    "  tasks list                List project tasks across panels\n",
+    "  tasks list|next|inspect   Read project tasks across panels\n",
     "  wiki context              Read current wiki context\n",
     "  wiki documents list       List raw wiki documents\n",
     "  wiki documents add        Add a raw wiki document\n",
@@ -491,6 +493,17 @@ fn command_help_text(parsed: &ParsedArgs) -> String {
                 "List the current agent-facing command set.",
                 &[],
             ),
+            ["bridge", ..] => help_block(
+                "openpanels-local agent bridge [status] [--command <command>]",
+                "Run the task bridge or read bridge status. Does not create a Project.",
+                &[
+                    "--command <command>",
+                    "--once",
+                    "--queue <queue>",
+                    "--interval-ms <ms>",
+                    "--timeout-ms <ms>",
+                ],
+            ),
             ["guides", ..] => help_block(
                 "openpanels-local agent guides",
                 "List loadable agent guides.",
@@ -502,7 +515,7 @@ fn command_help_text(parsed: &ParsedArgs) -> String {
                 &["--task-id <id>"],
             ),
             _ => help_block(
-                "openpanels-local agent <context|capabilities|guides|guide>",
+                "openpanels-local agent <context|capabilities|bridge|guides|guide>",
                 "Agent discovery and context commands.",
                 &[],
             ),
@@ -511,7 +524,17 @@ fn command_help_text(parsed: &ParsedArgs) -> String {
             ["list", ..] | [] => help_block(
                 "openpanels-local tasks list",
                 "List project tasks across panels. Does not create a Project.",
-                &[],
+                &["--queue <queue>", "--status <status>", "--pending"],
+            ),
+            ["next", ..] => help_block(
+                "openpanels-local tasks next",
+                "Read the next pending project task. Does not create a Project.",
+                &["--queue <queue>", "--status <status>"],
+            ),
+            ["inspect", ..] => help_block(
+                "openpanels-local tasks inspect --task-id <id>",
+                "Read one project task by id. Does not create a Project.",
+                &["--task-id <id>"],
             ),
             _ => HELP_TEXT.to_owned(),
         },
@@ -533,11 +556,33 @@ fn run_tasks_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
     match subcommand {
         None | Some("list") => {
             let paths = parsed_current_paths(parsed)?;
-            let result = tasks::list_tasks(&paths)?;
+            let result = tasks::list_tasks(&paths, task_list_filter(parsed))?;
             let count = result["tasks"].as_array().map(Vec::len).unwrap_or(0);
             write_result(parsed, stdout, &result, &format!("{count} task(s)"))
         }
-        _ => Err(CliError::new("Expected tasks subcommand: list.")),
+        Some("next") => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = tasks::next_task(&paths, task_list_filter(parsed))?;
+            let text = result["task"]["id"].as_str().unwrap_or("No pending task");
+            write_result(parsed, stdout, &result, text)
+        }
+        Some("inspect") => {
+            let paths = parsed_current_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = tasks::inspect_task(&paths, task_id)?;
+            write_result(parsed, stdout, &result, task_id)
+        }
+        _ => Err(CliError::new(
+            "Expected tasks subcommand: list, next, or inspect.",
+        )),
+    }
+}
+
+fn task_list_filter<'a>(parsed: &'a ParsedArgs) -> tasks::TaskListFilter<'a> {
+    tasks::TaskListFilter {
+        pending: has_flag(parsed, "pending"),
+        queue: string_flag(parsed, "queue"),
+        status: string_flag(parsed, "status"),
     }
 }
 
@@ -827,6 +872,46 @@ fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
                 &render_capabilities_summary(&capabilities),
             )
         }
+        Some("bridge") => {
+            let paths = parsed_current_paths(parsed)?;
+            if parsed.positionals.get(2).map(String::as_str) == Some("status") {
+                let result = read_bridge_status(&paths)?;
+                let text = result["status"].as_str().unwrap_or("idle");
+                return write_result(parsed, stdout, &result, text);
+            }
+            let interval_ms = string_flag(parsed, "interval-ms")
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| CliError::new("Expected --interval-ms to be a number."))
+                })
+                .transpose()?
+                .unwrap_or(2000);
+            let timeout_ms = string_flag(parsed, "timeout-ms")
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| CliError::new("Expected --timeout-ms to be a number."))
+                })
+                .transpose()?
+                .unwrap_or(600_000);
+            let result = run_bridge(
+                &paths,
+                BridgeOptions {
+                    command: string_flag(parsed, "command"),
+                    interval_ms,
+                    once: has_flag(parsed, "once"),
+                    queue: string_flag(parsed, "queue"),
+                    timeout_ms,
+                },
+            )?;
+            let text = if result["ran"].as_bool().unwrap_or(false) {
+                "Bridge command ran"
+            } else {
+                "No pending task"
+            };
+            write_result(parsed, stdout, &result, text)
+        }
         Some("guides") => {
             let guides = list_agent_guides()?;
             let payload = serde_json::json!({ "guides": guides });
@@ -848,7 +933,7 @@ fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
             write_result(parsed, stdout, &payload, &markdown)
         }
         _ => Err(CliError::new(
-            "Expected agent subcommand: context, capabilities, guides, or guide.",
+            "Expected agent subcommand: context, capabilities, bridge, guides, or guide.",
         )),
     }
 }

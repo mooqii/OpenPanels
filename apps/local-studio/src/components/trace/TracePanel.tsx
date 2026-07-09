@@ -1,14 +1,15 @@
-import { Button, Chip } from "@heroui/react"
+import { Button, Chip, Tabs } from "@heroui/react"
 import {
   Activity,
   ArrowDown,
-  ChevronLeft,
-  ChevronRight,
+  CheckCircle2,
   Copy,
+  Download,
   ListTodo,
   MessageSquare,
   Pause,
   Play,
+  RefreshCw,
   Trash2,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -19,8 +20,10 @@ import {
   formatTraceTime,
 } from "../../lib/api"
 import type {
+  AgentWorkerStatus,
   OpenPanelsBuildInfo,
   OpenPanelsTransport,
+  OpenPanelsUpdateStatus,
   ProjectTask,
   TraceCategory,
   TraceEvent,
@@ -36,6 +39,7 @@ const TRACE_CATEGORIES: TraceCategory[] = [
 ]
 
 export type AgentPanelTab = "tasks" | "communication"
+export type TaskFilter = "pending" | "active" | "done" | "all"
 
 export function AgentToggleButton({
   isOpen,
@@ -57,7 +61,6 @@ export function AgentToggleButton({
       variant={isOpen ? "secondary" : "ghost"}
     >
       <Activity size={14} />
-      {isOpen ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
       {pendingCount > 0 ? (
         <span className="op-trace-toggle__dot">
           {formatTaskCount(pendingCount)}
@@ -67,43 +70,26 @@ export function AgentToggleButton({
   )
 }
 
-export function TaskStatusButton({
-  count,
-  onPress,
-}: {
-  count: number
-  onPress: () => void
-}) {
-  if (count <= 0) return null
-  return (
-    <Button
-      aria-label={`${count} pending OpenPanels task${count === 1 ? "" : "s"}`}
-      className="op-task-status-button"
-      isIconOnly
-      onPress={onPress}
-      size="sm"
-      variant="danger"
-    >
-      <ListTodo size={13} />
-      <span>{formatTaskCount(count)}</span>
-    </Button>
-  )
-}
-
 export function AgentPanel({
   activeTab,
   buildInfo,
   isOpen,
   onTabChange,
+  onTaskFilterChange,
+  taskFilter,
   tasks,
   transport,
+  workerStatus,
 }: {
   activeTab: AgentPanelTab
   buildInfo?: OpenPanelsBuildInfo
   isOpen: boolean
   onTabChange: (tab: AgentPanelTab) => void
+  onTaskFilterChange: (filter: TaskFilter) => void
+  taskFilter: TaskFilter
   tasks: ProjectTask[]
   transport: OpenPanelsTransport
+  workerStatus?: AgentWorkerStatus
 }) {
   const isDevelopment = buildInfo?.channel === "development"
   const audience = isDevelopment ? "development" : "release"
@@ -116,6 +102,7 @@ export function AgentPanel({
   const [connectionState, setConnectionState] = useState<
     "connecting" | "live" | "paused" | "offline"
   >("connecting")
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -157,6 +144,7 @@ export function AgentPanel({
     return events.filter((event) => activeCategories.has(event.category))
   }, [activeCategories, events, isDevelopment])
   const latestVisibleSeq = visibleEvents.at(-1)?.seq ?? 0
+  const pendingTasks = pendingTaskCount(tasks)
 
   useEffect(() => {
     if (!(isOpen && isFollowing)) return
@@ -198,7 +186,7 @@ export function AgentPanel({
             <span>
               {activeTab === "communication"
                 ? formatTraceConnection(connectionState)
-                : `${pendingTaskCount(tasks)} pending task${pendingTaskCount(tasks) === 1 ? "" : "s"}`}
+                : `${pendingTasks} pending task${pendingTasks === 1 ? "" : "s"}`}
             </span>
           </div>
           <div className="op-trace-panel__actions">
@@ -231,42 +219,36 @@ export function AgentPanel({
           </div>
         </header>
 
-        <div className="op-agent-panel__tabs" role="tablist">
-          <button
-            aria-selected={activeTab === "tasks"}
-            className={
-              activeTab === "tasks"
-                ? "op-agent-panel__tab op-agent-panel__tab--active"
-                : "op-agent-panel__tab"
-            }
-            onClick={() => onTabChange("tasks")}
-            role="tab"
-            type="button"
-          >
-            <ListTodo size={14} />
-            Tasks
-            {pendingTaskCount(tasks) > 0 ? (
-              <span>{formatTaskCount(pendingTaskCount(tasks))}</span>
-            ) : null}
-          </button>
-          <button
-            aria-selected={activeTab === "communication"}
-            className={
-              activeTab === "communication"
-                ? "op-agent-panel__tab op-agent-panel__tab--active"
-                : "op-agent-panel__tab"
-            }
-            onClick={() => onTabChange("communication")}
-            role="tab"
-            type="button"
-          >
-            <MessageSquare size={14} />
-            Communication
-          </button>
-        </div>
+        <Tabs
+          className="op-agent-panel__tabs"
+          onSelectionChange={(key) => onTabChange(String(key) as AgentPanelTab)}
+          selectedKey={activeTab}
+        >
+          <Tabs.ListContainer>
+            <Tabs.List aria-label="Agent panel sections">
+              <Tabs.Tab className="op-agent-panel__tab" id="tasks">
+                <ListTodo size={14} />
+                Tasks
+                <Tabs.Indicator />
+              </Tabs.Tab>
+              <Tabs.Tab className="op-agent-panel__tab" id="communication">
+                <MessageSquare size={14} />
+                Communication
+                <Tabs.Indicator />
+              </Tabs.Tab>
+            </Tabs.List>
+          </Tabs.ListContainer>
+        </Tabs>
 
         {activeTab === "tasks" ? (
-          <TaskList tasks={tasks} />
+          <TaskList
+            expandedTaskId={expandedTaskId}
+            filter={taskFilter}
+            onExpandTask={setExpandedTaskId}
+            onFilterChange={onTaskFilterChange}
+            tasks={tasks}
+            workerStatus={workerStatus}
+          />
         ) : (
           <>
             <div
@@ -334,7 +316,35 @@ export function AgentPanel({
   )
 }
 
-function TaskList({ tasks }: { tasks: ProjectTask[] }) {
+function TaskList({
+  expandedTaskId,
+  filter,
+  onExpandTask,
+  onFilterChange,
+  tasks,
+  workerStatus,
+}: {
+  expandedTaskId: string | null
+  filter: TaskFilter
+  onExpandTask: (taskId: string | null) => void
+  onFilterChange: (filter: TaskFilter) => void
+  tasks: ProjectTask[]
+  workerStatus?: AgentWorkerStatus
+}) {
+  const filteredTasks = tasks
+    .filter((task) => taskMatchesFilter(task, filter))
+    .sort(compareTasksForDisplay)
+  const filterItems: Array<{
+    count: number
+    id: TaskFilter
+    label: string
+  }> = [
+    { id: "pending", label: "Pending", count: pendingTaskCount(tasks) },
+    { id: "active", label: "Active", count: tasks.filter(isActiveTask).length },
+    { id: "done", label: "Done", count: tasks.filter(isDoneTask).length },
+    { id: "all", label: "All", count: tasks.length },
+  ]
+
   if (!tasks.length) {
     return (
       <div className="op-agent-tasks">
@@ -344,33 +354,249 @@ function TaskList({ tasks }: { tasks: ProjectTask[] }) {
   }
   return (
     <div className="op-agent-tasks">
-      {tasks.map((task) => (
-        <article
-          className={`op-agent-task op-agent-task--${taskStatusTone(task.status)}`}
-          key={task.id}
-        >
-          <div className="op-agent-task__topline">
-            <Chip
-              className="op-agent-task__queue"
-              color={taskStatusColor(task.status)}
-              size="sm"
-              variant="soft"
+      <WorkerStatusCard workerStatus={workerStatus} />
+      <div className="op-agent-task-filters">
+        {filterItems.map((item) => (
+          <button
+            aria-label={`${item.label} tasks (${item.count})`}
+            aria-pressed={filter === item.id}
+            className={
+              filter === item.id
+                ? "op-agent-task-filter op-agent-task-filter--active"
+                : "op-agent-task-filter"
+            }
+            key={item.id}
+            onClick={() => onFilterChange(item.id)}
+            type="button"
+          >
+            <span>{item.label}</span>
+            <strong
+              className={
+                item.id === "pending" && item.count > 0
+                  ? "op-agent-task-filter__count op-agent-task-filter__count--danger"
+                  : "op-agent-task-filter__count"
+              }
             >
-              {task.queue}
-            </Chip>
-            <span>{formatTaskTime(task.updatedAt)}</span>
-          </div>
-          <strong>{formatTaskType(task.type)}</strong>
-          <div className="op-agent-task__meta">
-            <span>{task.status}</span>
-            <span>{task.panelKind}</span>
-            <span>{task.targetId || task.id}</span>
-          </div>
-          <code>{task.id}</code>
-        </article>
-      ))}
+              {formatTaskCount(item.count)}
+            </strong>
+          </button>
+        ))}
+      </div>
+      {filteredTasks.length ? (
+        filteredTasks.map((task) => {
+          const isExpanded = expandedTaskId === task.id
+          const detail = JSON.stringify(task, null, 2)
+          const command = taskCommand(task)
+          return (
+            <article
+              className={`op-agent-task op-agent-task--${taskStatusTone(task.status)}`}
+              key={task.id}
+            >
+              <button
+                aria-expanded={isExpanded}
+                className="op-agent-task__summary"
+                onClick={() => onExpandTask(isExpanded ? null : task.id)}
+                type="button"
+              >
+                <span className="op-agent-task__topline">
+                  <Chip
+                    className="op-agent-task__queue"
+                    color={taskStatusColor(task.status)}
+                    size="sm"
+                    variant="soft"
+                  >
+                    {task.queue}
+                  </Chip>
+                  <span>{formatTaskTime(task.updatedAt)}</span>
+                </span>
+                <strong>{task.capability ?? formatTaskType(task.type)}</strong>
+                <span className="op-agent-task__meta">
+                  <span>{task.status}</span>
+                  <span
+                    className={
+                      task.ready
+                        ? "op-agent-task__state op-agent-task__state--ready"
+                        : task.blockedReason
+                          ? "op-agent-task__state op-agent-task__state--blocked"
+                          : "op-agent-task__state"
+                    }
+                  >
+                    {task.ready
+                      ? "ready"
+                      : task.blockedReason
+                        ? formatBlockedReason(task.blockedReason)
+                        : "not ready"}
+                  </span>
+                  {task.attempt ? (
+                    <span>
+                      attempt {task.attempt}
+                      {task.maxAttempts ? `/${task.maxAttempts}` : ""}
+                    </span>
+                  ) : null}
+                  <span>{task.panelKind}</span>
+                  <span>{task.targetId || task.id}</span>
+                </span>
+                {task.status === "failed" && task.error ? (
+                  <span className="op-agent-task__note">
+                    {formatTaskError(task.error)}
+                  </span>
+                ) : null}
+                {task.nextRunAt ? (
+                  <span className="op-agent-task__note">
+                    Next run {formatTaskTime(task.nextRunAt)}
+                  </span>
+                ) : task.lease?.expiresAt && task.blockedReason === "leased" ? (
+                  <span className="op-agent-task__note">
+                    Lease until {formatTaskTime(task.lease.expiresAt)}
+                  </span>
+                ) : null}
+                <code>{task.id}</code>
+              </button>
+              {isExpanded ? (
+                <div className="op-agent-task__detail">
+                  {command ? (
+                    <div className="op-agent-task__command">
+                      <span>{command.label}</span>
+                      <Button
+                        aria-label="Copy task command"
+                        isIconOnly
+                        onPress={() =>
+                          navigator.clipboard?.writeText(command.value)
+                        }
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <Copy size={14} />
+                      </Button>
+                      <code>{command.value}</code>
+                    </div>
+                  ) : null}
+                  <div className="op-agent-task__json">
+                    <Button
+                      aria-label="Copy task detail"
+                      isIconOnly
+                      onPress={() => navigator.clipboard?.writeText(detail)}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <Copy size={14} />
+                    </Button>
+                    <pre>{detail}</pre>
+                  </div>
+                </div>
+              ) : null}
+            </article>
+          )
+        })
+      ) : (
+        <div className="op-trace-panel__empty">
+          No {filter === "all" ? "project" : filter} tasks.
+        </div>
+      )}
     </div>
   )
+}
+
+function WorkerStatusCard({
+  workerStatus,
+}: {
+  workerStatus?: AgentWorkerStatus
+}) {
+  const status = workerStatus?.status ?? "idle"
+  const tone =
+    status === "running" ? "active" : status === "error" ? "danger" : "success"
+  return (
+    <div className={`op-agent-worker op-agent-worker--${tone}`}>
+      <span>
+        <Activity size={13} />
+        Worker
+      </span>
+      <strong>{formatWorkerStatus(status)}</strong>
+      {workerStatus?.lastError ? <em>{workerStatus.lastError}</em> : null}
+      {workerStatus?.heartbeatAt ? (
+        <small>{formatTaskTime(workerStatus.heartbeatAt)}</small>
+      ) : null}
+    </div>
+  )
+}
+
+function taskCommand(
+  task: ProjectTask
+): { label: string; value: string } | null {
+  if (task.queue !== "wiki") return null
+  if (task.status !== "queued" && task.status !== "failed") return null
+  if (!task.ready) return null
+  return {
+    label:
+      task.status === "failed"
+        ? "Retry with Wiki task API"
+        : "Claim with Wiki task API",
+    value: `openpanels-local wiki tasks claim --task-id ${shellQuote(task.id)} --format json`,
+  }
+}
+
+function compareTasksForDisplay(left: ProjectTask, right: ProjectTask): number {
+  const rank = taskDisplayRank(left) - taskDisplayRank(right)
+  if (rank !== 0) return rank
+  return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+}
+
+function taskDisplayRank(task: ProjectTask): number {
+  if (task.ready && task.status === "failed") return 0
+  if (task.ready && task.status === "queued") return 1
+  if (!task.ready && task.status === "failed") return 2
+  if (!task.ready && task.status === "queued") return 3
+  return 4
+}
+
+function formatBlockedReason(reason: string): string {
+  switch (reason) {
+    case "attemptsExceeded":
+      return "exhausted"
+    case "retryLater":
+      return "retry later"
+    case "leased":
+      return "leased"
+    default:
+      return reason
+  }
+}
+
+function formatTaskError(error: unknown): string {
+  if (typeof error === "string") return error
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return "Task failed"
+  }
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:-]+$/.test(value)) return value
+  return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+function taskMatchesFilter(task: ProjectTask, filter: TaskFilter): boolean {
+  switch (filter) {
+    case "pending":
+      return task.status === "queued" || task.status === "failed"
+    case "active":
+      return isActiveTask(task)
+    case "done":
+      return isDoneTask(task)
+    case "all":
+      return true
+    default:
+      return true
+  }
+}
+
+function isActiveTask(task: ProjectTask): boolean {
+  return ["running", "claimed", "converting", "indexing"].includes(task.status)
+}
+
+function isDoneTask(task: ProjectTask): boolean {
+  return ["succeeded", "stale"].includes(task.status)
 }
 
 function TraceEventRow({
@@ -432,11 +658,17 @@ export function BuildVersionBadge({
   info,
   isChecking,
   onCheckUpdate,
+  onUpdate,
+  status,
 }: {
   info: OpenPanelsBuildInfo
   isChecking: boolean
-  onCheckUpdate: () => void
+  onCheckUpdate: (options?: { refresh?: boolean }) => void
+  onUpdate: () => void
+  status: OpenPanelsUpdateStatus | null
 }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
   const localBuildTime = info.buildTime
     ? formatLocalBuildTime(info.buildTime)
     : null
@@ -444,19 +676,101 @@ export function BuildVersionBadge({
     info.channel === "development" && localBuildTime
       ? localBuildTime
       : info.label
+  const hasUpdate = Boolean(status?.updateAvailable || status?.readyToInstall)
+  const currentVersion = status?.currentVersion ?? info.version
+  const latestVersion = status?.latestVersion ?? null
+  const updateText = isChecking
+    ? "正在检查更新"
+    : hasUpdate
+      ? `发现新版本 ${latestVersion ?? ""}`.trim()
+      : status
+        ? "当前已是最新版"
+        : "点击检查更新"
+  const updateDetail = status
+    ? `当前 ${currentVersion}${latestVersion ? ` · 最新 ${latestVersion}` : ""}`
+    : "会从 GitHub Release 获取最新状态"
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setIsOpen(false)
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsOpen(false)
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown)
+    document.addEventListener("keydown", handleKeyDown)
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown)
+      document.removeEventListener("keydown", handleKeyDown)
+    }
+  }, [isOpen])
+
+  const openAndRefresh = useCallback(() => {
+    setIsOpen(true)
+    onCheckUpdate({ refresh: true })
+  }, [onCheckUpdate])
+
   return (
-    <Button
-      aria-label={isChecking ? "正在检查更新" : "检查更新"}
-      className="op-build-badge"
-      isDisabled={isChecking}
-      onFocus={onCheckUpdate}
-      onMouseEnter={onCheckUpdate}
-      onPress={onCheckUpdate}
-      size="sm"
-      variant="ghost"
-    >
-      {isChecking ? "checking..." : label}
-    </Button>
+    <div className="op-build-badge-wrap" ref={menuRef}>
+      <Button
+        aria-expanded={isOpen}
+        aria-haspopup="menu"
+        aria-label="打开更新菜单"
+        className="op-build-badge"
+        onPress={openAndRefresh}
+        size="sm"
+        variant="ghost"
+      >
+        {label}
+      </Button>
+      {isOpen ? (
+        <div className="op-build-menu" role="menu">
+          <div className="op-build-menu__status">
+            <span
+              className={`op-build-menu__icon ${
+                isChecking
+                  ? "op-build-menu__icon--checking"
+                  : hasUpdate
+                    ? "op-build-menu__icon--update"
+                    : "op-build-menu__icon--current"
+              }`}
+            >
+              {isChecking ? (
+                <RefreshCw size={15} />
+              ) : hasUpdate ? (
+                <Download size={15} />
+              ) : (
+                <CheckCircle2 size={15} />
+              )}
+            </span>
+            <div>
+              <strong>{updateText}</strong>
+              <span>{updateDetail}</span>
+            </div>
+          </div>
+          {hasUpdate ? (
+            <div className="op-build-menu__actions">
+              <Button
+                className="op-build-menu__primary"
+                isDisabled={isChecking}
+                onPress={onUpdate}
+                size="sm"
+              >
+                立即更新
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -476,6 +790,17 @@ function formatTaskType(type: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ")
+}
+
+function formatWorkerStatus(status: string): string {
+  switch (status) {
+    case "running":
+      return "Running"
+    case "error":
+      return "Error"
+    default:
+      return "Idle"
+  }
 }
 
 function formatTaskTime(value: string): string {

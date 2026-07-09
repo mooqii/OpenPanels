@@ -8,6 +8,7 @@ import type {
 export interface BootstrapResponse {
   activePanelId: string
   activePanelKind: OpenPanelsPanelKind
+  agentWorker?: AgentWorkerStatus
   buildInfo?: OpenPanelsBuildInfo
   panel: OpenPanelsPanel
   panels: PanelStateSnapshot[]
@@ -21,6 +22,15 @@ export interface BootstrapResponse {
 
 export interface AppState extends BootstrapResponse {}
 
+export interface AgentWorkerStatus {
+  currentTask?: ProjectTask | null
+  heartbeatAt?: string | null
+  lastError?: string | null
+  lastTask?: unknown
+  status: "idle" | "running" | "error" | string
+  updatedAt?: string | null
+}
+
 export interface OpenPanelsBuildInfo {
   buildTime?: string
   channel: "development" | "release"
@@ -30,10 +40,13 @@ export interface OpenPanelsBuildInfo {
 
 export interface OpenPanelsUpdateStatus {
   assetAvailable?: boolean
+  cached?: boolean
+  checkedAtUnix?: number
   currentVersion: string
   downloaded?: boolean
   latestVersion?: string | null
   readyToInstall?: boolean
+  target?: string
   updateAvailable: boolean
 }
 
@@ -65,12 +78,28 @@ export interface TraceSnapshotResponse {
 }
 
 export interface ProjectTask {
+  attempt?: number
+  blockedReason?: "attemptsExceeded" | "leased" | "retryLater" | string | null
+  capability?: string
   createdAt: string
+  error?: unknown
   id: string
+  input?: unknown
+  lease?: {
+    expiresAt?: string | null
+    heartbeatAt?: string | null
+    owner?: string | null
+  }
+  maxAttempts?: number
+  nextRunAt?: string | null
   panelId: string
   panelKind: OpenPanelsPanelKind | string
   queue: string
+  ready?: boolean
+  result?: unknown
+  retryAfter?: string | null
   sessionId: string
+  source?: unknown
   status: string
   targetId: string
   task?: unknown

@@ -98,7 +98,7 @@ pub fn check_for_update(
     let target = current_target();
 
     if use_cache {
-        if let Some(cached) = read_cached_update_check(&manifest_url, &target)? {
+        if let Some(cached) = read_cached_update_check(&manifest_url, &target, current_version)? {
             if !is_cache_stale(cached.checked_at_unix) {
                 return Ok(UpdateCheckPayload {
                     cached: true,
@@ -209,7 +209,8 @@ pub fn maybe_notify_update(current_version: &str, stderr: &mut impl Write) {
         return;
     }
 
-    let Ok(cached) = read_cached_update_check(&manifest_url(), &current_target()) else {
+    let Ok(cached) = read_cached_update_check(&manifest_url(), &current_target(), current_version)
+    else {
         return;
     };
 
@@ -509,6 +510,7 @@ fn ensure_self_update_allowed() -> Result<(), CliError> {
 fn read_cached_update_check(
     manifest_url: &str,
     target: &str,
+    current_version: &str,
 ) -> Result<Option<UpdateCheckPayload>, CliError> {
     let cache_path = update_state_path()?;
     if !cache_path.exists() {
@@ -516,11 +518,22 @@ fn read_cached_update_check(
     }
     let content = fs::read_to_string(cache_path).map_err(to_cli_error)?;
     let cached = serde_json::from_str::<UpdateCheckPayload>(&content).map_err(to_cli_error)?;
-    if cached.manifest_url == manifest_url && cached.target == target {
+    if cached_update_check_matches(&cached, manifest_url, target, current_version) {
         Ok(Some(cached))
     } else {
         Ok(None)
     }
+}
+
+fn cached_update_check_matches(
+    cached: &UpdateCheckPayload,
+    manifest_url: &str,
+    target: &str,
+    current_version: &str,
+) -> bool {
+    cached.manifest_url == manifest_url
+        && cached.target == target
+        && cached.current_version == current_version
 }
 
 fn write_cached_update_check(payload: &UpdateCheckPayload) -> Result<(), CliError> {
@@ -655,5 +668,33 @@ mod tests {
 
         assert!(checked.update_available);
         assert_eq!(checked.latest_version.as_deref(), Some("0.1.10"));
+    }
+
+    #[test]
+    fn cached_update_checks_are_scoped_to_current_version() {
+        let cached = UpdateCheckPayload {
+            current_version: "0.1.9".to_owned(),
+            latest_version: Some("0.1.9".to_owned()),
+            update_available: false,
+            channel: Some("stable".to_owned()),
+            target: "aarch64-apple-darwin".to_owned(),
+            asset_available: true,
+            manifest_url: DEFAULT_MANIFEST_URL.to_owned(),
+            checked_at_unix: 1,
+            cached: false,
+        };
+
+        assert!(cached_update_check_matches(
+            &cached,
+            DEFAULT_MANIFEST_URL,
+            "aarch64-apple-darwin",
+            "0.1.9"
+        ));
+        assert!(!cached_update_check_matches(
+            &cached,
+            DEFAULT_MANIFEST_URL,
+            "aarch64-apple-darwin",
+            "0.1.10"
+        ));
     }
 }

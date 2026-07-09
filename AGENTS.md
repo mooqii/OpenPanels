@@ -25,6 +25,15 @@
   rebuild the latest checkout-local CLI with `scripts/openpanels-local-dev`,
   then stop and restart any running development Studio service before checking
   the browser. Do not assume an already-running service picked up the new CLI.
+- If `studio start --format json` returns `"reusedExisting": true` after local
+  Studio/CLI changes, the browser is still pointed at an older detached server
+  process. Stop that exact session before opening it: use
+  `scripts/openpanels-local-dev studio stop --project "$PWD" --context-id <contextId>`
+  from the JSON payload (or terminate the returned `pid` if it is a borrowed
+  session), then run `corepack pnpm --filter @openpanels/local-studio build`
+  when UI assets changed, rerun `scripts/openpanels-local-dev` to rebuild the
+  embedded CLI, and start Studio again. A healthy reused server is not evidence
+  that it contains the latest checkout-local code.
 - Before publishing a new CLI release, follow this workflow:
   bump the version in `crates/openpanels-local/Cargo.toml`, `Cargo.lock`,
   root `package.json`, and `apps/local-studio/package.json`; run

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod bridge;
 pub mod canvas;
 pub mod cli;
 pub mod control;

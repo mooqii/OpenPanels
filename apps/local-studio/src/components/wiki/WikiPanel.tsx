@@ -1,4 +1,11 @@
-import { Button, Dropdown, ListBox, Select, Surface } from "@heroui/react"
+import {
+  Button,
+  Dropdown,
+  Header,
+  ListBox,
+  Select,
+  Surface,
+} from "@heroui/react"
 import {
   BookOpen,
   Edit3,
@@ -39,8 +46,6 @@ import { ConfirmDialog, MarkdownDialog, OriginalPreviewDialog } from "./Dialogs"
 import {
   documentIndexStatus,
   formatWikiPageType,
-  formatWikiTaskStatus,
-  formatWikiTaskType,
   isWikiLanguage,
   WikiIndexStatus,
   WikiStatus,
@@ -684,24 +689,17 @@ export function WikiPanel({
                 </Select.Trigger>
                 <Select.Popover>
                   <ListBox>
-                    {WIKI_LANGUAGE_OPTIONS.map((language) => (
-                      <ListBox.Item id={language} key={language}>
-                        {OPENPANELS_LOCALE_LABELS[language]}
-                      </ListBox.Item>
-                    ))}
+                    <ListBox.Section>
+                      <Header>{t`Wiki language`}</Header>
+                      {WIKI_LANGUAGE_OPTIONS.map((language) => (
+                        <ListBox.Item id={language} key={language}>
+                          {OPENPANELS_LOCALE_LABELS[language]}
+                        </ListBox.Item>
+                      ))}
+                    </ListBox.Section>
                   </ListBox>
                 </Select.Popover>
               </Select>
-              {state.tasks.length ? (
-                <div className="op-wiki-task-strip">
-                  {state.tasks.slice(0, 4).map((task) => (
-                    <span key={task.id}>
-                      {formatWikiTaskType(task.type, t)} ·{" "}
-                      {formatWikiTaskStatus(task.status, t)}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
             </div>
           </section>
         </div>

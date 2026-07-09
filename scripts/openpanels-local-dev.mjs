@@ -16,6 +16,8 @@ function ensureRustCli() {
     join(repoRoot, "Cargo.lock"),
     join(repoRoot, "crates", "openpanels-local", "Cargo.toml"),
     join(repoRoot, "crates", "openpanels-local", "src"),
+    join(repoRoot, "crates", "openpanels-local", "build.rs"),
+    join(repoRoot, "apps", "local-studio", "dist"),
   ]
   if (isOutdated(rustBin, sourcePaths)) {
     const cargo = findCargo()

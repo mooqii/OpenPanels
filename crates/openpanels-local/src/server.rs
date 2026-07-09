@@ -1,3 +1,4 @@
+use crate::bridge;
 use crate::control::{
     create_project, create_runtime_session, delete_session, ensure_project_bootstrap, now_iso,
     open_runtime_panel, read_active_panel_value, read_active_session_id, rename_session,
@@ -86,6 +87,7 @@ async fn run_server_async(
     let build_info = current_build_info();
     std::env::set_var("OPENPANELS_TRACE_URL", trace::trace_url_for_port(port));
     std::env::set_var("OPENPANELS_TRACE_AUDIENCE", build_info.channel);
+    bridge::start_builtin_worker_loop(paths.clone());
     let std_listener = TcpListener::bind((host, port)).map_err(to_cli_error)?;
     std_listener.set_nonblocking(true).map_err(to_cli_error)?;
     let listener = tokio::net::TcpListener::from_std(std_listener).map_err(to_cli_error)?;
@@ -134,6 +136,9 @@ fn build_router(
         .route("/api/trace/events", post(api_trace_events))
         .route("/api/events", get(api_project_events))
         .route("/api/tasks", get(api_tasks))
+        .route("/api/tasks/next", get(api_next_task))
+        .route("/api/tasks/{task_id}", get(api_inspect_task))
+        .route("/api/agent/bridge/status", get(api_bridge_status))
         .route("/api/sessions", get(api_sessions).post(api_create_session))
         .route(
             "/api/sessions/{session_id}",
@@ -257,6 +262,13 @@ struct TraceQuery {
     audience: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct TasksQuery {
+    pending: Option<bool>,
+    queue: Option<String>,
+    status: Option<String>,
+}
+
 async fn api_bootstrap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<BootstrapQuery>,
@@ -341,10 +353,48 @@ async fn api_trace_events(Json(body): Json<Value>) -> Response {
     json_response(StatusCode::OK, &json!({ "events": recorded }))
 }
 
-async fn api_tasks(State(state): State<Arc<AppState>>) -> Response {
-    match tasks::list_tasks(&state.paths) {
+async fn api_tasks(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TasksQuery>,
+) -> Response {
+    match tasks::list_tasks(&state.paths, task_list_filter(&query)) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_bridge_status(State(state): State<Arc<AppState>>) -> Response {
+    match bridge::read_bridge_status(&state.paths) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_next_task(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TasksQuery>,
+) -> Response {
+    match tasks::next_task(&state.paths, task_list_filter(&query)) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+fn task_list_filter(query: &TasksQuery) -> tasks::TaskListFilter<'_> {
+    tasks::TaskListFilter {
+        pending: query.pending.unwrap_or(false),
+        queue: query.queue.as_deref(),
+        status: query.status.as_deref(),
+    }
+}
+
+async fn api_inspect_task(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+) -> Response {
+    match tasks::inspect_task(&state.paths, &task_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(StatusCode::NOT_FOUND, error.message()),
     }
 }
 
@@ -521,8 +571,32 @@ async fn api_insert_artifact(
     }
 }
 
-async fn api_update_status() -> Response {
-    match check_for_update(env!("CARGO_PKG_VERSION"), true) {
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateStatusQuery {
+    force: Option<String>,
+    refresh: Option<String>,
+}
+
+impl UpdateStatusQuery {
+    fn bypass_cache(&self) -> bool {
+        query_flag(self.refresh.as_deref()) || query_flag(self.force.as_deref())
+    }
+}
+
+fn query_flag(value: Option<&str>) -> bool {
+    value
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+async fn api_update_status(Query(query): Query<UpdateStatusQuery>) -> Response {
+    match check_for_update(env!("CARGO_PKG_VERSION"), !query.bypass_cache()) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
@@ -932,6 +1006,11 @@ fn with_build_info(payload: impl Serialize, state: &AppState) -> Value {
             "buildInfo".to_owned(),
             serde_json::to_value(&state.build_info).unwrap_or_else(|_| json!({})),
         );
+        object.insert(
+            "agentWorker".to_owned(),
+            bridge::read_bridge_status(&state.paths)
+                .unwrap_or_else(|_| json!({ "status": "idle" })),
+        );
     }
     value
 }
@@ -1102,4 +1181,24 @@ fn create_id(prefix: &str) -> String {
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {
     CliError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_status_query_can_bypass_cached_checks() {
+        assert!(!UpdateStatusQuery::default().bypass_cache());
+        assert!(UpdateStatusQuery {
+            refresh: Some("1".to_owned()),
+            ..UpdateStatusQuery::default()
+        }
+        .bypass_cache());
+        assert!(UpdateStatusQuery {
+            force: Some("true".to_owned()),
+            ..UpdateStatusQuery::default()
+        }
+        .bypass_cache());
+    }
 }

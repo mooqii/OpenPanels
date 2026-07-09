@@ -142,8 +142,8 @@ const zhCNMessages: Record<string, string> = {
   "Text Fill Color": "文本填充颜色",
   Theme: "主题",
   Topic: "主题",
-  "This project and its canvas data will be deleted.":
-    "此项目及其中的画布数据将被删除。",
+  "Deleting this project removes all content in the current project, including every Wiki page and everything on the canvas. This cannot be undone.":
+    "删除后，当前项目下的所有内容都会被删除，包括 Wiki 和 Canvas 里的所有内容，且不可恢复。",
   "This raw document will be removed from the source library.":
     "这个原始文档会从源文档库中移除。",
   Type: "类型",

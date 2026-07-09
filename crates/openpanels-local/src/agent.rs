@@ -96,6 +96,27 @@ pub fn capabilities() -> Vec<Value> {
             vec![],
         ),
         capability(
+            "agent.bridge.run",
+            "Run the task bridge",
+            "openpanels-local agent bridge",
+            "current_user_project",
+            false,
+            vec![
+                arg("command", "--command", "string", false),
+                arg("once", "--once", "bool", false),
+                arg("queue", "--queue", "string", false),
+                arg("timeoutMs", "--timeout-ms", "number", false),
+            ],
+        ),
+        capability(
+            "agent.bridge.status",
+            "Read task bridge status",
+            "openpanels-local agent bridge status",
+            "current_user_project",
+            false,
+            vec![],
+        ),
+        capability(
             "agent.guide.read",
             "Read one full agent guide",
             "openpanels-local agent guide <guide-id>",
@@ -221,7 +242,30 @@ pub fn capabilities() -> Vec<Value> {
             "openpanels-local tasks list",
             "current_user_project",
             false,
-            vec![],
+            vec![
+                arg("pending", "--pending", "bool", false),
+                arg("queue", "--queue", "string", false),
+                arg("status", "--status", "string", false),
+            ],
+        ),
+        capability(
+            "tasks.next",
+            "Read the next pending project task",
+            "openpanels-local tasks next",
+            "current_user_project",
+            false,
+            vec![
+                arg("queue", "--queue", "string", false),
+                arg("status", "--status", "string", false),
+            ],
+        ),
+        capability(
+            "tasks.inspect",
+            "Read one project task by id",
+            "openpanels-local tasks inspect",
+            "current_user_project",
+            false,
+            vec![arg("taskId", "--task-id", "string", true)],
         ),
         capability(
             "wiki.context.read",
@@ -459,6 +503,7 @@ fn agent_context_payload(
     selection: Option<&crate::selection::SelectionPayload>,
 ) -> Value {
     let wiki = wiki_summary(bootstrap);
+    let tasks = project_tasks_summary(bootstrap);
     let canvas = canvas_summary(selection);
     json!({
         "protocolVersion": 1,
@@ -478,6 +523,7 @@ fn agent_context_payload(
             "title": snapshot.panel.title,
         })).collect::<Vec<_>>(),
         "state": {
+            "tasks": tasks,
             "wiki": wiki,
             "canvas": canvas,
         },
@@ -494,6 +540,7 @@ fn agent_context_markdown(
     selection: Option<&crate::selection::SelectionPayload>,
 ) -> String {
     let wiki = wiki_summary(bootstrap);
+    let tasks = project_tasks_summary(bootstrap);
     let canvas = canvas_summary(selection);
     let panels = bootstrap
         .panels
@@ -538,11 +585,14 @@ fn agent_context_markdown(
         .collect::<Vec<_>>()
         .join("\n\n");
     format!(
-        "# OpenPanels Agent Context\n\nProtocol version: 1\nCLI version: {cli_version}\nProject: {} ({})\nActive panel: {} ({})\n\n## Panels\n\n{panels}\n\n## State\n\n### Wiki\n\n- language: {}\n- pending task count: {}\n- next task: {}\n\n### Canvas\n\n- has selection: {}\n- selected shape count: {}\n- selected image asset: {}\n- fallback: {}\n\n## Capabilities\n\n{caps}\n\n## Suggested Next Commands\n\n{suggested}\n\n## Available Guides\n\n{}\n",
+        "# OpenPanels Agent Context\n\nProtocol version: 1\nCLI version: {cli_version}\nProject: {} ({})\nActive panel: {} ({})\n\n## Panels\n\n{panels}\n\n## State\n\n### Tasks\n\n- total task count: {}\n- pending task count: {}\n- next task: {}\n\n### Wiki\n\n- language: {}\n- pending task count: {}\n- next task: {}\n\n### Canvas\n\n- has selection: {}\n- selected shape count: {}\n- selected image asset: {}\n- fallback: {}\n\n## Capabilities\n\n{caps}\n\n## Suggested Next Commands\n\n{suggested}\n\n## Available Guides\n\n{}\n",
         bootstrap.session.title,
         bootstrap.session.id,
         bootstrap.active_panel_kind.as_str(),
         bootstrap.panel.title,
+        tasks["totalTaskCount"].as_u64().unwrap_or(0),
+        tasks["pendingTaskCount"].as_u64().unwrap_or(0),
+        format_next_task(tasks.get("nextTask")),
         wiki["language"].as_str().unwrap_or("not set"),
         wiki["pendingTaskCount"].as_u64().unwrap_or(0),
         format_next_task(wiki.get("nextTask")),
@@ -744,6 +794,15 @@ fn wiki_summary(bootstrap: &ProjectBootstrap) -> Value {
     })
 }
 
+fn project_tasks_summary(bootstrap: &ProjectBootstrap) -> Value {
+    let next_task = next_project_task(bootstrap).cloned();
+    json!({
+        "nextTask": next_task,
+        "pendingTaskCount": bootstrap.pending_task_count,
+        "totalTaskCount": bootstrap.tasks.len(),
+    })
+}
+
 fn canvas_summary(selection: Option<&crate::selection::SelectionPayload>) -> Value {
     let is_explicit_selection = selection
         .and_then(|selection| selection.selection.get("isExplicitSelection"))
@@ -773,6 +832,18 @@ fn suggested_commands(bootstrap: &ProjectBootstrap, guides: &[AgentGuideMetadata
         "intent": "agent.context.read",
         "command": "openpanels-local agent context --format json",
     })];
+    if let Some(task) = next_project_task(bootstrap) {
+        commands.push(json!({
+            "intent": "tasks.next",
+            "command": "openpanels-local tasks next --format json",
+        }));
+        if let Some(task_id) = task.get("id").and_then(Value::as_str) {
+            commands.push(json!({
+                "intent": "tasks.inspect",
+                "command": format!("openpanels-local tasks inspect --task-id {} --format json", shell_quote(task_id)),
+            }));
+        }
+    }
     let wiki = wiki_summary(bootstrap);
     if let Some(task) = wiki.get("nextTask").filter(|value| !value.is_null()) {
         commands.push(json!({
@@ -803,6 +874,21 @@ fn suggested_commands(bootstrap: &ProjectBootstrap, guides: &[AgentGuideMetadata
     commands
 }
 
+fn next_project_task(bootstrap: &ProjectBootstrap) -> Option<&Value> {
+    bootstrap
+        .tasks
+        .iter()
+        .filter(|task| task.get("ready").and_then(Value::as_bool).unwrap_or(false))
+        .find(|task| task.get("status").and_then(Value::as_str) == Some("queued"))
+        .or_else(|| {
+            bootstrap
+                .tasks
+                .iter()
+                .filter(|task| task.get("ready").and_then(Value::as_bool).unwrap_or(false))
+                .find(|task| task.get("status").and_then(Value::as_str) == Some("failed"))
+        })
+}
+
 fn format_next_task(task: Option<&Value>) -> String {
     let Some(task) = task.filter(|value| !value.is_null()) else {
         return "none".to_owned();
@@ -817,6 +903,17 @@ fn format_next_task(task: Option<&Value>) -> String {
             .unwrap_or("unknown"),
         task.get("id").and_then(Value::as_str).unwrap_or("unknown")
     )
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':'))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 fn render_current_context(
