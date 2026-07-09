@@ -1,6 +1,6 @@
 ---
 name: myopenpanels
-description: "Use MyOpenPanels when the user wants a local wiki for preparing, organizing, and refining project documents, or an infinite canvas for drawing, visual planning, image work, and richer agent-user collaboration around diagrams and visual artifacts."
+description: "Use MyOpenPanels when the user asks to open MyOpenPanels, open OpenPanels, open the panel, launch the MyOpenPanels panel, or start the OpenPanels local studio. Also use when the user wants a local wiki for preparing, organizing, and refining project documents, or an infinite canvas for drawing, visual planning, image work, and richer agent-user collaboration around diagrams and visual artifacts."
 ---
 
 Use this skill when the user wants to use MyOpenPanels, prepare or organize
