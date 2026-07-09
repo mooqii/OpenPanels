@@ -7,36 +7,8 @@ import { fileURLToPath } from "node:url"
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const args = process.argv.slice(2)
 const rustBin = join(repoRoot, "target", "debug", exeName("openpanels-local"))
-const nodeCli = join(
-  repoRoot,
-  "packages",
-  "local-cli",
-  "dist",
-  "openpanels-local.mjs"
-)
-
-const command = commandName(args)
-const shouldUseRust =
-  args.includes("--version") ||
-  command === "version" ||
-  command === "help" ||
-  command === "update" ||
-  command === "selection"
-
-if (shouldUseRust) {
-  ensureRustCli()
-  run(rustBin, args)
-} else {
-  ensureNodeCli()
-  run(process.execPath, [nodeCli, ...args])
-}
-
-function commandName(argv) {
-  for (const arg of argv) {
-    if (!arg.startsWith("-")) return arg
-  }
-  return null
-}
+ensureRustCli()
+run(rustBin, args)
 
 function ensureRustCli() {
   const sourcePaths = [
@@ -48,24 +20,6 @@ function ensureRustCli() {
   if (isOutdated(rustBin, sourcePaths)) {
     const cargo = findCargo()
     runChecked(cargo, ["build", "-p", "openpanels-local"])
-  }
-}
-
-function ensureNodeCli() {
-  const sourcePaths = [
-    join(repoRoot, "package.json"),
-    join(repoRoot, "pnpm-lock.yaml"),
-    join(repoRoot, "apps", "local-studio", "src"),
-    join(repoRoot, "packages", "canvas", "src"),
-    join(repoRoot, "packages", "local-cli", "src"),
-    join(repoRoot, "packages", "local-control", "src"),
-    join(repoRoot, "packages", "local-server", "src"),
-    join(repoRoot, "packages", "local-storage", "src"),
-    join(repoRoot, "packages", "protocol", "src"),
-    join(repoRoot, "packages", "runtime", "src"),
-  ]
-  if (isOutdated(nodeCli, sourcePaths)) {
-    runChecked("pnpm", ["--filter", "@openpanels/local-cli", "build"])
   }
 }
 
@@ -103,7 +57,12 @@ function pathMtime(path) {
 
 function findCargo() {
   if (process.env.CARGO) return process.env.CARGO
-  const homeCargo = join(process.env.HOME ?? "", ".cargo", "bin", exeName("cargo"))
+  const homeCargo = join(
+    process.env.HOME ?? "",
+    ".cargo",
+    "bin",
+    exeName("cargo")
+  )
   if (existsSync(homeCargo)) return homeCargo
   return "cargo"
 }

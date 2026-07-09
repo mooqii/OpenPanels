@@ -8,16 +8,26 @@ use crate::paths::resolve_openpanels_paths;
 use crate::selection::{read_selection, read_selection_asset_to_file};
 use crate::server::run_server;
 use crate::studio::{
-    start_studio, stop_studio, studio_status, wait_for_existing_studio, StudioServerStatus,
+    find_open_port, reuse_existing_studio, start_studio, stop_studio_session, studio_status,
+    wait_for_existing_studio, write_studio_session, StudioServerStatus, StudioSession,
     StudioStartOptions,
 };
+use crate::trace::{self, TraceEventInput};
 use crate::types::{PanelKind, ProjectBootstrap};
 use crate::update::{
     check_for_update, download_update, install_update, maybe_notify_update, UpdateCheckPayload,
     UpdateDownloadPayload, UpdateInstallPayload, DEFAULT_MANIFEST_URL,
 };
+use crate::wiki;
 use serde::Serialize;
 use serde_json::Value;
+mod support;
+#[cfg(test)]
+mod tests;
+mod update;
+
+use self::support::*;
+use self::update::run_update_command;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
@@ -29,6 +39,7 @@ pub const HELP_TEXT: &str = concat!(
     "  studio start              Start or reuse the local studio\n",
     "  studio status             Show local studio status\n",
     "  studio open               Open the local studio in a browser\n",
+    "  studio serve              Run the local studio in the foreground\n",
     "  studio wait               Wait for the local studio to become ready\n",
     "  studio stop               Stop the local studio\n",
     "  agent context             Print compact agent context with capabilities\n",
@@ -50,6 +61,7 @@ pub const HELP_TEXT: &str = concat!(
     "  --project <dir>           Project directory (default: cwd or OPENPANELS_PROJECT_DIR; data is global)\n",
     "  --host <host>             Studio bind host (default: 0.0.0.0; set 127.0.0.1 for local-only)\n",
     "  --local-only              Bind the studio to 127.0.0.1\n",
+    "  --port <port>             Studio port for foreground serving\n",
     "  --format json             Emit stable JSON output\n",
     "  --version                 Print the CLI version\n",
 );
@@ -86,7 +98,117 @@ struct ErrorPayload<'a> {
 pub fn run_cli(argv: &[String]) -> i32 {
     let stdout = io::stdout();
     let stderr = io::stderr();
+    if let Some(trace_url) = trace_url_for_cli(argv) {
+        std::env::set_var("OPENPANELS_TRACE_URL", trace_url);
+        trace::emit_cli_event(TraceEventInput {
+            audience: None,
+            category: Some("cli".to_owned()),
+            detail: Some(serde_json::json!({ "argv": argv })),
+            direction: Some("start".to_owned()),
+            release_summary: None,
+            run_id: std::env::var("OPENPANELS_TRACE_RUN_ID").ok(),
+            source: Some("openpanels-local".to_owned()),
+            summary: Some(format!("openpanels-local {}", argv.join(" "))),
+            task_id: std::env::var("OPENPANELS_TRACE_RUN_ID").ok(),
+        });
+        let code = run_cli_with_io(
+            argv,
+            TracedWriter::new(stdout.lock(), "stdout"),
+            TracedWriter::new(stderr.lock(), "stderr"),
+        );
+        trace::emit_cli_event(TraceEventInput {
+            audience: None,
+            category: Some(if code == 0 { "cli" } else { "error" }.to_owned()),
+            detail: Some(serde_json::json!({ "code": code })),
+            direction: Some("exit".to_owned()),
+            release_summary: if code == 0 {
+                None
+            } else {
+                Some("A local OpenPanels command failed".to_owned())
+            },
+            run_id: std::env::var("OPENPANELS_TRACE_RUN_ID").ok(),
+            source: Some("openpanels-local".to_owned()),
+            summary: Some(format!("openpanels-local exited with {code}")),
+            task_id: std::env::var("OPENPANELS_TRACE_RUN_ID").ok(),
+        });
+        return code;
+    }
     run_cli_with_io(argv, stdout.lock(), stderr.lock())
+}
+
+fn trace_url_for_cli(argv: &[String]) -> Option<String> {
+    if let Ok(url) = std::env::var("OPENPANELS_TRACE_URL") {
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
+
+    let parsed = parse_args(argv);
+    let command = parsed.positionals.first().map(String::as_str);
+    if command.is_none()
+        || command == Some("__serve-studio")
+        || command == Some("help")
+        || has_flag(&parsed, "help")
+        || has_flag(&parsed, "version")
+    {
+        return None;
+    }
+
+    let paths = parsed_paths(&parsed).ok()?;
+    let status = studio_status(&paths).ok()?;
+    if status.server != StudioServerStatus::Running {
+        return None;
+    }
+    let session = status.session?;
+    Some(trace_url_for_studio_session(&session))
+}
+
+fn trace_url_for_studio_session(session: &StudioSession) -> String {
+    let server_url = session
+        .local_server_url
+        .as_deref()
+        .unwrap_or(&session.server_url)
+        .trim_end_matches('/');
+    format!("{server_url}/api/trace/events")
+}
+
+struct TracedWriter<W: Write> {
+    inner: W,
+    stream: &'static str,
+}
+
+impl<W: Write> TracedWriter<W> {
+    fn new(inner: W, stream: &'static str) -> Self {
+        Self { inner, stream }
+    }
+}
+
+impl<W: Write> Write for TracedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        if written > 0 {
+            let text = String::from_utf8_lossy(&buf[..written]).to_string();
+            trace::emit_cli_event(TraceEventInput {
+                audience: None,
+                category: Some("cli".to_owned()),
+                detail: Some(serde_json::json!({
+                    "stream": self.stream,
+                    "text": text,
+                })),
+                direction: Some(self.stream.to_owned()),
+                release_summary: None,
+                run_id: std::env::var("OPENPANELS_TRACE_RUN_ID").ok(),
+                source: Some("openpanels-local".to_owned()),
+                summary: Some(format!("cli {}: {}", self.stream, text)),
+                task_id: std::env::var("OPENPANELS_TRACE_RUN_ID").ok(),
+            });
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn run_cli_with_io(argv: &[String], mut stdout: impl Write, mut stderr: impl Write) -> i32 {
@@ -134,6 +256,12 @@ fn run_parsed_cli(
             .map_err(|_| CliError::new("Expected --port to be a number."))?;
         let host = string_flag(parsed, "host").unwrap_or("127.0.0.1");
         let static_dir = string_flag(parsed, "static-dir").map(std::path::PathBuf::from);
+        if let Some(delay_ms) = string_flag(parsed, "restart-delay-ms") {
+            let delay_ms = delay_ms
+                .parse::<u64>()
+                .map_err(|_| CliError::new("Expected --restart-delay-ms to be a number."))?;
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
         let exit_code = run_server(host, port, paths, static_dir)?;
         std::process::exit(exit_code);
     }
@@ -244,7 +372,7 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
     match subcommand {
         Some("start") => {
             let paths = parsed_paths(parsed)?;
-            let session = start_studio(
+            let result = start_studio(
                 &paths,
                 StudioStartOptions {
                     host: studio_host(parsed),
@@ -252,8 +380,14 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
                     static_dir: string_flag(parsed, "static-dir").map(std::path::PathBuf::from),
                 },
             )?;
-            let payload = studio_session_payload(&session, &[("ok", serde_json::json!(true))])?;
-            write_result(parsed, stdout, &payload, &session.server_url)
+            let payload = studio_session_payload(
+                &result.session,
+                &[
+                    ("ok", serde_json::json!(true)),
+                    ("reusedExisting", serde_json::json!(result.reused_existing)),
+                ],
+            )?;
+            write_result(parsed, stdout, &payload, &result.session.server_url)
         }
         Some("status") => {
             let paths = parsed_paths(parsed)?;
@@ -263,7 +397,7 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
         }
         Some("open") => {
             let paths = parsed_paths(parsed)?;
-            let session = start_studio(
+            let result = start_studio(
                 &paths,
                 StudioStartOptions {
                     host: studio_host(parsed),
@@ -272,18 +406,68 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
                 },
             )?;
             let payload = studio_session_payload(
-                &session,
+                &result.session,
                 &[
                     ("ok", serde_json::json!(true)),
                     ("opened", serde_json::json!(true)),
+                    ("reusedExisting", serde_json::json!(result.reused_existing)),
                 ],
             )?;
             write_result(
                 parsed,
                 stdout,
                 &payload,
-                &format!("Opened {}", session.server_url),
+                &format!("Opened {}", result.session.server_url),
             )
+        }
+        Some("serve") => {
+            let paths = parsed_paths(parsed)?;
+            if let Some(session) = reuse_existing_studio(&paths, false)? {
+                let payload = studio_session_payload(
+                    &session,
+                    &[
+                        ("ok", serde_json::json!(true)),
+                        ("foreground", serde_json::json!(false)),
+                        ("reusedExisting", serde_json::json!(true)),
+                    ],
+                )?;
+                return write_result(parsed, stdout, &payload, &session.server_url);
+            }
+            let host = studio_host(parsed);
+            let port = studio_port(parsed)?.unwrap_or(find_open_port(&host)?);
+            let local_server_url = format!("http://127.0.0.1:{port}");
+            let session = StudioSession {
+                browser_url: Some(local_server_url.clone()),
+                context_dir: paths.context_dir.display().to_string(),
+                context_id: paths.context_id.clone(),
+                context_id_source: paths.context_id_source.clone(),
+                host: Some(host.clone()),
+                lan_server_urls: Some(Vec::new()),
+                local_server_url: Some(local_server_url.clone()),
+                log_path: paths.context_dir.join("studio.log").display().to_string(),
+                pid: std::process::id(),
+                port,
+                project_dir: paths.project_dir.display().to_string(),
+                server_url: local_server_url.clone(),
+                started_at: crate::control::now_iso(),
+                storage_dir: paths.storage_dir.display().to_string(),
+            };
+            write_studio_session(&paths, &session)?;
+            let payload = studio_session_payload(
+                &session,
+                &[
+                    ("ok", serde_json::json!(true)),
+                    ("foreground", serde_json::json!(true)),
+                    ("reusedExisting", serde_json::json!(false)),
+                ],
+            )?;
+            write_result(parsed, stdout, &payload, &session.server_url)?;
+            stdout
+                .flush()
+                .map_err(|error| CliError::new(error.to_string()))?;
+            let static_dir = string_flag(parsed, "static-dir").map(std::path::PathBuf::from);
+            let exit_code = run_server(&host, port, paths, static_dir)?;
+            std::process::exit(exit_code);
         }
         Some("wait") => {
             let paths = parsed_paths(parsed)?;
@@ -298,7 +482,7 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
         }
         Some("stop") => {
             let paths = parsed_paths(parsed)?;
-            stop_studio(&paths)?;
+            let result = stop_studio_session(&paths)?;
             let payload = serde_json::json!({
                 "ok": true,
                 "contextDir": paths.context_dir,
@@ -306,12 +490,20 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
                 "contextIdSource": paths.context_id_source,
                 "projectDir": paths.project_dir,
                 "storageDir": paths.storage_dir,
-                "stopped": true,
+                "stopped": result.stopped,
+                "unbound": result.unbound,
             });
-            write_result(parsed, stdout, &payload, "Stopped MyOpenPanels")
+            let text = if result.stopped {
+                "Stopped MyOpenPanels"
+            } else if result.unbound {
+                "Unbound MyOpenPanels studio"
+            } else {
+                "No MyOpenPanels studio binding"
+            };
+            write_result(parsed, stdout, &payload, text)
         }
         _ => Err(CliError::new(
-            "Expected studio subcommand: start, status, open, wait, or stop.",
+            "Expected studio subcommand: start, status, open, serve, wait, or stop.",
         )),
     }
 }
@@ -362,11 +554,223 @@ fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
 
 fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
-    match subcommand {
-        None | Some("context") => {
+    let action = parsed.positionals.get(2).map(String::as_str);
+    match (subcommand, action) {
+        (None, _) | (Some("context"), _) => {
             let paths = parsed_paths(parsed)?;
             let (payload, markdown) = agent_context(&paths, VERSION, Some(PanelKind::Wiki))?;
             write_result(parsed, stdout, &payload, &markdown)
+        }
+        (Some("agent-target"), Some("register")) => {
+            let paths = parsed_paths(parsed)?;
+            let result = wiki::register_agent_target(
+                &paths,
+                string_flag(parsed, "host").unwrap_or("unknown"),
+                string_flag(parsed, "thread-id").unwrap_or("default"),
+                string_flag(parsed, "wake-url"),
+            )?;
+            let text = format!(
+                "Registered {}",
+                result["target"]["host"].as_str().unwrap_or("")
+            );
+            write_result(parsed, stdout, &result, &text)
+        }
+        (Some("agent-target"), None | Some("list")) => {
+            let paths = parsed_paths(parsed)?;
+            let result = wiki::list_agent_targets(&paths)?;
+            let text = result["targets"]
+                .as_array()
+                .map(|targets| {
+                    targets
+                        .iter()
+                        .map(|target| {
+                            format!(
+                                "{}:{}",
+                                target["host"].as_str().unwrap_or(""),
+                                target["threadId"].as_str().unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            write_result(parsed, stdout, &result, &text)
+        }
+        (Some("raw"), Some("new-markdown") | Some("add-text")) => {
+            let paths = parsed_paths(parsed)?;
+            let title = string_flag(parsed, "title").unwrap_or("Untitled");
+            let file_name = string_flag(parsed, "file-name").unwrap_or(title);
+            let content = if let Some(file) = string_flag(parsed, "file") {
+                std::fs::read(file).map_err(|error| CliError::new(error.to_string()))?
+            } else {
+                string_flag(parsed, "content")
+                    .unwrap_or("")
+                    .as_bytes()
+                    .to_vec()
+            };
+            let result = wiki::add_raw_document(
+                &paths,
+                file_name,
+                Some(title),
+                Some("text/markdown"),
+                "agent",
+                string_flag(parsed, "wiki-space-id"),
+                &content,
+            )?;
+            let text = format!(
+                "Created markdown {}",
+                result["document"]["id"].as_str().unwrap_or("")
+            );
+            write_result(parsed, stdout, &result, &text)
+        }
+        (Some("raw"), Some("add")) => {
+            let paths = parsed_paths(parsed)?;
+            let file = required_flag(parsed, "file")?;
+            let content = std::fs::read(file).map_err(|error| CliError::new(error.to_string()))?;
+            let file_name = string_flag(parsed, "file-name")
+                .or_else(|| {
+                    std::path::Path::new(file)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                })
+                .unwrap_or("document");
+            let result = wiki::add_raw_document(
+                &paths,
+                file_name,
+                string_flag(parsed, "title"),
+                string_flag(parsed, "mime-type"),
+                "agent",
+                string_flag(parsed, "wiki-space-id"),
+                &content,
+            )?;
+            let text = format!(
+                "Added raw document {}",
+                result["document"]["id"].as_str().unwrap_or("")
+            );
+            write_result(parsed, stdout, &result, &text)
+        }
+        (Some("raw"), None | Some("list")) => {
+            let paths = parsed_paths(parsed)?;
+            let result = wiki::wiki_context(&paths)?;
+            let documents = result["state"]["rawDocuments"].clone();
+            let payload = serde_json::json!({ "documents": documents });
+            let count = payload["documents"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(parsed, stdout, &payload, &format!("{count} document(s)"))
+        }
+        (Some("markdown"), Some("read")) => {
+            let paths = parsed_paths(parsed)?;
+            let document_id = required_flag(parsed, "document-id")?;
+            let result = wiki::read_markdown(&paths, document_id)?;
+            let text = result["markdown"].as_str().unwrap_or("");
+            write_result(parsed, stdout, &result, text)
+        }
+        (Some("markdown"), Some("write")) => {
+            let paths = parsed_paths(parsed)?;
+            let document_id = required_flag(parsed, "document-id")?;
+            let file = required_flag(parsed, "file")?;
+            let content =
+                std::fs::read_to_string(file).map_err(|error| CliError::new(error.to_string()))?;
+            let result = wiki::write_markdown(
+                &paths,
+                document_id,
+                &content,
+                string_flag(parsed, "task-id"),
+            )?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("Wrote markdown {document_id}"),
+            )
+        }
+        (Some("tasks"), None | Some("list")) => {
+            let paths = parsed_paths(parsed)?;
+            let result = wiki::list_tasks(&paths, string_flag(parsed, "status"))?;
+            let count = result["tasks"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(parsed, stdout, &result, &format!("{count} task(s)"))
+        }
+        (Some("tasks"), Some("next")) => {
+            let paths = parsed_paths(parsed)?;
+            let result = wiki::next_task(&paths)?;
+            let text = result["task"]["id"].as_str().unwrap_or("No queued task");
+            write_result(parsed, stdout, &result, text)
+        }
+        (Some("tasks"), Some("claim")) => {
+            let paths = parsed_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = wiki::claim_task(
+                &paths,
+                task_id,
+                string_flag(parsed, "agent-host"),
+                string_flag(parsed, "thread-id"),
+            )?;
+            write_result(parsed, stdout, &result, &format!("Claimed {task_id}"))
+        }
+        (Some("tasks"), Some("complete")) => {
+            let paths = parsed_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = wiki::complete_task(&paths, task_id, None)?;
+            write_result(parsed, stdout, &result, &format!("Completed {task_id}"))
+        }
+        (Some("tasks"), Some("fail")) => {
+            let paths = parsed_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = wiki::fail_task(
+                &paths,
+                task_id,
+                string_flag(parsed, "message").unwrap_or("Wiki task failed"),
+            )?;
+            write_result(parsed, stdout, &result, &format!("Failed {task_id}"))
+        }
+        (Some("spaces"), Some("active")) => {
+            let paths = parsed_paths(parsed)?;
+            let wiki_space_id = required_flag(parsed, "wiki-space-id")?;
+            let result = wiki::set_active_space(&paths, wiki_space_id)?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("Active wiki space {wiki_space_id}"),
+            )
+        }
+        (Some("spaces"), None | Some("list")) => {
+            let paths = parsed_paths(parsed)?;
+            let result = wiki::list_spaces(&paths)?;
+            let count = result["spaces"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(parsed, stdout, &result, &format!("{count} wiki space(s)"))
+        }
+        (Some("pages"), Some("read")) => {
+            let paths = parsed_paths(parsed)?;
+            let result = wiki::read_page(
+                &paths,
+                required_flag(parsed, "wiki-space-id")?,
+                required_flag(parsed, "path")?,
+            )?;
+            let text = result["markdown"].as_str().unwrap_or("");
+            write_result(parsed, stdout, &result, text)
+        }
+        (Some("pages"), Some("create") | Some("write")) => {
+            let paths = parsed_paths(parsed)?;
+            let wiki_space_id = required_flag(parsed, "wiki-space-id")?;
+            let page_path = required_flag(parsed, "path")?;
+            let file = required_flag(parsed, "file")?;
+            let content =
+                std::fs::read_to_string(file).map_err(|error| CliError::new(error.to_string()))?;
+            let result = wiki::write_page(
+                &paths,
+                wiki_space_id,
+                page_path,
+                &content,
+                string_flag(parsed, "title"),
+                string_flag(parsed, "task-id"),
+            )?;
+            write_result(parsed, stdout, &result, &format!("Wrote page {page_path}"))
+        }
+        (Some("pages"), None | Some("list")) => {
+            let paths = parsed_paths(parsed)?;
+            let result = wiki::list_pages(&paths, required_flag(parsed, "wiki-space-id")?)?;
+            let count = result["pages"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(parsed, stdout, &result, &format!("{count} page(s)"))
         }
         _ => Err(CliError::new("Unknown wiki command.")),
     }
@@ -506,6 +910,15 @@ fn studio_host(parsed: &ParsedArgs) -> String {
         .unwrap_or_else(|| "0.0.0.0".to_owned())
 }
 
+fn studio_port(parsed: &ParsedArgs) -> Result<Option<u16>, CliError> {
+    string_flag(parsed, "port")
+        .map(|port| {
+            port.parse::<u16>()
+                .map_err(|_| CliError::new("Expected --port to be a number between 0 and 65535."))
+        })
+        .transpose()
+}
+
 fn studio_session_payload(
     session: &crate::studio::StudioSession,
     fields: &[(&str, Value)],
@@ -519,235 +932,6 @@ fn studio_session_payload(
         object.insert((*key).to_owned(), field_value.clone());
     }
     Ok(value)
-}
-
-fn run_update_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
-    let subcommand = parsed.positionals.get(1).map(String::as_str);
-    if subcommand == Some("help") || has_flag(parsed, "help") {
-        write_text(stdout, &update_help_text())?;
-        return Ok(());
-    }
-
-    if has_flag(parsed, "check") || subcommand == Some("check") {
-        let payload = check_for_update(VERSION, false)?;
-        let text = update_check_text(&payload);
-        write_result(parsed, stdout, &payload, &text)?;
-        return Ok(());
-    }
-
-    if subcommand == Some("download") {
-        let payload = download_update(VERSION)?;
-        let text = update_download_text(&payload);
-        write_result(parsed, stdout, &payload, &text)?;
-        return Ok(());
-    }
-
-    if subcommand.is_none() || subcommand == Some("install") {
-        let payload = install_update(VERSION)?;
-        let text = update_install_text(&payload);
-        write_result(parsed, stdout, &payload, &text)?;
-        return Ok(());
-    }
-
-    Err(CliError::new(format!(
-        "Unknown update command: {}",
-        subcommand.unwrap_or_default()
-    )))
-}
-
-fn parse_args(argv: &[String]) -> ParsedArgs {
-    let mut flags = BTreeMap::new();
-    let mut positionals = Vec::new();
-    let mut index = 0;
-    while index < argv.len() {
-        let arg = &argv[index];
-        if !arg.starts_with("--") {
-            positionals.push(arg.clone());
-            index += 1;
-            continue;
-        }
-
-        let raw = &arg[2..];
-        if let Some((name, value)) = raw.split_once('=') {
-            flags.insert(name.to_owned(), FlagValue::String(value.to_owned()));
-            index += 1;
-            continue;
-        }
-
-        if let Some(next) = argv.get(index + 1) {
-            if !next.starts_with("--") {
-                flags.insert(raw.to_owned(), FlagValue::String(next.clone()));
-                index += 2;
-                continue;
-            }
-        }
-
-        flags.insert(raw.to_owned(), FlagValue::Bool);
-        index += 1;
-    }
-
-    ParsedArgs { flags, positionals }
-}
-
-fn has_flag(parsed: &ParsedArgs, name: &str) -> bool {
-    parsed.flags.contains_key(name)
-}
-
-fn string_flag<'a>(parsed: &'a ParsedArgs, name: &str) -> Option<&'a str> {
-    match parsed.flags.get(name) {
-        Some(FlagValue::String(value)) => Some(value),
-        _ => None,
-    }
-}
-
-fn required_flag<'a>(parsed: &'a ParsedArgs, name: &str) -> Result<&'a str, CliError> {
-    string_flag(parsed, name)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| CliError::new(format!("Missing required --{name} <value>.")))
-}
-
-fn number_flag(parsed: &ParsedArgs, name: &str) -> Result<Option<f64>, CliError> {
-    string_flag(parsed, name)
-        .map(|value| {
-            value
-                .parse::<f64>()
-                .map_err(|_| CliError::new(format!("Expected --{name} to be a number.")))
-        })
-        .transpose()
-}
-
-fn parse_panel_kind(value: &str) -> Result<PanelKind, CliError> {
-    PanelKind::parse(value).ok_or_else(|| {
-        CliError::new("Expected --kind to be one of: wiki, canvas, image, diff, preview, files.")
-    })
-}
-
-fn output_format(parsed: &ParsedArgs) -> OutputFormat {
-    match string_flag(parsed, "format") {
-        Some("json") => OutputFormat::Json,
-        _ => OutputFormat::Text,
-    }
-}
-
-fn selected_shape_count(selection: &Value) -> usize {
-    selection
-        .get("selectedShapes")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0)
-}
-
-fn studio_status_text(status: StudioServerStatus) -> String {
-    match status {
-        StudioServerStatus::Running => "MyOpenPanels studio running".to_owned(),
-        StudioServerStatus::Missing => "MyOpenPanels studio missing".to_owned(),
-        StudioServerStatus::Stale => "MyOpenPanels studio stale".to_owned(),
-        StudioServerStatus::Unavailable => "MyOpenPanels studio unavailable".to_owned(),
-    }
-}
-
-fn render_capabilities_summary(capabilities: &[Value]) -> String {
-    let rows = capabilities
-        .iter()
-        .map(|capability| {
-            format!(
-                "| `{}` | `{}` |",
-                capability["intent"].as_str().unwrap_or(""),
-                capability["command"].as_str().unwrap_or("")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("# OpenPanels Agent Capabilities\n\n| Intent | Command |\n| --- | --- |\n{rows}\n")
-}
-
-fn should_check_for_updates(parsed: &ParsedArgs, command: Option<&str>) -> bool {
-    if output_format(parsed) == OutputFormat::Json {
-        return false;
-    }
-
-    matches!(
-        command,
-        Some(
-            "studio"
-                | "agent"
-                | "agent-context"
-                | "panels"
-                | "active-panel"
-                | "panel-state"
-                | "canvas-state"
-                | "selection"
-                | "read-selection-asset"
-                | "insert-placeholder"
-                | "insert-image"
-                | "wiki"
-        )
-    )
-}
-
-fn update_check_text(payload: &UpdateCheckPayload) -> String {
-    let latest = payload.latest_version.as_deref().unwrap_or("unknown");
-    if payload.update_available {
-        if payload.asset_available {
-            format!(
-                "Update available: openpanels-local {} -> {latest}. Run `openpanels-local update` to install.",
-                payload.current_version
-            )
-        } else {
-            format!(
-                "Update available: openpanels-local {} -> {latest}, but no asset exists for {}.",
-                payload.current_version, payload.target
-            )
-        }
-    } else {
-        format!("openpanels-local is up to date ({latest}).")
-    }
-}
-
-fn update_install_text(payload: &UpdateInstallPayload) -> String {
-    let latest = payload.latest_version.as_deref().unwrap_or("unknown");
-    if payload.updated {
-        format!(
-            "Updated openpanels-local {} -> {latest}.",
-            payload.current_version
-        )
-    } else {
-        format!("openpanels-local is already up to date ({latest}).")
-    }
-}
-
-fn update_download_text(payload: &UpdateDownloadPayload) -> String {
-    let latest = payload.latest_version.as_deref().unwrap_or("unknown");
-    if payload.downloaded {
-        format!("Downloaded openpanels-local {latest}.")
-    } else if payload.update_available {
-        format!(
-            "Update available: openpanels-local {} -> {latest}, but it was not downloaded.",
-            payload.current_version
-        )
-    } else {
-        format!("openpanels-local is already up to date ({latest}).")
-    }
-}
-
-fn update_help_text() -> String {
-    format!(concat!(
-        "openpanels-local update [check|install] [options]\n\n",
-        "Commands:\n",
-        "  update                    Download, verify, and install the latest GitHub Releases binary\n",
-        "  update install            Same as `update`\n",
-        "  update download           Download and cache the latest binary without installing it\n",
-        "  update check              Check whether a newer GitHub Releases binary exists\n\n",
-        "Options:\n",
-        "  --check                   Same as `update check`\n",
-        "  --format json             Emit stable JSON output\n\n",
-        "Environment:\n",
-        "  OPENPANELS_UPDATE_MANIFEST_URL  Override the release manifest URL\n",
-        "  OPENPANELS_UPDATE_CACHE_DIR     Override the 24-hour update check cache directory\n",
-        "  OPENPANELS_DISABLE_UPDATE_CHECK Disable opportunistic 24-hour update checks\n\n",
-        "Default manifest:\n",
-        "{}\n",
-    ), DEFAULT_MANIFEST_URL)
 }
 
 fn write_result(
@@ -791,527 +975,4 @@ fn write_text(stream: &mut impl Write, text: &str) -> Result<(), CliError> {
     stream
         .write_all(text.as_bytes())
         .map_err(|error| CliError::new(error.to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use base64::Engine;
-    use rusqlite::{params, Connection};
-    use serde_json::{json, Value};
-    use std::fs;
-    use std::path::Path;
-
-    fn run(args: &[&str]) -> (i32, String, String) {
-        let argv = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let code = run_cli_with_io(&argv, &mut stdout, &mut stderr);
-        (
-            code,
-            String::from_utf8(stdout).expect("stdout should be utf8"),
-            String::from_utf8(stderr).expect("stderr should be utf8"),
-        )
-    }
-
-    #[test]
-    fn project_read_commands_bootstrap_project() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let project_dir = temp.path().join("project");
-        let storage_dir = temp.path().join(".myopenpanels");
-        fs::create_dir_all(&project_dir).expect("project dir");
-
-        let (code, stdout, stderr) = run(&[
-            "panels",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-            "--format",
-            "json",
-        ]);
-
-        assert_eq!(code, 0, "{stderr}");
-        let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-        assert_eq!(payload["activePanelKind"], "wiki");
-        assert_eq!(
-            payload["panels"]
-                .as_array()
-                .expect("panels")
-                .iter()
-                .map(|panel| panel["kind"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            vec!["wiki", "canvas"]
-        );
-        assert_eq!(stderr, "");
-
-        let (code, stdout, stderr) = run(&[
-            "active-panel",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-            "--kind",
-            "canvas",
-            "--format",
-            "json",
-        ]);
-        assert_eq!(code, 0, "{stderr}");
-        assert_eq!(
-            serde_json::from_str::<Value>(&stdout).expect("json")["activePanelKind"],
-            "canvas"
-        );
-    }
-
-    #[test]
-    fn agent_commands_emit_context_guides_and_capabilities() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let project_dir = temp.path().join("project");
-        let storage_dir = temp.path().join(".myopenpanels");
-        fs::create_dir_all(&project_dir).expect("project dir");
-
-        let (code, stdout, stderr) = run(&[
-            "agent-context",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-            "--format",
-            "json",
-        ]);
-        assert_eq!(code, 0, "{stderr}");
-        let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-        assert_eq!(payload["protocolVersion"], 1);
-        assert_eq!(payload["cliVersion"], VERSION);
-        assert_eq!(payload["activePanel"]["kind"], "wiki");
-        assert_eq!(payload["state"]["wiki"]["language"], Value::Null);
-        assert!(payload["capabilities"]
-            .as_array()
-            .expect("capabilities")
-            .iter()
-            .any(|capability| capability["intent"] == "canvas.placeholder.create"));
-        assert!(payload["availableGuides"]
-            .as_array()
-            .expect("available guides")
-            .iter()
-            .any(|guide| guide["id"] == "canvas.image-generation" && guide["source"] == "builtin"));
-
-        let (code, stdout, stderr) = run(&[
-            "agent",
-            "context",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-        ]);
-        assert_eq!(code, 0, "{stderr}");
-        assert!(stdout.contains("# OpenPanels Agent Context"));
-        assert!(stdout.contains("## Capabilities"));
-
-        let (code, stdout, stderr) = run(&[
-            "agent",
-            "guides",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-        ]);
-        assert_eq!(code, 0, "{stderr}");
-        assert!(stdout.contains("wiki.index-document"));
-
-        let (code, stdout, stderr) = run(&[
-            "agent",
-            "guide",
-            "canvas.image-generation",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-        ]);
-        assert_eq!(code, 0, "{stderr}");
-        assert!(stdout.contains("# Guide: canvas.image-generation"));
-        assert!(stdout.contains("## Instructions"));
-
-        let (code, stdout, stderr) = run(&[
-            "wiki",
-            "context",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-            "--format",
-            "json",
-        ]);
-        assert_eq!(code, 0, "{stderr}");
-        assert_eq!(
-            serde_json::from_str::<Value>(&stdout).expect("json")["activePanel"]["kind"],
-            "wiki"
-        );
-    }
-
-    #[test]
-    fn canvas_write_commands_insert_and_replace_shapes() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let project_dir = temp.path().join("project");
-        let storage_dir = temp.path().join(".myopenpanels");
-        let image_path = project_dir.join("image.png");
-        fs::create_dir_all(&project_dir).expect("project dir");
-        fs::write(&image_path, tiny_png()).expect("image");
-
-        let (code, stdout, stderr) = run(&[
-            "insert-image",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-            "--image",
-            image_path.to_str().unwrap(),
-            "--display-width",
-            "512",
-            "--display-height",
-            "512",
-            "--format",
-            "json",
-        ]);
-        assert_eq!(code, 0, "{stderr}");
-        let inserted = serde_json::from_str::<Value>(&stdout).expect("json");
-        assert_eq!(
-            inserted["bounds"],
-            json!({ "x": 160.0, "y": 160.0, "width": 512.0, "height": 512.0 })
-        );
-
-        let (code, stdout, stderr) = run(&[
-            "insert-placeholder",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-            "--anchor-shape-id",
-            inserted["shapeId"].as_str().unwrap(),
-            "--display-width",
-            "512",
-            "--display-height",
-            "512",
-            "--format",
-            "json",
-        ]);
-        assert_eq!(code, 0, "{stderr}");
-        let placeholder = serde_json::from_str::<Value>(&stdout).expect("json");
-        assert_eq!(
-            placeholder["bounds"],
-            json!({ "x": 752.0, "y": 160.0, "width": 512.0, "height": 512.0 })
-        );
-
-        let (code, stdout, stderr) = run(&[
-            "insert-image",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-            "--image",
-            image_path.to_str().unwrap(),
-            "--replace-shape-id",
-            placeholder["shapeId"].as_str().unwrap(),
-            "--format",
-            "json",
-        ]);
-        assert_eq!(code, 0, "{stderr}");
-        let replaced = serde_json::from_str::<Value>(&stdout).expect("json");
-        assert_eq!(replaced["replacedShapeId"], placeholder["shapeId"]);
-        assert_eq!(replaced["bounds"], placeholder["bounds"]);
-
-        let (code, stdout, stderr) = run(&[
-            "panel-state",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-            "--kind",
-            "canvas",
-            "--format",
-            "json",
-        ]);
-        assert_eq!(code, 0, "{stderr}");
-        let state = serde_json::from_str::<Value>(&stdout).expect("json")["state"].clone();
-        assert_eq!(state["selectedShapeIds"], json!([replaced["shapeId"]]));
-        assert!(state["store"][placeholder["shapeId"].as_str().unwrap()].is_null());
-    }
-
-    #[test]
-    fn studio_status_reports_missing_session() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let project_dir = temp.path().join("project");
-        let storage_dir = temp.path().join(".myopenpanels");
-        fs::create_dir_all(&project_dir).expect("project dir");
-
-        let (code, stdout, stderr) = run(&[
-            "studio",
-            "status",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-            "--format",
-            "json",
-        ]);
-
-        assert_eq!(code, 0, "{stderr}");
-        let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-        assert_eq!(payload["ok"], true);
-        assert_eq!(payload["server"], "missing");
-        assert_eq!(payload["contextId"], "ctx");
-        assert_eq!(stderr, "");
-    }
-
-    #[test]
-    fn selection_reads_sqlite_panel_selection() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let project_dir = temp.path().join("project");
-        let storage_dir = temp.path().join(".myopenpanels");
-        let context_dir = storage_dir.join("contexts").join("ctx");
-        fs::create_dir_all(&context_dir).expect("context dir");
-        fs::create_dir_all(&project_dir).expect("project dir");
-        seed_selection_database(
-            &storage_dir,
-            "session:1",
-            "panel:canvas",
-            serde_json::json!({
-                "sessionId": "session:1",
-                "panelId": "panel:canvas",
-                "selectedShapeIds": ["shape:1"],
-                "selectedShapes": [{
-                    "id": "shape:1",
-                    "type": "geo",
-                    "parentId": "page:main",
-                    "props": {},
-                    "bounds": { "x": 1, "y": 2, "width": 3, "height": 4 }
-                }],
-                "assetRef": null,
-                "updatedAt": "2026-07-08T00:00:00.000Z"
-            }),
-            None,
-        );
-        fs::write(
-            context_dir.join("active-session.json"),
-            r#"{"sessionId":"session:1"}"#,
-        )
-        .expect("active session");
-
-        let (code, stdout, stderr) = run(&[
-            "selection",
-            "--project",
-            project_dir.to_str().unwrap(),
-            "--storage-dir",
-            storage_dir.to_str().unwrap(),
-            "--context-id",
-            "ctx",
-            "--format",
-            "json",
-        ]);
-
-        assert_eq!(code, 0, "{stderr}");
-        let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-        assert_eq!(
-            payload["selection"]["selectedShapeIds"],
-            serde_json::json!(["shape:1"])
-        );
-        assert_eq!(payload["contextId"], "ctx");
-        assert_eq!(stderr, "");
-    }
-
-    #[test]
-    fn version_prints_text() {
-        let (code, stdout, stderr) = run(&["version"]);
-
-        assert_eq!(code, 0);
-        assert_eq!(stdout, format!("{VERSION}\n"));
-        assert_eq!(stderr, "");
-    }
-
-    #[test]
-    fn version_prints_json() {
-        let (code, stdout, stderr) = run(&["--version", "--format", "json"]);
-
-        assert_eq!(code, 0);
-        assert_eq!(stdout, format!("{{\n  \"version\": \"{VERSION}\"\n}}\n"));
-        assert_eq!(stderr, "");
-    }
-
-    #[test]
-    fn help_prints_current_command_map() {
-        let (code, stdout, stderr) = run(&[]);
-
-        assert_eq!(code, 0);
-        assert!(stdout.contains("openpanels-local <command> [options]"));
-        assert!(stdout.contains("studio start"));
-        assert!(stdout.contains("insert-image"));
-        assert!(stdout.contains("update check"));
-        assert_eq!(stderr, "");
-    }
-
-    #[test]
-    fn update_help_prints_manifest_controls() {
-        let (code, stdout, stderr) = run(&["update", "help"]);
-
-        assert_eq!(code, 0);
-        assert!(stdout.contains("openpanels-local update"));
-        assert!(stdout.contains("OPENPANELS_UPDATE_MANIFEST_URL"));
-        assert_eq!(stderr, "");
-    }
-
-    #[test]
-    fn unknown_command_prints_text_error() {
-        let (code, stdout, stderr) = run(&["nope"]);
-
-        assert_eq!(code, 1);
-        assert_eq!(stdout, "");
-        assert_eq!(stderr, "Error: Unknown command: nope\n");
-    }
-
-    #[test]
-    fn unknown_command_prints_json_error() {
-        let (code, stdout, stderr) = run(&["nope", "--format=json"]);
-
-        assert_eq!(code, 1);
-        assert_eq!(
-            stdout,
-            "{\n  \"ok\": false,\n  \"error\": \"Unknown command: nope\"\n}\n"
-        );
-        assert_eq!(stderr, "");
-    }
-
-    fn seed_selection_database(
-        storage_dir: &Path,
-        session_id: &str,
-        panel_id: &str,
-        selection: Value,
-        state: Option<Value>,
-    ) {
-        fs::create_dir_all(storage_dir).expect("storage dir");
-        let connection = Connection::open(storage_dir.join("main.sqlite3")).expect("db");
-        connection
-            .execute_batch(
-                r#"
-                CREATE TABLE sessions (
-                  id TEXT PRIMARY KEY NOT NULL,
-                  title TEXT NOT NULL,
-                  created_at TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  panel_ids_json TEXT NOT NULL DEFAULT '[]',
-                  session_json TEXT NOT NULL
-                );
-                CREATE TABLE panels (
-                  id TEXT NOT NULL,
-                  session_id TEXT NOT NULL,
-                  kind TEXT NOT NULL,
-                  title TEXT NOT NULL,
-                  created_at TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  state_ref TEXT,
-                  panel_json TEXT NOT NULL,
-                  PRIMARY KEY (session_id, id)
-                );
-                CREATE TABLE panel_states (
-                  session_id TEXT NOT NULL,
-                  panel_id TEXT NOT NULL,
-                  schema_version INTEGER,
-                  state_json TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  PRIMARY KEY (session_id, panel_id)
-                );
-                CREATE TABLE panel_selections (
-                  session_id TEXT NOT NULL,
-                  panel_id TEXT NOT NULL,
-                  asset_ref TEXT,
-                  selected_shape_ids_json TEXT NOT NULL DEFAULT '[]',
-                  selection_json TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  PRIMARY KEY (session_id, panel_id)
-                );
-                "#,
-            )
-            .expect("schema");
-        connection
-            .execute(
-                "INSERT INTO sessions (id, title, created_at, updated_at, panel_ids_json, session_json) VALUES (?, 'Project 1', '2026-07-08T00:00:00.000Z', '2026-07-08T00:00:00.000Z', ?, ?)",
-                params![
-                    session_id,
-                    serde_json::json!([panel_id]).to_string(),
-                    serde_json::json!({
-                        "id": session_id,
-                        "title": "Project 1",
-                        "panelIds": [panel_id],
-                        "createdAt": "2026-07-08T00:00:00.000Z",
-                        "updatedAt": "2026-07-08T00:00:00.000Z"
-                    }).to_string()
-                ],
-            )
-            .expect("session");
-        connection
-            .execute(
-                "INSERT INTO panels (id, session_id, kind, title, created_at, updated_at, state_ref, panel_json) VALUES (?, ?, 'canvas', 'Design canvas', '2026-07-08T00:00:00.000Z', '2026-07-08T00:00:00.000Z', NULL, ?)",
-                params![
-                    panel_id,
-                    session_id,
-                    serde_json::json!({
-                        "id": panel_id,
-                        "sessionId": session_id,
-                        "kind": "canvas",
-                        "title": "Design canvas",
-                        "createdAt": "2026-07-08T00:00:00.000Z",
-                        "updatedAt": "2026-07-08T00:00:00.000Z"
-                    }).to_string()
-                ],
-            )
-            .expect("panel");
-        if let Some(state) = state {
-            connection
-                .execute(
-                    "INSERT INTO panel_states (session_id, panel_id, schema_version, state_json, updated_at) VALUES (?, ?, 1, ?, '2026-07-08T00:00:00.000Z')",
-                    params![session_id, panel_id, state.to_string()],
-                )
-                .expect("state");
-        }
-        connection
-            .execute(
-                "INSERT INTO panel_selections (session_id, panel_id, asset_ref, selected_shape_ids_json, selection_json, updated_at) VALUES (?, ?, NULL, ?, ?, '2026-07-08T00:00:00.000Z')",
-                params![
-                    session_id,
-                    panel_id,
-                    selection["selectedShapeIds"].to_string(),
-                    selection.to_string()
-                ],
-            )
-            .expect("selection");
-    }
-
-    fn tiny_png() -> Vec<u8> {
-        base64::engine::general_purpose::STANDARD
-            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
-            .expect("tiny png")
-    }
 }

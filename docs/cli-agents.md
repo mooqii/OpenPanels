@@ -14,26 +14,13 @@ it:
 openpanels-local --version
 ```
 
-Check for and install release updates:
-
-```bash
-openpanels-local update check
-openpanels-local update
-```
-
 The recommended agent skill uses the installed `openpanels-local` binary as the
-stable entry point. The CLI may check GitHub Releases for updates at most once
-every 24 hours on normal text-mode commands, and `openpanels-local update`
-performs an explicit self-update. Agents should not install updates or restart
-the studio unless the user asks them to; the studio UI can surface an update
-button for user-confirmed install and restart. Panel-specific instructions are
-returned by the CLI through `agent context`, so users do not need to keep
-separate canvas/wiki skills manually updated.
+stable entry point. Panel-specific instructions are returned by the CLI through
+`agent context`, so users do not need to keep separate canvas/wiki skills
+manually updated.
 
-The compact context renderer lives in `packages/local-cli/src/agent-context.ts`,
-the command capability manifest lives in
-`packages/local-cli/src/agent-capabilities.ts`, and longer workflow guides live
-in top-level `agent-guides/*.md` files.
+The compact context renderer, capability manifest, and built-in workflow guides
+now live in the Rust CLI crate under `crates/openpanels-local/src/agent.rs`.
 
 If you do not pass `--project`, OpenPanels uses `OPENPANELS_PROJECT_DIR` or the
 current working directory for project metadata. Canvas data is stored in the

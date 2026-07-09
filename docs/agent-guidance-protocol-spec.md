@@ -216,13 +216,13 @@ wiki.space.list
 wiki.space.switch
 ```
 
-建议在实现中把 capability manifest 独立出来：
+当前 Rust 实现中，capability manifest 由 CLI crate 维护：
 
 ```text
-packages/local-cli/src/agent-capabilities.ts
+crates/openpanels-local/src/agent.rs
 ```
 
-这个文件只定义 agent-facing 指令，不放长提示词。
+后续如果需要给前端复用能力列表，再把这部分拆成语言无关 JSON。
 
 ## Guide 文件
 
@@ -238,27 +238,14 @@ agent-guides/
   wiki.rebuild-index.md
 ```
 
-构建时复制到 CLI 包中，随 `@openpanels/local-cli` 发布。这样 agent 永远通过最新
-CLI 获取和当前 CLI 版本匹配的 guide。
+Rust CLI 随 release binary 发布这些 guide。这样 agent 永远通过最新 CLI 获取和
+当前 CLI 版本匹配的 guide。
 
-推荐实现文件：
+当前实现文件：
 
 ```text
-packages/local-cli/src/agent-context.ts
-  读取当前项目状态。
-  渲染短 markdown context。
-
-packages/local-cli/src/agent-capabilities.ts
-  定义 capability manifest、命令模板、参数 schema。
-
-packages/local-cli/src/agent-guides.ts
-  加载顶层 agent-guides/*.md。
-  验证 frontmatter。
-  根据 panel/task/state 选择可用 guides。
-  渲染 guide，并注入动态上下文。
-
-agent-guides/*.md
-  可编辑的 skill-like agent 引导文本。
+crates/openpanels-local/src/agent.rs
+  定义 capability manifest、guide metadata、context/guide 渲染。
 ```
 
 ### Guide Frontmatter
@@ -507,5 +494,5 @@ openpanels-local agent context --project "$PWD"
 - `openpanels-local agent guide <id>` 能输出完整 guide。
 - `openpanels-local agent guide <id> --task-id <task-id>` 能注入任务上下文。
 - 顶层 `agent-guides/*.md` 是编辑 agent 引导的主要入口。
-- build 后 CLI npm 包包含内置 guides。
+- release binary 包含内置 guides。
 - agent-facing 输出不暴露内部实现函数作为 API。

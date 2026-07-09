@@ -1,34 +1,62 @@
 use crate::control::{
-    create_project, ensure_project_bootstrap, now_iso, read_active_panel_value,
-    read_active_session_id, write_active_session_id, BootstrapRequest,
+    create_project, create_runtime_session, delete_session, ensure_project_bootstrap, now_iso,
+    open_runtime_panel, read_active_panel_value, read_active_session_id, rename_session,
+    write_active_session_id, BootstrapRequest,
 };
 use crate::error::CliError;
 use crate::paths::OpenPanelsPaths;
 use crate::storage::Storage;
+use crate::studio::{spawn_studio_server_process, write_studio_session, StudioSession};
+use crate::trace::{self, TraceEventInput};
 use crate::types::PanelKind;
+use crate::update::{check_for_update, download_update, install_update};
+use crate::wiki;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::Json;
 use axum::Router;
 use base64::Engine;
 use include_dir::{include_dir, Dir};
-use serde::Deserialize;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
+
+mod wiki_api;
+use wiki_api::*;
 
 static STUDIO_DIST: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../apps/local-studio/dist");
 
 #[derive(Clone)]
 struct AppState {
+    build_info: StudioBuildInfo,
+    host: String,
     paths: OpenPanelsPaths,
+    port: u16,
     static_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StudioBuildInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build_time: Option<String>,
+    channel: &'static str,
+    label: String,
+    version: &'static str,
 }
 
 pub fn run_server(
@@ -50,19 +78,31 @@ async fn run_server_async(
     paths: OpenPanelsPaths,
     static_dir: Option<PathBuf>,
 ) -> Result<i32, CliError> {
+    let build_info = current_build_info();
+    std::env::set_var("OPENPANELS_TRACE_URL", trace::trace_url_for_port(port));
+    std::env::set_var("OPENPANELS_TRACE_AUDIENCE", build_info.channel);
     let std_listener = TcpListener::bind((host, port)).map_err(to_cli_error)?;
     std_listener.set_nonblocking(true).map_err(to_cli_error)?;
     let listener = tokio::net::TcpListener::from_std(std_listener).map_err(to_cli_error)?;
-    axum::serve(listener, build_router(paths, static_dir))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .map_err(to_cli_error)?;
+    axum::serve(
+        listener,
+        build_router(host.to_owned(), port, paths, static_dir, build_info),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+    .map_err(to_cli_error)?;
     Ok(0)
 }
 
-fn build_router(paths: OpenPanelsPaths, static_dir: Option<PathBuf>) -> Router {
+fn build_router(
+    host: String,
+    port: u16,
+    paths: OpenPanelsPaths,
+    static_dir: Option<PathBuf>,
+    build_info: StudioBuildInfo,
+) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(HeaderValue::from_static("*"))
         .allow_methods([
@@ -77,7 +117,88 @@ fn build_router(paths: OpenPanelsPaths, static_dir: Option<PathBuf>) -> Router {
     Router::new()
         .route("/api/bootstrap", get(api_bootstrap))
         .route("/api/projects", post(api_projects_create))
-        .route("/api/sessions", get(api_sessions))
+        .route("/api/update/status", get(api_update_status))
+        .route("/api/update/download", post(api_update_download))
+        .route(
+            "/api/update/install-restart",
+            post(api_update_install_restart),
+        )
+        .route("/api/trace/snapshot", get(api_trace_snapshot))
+        .route("/api/trace/stream", get(api_trace_stream))
+        .route("/api/trace/events", post(api_trace_events))
+        .route("/api/sessions", get(api_sessions).post(api_create_session))
+        .route(
+            "/api/sessions/{session_id}",
+            patch(api_rename_session).delete(api_delete_session),
+        )
+        .route("/api/panels", post(api_open_panel))
+        .route("/api/artifacts", post(api_insert_artifact))
+        .route("/api/wiki/context", get(api_wiki_context))
+        .route(
+            "/api/wiki/raw-documents",
+            get(api_wiki_raw_documents).post(api_wiki_add_raw_document),
+        )
+        .route(
+            "/api/wiki/raw-documents/{document_id}/markdown",
+            get(api_wiki_read_markdown).put(api_wiki_write_markdown),
+        )
+        .route(
+            "/api/wiki/raw-documents/{document_id}/original",
+            get(api_wiki_raw_document_original),
+        )
+        .route(
+            "/api/wiki/raw-documents/{document_id}/reveal",
+            post(api_wiki_reveal_raw_document),
+        )
+        .route(
+            "/api/wiki/raw-documents/{document_id}/extract",
+            post(api_wiki_extract_raw_document),
+        )
+        .route(
+            "/api/wiki/raw-documents/{document_id}/reindex",
+            post(api_wiki_reindex_raw_document),
+        )
+        .route(
+            "/api/wiki/raw-documents/{document_id}",
+            delete(api_wiki_delete_raw_document),
+        )
+        .route("/api/wiki/tasks", get(api_wiki_tasks))
+        .route("/api/wiki/tasks/next", get(api_wiki_next_task))
+        .route("/api/wiki/tasks/{task_id}/claim", post(api_wiki_claim_task))
+        .route(
+            "/api/wiki/tasks/{task_id}/complete",
+            post(api_wiki_complete_task),
+        )
+        .route("/api/wiki/tasks/{task_id}/fail", post(api_wiki_fail_task))
+        .route(
+            "/api/wiki/agent-targets",
+            get(api_wiki_agent_targets).post(api_wiki_register_agent_target),
+        )
+        .route(
+            "/api/wiki/active-space",
+            get(api_wiki_active_space).put(api_wiki_set_active_space),
+        )
+        .route(
+            "/api/wiki/language",
+            get(api_wiki_language)
+                .put(api_wiki_set_language)
+                .post(api_wiki_set_language),
+        )
+        .route("/api/wiki/spaces", get(api_wiki_spaces))
+        .route(
+            "/api/wiki/spaces/{wiki_space_id}/reindex",
+            post(api_wiki_reindex_space),
+        )
+        .route(
+            "/api/wiki/spaces/{wiki_space_id}/pages",
+            get(api_wiki_pages).post(api_wiki_write_page_at_collection),
+        )
+        .route(
+            "/api/wiki/spaces/{wiki_space_id}/pages/{*page_path}",
+            get(api_wiki_read_page)
+                .put(api_wiki_write_page)
+                .post(api_wiki_write_page),
+        )
         .route(
             "/api/active-session",
             get(api_active_session).put(api_set_active_session),
@@ -105,7 +226,14 @@ fn build_router(paths: OpenPanelsPaths, static_dir: Option<PathBuf>) -> Router {
         .route("/", get(index))
         .route("/{*path}", get(static_asset))
         .layer(cors)
-        .with_state(Arc::new(AppState { paths, static_dir }))
+        .layer(middleware::from_fn(trace_api_middleware))
+        .with_state(Arc::new(AppState {
+            build_info,
+            host,
+            paths,
+            port,
+            static_dir,
+        }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +242,11 @@ struct BootstrapQuery {
     panel_id: Option<String>,
     panel_kind: Option<String>,
     session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceQuery {
+    audience: Option<String>,
 }
 
 async fn api_bootstrap(
@@ -126,7 +259,7 @@ async fn api_bootstrap(
         requested_session_id: query.session_id,
     };
     match ensure_project_bootstrap(&state.paths, request) {
-        Ok(bootstrap) => json_response(StatusCode::OK, &bootstrap),
+        Ok(bootstrap) => json_response(StatusCode::OK, &with_build_info(bootstrap, &state)),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
 }
@@ -141,9 +274,55 @@ async fn api_projects_create(
     Json(body): Json<CreateProjectBody>,
 ) -> Response {
     match create_project(&state.paths, body.title.as_deref()) {
-        Ok(bootstrap) => json_response(StatusCode::OK, &bootstrap),
+        Ok(bootstrap) => json_response(StatusCode::OK, &with_build_info(bootstrap, &state)),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
+}
+
+async fn api_trace_snapshot(Query(query): Query<TraceQuery>) -> Response {
+    let audience = query.audience.as_deref().unwrap_or("release");
+    json_response(StatusCode::OK, &trace::snapshot(audience))
+}
+
+async fn api_trace_stream(Query(query): Query<TraceQuery>) -> impl IntoResponse {
+    let audience = query.audience.unwrap_or_else(|| "release".to_owned());
+    let stream = UnboundedReceiverStream::new(trace::subscribe()).filter_map(move |event| {
+        let audience = audience.clone();
+        trace::event_for_audience(&event, &audience).map(|event| {
+            Ok::<Event, std::convert::Infallible>(
+                Event::default()
+                    .event("trace")
+                    .data(serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_owned())),
+            )
+        })
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+async fn api_trace_events(Json(body): Json<Value>) -> Response {
+    let inputs = if let Some(events) = body.as_array() {
+        events.clone()
+    } else {
+        vec![body]
+    };
+    let mut recorded = Vec::new();
+    for value in inputs {
+        let input = serde_json::from_value::<TraceEventInput>(value.clone()).unwrap_or_else(|_| {
+            TraceEventInput {
+                audience: None,
+                category: Some("system".to_owned()),
+                detail: Some(value),
+                direction: Some("in".to_owned()),
+                release_summary: None,
+                run_id: None,
+                source: Some("trace-client".to_owned()),
+                summary: Some("Trace event".to_owned()),
+                task_id: None,
+            }
+        });
+        recorded.push(trace::record(input));
+    }
+    json_response(StatusCode::OK, &json!({ "events": recorded }))
 }
 
 async fn api_sessions(State(state): State<Arc<AppState>>) -> Response {
@@ -151,6 +330,201 @@ async fn api_sessions(State(state): State<Arc<AppState>>) -> Response {
         Ok(sessions) => json_response(StatusCode::OK, &sessions),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateSessionBody {
+    title: Option<String>,
+}
+
+async fn api_create_session(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CreateSessionBody>,
+) -> Response {
+    match create_runtime_session(&state.paths, body.title.as_deref()) {
+        Ok(session) => json_response(StatusCode::OK, &session),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RenameSessionBody {
+    title: Option<String>,
+}
+
+async fn api_rename_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Json(body): Json<RenameSessionBody>,
+) -> Response {
+    match rename_session(&state.paths, &session_id, body.title.as_deref()) {
+        Ok(session) => json_response(StatusCode::OK, &json!({ "session": session })),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_delete_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Response {
+    match delete_session(&state.paths, &session_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenPanelBody {
+    initial_state: Option<Value>,
+    kind: String,
+    session_id: String,
+    title: Option<String>,
+}
+
+async fn api_open_panel(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<OpenPanelBody>,
+) -> Response {
+    let Some(kind) = PanelKind::parse(&body.kind) else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "Expected kind to be one of: wiki, canvas, image, diff, preview, files.",
+        );
+    };
+    match open_runtime_panel(
+        &state.paths,
+        &body.session_id,
+        kind,
+        body.title.as_deref(),
+        body.initial_state,
+    ) {
+        Ok(panel) => json_response(StatusCode::OK, &panel),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InsertArtifactBody {
+    artifact: Value,
+    panel_id: Option<String>,
+    session_id: String,
+}
+
+async fn api_insert_artifact(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<InsertArtifactBody>,
+) -> Response {
+    let result = Storage::open(&state.paths).and_then(|storage| {
+        let timestamp = now_iso();
+        let mut artifact = body.artifact;
+        let object = artifact
+            .as_object_mut()
+            .ok_or_else(|| CliError::new("Artifact must be a JSON object."))?;
+        object
+            .entry("id".to_owned())
+            .or_insert_with(|| json!(create_id("artifact")));
+        object
+            .entry("createdAt".to_owned())
+            .or_insert_with(|| json!(timestamp));
+        if !object.contains_key("panelId") {
+            if let Some(panel_id) = body.panel_id {
+                object.insert("panelId".to_owned(), json!(panel_id));
+            }
+        }
+        storage.write_artifact(&body.session_id, &artifact)?;
+        Ok(artifact)
+    });
+    match result {
+        Ok(artifact) => json_response(StatusCode::OK, &artifact),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_update_status() -> Response {
+    match check_for_update(env!("CARGO_PKG_VERSION"), true) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_update_download() -> Response {
+    match download_update(env!("CARGO_PKG_VERSION")) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_update_install_restart(State(state): State<Arc<AppState>>) -> Response {
+    let install = match install_update(env!("CARGO_PKG_VERSION")) {
+        Ok(payload) => payload,
+        Err(error) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    };
+
+    if !install.updated {
+        return json_response(
+            StatusCode::OK,
+            &json!({
+                "ok": true,
+                "restarting": false,
+                "update": install,
+            }),
+        );
+    }
+
+    match spawn_restarted_studio(&state) {
+        Ok(session) => {
+            schedule_current_server_exit();
+            json_response(
+                StatusCode::OK,
+                &json!({
+                    "ok": true,
+                    "restarting": true,
+                    "session": session,
+                    "update": install,
+                }),
+            )
+        }
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+fn spawn_restarted_studio(state: &AppState) -> Result<StudioSession, CliError> {
+    let process = spawn_studio_server_process(
+        &state.paths,
+        state.port,
+        &state.host,
+        state.static_dir.as_ref(),
+        Some(750),
+    )?;
+
+    let local_server_url = format!("http://127.0.0.1:{}", state.port);
+    let session = StudioSession {
+        browser_url: Some(local_server_url.clone()),
+        context_dir: state.paths.context_dir.display().to_string(),
+        context_id: state.paths.context_id.clone(),
+        context_id_source: state.paths.context_id_source.clone(),
+        host: Some(state.host.clone()),
+        lan_server_urls: Some(Vec::new()),
+        local_server_url: Some(local_server_url.clone()),
+        log_path: process.log_path.display().to_string(),
+        pid: process.pid,
+        port: state.port,
+        project_dir: state.paths.project_dir.display().to_string(),
+        server_url: local_server_url,
+        started_at: now_iso(),
+        storage_dir: state.paths.storage_dir.display().to_string(),
+    };
+    write_studio_session(&state.paths, &session)?;
+    Ok(session)
+}
+
+fn schedule_current_server_exit() {
+    thread::spawn(|| {
+        thread::sleep(Duration::from_millis(150));
+        std::process::exit(0);
+    });
 }
 
 async fn api_active_session(State(state): State<Arc<AppState>>) -> Response {
@@ -418,6 +792,79 @@ fn serve_file_from_dir(static_dir: &std::path::Path, path: &str) -> Option<Respo
     ))
 }
 
+async fn trace_api_middleware(request: axum::http::Request<Body>, next: Next) -> Response {
+    let method = request.method().to_string();
+    let path = request.uri().path().to_owned();
+    let should_trace = path.starts_with("/api/") && !path.starts_with("/api/trace/");
+    let started = Instant::now();
+    let response = next.run(request).await;
+    if should_trace {
+        let status = response.status().as_u16();
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        trace::record_simple(
+            "api",
+            "rust-server",
+            Some("request"),
+            format!("{method} {path} -> {status}"),
+            None,
+            Some(json!({
+                "method": method,
+                "path": path,
+                "status": status,
+                "elapsedMs": elapsed_ms,
+            })),
+        );
+    }
+    response
+}
+
+fn with_build_info(payload: impl Serialize, state: &AppState) -> Value {
+    let mut value = serde_json::to_value(payload).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "buildInfo".to_owned(),
+            serde_json::to_value(&state.build_info).unwrap_or_else(|_| json!({})),
+        );
+    }
+    value
+}
+
+fn current_build_info() -> StudioBuildInfo {
+    let is_development = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_owned))
+        .map(|path| {
+            path.contains("/target/debug/")
+                || path.contains("\\target\\debug\\")
+                || std::env::var("OPENPANELS_LOCAL_DEV").is_ok()
+        })
+        .unwrap_or_else(|| std::env::var("OPENPANELS_LOCAL_DEV").is_ok());
+    if !is_development {
+        return StudioBuildInfo {
+            build_time: None,
+            channel: "release",
+            label: env!("CARGO_PKG_VERSION").to_owned(),
+            version: env!("CARGO_PKG_VERSION"),
+        };
+    }
+
+    StudioBuildInfo {
+        build_time: development_build_time(),
+        channel: "development",
+        label: "dev".to_owned(),
+        version: env!("CARGO_PKG_VERSION"),
+    }
+}
+
+fn development_build_time() -> Option<String> {
+    let modified = std::env::current_exe()
+        .ok()
+        .and_then(|path| fs::metadata(path).ok())
+        .and_then(|metadata| metadata.modified().ok())?;
+    let datetime: chrono::DateTime<chrono::Utc> = modified.into();
+    Some(datetime.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
 fn json_response(status: StatusCode, payload: &impl serde::Serialize) -> Response {
     match serde_json::to_vec(payload) {
         Ok(bytes) => bytes_response(status, bytes, "application/json"),
@@ -450,6 +897,23 @@ fn mime_type(path: &str) -> &'static str {
     mime_guess::from_path(path)
         .first_raw()
         .unwrap_or("application/octet-stream")
+}
+
+fn content_disposition_inline(file_name: &str) -> String {
+    let fallback = std::path::Path::new(file_name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("inline; filename=\"{}\"", fallback.replace('"', "_"))
 }
 
 struct DataUrlBytes {
@@ -497,6 +961,11 @@ fn percent_decode(value: &str) -> Result<Vec<u8>, CliError> {
         }
     }
     Ok(bytes)
+}
+
+fn create_id(prefix: &str) -> String {
+    let random: u128 = rand::rng().random();
+    format!("{prefix}:{random:032x}")
 }
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {

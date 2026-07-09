@@ -1,0 +1,385 @@
+.op-panel-tabs {
+  position: absolute;
+  right: 0;
+  bottom: 8px;
+  left: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.op-panel-tabs__tabs {
+  pointer-events: auto;
+}
+
+.op-panel-tabs__list {
+  gap: 2px;
+  padding: 2px;
+  background: var(--op-canvas-toolbar);
+  border: 1px solid var(--op-toolbar-border);
+  border-radius: 999px;
+  box-shadow: var(--op-toolbar-shadow);
+  backdrop-filter: blur(14px);
+}
+
+.op-panel-tabs__tab {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  min-width: 104px;
+  height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: 0;
+  border-radius: 999px;
+}
+
+.op-panel-tabs__tab svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.op-panel-tabs__tab span {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+
+.op-status-cluster {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 61;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  max-width: min(58vw, 430px);
+}
+
+.op-build-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  max-width: min(46vw, 340px);
+  height: 24px;
+  padding: 0 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 24px;
+  color: var(--op-text-tertiary);
+  white-space: nowrap;
+  cursor: pointer;
+  background: color-mix(in oklab, var(--op-canvas-toolbar) 82%, transparent);
+  border: 1px solid var(--op-toolbar-border);
+  border-radius: 999px;
+  box-shadow: var(--op-toolbar-shadow);
+  backdrop-filter: blur(14px);
+}
+
+.op-build-badge:hover,
+.op-build-badge:focus-visible {
+  color: var(--op-text-primary);
+  outline: none;
+  background: color-mix(in oklab, var(--op-canvas-toolbar) 94%, transparent);
+}
+
+.op-build-badge:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.op-trace-toggle {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 24px;
+  padding: 0;
+  color: var(--op-text-tertiary);
+  cursor: pointer;
+  background: color-mix(in oklab, var(--op-canvas-toolbar) 82%, transparent);
+  border: 1px solid var(--op-toolbar-border);
+  border-radius: 999px;
+  box-shadow: var(--op-toolbar-shadow);
+  backdrop-filter: blur(14px);
+}
+
+.op-trace-toggle:hover,
+.op-trace-toggle:focus-visible,
+.op-trace-toggle--active {
+  color: var(--op-text-primary);
+  outline: none;
+  background: color-mix(in oklab, var(--op-canvas-toolbar) 94%, transparent);
+}
+
+.op-trace-toggle--active {
+  border-color: color-mix(
+    in oklab,
+    var(--accent) 38%,
+    var(--op-toolbar-border)
+  );
+}
+
+.op-update-prompt {
+  position: absolute;
+  right: 10px;
+  bottom: 42px;
+  z-index: 62;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: min(360px, calc(100vw - 20px));
+  min-height: 44px;
+  padding: 7px 7px 7px 12px;
+  background: color-mix(in oklab, var(--op-canvas-toolbar) 92%, transparent);
+  border: 1px solid var(--op-toolbar-border);
+  border-radius: 8px;
+  box-shadow: var(--op-toolbar-shadow);
+  backdrop-filter: blur(14px);
+}
+
+.op-update-prompt__copy {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+
+.op-update-prompt__copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--op-text-primary);
+  white-space: nowrap;
+}
+
+.op-update-prompt__copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--op-text-tertiary);
+  white-space: nowrap;
+}
+
+.op-update-prompt__actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.op-update-prompt__primary {
+  min-width: 92px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.op-project-title {
+  position: relative;
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+}
+
+.op-project-title__trigger {
+  max-width: min(42vw, 360px);
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: inherit;
+  font-weight: inherit;
+  color: var(--op-title);
+  text-align: left;
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: default;
+  background: transparent;
+  border: 0;
+}
+
+.op-project-title__edit-button {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.op-project-title:hover .op-project-title__edit-button,
+.op-project-title__edit-button[data-focus-visible="true"] {
+  opacity: 1;
+}
+
+.op-project-title__menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 70;
+  width: 260px;
+  padding: 6px;
+  overflow: hidden;
+  color: var(--op-text-primary);
+  background: var(--op-bg-base);
+  border: 1px solid var(--op-border-default);
+  border-radius: 12px;
+  box-shadow: var(--op-toolbar-shadow);
+}
+
+.op-project-title__menu::before {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: 10px;
+  content: "";
+}
+
+.op-project-title__menu-header {
+  padding: 7px 9px 6px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--op-text-tertiary);
+}
+
+.op-project-title__menu-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.op-project-title__menu-item {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--op-text-secondary);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+
+.op-project-title__menu-item:hover,
+.op-project-title__menu-item:focus-within,
+.op-project-title__menu-item:focus-visible {
+  color: var(--op-text-primary);
+  outline: none;
+  background: var(--op-bg-muted);
+}
+
+.op-project-title__menu-item--active {
+  color: var(--op-text-primary);
+  background: var(--accent-soft);
+}
+
+.op-project-title__switch-button {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.op-project-title__switch-button span,
+.op-project-title__menu-item--create span,
+.op-project-title__confirm-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-project-title__delete-wrap {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+}
+
+.op-project-title__delete-button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--op-text-tertiary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+}
+
+.op-project-title__delete-button:hover,
+.op-project-title__delete-button:focus-visible {
+  color: var(--danger);
+  outline: none;
+  background: var(--danger-soft);
+}
+
+.op-project-title__delete-button[aria-disabled="true"] {
+  color: color-mix(in oklab, var(--op-text-tertiary) 45%, transparent);
+  cursor: not-allowed;
+  background: transparent;
+}
+
+.op-project-title__menu-item--create {
+  justify-content: flex-start;
+  padding-top: 10px;
+  margin-top: 4px;
+  border-top: 1px solid var(--op-border-default);
+  border-radius: 0;
+}
+
+.op-project-title--editing {
+  min-width: 220px;
+}
+
+.op-project-title__input {
+  width: min(42vw, 360px);
+  height: 30px;
+  padding: 2px 9px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--op-text-primary);
+  outline: none;
+  background: var(--op-bg-base);
+  border: 1px solid var(--op-border-default);
+  border-radius: 8px;
+}
+
+.op-project-title__input:focus {
+  border-color: var(--accent);
+}
+
+.op-project-title__confirm-name {
+  padding: 9px 10px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--op-text-primary);
+  background: var(--op-bg-muted);
+  border-radius: 8px;
+}

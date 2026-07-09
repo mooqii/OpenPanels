@@ -13,6 +13,8 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "check:release": "node scripts/check-release-constraints.mjs",
+    "package:release:cli": "node scripts/package-openpanels-local.mjs",
+    "manifest:release:cli": "node scripts/generate-openpanels-release-manifest.mjs",
     "check": "pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
   },
   "devDependencies": {

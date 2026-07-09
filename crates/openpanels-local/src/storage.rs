@@ -90,6 +90,26 @@ impl Storage {
         Ok(())
     }
 
+    pub fn delete_session(&self, session_id: &str) -> Result<(), CliError> {
+        self.connection
+            .execute("DELETE FROM sessions WHERE id = ?", params![session_id])
+            .map_err(to_cli_error)?;
+        let session_dir = self
+            .root_dir
+            .join("sessions")
+            .join(sanitize_path_part(session_id));
+        fs::remove_dir_all(session_dir)
+            .or_else(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(to_cli_error)?;
+        Ok(())
+    }
+
     pub fn read_panel(&self, session_id: &str, panel_id: &str) -> Result<Option<Panel>, CliError> {
         self.connection
             .query_row(
@@ -175,6 +195,122 @@ impl Storage {
                     state.get("schemaVersion").and_then(Value::as_i64),
                     serde_json::to_string(state).map_err(to_cli_error)?,
                     crate::control::now_iso(),
+                ],
+            )
+            .map_err(to_cli_error)?;
+        Ok(())
+    }
+
+    pub fn sync_wiki_tasks(
+        &self,
+        session_id: &str,
+        panel_id: &str,
+        state: &Value,
+    ) -> Result<(), CliError> {
+        self.connection
+            .execute(
+                "DELETE FROM wiki_tasks WHERE session_id = ? AND panel_id = ?",
+                params![session_id, panel_id],
+            )
+            .map_err(to_cli_error)?;
+        for task in state
+            .get("tasks")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let id = task
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| CliError::new("Wiki task id is required."))?;
+            self.connection
+                .execute(
+                    r#"
+                    INSERT INTO wiki_tasks (
+                      id, session_id, panel_id, type, status, target_id,
+                      document_id, wiki_space_id, markdown_version,
+                      claimed_by_process_id, created_at, updated_at, task_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                      session_id = excluded.session_id,
+                      panel_id = excluded.panel_id,
+                      type = excluded.type,
+                      status = excluded.status,
+                      target_id = excluded.target_id,
+                      document_id = excluded.document_id,
+                      wiki_space_id = excluded.wiki_space_id,
+                      markdown_version = excluded.markdown_version,
+                      claimed_by_process_id = excluded.claimed_by_process_id,
+                      created_at = excluded.created_at,
+                      updated_at = excluded.updated_at,
+                      task_json = excluded.task_json
+                    "#,
+                    params![
+                        id,
+                        session_id,
+                        panel_id,
+                        task.get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown"),
+                        task.get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("queued"),
+                        task.get("targetId").and_then(Value::as_str).unwrap_or(""),
+                        task.get("documentId").and_then(Value::as_str),
+                        task.get("wikiSpaceId").and_then(Value::as_str),
+                        task.get("markdownVersion").and_then(Value::as_i64),
+                        task.get("claimedByProcessId").and_then(Value::as_str),
+                        task.get("createdAt")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .unwrap_or_else(crate::control::now_iso),
+                        task.get("updatedAt")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .unwrap_or_else(crate::control::now_iso),
+                        serde_json::to_string(task).map_err(to_cli_error)?,
+                    ],
+                )
+                .map_err(to_cli_error)?;
+        }
+        Ok(())
+    }
+
+    pub fn write_artifact(&self, session_id: &str, artifact: &Value) -> Result<(), CliError> {
+        let id = artifact
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new("Artifact id is required."))?;
+        self.connection
+            .execute(
+                r#"
+                INSERT INTO artifacts (
+                  id, session_id, panel_id, kind, title, created_at, artifact_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, id) DO UPDATE SET
+                  panel_id = excluded.panel_id,
+                  kind = excluded.kind,
+                  title = excluded.title,
+                  created_at = excluded.created_at,
+                  artifact_json = excluded.artifact_json
+                "#,
+                params![
+                    id,
+                    session_id,
+                    artifact.get("panelId").and_then(Value::as_str),
+                    artifact
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("file"),
+                    artifact.get("title").and_then(Value::as_str),
+                    artifact
+                        .get("createdAt")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(crate::control::now_iso),
+                    serde_json::to_string(artifact).map_err(to_cli_error)?,
                 ],
             )
             .map_err(to_cli_error)?;

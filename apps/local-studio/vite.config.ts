@@ -2,10 +2,9 @@ import path from "node:path"
 import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
-import { createOpenPanelsApiMiddleware } from "../../packages/local-server/src/index"
-import packageJson from "./package.json"
 
-const DEV_BUILD_TIME = new Date().toISOString()
+const apiProxyTarget =
+  process.env.OPENPANELS_API_BASE ?? process.env.OPENPANELS_STUDIO_API_BASE
 
 export default defineConfig({
   server: {
@@ -15,39 +14,22 @@ export default defineConfig({
       "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
       "Access-Control-Allow-Origin": "*",
     },
+    proxy: apiProxyTarget
+      ? {
+          "/api": {
+            changeOrigin: true,
+            target: apiProxyTarget,
+          },
+        }
+      : undefined,
   },
-  plugins: [
-    {
-      name: "openpanels-local-api",
-      configureServer(server) {
-        server.middlewares.use(
-          createOpenPanelsApiMiddleware(
-            process.env.OPENPANELS_PROJECT_DIR ??
-              path.resolve(import.meta.dirname, "../.."),
-            {
-              buildInfo: {
-                buildTime: DEV_BUILD_TIME,
-                channel: "development",
-                label: "dev",
-                version: packageJson.version,
-              },
-            }
-          )
-        )
-      },
-    },
-    tailwindcss(),
-    react(),
-  ],
+  plugins: [tailwindcss(), react()],
   resolve: {
     alias: {
-      "~/canvas": path.resolve(
-        import.meta.dirname,
-        "../../packages/canvas/src"
-      ),
+      "~/canvas": path.resolve(import.meta.dirname, "src/canvas"),
       "@lingui/react/macro": path.resolve(
         import.meta.dirname,
-        "../../packages/canvas/src/i18n-shim.tsx"
+        "src/canvas/i18n-shim.tsx"
       ),
     },
   },

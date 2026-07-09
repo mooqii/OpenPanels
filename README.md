@@ -33,12 +33,24 @@ pnpm install
 pnpm dev
 ```
 
-The local studio runs from `apps/local-studio`. The publishable agent CLI lives
-in `packages/local-cli`.
+The local studio runs from `apps/local-studio`. The publishable agent CLI is the
+Rust binary in `crates/openpanels-local`.
 
 ## Install
 
 Install the Rust-native CLI from GitHub Releases, then verify it:
+
+macOS/Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-openpanels-local.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-openpanels-local.ps1 -UseB | iex
+```
 
 ```bash
 openpanels-local --version
@@ -88,7 +100,7 @@ openpanels-local insert-image --project /path/to/project --image /tmp/result.png
 ## v0.1 Scope
 
 - Local workflow for generic shell agents
-- Panel protocol, runtime, React host, SDK, local storage, and local server packages
+- Rust local CLI/server/storage with a React local-studio frontend
 - Multi-panel project workspace with wiki and canvas panels
 - Image artifacts and editable canvas image shapes
 - Project-local `.myopenpanels/` persistence

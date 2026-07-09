@@ -27,7 +27,6 @@ function assert(condition, message) {
 
 const rootVersion = readJson("package.json").version
 const rustVersion = readCargoVersion("crates/openpanels-local/Cargo.toml")
-const legacyNpmVersion = readJson("packages/local-cli/package.json").version
 const tag =
   process.env.GITHUB_REF_NAME || process.env.RELEASE_TAG || `v${rootVersion}`
 const tagVersion = tag.startsWith("v") ? tag.slice(1) : tag
@@ -35,10 +34,6 @@ const tagVersion = tag.startsWith("v") ? tag.slice(1) : tag
 assert(
   rootVersion === rustVersion,
   `Root package version ${rootVersion} does not match Rust CLI version ${rustVersion}.`
-)
-assert(
-  rootVersion === legacyNpmVersion,
-  `Root package version ${rootVersion} does not match legacy npm wrapper version ${legacyNpmVersion}.`
 )
 assert(
   tag === `v${rootVersion}`,

@@ -121,6 +121,112 @@ pub fn create_project(
     )
 }
 
+pub fn create_runtime_session(
+    paths: &OpenPanelsPaths,
+    title: Option<&str>,
+) -> Result<Session, CliError> {
+    let storage = Storage::open(paths)?;
+    let session = create_session(
+        &storage,
+        title
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_owned())
+            .unwrap_or_else(|| "OpenPanels Session".to_owned()),
+    )?;
+    write_active_session_id(paths, &session.id)?;
+    Ok(session)
+}
+
+pub fn open_runtime_panel(
+    paths: &OpenPanelsPaths,
+    session_id: &str,
+    kind: PanelKind,
+    title: Option<&str>,
+    initial_state: Option<Value>,
+) -> Result<Panel, CliError> {
+    let storage = Storage::open(paths)?;
+    let Some(session) = storage.read_session(session_id)? else {
+        return Err(CliError::new(format!(
+            "OpenPanels session not found: {session_id}"
+        )));
+    };
+    let timestamp = now_iso();
+    let mut panel = Panel {
+        id: create_openpanels_id("panel"),
+        session_id: session.id.clone(),
+        kind,
+        title: title
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_owned())
+            .unwrap_or_else(|| initial_panel_title(kind).to_owned()),
+        created_at: timestamp.clone(),
+        updated_at: timestamp.clone(),
+        state_ref: None,
+    };
+    panel.state_ref = Some(format!(
+        "sqlite:panel-states/{}/{}",
+        panel.session_id, panel.id
+    ));
+    storage.write_panel(&panel)?;
+    storage.write_panel_state(
+        &session.id,
+        &panel.id,
+        &initial_state.unwrap_or_else(|| initial_panel_state(kind)),
+    )?;
+    let mut next_session = session;
+    next_session.updated_at = timestamp;
+    next_session.panel_ids.push(panel.id.clone());
+    storage.write_session(&next_session)?;
+    Ok(panel)
+}
+
+pub fn rename_session(
+    paths: &OpenPanelsPaths,
+    session_id: &str,
+    title: Option<&str>,
+) -> Result<Session, CliError> {
+    let storage = Storage::open(paths)?;
+    let Some(mut session) = storage.read_session(session_id)? else {
+        return Err(CliError::new(format!(
+            "OpenPanels session not found: {session_id}"
+        )));
+    };
+    let Some(title) = title.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Err(CliError::new("Project title is required"));
+    };
+    session.title = title.to_owned();
+    session.updated_at = now_iso();
+    storage.write_session(&session)?;
+    Ok(session)
+}
+
+pub fn delete_session(paths: &OpenPanelsPaths, session_id: &str) -> Result<Value, CliError> {
+    let storage = Storage::open(paths)?;
+    let sessions = storage.list_sessions()?;
+    if sessions.len() <= 1 {
+        return Err(CliError::new("At least one project must remain"));
+    }
+    if !sessions.iter().any(|session| session.id == session_id) {
+        return Err(CliError::new(format!(
+            "OpenPanels session not found: {session_id}"
+        )));
+    }
+    storage.delete_session(session_id)?;
+    let remaining_sessions = storage.list_sessions()?;
+    let current_active_session_id = read_active_session(paths)?;
+    let next_active_session = remaining_sessions
+        .iter()
+        .find(|session| Some(session.id.as_str()) == current_active_session_id.as_deref())
+        .or_else(|| remaining_sessions.first())
+        .ok_or_else(|| CliError::new("At least one project must remain"))?;
+    write_active_session(paths, &next_active_session.id)?;
+    Ok(json!({
+        "activeSessionId": next_active_session.id,
+        "deletedSessionId": session_id,
+        "sessions": remaining_sessions,
+    }))
+}
+
 pub fn read_active_session_id(paths: &OpenPanelsPaths) -> Result<Option<String>, CliError> {
     read_active_session(paths)
 }

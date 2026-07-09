@@ -2,9 +2,8 @@
 
 ## 背景
 
-OpenPanels 当前通过 npm 发布 `@openpanels/local-cli`，入口命令是
-`openpanels-local`。它由 TypeScript 编写，经 Vite 打包为
-`dist/openpanels-local.mjs`，运行时依赖用户机器上的 Node.js。
+OpenPanels 迁移前的 `openpanels-local` 由 TypeScript/Node.js 实现，运行时依赖
+用户机器上的 Node.js。
 
 当前 CLI 同时承担三类职责：
 
@@ -21,14 +20,14 @@ release 构建时产出静态资源并嵌入 Rust binary。
 
 ## 目标
 
-1. 交付一个 Rust 原生 `openpanels-local` binary，覆盖当前 npm CLI 的用户可见命令。
+1. 交付一个 Rust 原生 `openpanels-local` binary，覆盖旧 CLI 的用户可见命令。
 2. 用户运行 CLI 不需要本机安装 Node.js。
 3. `studio start` 启动 Rust 内置 HTTP server，托管嵌入的 studio 静态资源。
 4. 保持现有 `.myopenpanels/main.sqlite3` 数据格式和文件资产布局可读写。
 5. 保持当前 agent-facing stdout/stderr、JSON 字段、exit code 语义稳定。
-6. 保留 `apps/local-studio`、`packages/canvas`、`packages/react` 等前端/React 包。
+6. 保留 `apps/local-studio` 前端；canvas 作为 studio 内部模块维护。
 7. 使用 GitHub Releases 发布多平台二进制。
-8. 将 npm 入口改为 native binary downloader，不再保留纯 JS CLI fallback。
+8. 不再支持 npm 安装入口；安装以 GitHub Releases binary 和安装脚本为准。
 
 ## 非目标
 
@@ -37,52 +36,34 @@ release 构建时产出静态资源并嵌入 Rust binary。
 - 不重写 canvas 渲染、Konva 交互、HeroUI 界面。
 - 不引入云同步、多用户协作或远程数据库。
 - 不在第一阶段强制完成代码签名、公证、Homebrew tap、winget、scoop 全渠道发布。
-- 不要求一次性删除现有 TypeScript 包；迁移应允许逐步替换。
+- studio UI 仍保留为 TypeScript/React；本地 CLI、server、storage 和 control 逻辑已迁移到 Rust。
 
 ## 关键决策
 
 - Rust 负责本地 native surface：CLI、HTTP server、SQLite storage、agent context
   渲染、studio 进程管理。
-- TypeScript 继续负责 browser surface：studio app、canvas UI、React SDK、前端
-  domain 交互。
-- CLI 命令协议以现有 `packages/local-cli/src/index.ts` 为迁移基准，不借迁移扩大
-  命令集。
-- 数据协议以现有 `packages/protocol/src/index.ts` 和
-  `packages/local-control/src/index.ts` 类型为迁移基准。
-- SQLite schema 以 `packages/local-storage/src/migrations/index.ts` 为迁移基准。
+- TypeScript 继续负责 browser surface：studio app、canvas UI、前端 domain 交互。
+- CLI 命令协议以迁移前的 TypeScript CLI 为迁移基准，不借迁移扩大命令集；当前
+  实现权威已经转到 `crates/openpanels-local/src/cli.rs`。
+- 前端数据类型保留在 `apps/local-studio/src/protocol.ts`。
+- SQLite schema 以 `crates/openpanels-local/src/storage.rs` 为权威实现。
 - `agent-capabilities` 应迁移为语言无关 manifest，避免 Rust 和 TypeScript 重复维护。
 - Release binary 内嵌 `apps/local-studio/dist`，同时保留
   `OPENPANELS_STUDIO_STATIC_DIR` 作为开发和调试覆盖入口。
 
 ## 当前实现盘点
 
-### npm CLI
+### 已移除的 Node CLI
 
-当前发布包：
+迁移前 CLI 包含：
 
 ```text
-packages/local-cli/
-  package.json
-  src/index.ts
-  src/agent-capabilities.ts
-  src/agent-context.ts
-  src/agent-guides.ts
-  dist/openpanels-local.mjs
-  dist/studio/
-  dist/agent-guides/
+TypeScript CLI command implementation
+Node.js executable entry
+agent context/capabilities/guides rendering
 ```
 
-入口：
-
-```json
-{
-  "bin": {
-    "openpanels-local": "./dist/openpanels-local.mjs"
-  }
-}
-```
-
-运行时入口是 `#!/usr/bin/env node`，所以当前是纯 Node/npm CLI。
+当前不再保留 Node CLI package，也不再通过 npm 发布安装入口。
 
 ### 当前命令面
 
@@ -242,7 +223,6 @@ OpenPanels/
         canvas.rs
         process.rs
   apps/local-studio/
-  packages/
   agent-guides/
   docs/
 ```
@@ -258,7 +238,7 @@ binary 名称必须是 `openpanels-local`。根目录 `Cargo.toml` 只作为 Rus
 - `paths.rs`：解析 project/storage/context 路径和环境变量。
 - `storage.rs`：SQLite-backed storage，实现当前 `LocalOpenPanelsStorage` 行为。
 - `migrations.rs`：Rust 版本 SQLite migrations 和 checksum/版本记录。
-- `control.rs`：迁移当前 `@openpanels/local-control` 的 project/panel/bootstrap 业务逻辑。
+- `control.rs`：迁移当前 `@openpanelsRust control/wiki modules` 的 project/panel/bootstrap 业务逻辑。
 - `wiki.rs`：wiki raw document、task、space、page 操作。
 - `canvas.rs`：canvas selection、asset、insert image、insert placeholder 操作。
 - `server.rs`：Axum HTTP server 和 route。
@@ -327,14 +307,10 @@ Release binary 必须不依赖外部 `dist/` 目录。
 
 ```text
 apps/local-studio
-packages/canvas
-packages/react
-packages/core
-packages/protocol
 ```
 
-其中 `packages/protocol` 在迁移期继续作为前端类型来源。Rust 侧维护等价
-`serde` 类型，并通过 contract tests 保证 JSON 结构兼容。
+其中 canvas 已内联到 `apps/local-studio/src/canvas`，前端协议类型位于
+`apps/local-studio/src/protocol.ts`。Rust 侧维护等价 `serde` 类型。
 
 ## CLI 行为规范
 
@@ -356,7 +332,7 @@ packages/protocol
 
 ### 版本
 
-Rust binary 版本来自 `CARGO_PKG_VERSION`。迁移期需要和 npm 包版本保持一致。
+Rust binary 版本来自 `CARGO_PKG_VERSION`，并和 root `package.json` 版本保持一致。
 
 ```text
 openpanels-local version
@@ -506,20 +482,14 @@ openpanels-local agent context --project "$PWD"
 
 ### Capabilities manifest
 
-把 `packages/local-cli/src/agent-capabilities.ts` 迁移为语言无关文件：
+迁移前计划把 capability manifest 迁移为语言无关文件：
 
 ```text
 agent-guides/capabilities.json
 ```
 
-或：
-
-```text
-packages/local-cli/agent-capabilities.json
-```
-
-Rust 使用 `include_str!` 嵌入并反序列化。TypeScript 侧如果还需要显示能力，也从同一
-JSON 读取。
+当前第一版直接由 `crates/openpanels-local/src/agent.rs` 维护 capability 和 guide
+渲染；如果前端后续也需要消费同一份能力列表，再拆成共享 JSON。
 
 ### Guides
 
@@ -557,7 +527,7 @@ openpanels-local __serve-studio
 
 ## Canvas 操作迁移
 
-Rust 需要迁移当前 `local-control` 中的 canvas CLI 操作：
+Rust 需要提供 canvas CLI 操作：
 
 - `getCanvasState`
 - `getSelection`
@@ -585,7 +555,7 @@ Rust 需要迁移当前 `local-control` 中的 canvas CLI 操作：
 
 ## Wiki 操作迁移
 
-Rust 需要迁移当前 wiki local-control 行为：
+Rust 需要提供 wiki control 行为：
 
 - raw document add/new markdown/add text/list
 - markdown read/write
@@ -629,8 +599,8 @@ openpanels-local-x86_64-pc-windows-msvc.zip
 ```
 
 发布约束、manifest schema、自更新缓存策略以 `docs/release.md` 为准。release tag、
-Rust crate version、root package version 和兼容 npm wrapper version 必须保持一致；
-CLI 自更新只读取 GitHub Releases，不依赖 OpenPanels 云服务。
+Rust crate version 和 root package version 必须保持一致；CLI 自更新只读取
+GitHub Releases，不依赖 OpenPanels 云服务。
 
 ### 自更新
 
@@ -655,8 +625,8 @@ asset，运行新 binary 的 `--version` 验证版本，然后替换当前 execu
 参考 `CreartCLI`：
 
 ```text
-install.sh
-install.ps1
+scripts/install-openpanels-local.sh
+scripts/install-openpanels-local.ps1
 ```
 
 脚本职责：
@@ -667,30 +637,6 @@ install.ps1
 4. 解压为 `openpanels-local` 或 `openpanels-local.exe`。
 5. 安装到用户 PATH 中的目录，例如 `~/.local/bin`。
 6. 输出 `openpanels-local --version` 验证结果。
-
-### npm Native Downloader
-
-迁移期保留 `@openpanels/local-cli` 这个 npm 包名作为安装入口，但不再保留纯 JS CLI
-fallback。npm 包只负责下载、缓存并转发到 GitHub Releases 上对应平台的 native
-binary。
-
-推荐实现：
-
-1. npm 包发布一个很小的 Node wrapper。
-2. wrapper 检测 OS/arch 和目标版本。
-3. wrapper 从 GitHub Releases 下载对应 archive。
-4. wrapper 校验 checksum。
-5. wrapper 缓存在 npm 包可写缓存目录或用户 cache 目录。
-6. wrapper `spawn` native `openpanels-local` 并透传 argv、stdio、exit code。
-
-这样可以继续支持现有 agent skill 使用：
-
-```text
-npx -y @openpanels/local-cli@latest
-```
-
-但实际执行路径已经是 Rust native binary。直接全量内置多平台 binary 到 npm 包不作为
-第一选择，因为包体会变大，且每个平台只需要其中一个二进制。
 
 ### 签名策略
 
@@ -814,9 +760,10 @@ openpanels-local studio stop --project <tmp> --format json
 
 - GitHub Actions 多平台构建。
 - 上传 release assets 和 checksums 到 GitHub Releases。
-- 增加 `install.sh`、`install.ps1`。
+- 增加 `scripts/install-openpanels-local.sh` 和
+  `scripts/install-openpanels-local.ps1`。
 - 更新 README、docs、skill。
-- 将 `@openpanels/local-cli` 改为 GitHub Releases native binary downloader。
+- 删除 npm 安装入口，安装脚本直接下载 GitHub Releases native binary。
 
 ## 验收标准
 
@@ -827,7 +774,7 @@ Rust 迁移完成时必须满足：
 2. `studio start` 返回的 `browserUrl` 能打开现有 studio UI。
 3. studio UI 能创建/切换 project、panel，保存 canvas 和 wiki state。
 4. 现有 agent skill 中核心命令继续可用。
-5. `--format json` 输出和当前 npm CLI 兼容。
+5. `--format json` 输出和旧 CLI 兼容。
 6. 当前 `.myopenpanels` SQLite 数据能被 Rust CLI 读取。
 7. Release asset 在 macOS/Linux/Windows 对应平台可执行。
 8. CI 同时覆盖 Rust tests 和前端 TypeScript checks。
@@ -835,7 +782,7 @@ Rust 迁移完成时必须满足：
 ## 已确认决策
 
 - Rust crate 放在 `crates/openpanels-local/`。
-- npm 入口不保留纯 JS fallback，改成 native binary downloader。
+- npm 安装入口不保留；第一版只通过 GitHub Releases binary 和安装脚本分发。
 - Release assets 放 GitHub Releases。
 - 第一版不处理 macOS notarization 或 Windows 签名。
 - Rust 迁移时不顺手清理文档里提到但当前未实现的 wiki 命令，先保持当前代码行为和迁移边界。

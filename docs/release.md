@@ -7,8 +7,8 @@ Releases, and it never depends on an OpenPanels cloud service.
 
 - The Rust CLI version is the source of truth at
   `crates/openpanels-local/Cargo.toml`.
-- The root `package.json` version and the compatibility npm wrapper version must
-  match the Rust CLI version while those files remain in the repository.
+- The root `package.json` version must match the Rust CLI version while both
+  files remain in the repository.
 - Release tags must be `v<version>`, for example `v0.1.9`.
 - `openpanels-local --version` must print the same version without the leading
   `v`.
@@ -17,6 +17,21 @@ Run this before publishing:
 
 ```bash
 pnpm run check:release
+```
+
+GitHub tags matching `v*` run `.github/workflows/release-openpanels-local.yml`.
+The workflow builds the Rust CLI for each supported target, packages the
+archives, generates `openpanels-local-manifest.json`, and uploads all release
+assets to the matching GitHub Release.
+
+For local packaging smoke tests:
+
+```bash
+node scripts/package-openpanels-local.mjs \
+  --target aarch64-apple-darwin \
+  --binary target/debug/openpanels-local \
+  --out-dir dist/release
+node scripts/generate-openpanels-release-manifest.mjs --out-dir dist/release
 ```
 
 ## GitHub Release Assets
@@ -35,6 +50,31 @@ checksums.txt
 
 Each archive must contain exactly one executable named `openpanels-local` or
 `openpanels-local.exe`.
+
+## Install Scripts
+
+The public install entry points are:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-openpanels-local.sh | sh
+```
+
+```powershell
+iwr https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-openpanels-local.ps1 -UseB | iex
+```
+
+The scripts read the latest release manifest, choose the current platform asset,
+verify SHA-256, install to the user-local bin directory, and run
+`openpanels-local --version`. They print PATH instructions when the install
+directory is not already on PATH, but do not edit shell profiles.
+
+Install-script environment controls:
+
+```text
+OPENPANELS_INSTALL_REPO          Override the GitHub repository.
+OPENPANELS_INSTALL_MANIFEST_URL  Override the release manifest URL.
+OPENPANELS_INSTALL_DIR           Override the install directory.
+```
 
 ## Update Manifest
 
@@ -91,7 +131,9 @@ POST /api/update/install-restart
 `status` drives the lower-right update prompt. `download` caches the latest
 asset without replacing the running binary. `install-restart` is only invoked
 after user confirmation; it installs the cached update when possible and then
-restarts the studio process.
+spawns a delayed replacement studio process on the same host, port, project,
+storage directory, context id, and static asset override. The new process
+writes `studio-session.json` before the current server exits.
 
 Environment controls:
 
