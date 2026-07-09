@@ -20,6 +20,14 @@ fn run(args: &[&str]) -> (i32, String, String) {
     )
 }
 
+fn print_openpanels_task_id_command() -> &'static str {
+    if cfg!(windows) {
+        "<nul set /p dummy=%OPENPANELS_TASK_ID%"
+    } else {
+        "printf \"$OPENPANELS_TASK_ID\""
+    }
+}
+
 fn update_task_in_panel_state(storage_dir: &Path, task_id: &str, fields: &[(&str, Value)]) {
     let connection = Connection::open(storage_dir.join("main.sqlite3")).expect("db");
     let raw: String = connection
@@ -926,7 +934,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "ctx",
         "--once",
         "--command",
-        "printf \"$OPENPANELS_TASK_ID\"",
+        print_openpanels_task_id_command(),
         "--format",
         "json",
     ]);
