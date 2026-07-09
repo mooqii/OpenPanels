@@ -145,7 +145,7 @@ fn studio_start_json_reuses_same_project_studio() {
         "--no-open",
     ]);
 
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}{stdout}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(payload["browserUrl"], server_url);
     assert_eq!(payload["contextId"], "owner");
@@ -210,7 +210,7 @@ fn studio_serve_reuses_existing_studio_without_foreground_server() {
         "json",
     ]);
 
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}{stdout}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(payload["browserUrl"], server_url);
     assert_eq!(payload["foreground"], false);
@@ -289,7 +289,7 @@ fn agent_commands_emit_context_guides_and_capabilities() {
         "--format",
         "json",
     ]);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}{stdout}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(payload["protocolVersion"], 1);
     assert_eq!(payload["cliVersion"], VERSION);
@@ -518,7 +518,10 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         .join("contexts")
         .join("ctx")
         .join("wakeups")
-        .join(format!("{task_id}.json"))
+        .join(format!(
+            "{}.json",
+            crate::paths::sanitize_path_part(task_id)
+        ))
         .exists());
 
     let (code, stdout, stderr) = run(&[
