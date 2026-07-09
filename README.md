@@ -15,12 +15,17 @@ portable entry skill:
 Paste this into your agent to install the skill:
 
 ```text
-Install the MyOpenPanels Agent Skill directly from GitHub repo `mooqii/OpenPanels` at path `skills/myopenpanels`. Use your agent's GitHub skill installer command if one is available; do not inspect the repository first unless installation fails.
+Install the MyOpenPanels Agent Skill directly from this GitHub skill URL:
+https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels
+
+Use your agent's skill installer for GitHub skill URLs if one is available.
+Download only that skill directory. Do not clone or inspect the full repository
+unless direct skill-directory installation fails.
 ```
 
-This tells the agent to use a direct repo/path skill install instead of first
-reading the repository. If your agent has a shorthand installer command, pass
-the same GitHub repository and skill path to that command.
+This gives the agent the exact skill directory URL instead of only a repository
+and path. If your agent only accepts repo/path syntax, use repository
+`mooqii/OpenPanels` with path `skills/myopenpanels`.
 
 The entry skill keeps itself small and stable. It uses the Rust-native
 `openpanels-local` CLI from GitHub Releases, then asks the CLI for
