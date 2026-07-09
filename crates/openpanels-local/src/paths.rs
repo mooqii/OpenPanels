@@ -54,7 +54,10 @@ pub fn sanitize_path_part(value: &str) -> String {
     let sanitized = trimmed
         .chars()
         .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '@' | '+' | '=') {
+            if ch.is_ascii_alphanumeric()
+                || matches!(ch, '-' | '_' | '.' | '@' | '+' | '=')
+                || (!cfg!(target_os = "windows") && ch == ':')
+            {
                 ch
             } else {
                 '_'
