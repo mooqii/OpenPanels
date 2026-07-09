@@ -23,14 +23,16 @@ Download only that skill directory. Do not clone or inspect the full repository
 unless direct skill-directory installation fails.
 
 After the skill is installed, invoke the MyOpenPanels skill once so it can run
-its setup workflow and install or verify the `openpanels-local` CLI.
+its setup workflow, install or verify the `openpanels-local` CLI, and open the
+MyOpenPanels panel.
 ```
 
 This gives the agent the exact skill directory URL instead of only a repository
 and path. If your agent only accepts repo/path syntax, use repository
 `mooqii/OpenPanels` with path `skills/myopenpanels`.
 Installing the skill only adds the agent instructions; the first MyOpenPanels
-skill run installs or verifies the native CLI from GitHub Releases.
+skill run installs or verifies the native CLI from GitHub Releases, starts the
+local studio, and opens the MyOpenPanels panel URL returned by the CLI.
 
 The entry skill keeps itself small and stable. It uses the Rust-native
 `openpanels-local` CLI from GitHub Releases, then asks the CLI for
