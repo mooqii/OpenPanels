@@ -12,12 +12,16 @@ MyOpenPanels is distributed from the
 portable entry skill:
 `skills/myopenpanels/SKILL.md`.
 
-Paste this into your agent to install the skill:
+Paste this into Codex to install the skill:
 
 ```text
-Please install the MyOpenPanels skill from GitHub repo `mooqii/OpenPanels`,
-using the skill at `skills/myopenpanels`.
+$skill-installer install from GitHub repo `mooqii/OpenPanels` path `skills/myopenpanels`
 ```
+
+This explicitly invokes Codex's built-in skill installer, so the agent should
+download the skill directly instead of first inspecting the repository. If your
+agent does not support `$skill-installer`, ask it to install from GitHub repo
+`mooqii/OpenPanels` using the skill path `skills/myopenpanels`.
 
 The entry skill keeps itself small and stable. It uses the Rust-native
 `openpanels-local` CLI from GitHub Releases, then asks the CLI for
