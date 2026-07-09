@@ -290,6 +290,13 @@ fn load_agent_guides_from_dir(dir: PathBuf) -> Result<Vec<AgentGuide>, CliError>
 }
 
 fn parse_guide(source: &str, file_name: &str) -> Result<AgentGuide, CliError> {
+    let normalized_source;
+    let source = if source.contains("\r\n") {
+        normalized_source = source.replace("\r\n", "\n");
+        normalized_source.as_str()
+    } else {
+        source
+    };
     let rest = source
         .strip_prefix("---\n")
         .ok_or_else(|| CliError::new(format!("Agent guide is missing frontmatter: {file_name}")))?;
@@ -566,4 +573,22 @@ fn find_wiki_task(bootstrap: &ProjectBootstrap, task_id: &str) -> Option<Value> 
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {
     CliError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_guide_accepts_crlf_frontmatter() {
+        let guide = parse_guide(
+            "---\r\nid: test.guide\r\ntitle: Test Guide\r\n---\r\n\r\nBody.\r\n",
+            "test.md",
+        )
+        .expect("guide");
+
+        assert_eq!(guide.metadata.id, "test.guide");
+        assert_eq!(guide.metadata.title, "Test Guide");
+        assert_eq!(guide.body, "Body.\n");
+    }
 }
