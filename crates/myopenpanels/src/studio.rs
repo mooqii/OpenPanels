@@ -1,5 +1,6 @@
 use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::net::TcpListener;
@@ -69,6 +70,32 @@ pub struct StudioStartOptions {
 pub struct StudioStartResult {
     pub session: StudioSession,
     pub reused_existing: bool,
+    pub server_version: String,
+    pub lifecycle: StudioLifecycle,
+    pub previous_version: Option<String>,
+    pub browser_refresh_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioLifecycle {
+    Reused,
+    Started,
+    VersionRestarted,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StudioHealth {
+    ok: bool,
+    version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum StudioVersionRelation {
+    Current,
+    Older,
+    Newer,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,31 +115,89 @@ pub fn start_studio(
     options: StudioStartOptions,
 ) -> Result<StudioStartResult, CliError> {
     if let Some(session) = reuse_existing_studio(paths)? {
-        return Ok(StudioStartResult {
-            session,
-            reused_existing: true,
-        });
+        let previous_version = studio_version(&session)?;
+        match compare_studio_version(previous_version.as_deref())? {
+            StudioVersionRelation::Current => {
+                return Ok(StudioStartResult {
+                    session,
+                    reused_existing: true,
+                    server_version: env!("CARGO_PKG_VERSION").to_owned(),
+                    lifecycle: StudioLifecycle::Reused,
+                    previous_version: None,
+                    browser_refresh_required: false,
+                });
+            }
+            StudioVersionRelation::Newer => {
+                let version = previous_version.as_deref().unwrap_or("unknown");
+                return Err(CliError::with_code(
+                    "studio_version_mismatch",
+                    format!(
+                        "Running MyOpenPanels Studio {version} is newer than CLI {}. Update the CLI before starting Studio.",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                ));
+            }
+            StudioVersionRelation::Older => {
+                if is_session_owner(paths, &session) {
+                    let host = session.host.clone().unwrap_or_else(|| options.host.clone());
+                    let port = session.port;
+                    terminate_process(session.pid);
+                    remove_file_if_exists(&studio_session_path(paths))?;
+                    return launch_studio(
+                        paths,
+                        &host,
+                        port,
+                        options.static_dir.as_ref(),
+                        StudioLifecycle::VersionRestarted,
+                        previous_version,
+                    );
+                }
+
+                discard_studio_session_binding(paths)?;
+                let port = find_open_port(&options.host)?;
+                return launch_studio(
+                    paths,
+                    &options.host,
+                    port,
+                    options.static_dir.as_ref(),
+                    StudioLifecycle::VersionRestarted,
+                    previous_version,
+                );
+            }
+        }
     }
 
-    fs::create_dir_all(&paths.context_dir).map_err(to_cli_error)?;
     let port = find_open_port(&options.host)?;
+    launch_studio(
+        paths,
+        &options.host,
+        port,
+        options.static_dir.as_ref(),
+        StudioLifecycle::Started,
+        None,
+    )
+}
+
+fn launch_studio(
+    paths: &MyOpenPanelsPaths,
+    host: &str,
+    port: u16,
+    static_dir: Option<&PathBuf>,
+    lifecycle: StudioLifecycle,
+    previous_version: Option<String>,
+) -> Result<StudioStartResult, CliError> {
+    fs::create_dir_all(&paths.context_dir).map_err(to_cli_error)?;
     let local_server_url = format!("http://127.0.0.1:{port}");
     let server_url = local_server_url.clone();
     let system_browser_url = server_url.clone();
-    let process = spawn_studio_server_process(
-        paths,
-        port,
-        &options.host,
-        options.static_dir.as_ref(),
-        None,
-    )?;
+    let process = spawn_studio_server_process(paths, port, host, static_dir, None)?;
 
     let session = StudioSession {
         system_browser_url: Some(system_browser_url.clone()),
         context_dir: paths.context_dir.display().to_string(),
         context_id: paths.context_id.clone(),
         context_id_source: paths.context_id_source.clone(),
-        host: Some(options.host),
+        host: Some(host.to_owned()),
         lan_server_urls: Some(Vec::new()),
         local_server_url: Some(local_server_url.clone()),
         log_path: process.log_path.display().to_string(),
@@ -124,10 +209,22 @@ pub fn start_studio(
         storage_dir: paths.storage_dir.display().to_string(),
     };
     write_studio_session(paths, &session)?;
-    wait_for_studio(&local_server_url, Duration::from_secs(10))?;
+    if let Err(error) = wait_for_studio_version(
+        &local_server_url,
+        env!("CARGO_PKG_VERSION"),
+        Duration::from_secs(10),
+    ) {
+        terminate_process(process.pid);
+        let _ = remove_file_if_exists(&studio_session_path(paths));
+        return Err(error);
+    }
     Ok(StudioStartResult {
         session,
         reused_existing: false,
+        server_version: env!("CARGO_PKG_VERSION").to_owned(),
+        lifecycle,
+        previous_version,
+        browser_refresh_required: lifecycle == StudioLifecycle::VersionRestarted,
     })
 }
 
@@ -459,6 +556,47 @@ fn is_studio_url_healthy(server_url: &str) -> bool {
     }
 }
 
+pub(crate) fn studio_version(session: &StudioSession) -> Result<Option<String>, CliError> {
+    let server_url = session
+        .local_server_url
+        .as_deref()
+        .unwrap_or(&session.server_url);
+    let response = studio_get(server_url, "/api/health").map_err(to_cli_error)?;
+    if !(200..300).contains(&response.status()) {
+        return Err(CliError::new(format!(
+            "MyOpenPanels Studio health check returned {}.",
+            response.status()
+        )));
+    }
+    let health = response.into_json::<StudioHealth>().map_err(to_cli_error)?;
+    if !health.ok {
+        return Err(CliError::new(
+            "MyOpenPanels Studio reported an unhealthy state.",
+        ));
+    }
+    Ok(health.version)
+}
+
+fn compare_studio_version(server_version: Option<&str>) -> Result<StudioVersionRelation, CliError> {
+    let Some(server_version) = server_version else {
+        return Ok(StudioVersionRelation::Older);
+    };
+    let server = Version::parse(server_version.trim_start_matches('v')).map_err(|error| {
+        CliError::with_code(
+            "studio_version_mismatch",
+            format!("Running Studio returned invalid version `{server_version}`: {error}"),
+        )
+    })?;
+    let cli = Version::parse(env!("CARGO_PKG_VERSION")).map_err(to_cli_error)?;
+    Ok(if server < cli {
+        StudioVersionRelation::Older
+    } else if server > cli {
+        StudioVersionRelation::Newer
+    } else {
+        StudioVersionRelation::Current
+    })
+}
+
 fn studio_get(server_url: &str, path: &str) -> Result<ureq::Response, ureq::Error> {
     let url = format!("{}{}", server_url.trim_end_matches('/'), path);
     ureq::AgentBuilder::new()
@@ -498,6 +636,46 @@ fn wait_for_studio(server_url: &str, timeout: Duration) -> Result<(), CliError> 
     Err(CliError::new(format!(
         "MyOpenPanels studio did not become ready at {server_url}: {last_error}"
     )))
+}
+
+fn wait_for_studio_version(
+    server_url: &str,
+    expected_version: &str,
+    timeout: Duration,
+) -> Result<(), CliError> {
+    let started = Instant::now();
+    let mut last_error = "not ready".to_owned();
+    while started.elapsed() < timeout {
+        match studio_get(server_url, "/api/health") {
+            Ok(response) if (200..300).contains(&response.status()) => {
+                match response.into_json::<StudioHealth>() {
+                    Ok(health)
+                        if health.ok && health.version.as_deref() == Some(expected_version) =>
+                    {
+                        return Ok(());
+                    }
+                    Ok(health) => {
+                        last_error = format!(
+                            "expected version {expected_version}, got {}",
+                            health.version.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    Err(error) => last_error = error.to_string(),
+                }
+            }
+            Ok(response) => last_error = format!("Studio responded with {}", response.status()),
+            Err(error) => last_error = error.to_string(),
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    Err(CliError::with_recovery(
+        "studio_version_mismatch",
+        format!(
+            "MyOpenPanels Studio did not start version {expected_version} at {server_url}: {last_error}"
+        ),
+        true,
+        "Retry `myopenpanels studio start --project-dir <project> --format json` after checking studio.log.",
+    ))
 }
 
 fn process_exists(pid: u32) -> bool {
@@ -675,15 +853,19 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
         let port = listener.local_addr().expect("local addr").port();
         let handle = thread::spawn(move || {
+            let body = format!(
+                "{{\"ok\":true,\"version\":\"{}\"}}",
+                env!("CARGO_PKG_VERSION")
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
             for _ in 0..request_count {
                 let (mut stream, _) = listener.accept().expect("accept");
                 let mut buffer = [0_u8; 1024];
                 let _ = stream.read(&mut buffer);
-                stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\n\r\n{\"ok\":true}",
-                    )
-                    .expect("response");
+                stream.write_all(response.as_bytes()).expect("response");
             }
         });
         (port, handle)
@@ -710,6 +892,28 @@ mod tests {
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
         server.join().expect("server thread");
+    }
+
+    #[test]
+    fn studio_versions_are_compared_before_reuse() {
+        assert_eq!(
+            compare_studio_version(Some(env!("CARGO_PKG_VERSION"))).expect("current"),
+            StudioVersionRelation::Current
+        );
+        assert_eq!(
+            compare_studio_version(Some("0.2.2")).expect("older"),
+            StudioVersionRelation::Older
+        );
+        assert_eq!(
+            compare_studio_version(Some("99.0.0")).expect("newer"),
+            StudioVersionRelation::Newer
+        );
+        assert_eq!(
+            compare_studio_version(None).expect("legacy"),
+            StudioVersionRelation::Older
+        );
+        let error = compare_studio_version(Some("not-semver")).expect_err("invalid");
+        assert_eq!(error.code(), Some("studio_version_mismatch"));
     }
 
     fn studio_session(paths: &MyOpenPanelsPaths, port: u16) -> StudioSession {
@@ -740,7 +944,7 @@ mod tests {
         fs::create_dir_all(&project_dir).expect("project dir");
         let owner_paths = paths_for(&project_dir, &storage_dir, "owner");
         let borrower_paths = paths_for(&project_dir, &storage_dir, "borrower");
-        let (port, server) = fake_studio_server(1);
+        let (port, server) = fake_studio_server(2);
         let owner_session = studio_session(&owner_paths, port);
         write_studio_session(&owner_paths, &owner_session).expect("owner session");
 
@@ -754,6 +958,9 @@ mod tests {
         .expect("start");
 
         assert!(result.reused_existing);
+        assert_eq!(result.lifecycle, StudioLifecycle::Reused);
+        assert_eq!(result.server_version, env!("CARGO_PKG_VERSION"));
+        assert!(!result.browser_refresh_required);
         assert_eq!(result.session.server_url, owner_session.server_url);
         assert_eq!(result.session.context_id, "owner");
         assert!(studio_session_path(&borrower_paths).exists());

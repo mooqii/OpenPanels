@@ -64,6 +64,7 @@ pub struct UpdateInstallPayload {
     pub current_version: String,
     pub latest_version: Option<String>,
     pub updated: bool,
+    pub studio_restart_required: bool,
     pub target: String,
     pub manifest_url: String,
     pub installed_path: Option<String>,
@@ -134,6 +135,7 @@ pub fn install_update(current_version: &str) -> Result<UpdateInstallPayload, Cli
             current_version: current_version.to_owned(),
             latest_version: checked.latest_version,
             updated: false,
+            studio_restart_required: false,
             target,
             manifest_url,
             installed_path: None,
@@ -159,6 +161,7 @@ pub fn install_update(current_version: &str) -> Result<UpdateInstallPayload, Cli
         current_version: current_version.to_owned(),
         latest_version: checked.latest_version,
         updated: true,
+        studio_restart_required: true,
         target,
         manifest_url,
         installed_path: Some(current_exe_display()?),
@@ -756,5 +759,21 @@ mod tests {
             envs.get("MYOPENPANELS_DISABLE_UPDATE_CHECK"),
             Some(&Some("1".to_owned()))
         );
+    }
+
+    #[test]
+    fn installed_update_requires_studio_restart_in_json() {
+        let payload = UpdateInstallPayload {
+            current_version: "0.3.0".to_owned(),
+            latest_version: Some("0.3.1".to_owned()),
+            updated: true,
+            studio_restart_required: true,
+            target: "test-target".to_owned(),
+            manifest_url: "https://example.invalid/manifest.json".to_owned(),
+            installed_path: Some("/tmp/myopenpanels".to_owned()),
+        };
+
+        let json = serde_json::to_value(payload).expect("serialize install payload");
+        assert_eq!(json["studioRestartRequired"], true);
     }
 }

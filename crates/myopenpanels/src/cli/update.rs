@@ -61,7 +61,7 @@ pub(super) fn update_install_text(payload: &UpdateInstallPayload) -> String {
     let latest = payload.latest_version.as_deref().unwrap_or("unknown");
     if payload.updated {
         format!(
-            "Updated myopenpanels {} -> {latest}.",
+            "Updated myopenpanels {} -> {latest}. Run `myopenpanels studio start --project-dir <project> --format json` to restart Studio, then navigate to the returned embeddedBrowserUrl.",
             payload.current_version
         )
     } else {

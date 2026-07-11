@@ -20,6 +20,10 @@ import {
   BuildVersionBadge,
   type TaskFilter,
 } from "./components/trace/TracePanel"
+import {
+  type StudioRuntimeState,
+  StudioRuntimeStatus,
+} from "./components/update/StudioRuntimeStatus"
 import { UpdatePrompt } from "./components/update/UpdatePrompt"
 import { WikiPanel } from "./components/wiki/WikiPanel"
 import { ACTIVE_SESSION_STORAGE_KEY } from "./constants"
@@ -48,6 +52,14 @@ import {
   externalBrowserPath,
   shouldShowOpenInBrowserPrompt,
 } from "./lib/browser-context"
+import {
+  flushBeforeRuntimeReload,
+  RUNTIME_RECONNECT_NOTICE_MS,
+  RUNTIME_RELOAD_MARKER,
+  runtimeConnectionDecision,
+  runtimePollDelay,
+  runtimeVersionDecision,
+} from "./lib/studio-runtime"
 import type {
   MyOpenPanelsPanel,
   MyOpenPanelsPanelKind,
@@ -85,6 +97,11 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     useState<MyOpenPanelsUpdateStatus | null>(null)
   const [updateAction, setUpdateAction] = useState<UpdateAction>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
+  const [loadedRuntimeVersion, setLoadedRuntimeVersion] = useState<
+    string | null
+  >(null)
+  const [runtimeState, setRuntimeState] =
+    useState<StudioRuntimeState>("connected")
   const [isTraceOpen, setIsTraceOpen] = useState(false)
   const [agentPanelTab, setAgentPanelTab] = useState<AgentPanelTab>("tasks")
   const [agentTaskFilter, setAgentTaskFilter] = useState<TaskFilter>("pending")
@@ -94,6 +111,9 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   const appStateRef = useRef<AppState | null>(null)
   const canvasSnapshotRef = useRef<StoreSnapshot | null>(null)
   const canvasRevisionRef = useRef(0)
+  const canvasSaveGenerationRef = useRef(0)
+  const canvasDirtyRef = useRef(false)
+  const runtimeContextIdRef = useRef<string | null>(null)
   const skipNextCanvasSaveRef = useRef(false)
   const operationStatusesRef = useRef<Map<string, string> | null>(null)
   const showOpenInBrowserPrompt = shouldShowOpenInBrowserPrompt(
@@ -111,6 +131,13 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   useEffect(() => {
     appStateRef.current = appState
   }, [appState])
+
+  useEffect(() => {
+    const version = appState?.buildInfo?.version
+    if (version && !loadedRuntimeVersion) {
+      setLoadedRuntimeVersion(version)
+    }
+  }, [appState?.buildInfo?.version, loadedRuntimeVersion])
 
   useEffect(() => {
     if (!appState) return
@@ -172,6 +199,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       appStateRef.current = normalized
       canvasSnapshotRef.current = nextCanvasSnapshot
       canvasRevisionRef.current = canvasRevisionFromState(normalized)
+      canvasDirtyRef.current = false
       skipNextCanvasSaveRef.current = true
       setSelection(null)
       setAppState(normalized)
@@ -279,6 +307,9 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     source.addEventListener("project", () => {
       syncProject()
     })
+    source.addEventListener("open", () => {
+      window.dispatchEvent(new Event("myopenpanels:runtime-check"))
+    })
     return () => {
       cancelled = true
       source.close()
@@ -307,29 +338,6 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     refreshUpdateStatus()
   }, [refreshUpdateStatus])
 
-  const waitForStudioRestart = useCallback(
-    async (expectedVersion?: string | null) => {
-      const started = Date.now()
-      const timeoutMs = 30_000
-      while (Date.now() - started < timeoutMs) {
-        try {
-          const health = await fetchStudioHealth(transport, { timeoutMs: 900 })
-          if (
-            health.ok &&
-            (!expectedVersion || health.version === expectedVersion)
-          ) {
-            return true
-          }
-        } catch {
-          // The server is expected to disappear briefly while the new binary starts.
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, 500))
-      }
-      return false
-    },
-    [transport]
-  )
-
   const downloadUpdate = useCallback(async () => {
     setUpdateAction("downloading")
     setUpdateError(null)
@@ -352,23 +360,13 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     setUpdateError(null)
     try {
       const result = await requestUpdateInstallRestart(transport)
-      const expectedVersion =
-        result.update.latestVersion ?? updateStatus?.latestVersion ?? null
       if (!result.restarting) {
         setUpdateAction(null)
         await refreshUpdateStatus({ refresh: true })
         return
       }
       setUpdateAction("restarting")
-      const restored = await waitForStudioRestart(expectedVersion)
-      if (restored) {
-        window.location.reload()
-        return
-      }
-      setUpdateError(
-        "更新可能已安装，但 Studio 没有自动恢复。请让 agent 重新打开 MyOpenPanels 面板。"
-      )
-      setUpdateAction("failed")
+      window.dispatchEvent(new Event("myopenpanels:runtime-check"))
     } catch (error) {
       console.error("Failed to install MyOpenPanels update", error)
       setUpdateError(
@@ -378,23 +376,14 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       )
       setUpdateAction("failed")
     }
-  }, [refreshUpdateStatus, transport, updateStatus, waitForStudioRestart])
+  }, [refreshUpdateStatus, transport])
 
-  const retryUpdateReconnect = useCallback(async () => {
+  const retryUpdateReconnect = useCallback(() => {
     setUpdateAction("restarting")
     setUpdateError(null)
-    const restored = await waitForStudioRestart(
-      updateStatus?.latestVersion ?? null
-    )
-    if (restored) {
-      window.location.reload()
-      return
-    }
-    setUpdateError(
-      "仍然无法连接到新版 Studio。请让 agent 重新打开 MyOpenPanels 面板。"
-    )
-    setUpdateAction("failed")
-  }, [updateStatus, waitForStudioRestart])
+    setRuntimeState("reconnecting")
+    window.dispatchEvent(new Event("myopenpanels:runtime-check"))
+  }, [])
 
   const dismissUpdateError = useCallback(() => {
     setUpdateAction(null)
@@ -451,6 +440,8 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   }, [activeSessionId, canvasPanelId, transport.apiBase])
 
   const saveSnapshot = useCallback((nextSnapshot: StoreSnapshot) => {
+    canvasSaveGenerationRef.current += 1
+    canvasDirtyRef.current = true
     canvasSnapshotRef.current = nextSnapshot
     setCanvasSnapshot(nextSnapshot)
     setAppState((current) => {
@@ -484,6 +475,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     appStateRef.current = normalized
     canvasSnapshotRef.current = nextCanvasSnapshot
     canvasRevisionRef.current = canvasRevisionFromState(normalized)
+    canvasDirtyRef.current = false
     skipNextCanvasSaveRef.current = true
     setSelection(null)
     setAppState(normalized)
@@ -602,38 +594,52 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     await loadProject(appState.session.id)
   }, [appState?.session.id, loadProject])
 
+  const flushCanvasSave = useCallback(async () => {
+    if (!canvasDirtyRef.current) return
+    const current = appStateRef.current
+    const snapshot = canvasSnapshotRef.current
+    const panel = current?.panels.find(
+      ({ panel }) => panel.kind === "canvas"
+    )?.panel
+    if (!(current && snapshot && panel)) return
+
+    const generation = canvasSaveGenerationRef.current
+    const payload = await savePanelState(
+      transport,
+      current.session.id,
+      panel.id,
+      snapshot,
+      canvasRevisionRef.current
+    )
+    canvasRevisionRef.current = payload.revision
+    if (canvasSaveGenerationRef.current === generation) {
+      canvasDirtyRef.current = false
+    }
+  }, [transport])
+
   useEffect(() => {
     if (!(appState && canvasPanel && canvasSnapshot)) return
     if (skipNextCanvasSaveRef.current) {
       skipNextCanvasSaveRef.current = false
+      canvasDirtyRef.current = false
       return
     }
     const timer = window.setTimeout(() => {
-      savePanelState(
-        transport,
-        appState.session.id,
-        canvasPanel.id,
-        canvasSnapshot,
-        canvasRevisionRef.current
-      )
-        .then((payload) => {
-          canvasRevisionRef.current = payload.revision
-        })
-        .catch((error) => {
-          if (error instanceof Error && error.message === "HTTP 409") {
-            loadProject(appState.session.id).catch((reloadError) => {
-              console.error(
-                "Failed to reload stale MyOpenPanels canvas",
-                reloadError
-              )
-            })
-            return
-          }
-          console.error("Failed to save MyOpenPanels canvas state", error)
-        })
+      flushCanvasSave().catch((error) => {
+        if (error instanceof Error && error.message === "HTTP 409") {
+          loadProject(appState.session.id).catch((reloadError) => {
+            console.error(
+              "Failed to reload stale MyOpenPanels canvas",
+              reloadError
+            )
+          })
+          return
+        }
+        console.error("Failed to save MyOpenPanels canvas state", error)
+      })
     }, 400)
     return () => window.clearTimeout(timer)
-  }, [appState, canvasPanel, canvasSnapshot, loadProject, transport])
+  }, [appState, canvasPanel, canvasSnapshot, flushCanvasSave, loadProject])
 
   useEffect(() => {
     if (!(appState && canvasPanel && selection)) return
@@ -649,6 +655,136 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     }, 300)
     return () => window.clearTimeout(timer)
   }, [appState, canvasPanel, selection, transport])
+
+  useEffect(() => {
+    if (!loadedRuntimeVersion) return
+    let cancelled = false
+    let checking = false
+    let disconnectedAt: number | null = null
+    let noticeTimer: number | null = null
+    let pollTimer: number | null = null
+    let reloadRequested = false
+
+    const clearNoticeTimer = () => {
+      if (noticeTimer !== null) {
+        window.clearTimeout(noticeTimer)
+        noticeTimer = null
+      }
+    }
+    const schedule = () => {
+      if (cancelled || reloadRequested) return
+      pollTimer = window.setTimeout(
+        checkRuntime,
+        runtimePollDelay(document.hidden)
+      )
+    }
+    const checkRuntime = async () => {
+      if (cancelled || checking || reloadRequested) return
+      checking = true
+      try {
+        const health = await fetchStudioHealth(transport, { timeoutMs: 900 })
+        if (!health.ok) throw new Error("Studio is not healthy")
+        if (
+          runtimeContextIdRef.current &&
+          health.contextId !== runtimeContextIdRef.current
+        ) {
+          setRuntimeState("failed")
+          return
+        }
+        runtimeContextIdRef.current ??= health.contextId
+
+        disconnectedAt = null
+        clearNoticeTimer()
+        let attemptedVersion: string | null = null
+        try {
+          attemptedVersion = window.sessionStorage.getItem(
+            RUNTIME_RELOAD_MARKER
+          )
+        } catch {
+          // Storage can be unavailable in constrained embedded browsers.
+        }
+        const decision = runtimeVersionDecision({
+          attemptedVersion,
+          loadedVersion: loadedRuntimeVersion,
+          serverVersion: health.version,
+        })
+        if (decision === "current") {
+          setRuntimeState("connected")
+          if (attemptedVersion === loadedRuntimeVersion) {
+            try {
+              window.sessionStorage.removeItem(RUNTIME_RELOAD_MARKER)
+            } catch {
+              // Storage can be unavailable in constrained embedded browsers.
+            }
+          }
+          return
+        }
+        if (decision === "stale") {
+          setRuntimeState("failed")
+          setUpdateError(
+            "页面仍在使用旧版资源。请确认 Studio 已升级后重新连接。"
+          )
+          setUpdateAction("failed")
+          return
+        }
+
+        setRuntimeState("switching")
+        await flushBeforeRuntimeReload({
+          flush: flushCanvasSave,
+          isDirty: () => canvasDirtyRef.current,
+        })
+        try {
+          window.sessionStorage.setItem(RUNTIME_RELOAD_MARKER, health.version)
+        } catch {
+          // Reload still works without loop protection when storage is unavailable.
+        }
+        reloadRequested = true
+        window.location.reload()
+      } catch {
+        const now = Date.now()
+        if (disconnectedAt === null) {
+          disconnectedAt = now
+          clearNoticeTimer()
+          noticeTimer = window.setTimeout(() => {
+            if (!cancelled && disconnectedAt !== null) {
+              setRuntimeState("reconnecting")
+            }
+          }, RUNTIME_RECONNECT_NOTICE_MS)
+        }
+        if (runtimeConnectionDecision(disconnectedAt, now) === "failed") {
+          clearNoticeTimer()
+          setRuntimeState("failed")
+          if (updateAction === "restarting") {
+            setUpdateError("新版 Studio 没有在预期时间内恢复。")
+            setUpdateAction("failed")
+          }
+        }
+      } finally {
+        checking = false
+        schedule()
+      }
+    }
+    const requestCheck = () => {
+      if (pollTimer !== null) window.clearTimeout(pollTimer)
+      pollTimer = null
+      checkRuntime()
+    }
+
+    window.addEventListener("focus", requestCheck)
+    window.addEventListener("online", requestCheck)
+    window.addEventListener("myopenpanels:runtime-check", requestCheck)
+    document.addEventListener("visibilitychange", requestCheck)
+    checkRuntime()
+    return () => {
+      cancelled = true
+      clearNoticeTimer()
+      if (pollTimer !== null) window.clearTimeout(pollTimer)
+      window.removeEventListener("focus", requestCheck)
+      window.removeEventListener("online", requestCheck)
+      window.removeEventListener("myopenpanels:runtime-check", requestCheck)
+      document.removeEventListener("visibilitychange", requestCheck)
+    }
+  }, [flushCanvasSave, loadedRuntimeVersion, transport, updateAction])
 
   if (!appState) {
     return (
@@ -775,6 +911,12 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           onUpdate={updateNow}
           status={updateStatus}
         />
+        {updateAction ? null : (
+          <StudioRuntimeStatus
+            onRetry={retryUpdateReconnect}
+            state={runtimeState}
+          />
+        )}
       </section>
       <AgentPanel
         activeTab={agentPanelTab}

@@ -88,15 +88,19 @@ fn fake_studio_server(request_count: usize) -> (u16, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
     let port = listener.local_addr().expect("local addr").port();
     let server = thread::spawn(move || {
+        let body = format!(
+            "{{\"ok\":true,\"version\":\"{}\"}}",
+            env!("CARGO_PKG_VERSION")
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
         for _ in 0..request_count {
             let (mut stream, _) = listener.accept().expect("accept");
             let mut buffer = [0_u8; 1024];
             let _ = stream.read(&mut buffer);
-            stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\n\r\n{\"ok\":true}",
-                    )
-                    .expect("response");
+            stream.write_all(response.as_bytes()).expect("response");
         }
     });
     (port, server)
@@ -187,7 +191,7 @@ fn studio_start_json_reuses_same_project_studio() {
         Some("owner"),
     )
     .expect("owner paths");
-    let (port, server) = fake_studio_server(2);
+    let (port, server) = fake_studio_server(3);
     let server_url = format!("http://127.0.0.1:{port}");
     write_studio_session(
         &owner_paths,
@@ -237,6 +241,10 @@ fn studio_start_json_reuses_same_project_studio() {
     assert_eq!(payload["context"]["id"], "owner");
     assert_eq!(payload["projectReady"], true);
     assert_eq!(payload["reusedExisting"], true);
+    assert_eq!(payload["serverVersion"], VERSION);
+    assert_eq!(payload["lifecycle"], "reused");
+    assert_eq!(payload["previousVersion"], Value::Null);
+    assert_eq!(payload["browserRefreshRequired"], false);
     assert!(storage_dir
         .join("contexts")
         .join("borrower")
@@ -330,7 +338,7 @@ fn studio_serve_reuses_existing_studio_without_foreground_server() {
         Some("owner"),
     )
     .expect("owner paths");
-    let (port, server) = fake_studio_server(1);
+    let (port, server) = fake_studio_server(2);
     let server_url = format!("http://127.0.0.1:{port}");
     write_studio_session(
         &owner_paths,
@@ -692,7 +700,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert_eq!(payload["protocolVersion"], 2);
     assert_eq!(payload["cliVersion"], VERSION);
     assert_eq!(payload["entrySkill"]["id"], "myopenpanels");
-    assert_eq!(payload["entrySkill"]["requiredVersion"], "1.3");
+    assert_eq!(payload["entrySkill"]["requiredVersion"], "1.4");
     assert!(payload["entrySkill"]["instruction"]
         .as_str()
         .expect("entry skill instruction")
@@ -3197,8 +3205,9 @@ fn embedded_browser_url_adds_one_marker_before_the_fragment() {
 #[test]
 fn entry_skill_prioritizes_embedded_open_without_bootstrap_gating() {
     let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
-    assert!(skill.contains("version: \"1.3\""));
+    assert!(skill.contains("version: \"1.4\""));
     assert!(skill.contains("embeddedBrowserUrl"));
+    assert!(skill.contains("browserRefreshRequired: true"));
     assert!(skill.contains("If the user only asked to open the panel"));
     assert!(skill.contains("Do not request Agent Bootstrap merely to verify"));
     assert!(skill.contains("studio open-system-browser"));

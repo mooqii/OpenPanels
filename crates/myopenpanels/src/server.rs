@@ -315,14 +315,14 @@ struct TasksQuery {
 }
 
 async fn api_health(State(state): State<Arc<AppState>>) -> Response {
-    json_response(
+    no_store_response(json_response(
         StatusCode::OK,
         &json!({
             "ok": true,
             "version": state.build_info.version,
             "contextId": state.paths.context_id.clone(),
         }),
-    )
+    ))
 }
 
 async fn api_bootstrap(
@@ -337,10 +337,10 @@ async fn api_bootstrap(
         requested_panel_kind: query.panel_kind.as_deref().and_then(PanelKind::parse),
         requested_session_id: query.session_id,
     };
-    match ensure_project_bootstrap(&state.paths, request) {
+    no_store_response(match ensure_project_bootstrap(&state.paths, request) {
         Ok(bootstrap) => json_response(StatusCode::OK, &with_build_info(bootstrap, &state)),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
+    })
 }
 
 async fn api_studio_focus(State(state): State<Arc<AppState>>) -> Response {
@@ -1259,15 +1259,27 @@ async fn static_asset(State(state): State<Arc<AppState>>, Path(path): Path<Strin
 }
 
 fn serve_static_path(state: &AppState, path: &str) -> Response {
-    if let Some(static_dir) = &state.static_dir {
+    let response = if let Some(static_dir) = &state.static_dir {
         if let Some(response) = serve_file_from_dir(static_dir, path) {
-            return response;
+            response
+        } else if let Some(file) = STUDIO_DIST.get_file(path) {
+            bytes_response(StatusCode::OK, file.contents().to_vec(), mime_type(path))
+        } else {
+            return StatusCode::NOT_FOUND.into_response();
         }
+    } else if let Some(file) = STUDIO_DIST.get_file(path) {
+        bytes_response(StatusCode::OK, file.contents().to_vec(), mime_type(path))
+    } else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    if path == "index.html" {
+        cache_control_response(response, "no-cache, must-revalidate")
+    } else if path.starts_with("assets/") {
+        cache_control_response(response, "public, max-age=31536000, immutable")
+    } else {
+        cache_control_response(response, "no-cache")
     }
-    if let Some(file) = STUDIO_DIST.get_file(path) {
-        return bytes_response(StatusCode::OK, file.contents().to_vec(), mime_type(path));
-    }
-    StatusCode::NOT_FOUND.into_response()
 }
 
 fn serve_file_from_dir(static_dir: &std::path::Path, path: &str) -> Option<Response> {
@@ -1414,6 +1426,17 @@ fn json_response(status: StatusCode, payload: &impl serde::Serialize) -> Respons
         Ok(bytes) => bytes_response(status, bytes, "application/json"),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     }
+}
+
+fn no_store_response(response: Response) -> Response {
+    cache_control_response(response, "no-store")
+}
+
+fn cache_control_response(mut response: Response, value: &'static str) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static(value));
+    response
 }
 
 fn json_error(status: StatusCode, message: &str) -> Response {
@@ -1579,8 +1602,65 @@ mod tests {
             static_dir: None,
         });
 
-        let response = api_health(State(state)).await;
+        let response = api_health(State(state.clone())).await;
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+
+        let response = api_bootstrap(
+            State(state),
+            Query(BootstrapQuery {
+                panel_id: None,
+                panel_kind: None,
+                session_id: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+    }
+
+    #[test]
+    fn studio_static_assets_use_release_cache_policy() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let state = AppState {
+            build_info: current_build_info(),
+            host: "127.0.0.1".to_owned(),
+            paths,
+            port: 0,
+            static_dir: None,
+        };
+
+        let index = serve_static_path(&state, "index.html");
+        assert_eq!(
+            index.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache, must-revalidate"
+        );
+
+        let asset = STUDIO_DIST
+            .get_dir("assets")
+            .and_then(|assets| assets.files().next())
+            .expect("built studio asset");
+        let asset_path = asset.path().to_str().expect("asset path");
+        let response = serve_static_path(&state, asset_path);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=31536000, immutable"
+        );
     }
 }

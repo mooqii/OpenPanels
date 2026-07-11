@@ -1037,9 +1037,15 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
             sync_builtin_agent_skills(&paths)?;
             if let Some(session) = reuse_existing_studio(&paths)? {
                 let bootstrap = bind_and_bootstrap_studio(&paths, &session)?;
+                let server_version = crate::studio::studio_version(&session)?
+                    .unwrap_or_else(|| "unknown".to_owned());
                 let result = StudioStartResult {
                     session,
                     reused_existing: true,
+                    server_version,
+                    lifecycle: crate::studio::StudioLifecycle::Reused,
+                    previous_version: None,
+                    browser_refresh_required: false,
                 };
                 let payload =
                     studio_launch_payload(&result, &bootstrap, Some(("foreground", false)))?;
@@ -1074,6 +1080,10 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
             let result = StudioStartResult {
                 session,
                 reused_existing: false,
+                server_version: VERSION.to_owned(),
+                lifecycle: crate::studio::StudioLifecycle::Started,
+                previous_version: None,
+                browser_refresh_required: false,
             };
             let payload = studio_launch_payload(&result, &bootstrap, Some(("foreground", true)))?;
             let text = payload["embeddedBrowserUrl"].as_str().unwrap_or("");
@@ -1960,6 +1970,10 @@ fn studio_launch_payload(
     let mut payload = serde_json::json!({
         "ok": true,
         "reusedExisting": result.reused_existing,
+        "serverVersion": result.server_version,
+        "lifecycle": result.lifecycle,
+        "previousVersion": result.previous_version,
+        "browserRefreshRequired": result.browser_refresh_required,
         "projectReady": true,
         "serverUrl": result.session.server_url,
         "embeddedBrowserUrl": embedded_browser_url(system_browser_url),
