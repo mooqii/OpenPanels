@@ -1,4 +1,4 @@
-# OpenPanels LLM Wiki Conventions
+# MyOpenPanels LLM Wiki Conventions
 
 Use these conventions whenever creating or changing generated wiki pages.
 

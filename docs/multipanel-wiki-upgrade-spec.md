@@ -45,7 +45,7 @@ Project(Session)
 ### 命名
 
 - 用户界面里称为 Project。
-- 协议和存储层可以暂时继续使用 `OpenPanelsSession`，避免大规模重命名。
+- 协议和存储层可以暂时继续使用 `MyOpenPanelsSession`，避免大规模重命名。
 - 文档和新增代码里尽量使用 Project 语义包装 Session，例如 `ProjectBootstrap`。
 
 ### Panel kind
@@ -53,7 +53,7 @@ Project(Session)
 新增：
 
 ```ts
-type OpenPanelsPanelKind =
+type MyOpenPanelsPanelKind =
   | "wiki"
   | "canvas"
   | "image"
@@ -136,14 +136,14 @@ export interface WikiPage {
 
 ### protocol
 
-文件：`apps/local-studio/src/protocol.ts`
+文件：`apps/studio/src/protocol.ts`
 
 - `panelKindSchema` 增加 `"wiki"`。
 - 如需要，可导出 `wikiStateSchema`，但当前状态约定主要由 Rust control/wiki 和 studio 前端共同维护。
 
 ### core
 
-文件：`crates/openpanels-local/src/control.rs`
+文件：`crates/myopenpanels/src/control.rs`
 
 - `createDefaultPanelRegistry()` 注册 wiki panel。
 - `defaultTitleForPanel("wiki")` 返回 `文档库` 或 `Wiki`。
@@ -167,7 +167,7 @@ registry.register({
 
 ## Rust Control 改造
 
-文件：`crates/openpanels-local/src/control.rs`
+文件：`crates/myopenpanels/src/control.rs`
 
 当前核心函数是 `ensureCanvasBootstrap()`。建议新增通用函数，旧函数保留为兼容包装。
 
@@ -175,19 +175,19 @@ registry.register({
 
 ```ts
 export interface ProjectPanelSnapshot {
-  panel: OpenPanelsPanel
+  panel: MyOpenPanelsPanel
   state: unknown
 }
 
 export interface ProjectBootstrap {
   activePanelId: string
-  activePanelKind: OpenPanelsPanelKind
+  activePanelKind: MyOpenPanelsPanelKind
   contextDir: string
   contextId: string
   contextIdSource: string
   panels: ProjectPanelSnapshot[]
-  session: OpenPanelsSession
-  sessions: OpenPanelsSession[]
+  session: MyOpenPanelsSession
+  sessions: MyOpenPanelsSession[]
   storageDir: string
 }
 ```
@@ -237,7 +237,7 @@ ensureProjectBootstrap(context, {
 
 ## Rust Server API
 
-文件：`crates/openpanels-local/src/server.rs`
+文件：`crates/myopenpanels/src/server.rs`
 
 ### 修改 bootstrap
 
@@ -310,7 +310,7 @@ Wiki 和 canvas 都使用这个通用 state 保存入口。
 
 ## Studio UI
 
-文件：`apps/local-studio/src/main.tsx`
+文件：`apps/studio/src/main.tsx`
 
 ### 新组件建议
 
@@ -341,7 +341,7 @@ App
 
 ### Wiki 占位面板
 
-新增组件可先放在 `apps/local-studio/src/main.tsx`，后续再拆包：
+新增组件可先放在 `apps/studio/src/main.tsx`，后续再拆包：
 
 ```tsx
 function WikiPanelPlaceholder({ state }: { state: WikiState }) {
@@ -374,7 +374,7 @@ function WikiPanelPlaceholder({ state }: { state: WikiState }) {
 
 ## CLI 架构
 
-文件：`crates/openpanels-local/src/cli.rs`
+文件：`crates/myopenpanels/src/cli.rs`
 
 ### 稳定入口原则
 
@@ -383,7 +383,7 @@ function WikiPanelPlaceholder({ state }: { state: WikiState }) {
 入口 skill 固定做：
 
 ```bash
-openpanels-local agent context --project "$PWD"
+myopenpanels agent context --project "$PWD"
 ```
 
 然后遵循 CLI 返回的最新说明。
@@ -393,12 +393,12 @@ openpanels-local agent context --project "$PWD"
 CLI 不保留旧的扁平命令或隐式子命令。面板发现与读取使用：
 
 ```text
-openpanels-local agent context
-openpanels-local panel list
-openpanels-local panel current
-openpanels-local panel switch
-openpanels-local wiki context
-openpanels-local canvas state
+myopenpanels agent context
+myopenpanels panel list
+myopenpanels panel current
+myopenpanels panel switch
+myopenpanels wiki context
+myopenpanels canvas state
 ```
 
 #### `agent context`
@@ -424,8 +424,8 @@ JSON 结构建议：
     { "id": "panel:...", "kind": "canvas", "title": "Canvas" }
   ],
   "commands": {
-    "studioStart": "openpanels-local studio start --project \"$PWD\" --format json",
-    "agentContext": "openpanels-local agent context --project \"$PWD\""
+    "studioStart": "myopenpanels studio start --project \"$PWD\" --format json",
+    "agentContext": "myopenpanels agent context --project \"$PWD\""
   },
   "panelInstructions": {
     "wiki": "...",
@@ -447,7 +447,7 @@ Markdown 输出面向 agent 直接阅读，内容应包括：
 列出当前 Project 的 panels：
 
 ```bash
-openpanels-local panel list --project "$PWD" --format json
+myopenpanels panel list --project "$PWD" --format json
 ```
 
 #### `panel current` / `panel switch`
@@ -455,9 +455,9 @@ openpanels-local panel list --project "$PWD" --format json
 读取或切换 active panel：
 
 ```bash
-openpanels-local panel current --project "$PWD" --format json
-openpanels-local panel switch --project "$PWD" --kind wiki --format json
-openpanels-local panel switch --project "$PWD" --kind canvas --format json
+myopenpanels panel current --project "$PWD" --format json
+myopenpanels panel switch --project "$PWD" --kind wiki --format json
+myopenpanels panel switch --project "$PWD" --kind canvas --format json
 ```
 
 #### Panel state
@@ -465,8 +465,8 @@ openpanels-local panel switch --project "$PWD" --kind canvas --format json
 使用 panel 对应的 canonical context/state 命令：
 
 ```bash
-openpanels-local wiki context --project "$PWD" --format json
-openpanels-local canvas state --project "$PWD" --format json
+myopenpanels wiki context --project "$PWD" --format json
+myopenpanels canvas state --project "$PWD" --format json
 ```
 
 Canvas 只使用 namespace 命令：
@@ -485,7 +485,7 @@ canvas image insert
 
 入口 skill 只负责：
 
-1. 确保全局 `openpanels-local` native binary 已安装且最新。
+1. 确保全局 `myopenpanels` native binary 已安装且最新。
 2. 启动 studio。
 3. 调用 `agent context`。
 4. 严格遵循 `agent context` 返回的最新 panel 说明。
@@ -503,13 +503,13 @@ canvas image insert
 Use this skill when the user wants to use MyOpenPanels.
 
 Set:
-OPENPANELS_LOCAL_CLI="${OPENPANELS_LOCAL_CLI:-openpanels-local}"
+MYOPENPANELS_CLI="${MYOPENPANELS_CLI:-myopenpanels}"
 
 Start or reuse the studio:
-$OPENPANELS_LOCAL_CLI studio start --project "$PWD" --format json
+$MYOPENPANELS_CLI studio start --project "$PWD" --format json
 
 Before interacting with any panel, run:
-$OPENPANELS_LOCAL_CLI agent context --project "$PWD"
+$MYOPENPANELS_CLI agent context --project "$PWD"
 
 Follow the returned MyOpenPanels instructions. The CLI is the source of truth
 for available panels, commands, and panel-specific workflows.
@@ -586,7 +586,7 @@ Acceptance criteria:
 
 ### UI verification
 
-- Run local studio.
+- Run MyOpenPanels Studio.
 - Confirm bottom tabs render.
 - Switch wiki/canvas multiple times.
 - Rename Project and confirm title remains across tabs.

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-OpenPanels exposes one Agent protocol entry point: `agent bootstrap`. The
+MyOpenPanels exposes one Agent protocol entry point: `agent bootstrap`. The
 installed CLI is the sole authority for the current Project, visible panel,
 selection, capabilities, guides, skills, and persistent operations.
 
@@ -28,9 +28,9 @@ the Agent reads Bootstrap and matches the user request against the returned
 `agent bootstrap --format json` returns:
 
 - `protocolVersion` and `cliVersion`.
-- `entrySkill` with the minimum MyOpenPanels Skill version, canonical source,
-  and the startup-only conditional update instruction. A missing version is
-  treated as outdated; an equal or newer version is left unchanged.
+- `entrySkill` with the minimum MyOpenPanels Skill version and canonical source.
+  The Agent may use this information to decide whether to update its installed
+  Skill; the update is not a CLI-enforced precondition.
 - `studioBinding` for the effective local Studio context.
 - `focus` with `focusRevision`, Project, panel id, and panel kind.
 - current Wiki, Canvas, task, and explicit-selection summaries.
@@ -94,8 +94,8 @@ The stable product contracts are CLI installation, Studio start/reuse, and
 `agent bootstrap`. All other commands are discovered from the current Bootstrap
 response.
 
-Skill freshness is checked only while processing the Bootstrap immediately
-after Studio start or reuse. It is not a precondition for later panel commands
-or an interruption mechanism for an active Operation. The Agent performs the
-comparison because the CLI cannot reliably inspect every Agent host's Skill
-installation directory.
+The CLI reports Skill freshness metadata only in the Bootstrap response after
+Studio start or reuse. Skill freshness is not a precondition for later panel
+commands or an interruption mechanism for an active Operation. The Agent may
+perform the comparison because the CLI cannot reliably inspect every Agent
+host's Skill installation directory.

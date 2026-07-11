@@ -1,4 +1,4 @@
 [workspace]
-members = ["crates/openpanels-local"]
+members = ["crates/myopenpanels"]
 resolver = "2"
 

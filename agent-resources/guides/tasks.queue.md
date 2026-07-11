@@ -47,18 +47,18 @@ Studio mode:
 - When Studio is started by a supported local agent host, it registers that
   host as a low-priority command target and starts processing tasks.
 - Explicitly registered targets take priority over the automatic local target.
-- Set `OPENPANELS_DISABLE_LOCAL_AGENT=1` to disable automatic local execution.
-- Set `OPENPANELS_AGENT_COMMAND` to provide a host-neutral command target. It
+- Set `MYOPENPANELS_DISABLE_LOCAL_AGENT=1` to disable automatic local execution.
+- Set `MYOPENPANELS_AGENT_COMMAND` to provide a host-neutral command target. It
   receives the standard task JSON and environment variables described below.
 
 Bridge mode:
 
-- `openpanels-local agent bridge --command <command> --capability <name>`
+- `myopenpanels agent bridge --command <command> --capability <name>`
   registers a local command target and processes matching tasks.
-- `openpanels-local agent bridge status` reads the worker status.
+- `myopenpanels agent bridge status` reads the worker status.
 - The task JSON is sent to stdin.
 - The command receives task, target, capability, and lease values through
-  `OPENPANELS_TASK_*` and `OPENPANELS_TARGET_ID`.
+  `MYOPENPANELS_TASK_*` and `MYOPENPANELS_TARGET_ID`.
 - Use `--timeout-ms <ms>` when the command can hang.
 - Exit code zero completes the task. A nonzero exit or timeout fails it and
   schedules a retry.

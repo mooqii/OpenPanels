@@ -1,0 +1,109 @@
+name: Release MyOpenPanels CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          MYOPENPANELS_SKIP_NATIVE_INSTALL: "1"
+
+      - name: Build studio assets
+        run: pnpm --dir apps/studio build
+
+      - name: Test Rust CLI
+        if: runner.os != 'Linux'
+        timeout-minutes: 10
+        run: cargo test -p myopenpanels -- --test-threads=1
+
+      - name: Build Rust CLI
+        timeout-minutes: 20
+        run: cargo build -p myopenpanels --release --target ${{ matrix.target }}
+
+      - name: Package release archive
+        shell: bash
+        run: |
+          node scripts/package-myopenpanels.mjs \
+            --target "${{ matrix.target }}" \
+            --binary "target/${{ matrix.target }}/release/myopenpanels${{ runner.os == 'Windows' && '.exe' || '' }}" \
+            --out-dir dist/release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: myopenpanels-${{ matrix.target }}
+          path: |
+            dist/release/myopenpanels-${{ matrix.target }}.*
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/release-artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p dist/release
+          find dist/release-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/release/ \;
+
+      - name: Generate manifest and checksums
+        run: node scripts/generate-myopenpanels-release-manifest.mjs --out-dir dist/release
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME:-v$(node -p "require('./package.json').version")}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "$tag" --draft
+          gh release upload "$tag" dist/release/* --clobber

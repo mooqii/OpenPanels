@@ -3,5 +3,4 @@ node_modules/
 dist/
 target/
 .myopenpanels/
-.openpanels/
 *.log

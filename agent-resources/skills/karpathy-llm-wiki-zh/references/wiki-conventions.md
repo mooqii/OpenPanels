@@ -1,4 +1,4 @@
-# OpenPanels LLM Wiki 约定
+# MyOpenPanels LLM Wiki 约定
 
 每次创建或修改生成式 Wiki 页面时，都使用这些约定。
 

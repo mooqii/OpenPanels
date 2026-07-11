@@ -1,8 +1,8 @@
-# OpenPanels
+# MyOpenPanels
 
-OpenPanels is a local panel system for shell-capable AI agents. It lets agents
+MyOpenPanels is a local panel system for shell-capable AI agents. It lets agents
 open interactive panels, insert artifacts, and persist local panel state under
-the active project's `.myopenpanels/` directory through the `openpanels-local`
+the active project's `.myopenpanels/` directory through the `myopenpanels`
 CLI.
 
 ## Skills
@@ -23,7 +23,7 @@ Download only that skill directory. Do not clone or inspect the full repository
 unless direct skill-directory installation fails.
 
 After the skill is installed, invoke the MyOpenPanels skill once so it can run
-its setup workflow, install or verify the `openpanels-local` CLI, and open the
+its setup workflow, install or verify the `myopenpanels` CLI, and open the
 MyOpenPanels panel.
 ```
 
@@ -32,10 +32,10 @@ and path. If your agent only accepts repo/path syntax, use repository
 `mooqii/OpenPanels` with path `skills/myopenpanels`.
 Installing the skill only adds the agent instructions; the first MyOpenPanels
 skill run installs or verifies the native CLI from GitHub Releases, starts the
-local studio, and opens the MyOpenPanels panel URL returned by the CLI.
+MyOpenPanels Studio, and opens the MyOpenPanels panel URL returned by the CLI.
 
 The entry skill keeps itself small and stable. It uses the Rust-native
-`openpanels-local` CLI from GitHub Releases, then asks the CLI for
+`myopenpanels` CLI from GitHub Releases, then asks the CLI for
 `agent bootstrap`, which is the source of truth for wiki, canvas, and future panel
 workflows. Bootstrap also publishes the required entry Skill version and its
 canonical update source. On Studio startup, the Agent updates a missing or older
@@ -52,8 +52,8 @@ pnpm install
 pnpm dev
 ```
 
-The local studio runs from `apps/local-studio`. The publishable agent CLI is the
-Rust binary in `crates/openpanels-local`.
+The MyOpenPanels Studio runs from `apps/studio`. The publishable agent CLI is the
+Rust binary in `crates/myopenpanels`.
 
 ## Install
 
@@ -62,24 +62,24 @@ Install the Rust-native CLI from GitHub Releases, then verify it:
 macOS/Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-openpanels-local.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-myopenpanels.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-openpanels-local.ps1 -UseB | iex
+iwr https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-myopenpanels.ps1 -UseB | iex
 ```
 
 ```bash
-openpanels-local --version
+myopenpanels --version
 ```
 
 Check for and install release updates:
 
 ```bash
-openpanels-local update check
-openpanels-local update
+myopenpanels update check
+myopenpanels update
 ```
 
 GitHub Releases are the update source. Release constraints and manifest
@@ -94,32 +94,33 @@ computer; `browserUrl` may use a LAN address so a browser on another device can
 reach the same agent host:
 
 ```bash
-openpanels-local studio start --project /path/to/project --format json
+myopenpanels studio start --project /path/to/project --format json
 ```
 
-Use `openpanels-local studio open` only when you explicitly want the system
+Use `myopenpanels studio open` only when you explicitly want the system
 browser instead of the agent side panel.
 
 Agents can then use project-backed CLI commands:
 
 ```bash
-openpanels-local agent bootstrap --project /path/to/project --format json
-openpanels-local agent guides --project /path/to/project
-openpanels-local agent guide canvas.image-generation --project /path/to/project
-openpanels-local panel list --project /path/to/project --format json
-openpanels-local panel switch --project /path/to/project --kind wiki --format json
-openpanels-local wiki context --project /path/to/project --format json
-openpanels-local canvas state --project /path/to/project --format json
-openpanels-local canvas selection read --project /path/to/project --format json
-openpanels-local canvas selection read --project /path/to/project --include-image-base64 --format json
-openpanels-local canvas selection export --project /path/to/project --output /tmp/selection.png --format json
-openpanels-local canvas image insert --project /path/to/project --image /tmp/result.png --placement right --format json
+myopenpanels agent bootstrap --project /path/to/project --format json
+myopenpanels agent guides --project /path/to/project
+myopenpanels agent skills --project /path/to/project
+myopenpanels agent skill canvas-panel --project /path/to/project
+myopenpanels panel list --project /path/to/project --format json
+myopenpanels panel switch --project /path/to/project --kind wiki --format json
+myopenpanels wiki context --project /path/to/project --format json
+myopenpanels canvas state --project /path/to/project --format json
+myopenpanels canvas selection read --project /path/to/project --format json
+myopenpanels canvas selection read --project /path/to/project --include-image-base64 --format json
+myopenpanels canvas selection export --project /path/to/project --output /tmp/selection.png --format json
+myopenpanels canvas image insert --project /path/to/project --image /tmp/result.png --placement right --format json
 ```
 
 ## v0.1 Scope
 
 - Local workflow for generic shell agents
-- Rust local CLI/server/storage with a React local-studio frontend
+- Rust CLI/server/storage with a React Studio frontend
 - Multi-panel project workspace with wiki and canvas panels
 - Image artifacts and editable canvas image shapes
 - Project-local `.myopenpanels/` persistence

@@ -1,16 +1,16 @@
-# OpenPanels CLI Release Contract
+# MyOpenPanels CLI Release Contract
 
-OpenPanels is a local-first project. The CLI updater only talks to GitHub
-Releases, and it never depends on an OpenPanels cloud service.
+MyOpenPanels is a local-first project. The CLI updater only talks to GitHub
+Releases, and it never depends on a MyOpenPanels cloud service.
 
 ## Version Source
 
 - The Rust CLI version is the source of truth at
-  `crates/openpanels-local/Cargo.toml`.
+  `crates/myopenpanels/Cargo.toml`.
 - The root `package.json` version must match the Rust CLI version while both
   files remain in the repository.
 - Release tags must be `v<version>`, for example `v0.1.9`.
-- `openpanels-local --version` must print the same version without the leading
+- `myopenpanels --version` must print the same version without the leading
   `v`.
 
 Run this before publishing:
@@ -19,19 +19,19 @@ Run this before publishing:
 pnpm run check:release
 ```
 
-GitHub tags matching `v*` run `.github/workflows/release-openpanels-local.yml`.
+GitHub tags matching `v*` run `.github/workflows/release-myopenpanels.yml`.
 The workflow builds the Rust CLI for each supported target, packages the
-archives, generates `openpanels-local-manifest.json`, and uploads all release
+archives, generates `myopenpanels-manifest.json`, and uploads all release
 assets to the matching GitHub Release.
 
 For local packaging smoke tests:
 
 ```bash
-node scripts/package-openpanels-local.mjs \
+node scripts/package-myopenpanels.mjs \
   --target aarch64-apple-darwin \
-  --binary target/debug/openpanels-local \
+  --binary target/debug/myopenpanels \
   --out-dir dist/release
-node scripts/generate-openpanels-release-manifest.mjs --out-dir dist/release
+node scripts/generate-myopenpanels-release-manifest.mjs --out-dir dist/release
 ```
 
 ## GitHub Release Assets
@@ -39,41 +39,41 @@ node scripts/generate-openpanels-release-manifest.mjs --out-dir dist/release
 Every published release must include:
 
 ```text
-openpanels-local-aarch64-apple-darwin.tar.gz
-openpanels-local-x86_64-apple-darwin.tar.gz
-openpanels-local-x86_64-unknown-linux-gnu.tar.gz
-openpanels-local-aarch64-unknown-linux-gnu.tar.gz
-openpanels-local-x86_64-pc-windows-msvc.zip
-openpanels-local-manifest.json
+myopenpanels-aarch64-apple-darwin.tar.gz
+myopenpanels-x86_64-apple-darwin.tar.gz
+myopenpanels-x86_64-unknown-linux-gnu.tar.gz
+myopenpanels-aarch64-unknown-linux-gnu.tar.gz
+myopenpanels-x86_64-pc-windows-msvc.zip
+myopenpanels-manifest.json
 checksums.txt
 ```
 
-Each archive must contain exactly one executable named `openpanels-local` or
-`openpanels-local.exe`.
+Each archive must contain exactly one executable named `myopenpanels` or
+`myopenpanels.exe`.
 
 ## Install Scripts
 
 The public install entry points are:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-openpanels-local.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-myopenpanels.sh | sh
 ```
 
 ```powershell
-iwr https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-openpanels-local.ps1 -UseB | iex
+iwr https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-myopenpanels.ps1 -UseB | iex
 ```
 
 The scripts read the latest release manifest, choose the current platform asset,
 verify SHA-256, install to the user-local bin directory, and run
-`openpanels-local --version`. They print PATH instructions when the install
+`myopenpanels --version`. They print PATH instructions when the install
 directory is not already on PATH, but do not edit shell profiles.
 
 Install-script environment controls:
 
 ```text
-OPENPANELS_INSTALL_REPO          Override the GitHub repository.
-OPENPANELS_INSTALL_MANIFEST_URL  Override the release manifest URL.
-OPENPANELS_INSTALL_DIR           Override the install directory.
+MYOPENPANELS_INSTALL_REPO          Override the GitHub repository.
+MYOPENPANELS_INSTALL_MANIFEST_URL  Override the release manifest URL.
+MYOPENPANELS_INSTALL_DIR           Override the install directory.
 ```
 
 ## Update Manifest
@@ -81,7 +81,7 @@ OPENPANELS_INSTALL_DIR           Override the install directory.
 The updater reads:
 
 ```text
-https://github.com/mooqii/OpenPanels/releases/latest/download/openpanels-local-manifest.json
+https://github.com/mooqii/OpenPanels/releases/latest/download/myopenpanels-manifest.json
 ```
 
 The manifest schema is:
@@ -89,12 +89,12 @@ The manifest schema is:
 ```json
 {
   "schemaVersion": 1,
-  "name": "openpanels-local",
+  "name": "myopenpanels",
   "version": "0.1.9",
   "channel": "stable",
   "assets": {
     "aarch64-apple-darwin": {
-      "url": "https://github.com/mooqii/OpenPanels/releases/download/v0.1.9/openpanels-local-aarch64-apple-darwin.tar.gz",
+      "url": "https://github.com/mooqii/OpenPanels/releases/download/v0.1.9/myopenpanels-aarch64-apple-darwin.tar.gz",
       "sha256": "...",
       "size": 1234567
     }
@@ -106,16 +106,16 @@ The manifest `version` must not include the leading `v`.
 
 ## Updater Behavior
 
-- `openpanels-local update check` checks GitHub Releases and caches the result.
-- `openpanels-local update download` downloads the matching asset into the local
+- `myopenpanels update check` checks GitHub Releases and caches the result.
+- `myopenpanels update download` downloads the matching asset into the local
   update cache after checking SHA-256.
-- `openpanels-local update` reuses the cached asset when possible, verifies the
+- `myopenpanels update` reuses the cached asset when possible, verifies the
   downloaded binary with `--version`, then replaces the current executable.
 - Normal text-mode commands may perform an opportunistic update check at most
   once every 24 hours. The check writes only a short stderr notice when an
   update exists.
 - JSON output mode does not perform opportunistic checks.
-- Failed opportunistic checks are silent and must never block local CLI work.
+- Failed opportunistic checks are silent and must never block CLI work.
 - The studio may show an update prompt when an update is available. It may
   pre-download the update, but installation and studio restart require an
   explicit user click or explicit user instruction to an agent.
@@ -138,10 +138,10 @@ writes `studio-session.json` before the current server exits.
 Environment controls:
 
 ```text
-OPENPANELS_UPDATE_MANIFEST_URL   Override the release manifest URL.
-OPENPANELS_UPDATE_CACHE_DIR      Override the update cache directory.
-OPENPANELS_DISABLE_UPDATE_CHECK  Disable opportunistic 24-hour checks.
-OPENPANELS_ALLOW_DEV_SELF_UPDATE Allow replacing target/debug or target/release builds.
+MYOPENPANELS_UPDATE_MANIFEST_URL   Override the release manifest URL.
+MYOPENPANELS_UPDATE_CACHE_DIR      Override the update cache directory.
+MYOPENPANELS_DISABLE_UPDATE_CHECK  Disable opportunistic 24-hour checks.
+MYOPENPANELS_ALLOW_DEV_SELF_UPDATE Allow replacing target/debug or target/release builds.
 ```
 
 The updater refuses to replace development builds by default and refuses

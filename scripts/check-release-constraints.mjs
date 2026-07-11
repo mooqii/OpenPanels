@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs"
-import { basename } from "node:path"
 
 const ROOT = new URL("..", import.meta.url)
 const RELEASE_TARGETS = [
@@ -26,8 +25,8 @@ function assert(condition, message) {
 }
 
 const rootVersion = readJson("package.json").version
-const studioVersion = readJson("apps/local-studio/package.json").version
-const rustVersion = readCargoVersion("crates/openpanels-local/Cargo.toml")
+const studioVersion = readJson("apps/studio/package.json").version
+const rustVersion = readCargoVersion("crates/myopenpanels/Cargo.toml")
 const tag =
   process.env.GITHUB_REF_NAME || process.env.RELEASE_TAG || `v${rootVersion}`
 const tagVersion = tag.startsWith("v") ? tag.slice(1) : tag
@@ -49,11 +48,11 @@ const entrySkillVersion = entrySkill.match(
   /^\s+version:\s*["']([^"']+)["']/m
 )?.[1]
 const cliSource = readFileSync(
-  new URL("crates/openpanels-local/src/cli.rs", ROOT),
+  new URL("crates/myopenpanels/src/cli.rs", ROOT),
   "utf8"
 )
 const agentSource = readFileSync(
-  new URL("crates/openpanels-local/src/agent.rs", ROOT),
+  new URL("crates/myopenpanels/src/agent.rs", ROOT),
   "utf8"
 )
 assert(
@@ -71,13 +70,13 @@ assert(
   `CLI required MyOpenPanels Skill version must match ${entrySkillVersion}.`
 )
 for (const required of [
-  "install-openpanels-local.sh",
-  "install-openpanels-local.ps1",
+  "install-myopenpanels.sh",
+  "install-myopenpanels.ps1",
   "agent bootstrap",
   "drawing",
   "organizing or comparing materials",
   "writing",
-  "open or launch OpenPanels",
+  "open or launch MyOpenPanels",
   "打开面板",
 ]) {
   assert(
@@ -105,13 +104,13 @@ assert(
 
 const manifest = {
   schemaVersion: 1,
-  name: "openpanels-local",
+  name: "myopenpanels",
   version: tagVersion,
   channel: tagVersion.includes("-") ? "prerelease" : "stable",
   assets: Object.fromEntries(
     RELEASE_TARGETS.map((target) => {
       const extension = target.includes("windows") ? "zip" : "tar.gz"
-      const fileName = `openpanels-local-${target}.${extension}`
+      const fileName = `myopenpanels-${target}.${extension}`
       return [
         target,
         {
@@ -125,5 +124,5 @@ const manifest = {
   ),
 }
 
-console.log(`Release constraints passed for ${basename(ROOT.pathname)} ${tag}.`)
+console.log(`Release constraints passed for MyOpenPanels ${tag}.`)
 console.log(JSON.stringify(manifest, null, 2))

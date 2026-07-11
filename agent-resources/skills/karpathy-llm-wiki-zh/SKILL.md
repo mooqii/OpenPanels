@@ -25,12 +25,12 @@ loadWhen:
 tokens: medium
 ---
 
-Use this skill when the current OpenPanels wiki task should create, add to,
+Use this skill when the current MyOpenPanels wiki task should create, add to,
 edit, or maintain a persistent, compounding wiki from curated source documents,
 with newly generated wiki content written in Chinese.
 
 This skill follows the pattern from Andrej Karpathy's LLM Wiki idea, adapted for
-OpenPanels: the left-side raw document list remains the source-of-truth layer,
+MyOpenPanels: the left-side raw document list remains the source-of-truth layer,
 while the LLM incrementally builds and maintains an interlinked markdown wiki as
 the generated synthesis layer. The wiki should accumulate synthesis over time
 instead of rediscovering knowledge from scratch for every question.

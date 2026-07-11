@@ -14,8 +14,8 @@
     "allowImportingTsExtensions": true,
     "baseUrl": ".",
     "paths": {
-      "~/canvas/*": ["apps/local-studio/src/canvas/*"],
-      "@lingui/react/macro": ["apps/local-studio/src/canvas/i18n-shim.tsx"]
+      "~/canvas/*": ["apps/studio/src/canvas/*"],
+      "@lingui/react/macro": ["apps/studio/src/canvas/i18n-shim.tsx"]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,

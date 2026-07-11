@@ -1,30 +1,30 @@
 # CLI Agent Setup
 
 MyOpenPanels can run in any local agent that can execute shell commands. Agents
-use the `openpanels-local` CLI to start the local studio, inspect the active
+use the `myopenpanels` CLI to start the MyOpenPanels Studio, inspect the active
 project and panel, read panel state, and use panel-specific commands such as
 canvas selection and image insertion.
 
 ## Install
 
-Install the Rust-native `openpanels-local` CLI from GitHub Releases, then verify
+Install the Rust-native `myopenpanels` CLI from GitHub Releases, then verify
 it:
 
 ```bash
-openpanels-local --version
+myopenpanels --version
 ```
 
-The recommended agent skill uses the installed `openpanels-local` binary as the
+The recommended agent skill uses the installed `myopenpanels` binary as the
 stable entry point. Panel-specific instructions are returned by the CLI through
 `agent bootstrap`, so users do not need to keep separate canvas/wiki skills
 manually updated.
 
 The compact context renderer, capability manifest, built-in workflow guides,
 and built-in agent skills now live in the Rust CLI crate under
-`crates/openpanels-local/src/agent.rs`, with markdown resources in
+`crates/myopenpanels/src/agent.rs`, with markdown resources in
 `agent-resources/`.
 
-If you do not pass `--project`, OpenPanels uses `OPENPANELS_PROJECT_DIR` or the
+If you do not pass `--project`, MyOpenPanels uses `MYOPENPANELS_PROJECT_DIR` or the
 current working directory for project metadata. Canvas data is stored in the
 global MyOpenPanels data directory so agents and projects can share the same
 boards and assets.
@@ -37,78 +37,77 @@ any existing Project in the studio.
 
 ## Agent Workflow
 
-1. Run `openpanels-local studio start --project <project> --format json`.
+1. Run `myopenpanels studio start --project <project> --format json`.
 2. Open the returned `browserUrl` in the agent's in-app Browser side panel.
    `serverUrl` is kept as the localhost URL for same-computer use; `browserUrl`
    may use a LAN address when another device is viewing the agent.
-3. Run `openpanels-local agent bootstrap --project <project> --format json` before
+3. Run `myopenpanels agent bootstrap --project <project> --format json` before
    panel-specific work. The returned context lists the current project, active
-   panel, available panels, current state, and full command capabilities. On
-   this startup Bootstrap only, compare the loaded MyOpenPanels Skill version
-   with `entrySkill.requiredVersion`; a missing or older version is updated from
-   `entrySkill.source` through the Agent host's Skill installer.
-4. Run `openpanels-local panel list --project <project> --format json` or
-   `openpanels-local panel switch --project <project> --kind wiki --format json`
+   panel, available panels, current state, and full command capabilities. The
+   startup Bootstrap response may also report a newer MyOpenPanels Skill
+   version and its canonical source; the Agent may decide whether to update it
+   through the host environment's Skill installer.
+4. Run `myopenpanels panel list --project <project> --format json` or
+   `myopenpanels panel switch --project <project> --kind wiki --format json`
    to inspect or switch panels.
-5. For complex workflows, run `openpanels-local agent skills --project
-   <project>` or `openpanels-local agent guides --project <project>`, then load
-   the recommended skill or guide. Wiki tasks use
-   `openpanels-local agent skill karpathy-llm-wiki --project <project> --task-id
-   <task-id>`.
-   For Wiki knowledge context, follow the CLI-suggested
-   `wiki.knowledge-context` guide. It decides when the agent should load
-   `wiki-query` without a task id.
-6. For canvas work, run `openpanels-local canvas selection read --project
+5. Before a new Wiki or Canvas operation, load the `activePanelSkill` returned
+   by Bootstrap. Wiki authoring tasks load `wiki-panel` first, then the selected
+   `karpathy-llm-wiki` or `karpathy-llm-wiki-zh` skill with the task id. Wiki
+   queries and generated documents route through references in `wiki-panel`.
+6. For Canvas work, load `canvas-panel`, then run `myopenpanels canvas selection read --project
    <project> --format json` to inspect the current canvas selection.
-7. Run `openpanels-local canvas selection read --project <project>
-   --include-image-base64 --format json` or `openpanels-local canvas selection
+7. Run `myopenpanels canvas selection read --project <project>
+   --include-image-base64 --format json` or `myopenpanels canvas selection
    export --project <project> --output <path> --format json` when selected pixels
    are needed.
-8. Run `openpanels-local canvas image insert --project <project> --image <path>
+8. Run `myopenpanels canvas image insert --project <project> --image <path>
    --placement right --format json` to place a generated local image into the
    canvas.
 
 ## Command Map
 
-- `openpanels-local studio start`: start or reuse the local studio.
-- `openpanels-local studio status`: show the conversation-local studio process status.
-- `openpanels-local studio open`: open the studio URL in the system browser.
-- `openpanels-local studio wait`: wait for the studio HTTP server to become ready.
-- `openpanels-local studio stop`: stop the conversation-local studio process.
-- `openpanels-local agent bootstrap`: print the protocol v2 focus, state,
+- `myopenpanels studio start`: start or reuse the MyOpenPanels Studio.
+- `myopenpanels studio status`: show the conversation-scoped MyOpenPanels Studio process status.
+- `myopenpanels studio open`: open the studio URL in the system browser.
+- `myopenpanels studio wait`: wait for the studio HTTP server to become ready.
+- `myopenpanels studio stop`: stop the conversation-scoped MyOpenPanels Studio process.
+- `myopenpanels agent bootstrap`: print the protocol v2 focus, state,
   capabilities, applicable guides, and active operations.
-- `openpanels-local agent skills`: list loadable built-in skills.
-- `openpanels-local agent skill <id>`: print one full workflow skill.
-- `openpanels-local agent guide wiki.knowledge-context`: load the current
-  CLI version's rules for using Wiki and raw-document knowledge context.
-- `openpanels-local wiki selection read`: read whether the whole Wiki is
+- `myopenpanels agent skills`: list loadable built-in skills.
+- `myopenpanels agent skill <id>`: resolve a panel or authoring skill and
+  print its task-specific loader context.
+- `myopenpanels agent skill wiki-panel`: load Wiki knowledge, generated
+  document, and authoring-skill routing rules.
+- `myopenpanels agent skill canvas-panel`: load Canvas selection,
+  generation, placement, and workflow-skill routing rules.
+- `myopenpanels wiki selection read`: read whether the whole Wiki is
   selected and which raw documents the user selected directly.
-- `openpanels-local wiki pages search`: search the selected Wiki space before
+- `myopenpanels wiki pages search`: search the selected Wiki space before
   reading relevant pages.
-- `openpanels-local agent guides`: list loadable built-in guides.
-- `openpanels-local agent guide <id>`: print one full workflow guide.
-- `openpanels-local panel list`: list panels in the current Project.
-- `openpanels-local panel current`: read the active Project panel.
-- `openpanels-local panel switch`: switch the active Project panel.
-- `openpanels-local wiki context`: read the current Wiki context.
-- `openpanels-local canvas state`: read the current canvas session, panel, and state.
-- `openpanels-local canvas selection read`: read selected shapes and optional PNG data.
-- `openpanels-local canvas selection export`: write the exported selection PNG to a file.
-- `openpanels-local canvas image insert`: add a local image file as a canvas image shape.
+- `myopenpanels agent guides`: list loadable built-in guides.
+- `myopenpanels agent guide <id>`: print one full workflow guide.
+- `myopenpanels panel list`: list panels in the current Project.
+- `myopenpanels panel current`: read the active Project panel.
+- `myopenpanels panel switch`: switch the active Project panel.
+- `myopenpanels wiki context`: read the current Wiki context.
+- `myopenpanels canvas state`: read the current canvas session, panel, and state.
+- `myopenpanels canvas selection read`: read selected shapes and optional PNG data.
+- `myopenpanels canvas selection export`: write the exported selection PNG to a file.
+- `myopenpanels canvas image insert`: add a local image file as a canvas image shape.
 
 ## Task Targets
 
-OpenPanels only assigns background work to explicitly registered targets. A
+MyOpenPanels only assigns background work to explicitly registered targets. A
 target declares the capabilities it can execute, such as
 `wiki.convertDocument` or `wiki.ingestMarkdown`.
 
 Register a polling target and claim work atomically:
 
 ```bash
-openpanels-local agent targets register \
+myopenpanels agent targets register \
   --name my-agent --transport poll \
   --capability wiki.ingestMarkdown --format json
-openpanels-local tasks claim-next \
+myopenpanels tasks claim-next \
   --target-id <target-id> --wait-ms 25000 --format json
 ```
 
@@ -118,7 +117,7 @@ The claim response contains a lease token. Use it with `tasks heartbeat`,
 For a local command-based agent, the bridge owns this lifecycle automatically:
 
 ```bash
-openpanels-local agent bridge \
+myopenpanels agent bridge \
   --name my-worker \
   --capability wiki.ingestMarkdown \
   --command '<agent command>'
@@ -126,5 +125,5 @@ openpanels-local agent bridge \
 
 Webhook targets register an endpoint and receive signed wake notifications.
 The target must still claim the task before executing it. Use
-`openpanels-local agent bridge status --format json` to inspect dispatcher,
+`myopenpanels agent bridge status --format json` to inspect dispatcher,
 target, retry, and running-task status.

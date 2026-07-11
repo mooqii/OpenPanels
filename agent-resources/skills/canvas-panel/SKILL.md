@@ -1,0 +1,50 @@
+---
+id: canvas-panel
+title: MyOpenPanels Canvas Panel
+description: Use before reading Canvas selections or generating, editing, arranging, or inserting visual content through an MyOpenPanels Canvas panel.
+source: builtin
+appliesTo:
+  - canvas
+taskTypes:
+requiresCapabilities:
+  - canvas.state.read
+  - canvas.selection.read
+  - canvas.selection.asset.read
+  - canvas.generation.begin
+  - canvas.generation.complete
+  - canvas.image.insert
+  - agent.skill.read
+loadWhen:
+  - Before beginning a new operation that targets an MyOpenPanels Canvas panel.
+tokens: short
+---
+
+Use this skill as the required operating contract for an MyOpenPanels Canvas
+panel. It defines safe Canvas selection, generation, and placement mechanics. It
+does not define an artistic style or prompt-writing method.
+
+Intent routing:
+
+- When selected Canvas content or a visual reference matters, read
+  `references/selection.md`.
+- When generating, redrawing, restyling, or editing a bitmap for the Canvas,
+  read `references/image-generation.md`.
+- Before invoking an image model, read `references/workflow-skill-routing.md` to
+  determine whether a separate drawing workflow skill was selected.
+
+Core rules:
+
+- CLI state and selection data are authoritative; do not infer selection from a
+  screenshot.
+- Never treat fallback content as an explicit user selection.
+- Begin target-bound generation before invoking an external image model.
+- Complete against the captured Canvas target even if the user switches panels.
+- Preserve generation prompt, model, references, and source asset metadata.
+- Do not intentionally overlap existing images or placeholders.
+- Use commands advertised by the current CLI instead of remembered syntax.
+
+Completion criteria:
+
+- The required references and any selected workflow skill were loaded.
+- The result is inserted into the intended Canvas and the operation lifecycle is
+  closed explicitly.
