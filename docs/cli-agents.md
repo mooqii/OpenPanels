@@ -37,9 +37,14 @@ contains no Projects.
 
 ## Agent Workflow
 
-1. Run `myopenpanels studio start --project-dir <project> --format json`.
-2. Open the returned `embeddedBrowserUrl` unchanged in the agent's in-app
-   Browser side panel. If the request was only to open the panel, stop here.
+1. Run `myopenpanels studio start --local-only --project-dir <project> --format
+   json`.
+2. Treat CLI success as Studio readiness, not proof that the panel is visible.
+   Follow `nextRequiredAction`: open its URL unchanged with a callable in-app
+   URL opener, or immediately run `myopenpanels studio open-system-browser
+   --local-only --project-dir <project> --format json` when that capability is
+   absent, fails, or cannot report success. Stop an open-only task only after an
+   opener succeeds.
 3. Run `myopenpanels agent bootstrap --format json` only before panel-specific
    work. The returned context lists the current project, active
    panel, available panels, current state, and full command capabilities. The
@@ -93,6 +98,27 @@ contains no Projects.
 - `myopenpanels canvas selection read`: read selected shapes and optional PNG data.
 - `myopenpanels canvas selection export`: write the exported selection PNG to a file.
 - `myopenpanels canvas image insert`: add a local image file as a canvas image shape.
+
+## WorkBuddy Troubleshooting
+
+WorkBuddy's Results Panel is a UI surface, not by itself a callable URL-open
+capability. Use an exposed URL-open or Preview tool when one is present; no
+separate Agent Browser Skill is required. Otherwise use the system-browser
+fallback returned by `nextRequiredAction`.
+
+Troubleshoot the stages independently:
+
+- No successful `studio start` payload, or a bind/timeout error: allow localhost
+  binding in the WorkBuddy sandbox or temporarily use the required permission
+  mode, then retry the local-only start command.
+- A payload with `ok: true` and a URL, but no visible panel: the Studio is ready
+  and the host open step is missing or failed; use the fallback command.
+- `browser_open_failed`: the system launcher rejected the open request. Use the
+  recovery URL manually and fix the host's external-program permission.
+
+MyOpenPanels does not guess undocumented WorkBuddy session environment
+variables. WorkBuddy conversations therefore use the CLI's normal default
+context behavior until a stable host session identifier is available.
 
 ## Task Targets
 

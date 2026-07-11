@@ -88,17 +88,21 @@ requirements live in [docs/release.md](docs/release.md).
 ## Use with Shell Agents
 
 MyOpenPanels works in any local agent that can run shell commands. `studio
-start` prepares the current Project without opening a browser. Open its returned
-`embeddedBrowserUrl` unchanged in the agent's in-app Browser side panel;
-`systemBrowserUrl` is reserved for an explicit system-browser fallback:
+start` prepares the current Project without opening a browser. Its
+`nextRequiredAction` describes the separate, required open step. Open the
+returned URL unchanged in an in-app Browser only when the host exposes a
+callable URL opener:
 
 ```bash
-myopenpanels studio start --project-dir /path/to/project --format json
+myopenpanels studio start --local-only --project-dir /path/to/project --format json
 ```
 
-Use `myopenpanels studio open-system-browser` only when the host has no in-app
-Browser or an attempted in-app open fails. An open-only request is complete once
-the embedded URL is visible; Bootstrap is needed only for subsequent panel work.
+If the host has no callable opener, or the attempt fails or cannot report
+success, run `myopenpanels studio open-system-browser --local-only`. The CLI
+reports `opened: true` only after the operating-system launcher succeeds; on
+failure it returns `browser_open_failed` and the URL for manual recovery. An
+open-only request is complete only after an opener succeeds. Bootstrap is needed
+only for subsequent panel work.
 
 Agents can then use project-backed CLI commands:
 

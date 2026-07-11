@@ -361,8 +361,26 @@ async fn api_studio_open_browser(
     Json(body): Json<OpenBrowserBody>,
 ) -> Response {
     let path = safe_browser_path(body.path.as_deref());
-    open_browser(&format!("http://127.0.0.1:{}{path}", state.port));
-    json_response(StatusCode::OK, &json!({ "ok": true }))
+    let url = format!("http://127.0.0.1:{}{path}", state.port);
+    studio_open_browser_response(&url, open_browser)
+}
+
+fn studio_open_browser_response(
+    url: &str,
+    opener: impl FnOnce(&str) -> Result<(), CliError>,
+) -> Response {
+    match opener(url) {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &json!({
+                "ok": true,
+                "opened": true,
+                "openTarget": "system_browser",
+                "url": url,
+            }),
+        ),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
 }
 
 fn safe_browser_path(path: Option<&str>) -> &str {
@@ -1580,6 +1598,44 @@ mod tests {
         assert_eq!(safe_browser_path(Some("https://example.com")), "/");
         assert_eq!(safe_browser_path(Some("//example.com")), "/");
         assert_eq!(safe_browser_path(Some("/\r\nexample.com")), "/");
+    }
+
+    #[tokio::test]
+    async fn studio_browser_endpoint_reports_successful_system_open() {
+        let url = "http://127.0.0.1:43217/wiki";
+        let response = studio_open_browser_response(url, |opened_url| {
+            assert_eq!(opened_url, url);
+            Ok(())
+        });
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload = serde_json::from_slice::<Value>(&body).expect("json response");
+        assert_eq!(payload["opened"], true);
+        assert_eq!(payload["openTarget"], "system_browser");
+        assert_eq!(payload["url"], url);
+    }
+
+    #[tokio::test]
+    async fn studio_browser_endpoint_propagates_launcher_failure() {
+        let url = "http://127.0.0.1:43217";
+        let response = studio_open_browser_response(url, |_| {
+            Err(CliError::with_recovery(
+                "browser_open_failed",
+                "browser launcher failed",
+                true,
+                format!("Open {url} manually."),
+            ))
+        });
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload = serde_json::from_slice::<Value>(&body).expect("json response");
+        assert_eq!(payload["error"], "browser launcher failed");
     }
 
     #[tokio::test]

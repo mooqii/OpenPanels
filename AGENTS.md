@@ -6,8 +6,12 @@
   exists and is executable; otherwise use `myopenpanels` from `PATH`.
 - When asked to open the MyOpenPanels panel, do not inspect the repository first.
   Start the MyOpenPanels Studio directly with:
-  `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev" scripts/myopenpanels-dev studio start --project-dir "$PWD" --format json`
-  Then open the returned `embeddedBrowserUrl` unchanged in the in-app browser.
+  `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev" scripts/myopenpanels-dev studio start --local-only --project-dir "$PWD" --format json`
+  Treat the successful response as Studio readiness, then follow
+  `nextRequiredAction`: open its URL unchanged with a callable in-app browser
+  tool. If no such tool exists, or the attempt fails or has no success signal,
+  run `scripts/myopenpanels-dev studio open-system-browser --local-only --project-dir "$PWD" --format json`.
+  Do not report completion until an opener succeeds.
   If the start command fails or reports a stale server, run the foreground fallback:
   `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev" scripts/myopenpanels-dev studio serve --project-dir "$PWD" --local-only --format json`
 - Do not run broad `rg` searches before starting MyOpenPanels unless the CLI

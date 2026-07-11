@@ -233,10 +233,7 @@ fn studio_start_json_reuses_same_project_studio() {
 
     assert_eq!(code, 0, "{stderr}{stdout}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(
-        payload["embeddedBrowserUrl"],
-        format!("{server_url}?myopenpanels-view=embedded")
-    );
+    assert_eq!(payload["embeddedBrowserUrl"], server_url);
     assert_eq!(payload["systemBrowserUrl"], server_url);
     assert_eq!(payload["context"]["id"], "owner");
     assert_eq!(payload["projectReady"], true);
@@ -245,6 +242,35 @@ fn studio_start_json_reuses_same_project_studio() {
     assert_eq!(payload["lifecycle"], "reused");
     assert_eq!(payload["previousVersion"], Value::Null);
     assert_eq!(payload["browserRefreshRequired"], false);
+    assert_eq!(payload["nextRequiredAction"]["intent"], "studio.open");
+    assert_eq!(payload["nextRequiredAction"]["required"], true);
+    assert_eq!(payload["nextRequiredAction"]["url"], server_url);
+    assert_eq!(
+        payload["nextRequiredAction"]["preferredTarget"],
+        "in_app_browser"
+    );
+    assert_eq!(
+        payload["nextRequiredAction"]["fallback"]["intent"],
+        "studio.open-system-browser"
+    );
+    assert_eq!(
+        payload["nextRequiredAction"]["fallback"]["command"],
+        "myopenpanels studio open-system-browser"
+    );
+    assert_eq!(
+        payload["nextRequiredAction"]["fallback"]["args"],
+        json!([
+            "--local-only",
+            "--project-dir",
+            project_dir,
+            "--format",
+            "json"
+        ])
+    );
+    assert!(payload["nextRequiredAction"]["completionCriterion"]
+        .as_str()
+        .unwrap()
+        .contains("accepted"));
     assert!(storage_dir
         .join("contexts")
         .join("borrower")
@@ -327,6 +353,67 @@ fn panel_commands_follow_borrowed_running_studio_context() {
 }
 
 #[test]
+fn system_browser_payload_requires_a_successful_launcher() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let bootstrap = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let server_url = "http://127.0.0.1:43217".to_owned();
+    let result = StudioStartResult {
+        session: StudioSession {
+            system_browser_url: Some(server_url.clone()),
+            context_dir: paths.context_dir.display().to_string(),
+            context_id: paths.context_id.clone(),
+            context_id_source: paths.context_id_source.clone(),
+            host: Some("127.0.0.1".to_owned()),
+            lan_server_urls: Some(Vec::new()),
+            local_server_url: Some(server_url.clone()),
+            log_path: paths.context_dir.join("studio.log").display().to_string(),
+            pid: std::process::id(),
+            port: 43_217,
+            project_dir: paths.project_dir.display().to_string(),
+            server_url: server_url.clone(),
+            started_at: "2026-07-11T00:00:00.000Z".to_owned(),
+            storage_dir: paths.storage_dir.display().to_string(),
+        },
+        reused_existing: false,
+        server_version: VERSION.to_owned(),
+        lifecycle: crate::studio::StudioLifecycle::Started,
+        previous_version: None,
+        browser_refresh_required: false,
+    };
+
+    let payload = studio_system_browser_payload(&result, &bootstrap, |url| {
+        assert_eq!(url, server_url);
+        Ok(())
+    })
+    .expect("browser payload");
+    assert_eq!(payload["opened"], true);
+    assert_eq!(payload["openTarget"], "system_browser");
+    assert!(payload.get("nextRequiredAction").is_none());
+
+    let error = studio_system_browser_payload(&result, &bootstrap, |_| {
+        Err(CliError::with_recovery(
+            "browser_open_failed",
+            "launcher failed",
+            true,
+            format!("Open {server_url} manually."),
+        ))
+    })
+    .expect_err("launcher failure");
+    assert_eq!(error.code(), Some("browser_open_failed"));
+    assert!(error.retryable());
+    assert!(error.recovery().unwrap().contains(&server_url));
+}
+
+#[test]
 fn studio_serve_reuses_existing_studio_without_foreground_server() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
@@ -380,12 +467,10 @@ fn studio_serve_reuses_existing_studio_without_foreground_server() {
 
     assert_eq!(code, 0, "{stderr}{stdout}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(
-        payload["embeddedBrowserUrl"],
-        format!("{server_url}?myopenpanels-view=embedded")
-    );
+    assert_eq!(payload["embeddedBrowserUrl"], server_url);
     assert_eq!(payload["foreground"], false);
     assert_eq!(payload["reusedExisting"], true);
+    assert_eq!(payload["nextRequiredAction"]["intent"], "studio.open");
     server.join().expect("server thread");
 }
 
@@ -3187,30 +3272,17 @@ fn unknown_command_prints_json_error() {
 }
 
 #[test]
-fn embedded_browser_url_adds_one_marker_before_the_fragment() {
-    assert_eq!(
-        embedded_browser_url("http://127.0.0.1:3000"),
-        "http://127.0.0.1:3000?myopenpanels-view=embedded"
-    );
-    assert_eq!(
-        embedded_browser_url("http://127.0.0.1:3000/?tab=canvas#selection"),
-        "http://127.0.0.1:3000/?tab=canvas&myopenpanels-view=embedded#selection"
-    );
-    assert_eq!(
-        embedded_browser_url("http://127.0.0.1:3000/?tab=canvas&myopenpanels-view=embedded"),
-        "http://127.0.0.1:3000/?tab=canvas&myopenpanels-view=embedded"
-    );
-}
-
-#[test]
-fn entry_skill_prioritizes_embedded_open_without_bootstrap_gating() {
+fn entry_skill_requires_verified_open_without_bootstrap_gating() {
     let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
     assert!(skill.contains("version: \"1.4\""));
-    assert!(skill.contains("embeddedBrowserUrl"));
-    assert!(skill.contains("browserRefreshRequired: true"));
+    assert!(skill.contains("nextRequiredAction.url"));
+    assert!(skill.contains("Studio readiness only"));
     assert!(skill.contains("If the user only asked to open the panel"));
     assert!(skill.contains("Do not request Agent Bootstrap merely to verify"));
     assert!(skill.contains("studio open-system-browser"));
+    assert!(skill.contains("opened: true"));
+    assert!(skill.contains("WorkBuddy Results Panel"));
+    assert!(skill.contains("--local-only"));
     assert!(!skill.contains("--no-open"));
 }
 

@@ -994,7 +994,7 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
                     return Err(error);
                 }
             };
-            let payload = studio_launch_payload(&result, &bootstrap, None)?;
+            let payload = studio_launch_payload(&result, &bootstrap, None, true)?;
             let text = payload["embeddedBrowserUrl"].as_str().unwrap_or("");
             write_result(parsed, stdout, &payload, text)
         }
@@ -1023,13 +1023,8 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
                     return Err(error);
                 }
             };
-            let system_url = result
-                .session
-                .system_browser_url
-                .as_deref()
-                .unwrap_or(&result.session.server_url);
-            open_browser(system_url);
-            let payload = studio_launch_payload(&result, &bootstrap, Some(("opened", true)))?;
+            let payload = studio_system_browser_payload(&result, &bootstrap, open_browser)?;
+            let system_url = payload["systemBrowserUrl"].as_str().unwrap_or("");
             write_result(parsed, stdout, &payload, &format!("Opened {system_url}"))
         }
         Some("serve") => {
@@ -1048,7 +1043,7 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
                     browser_refresh_required: false,
                 };
                 let payload =
-                    studio_launch_payload(&result, &bootstrap, Some(("foreground", false)))?;
+                    studio_launch_payload(&result, &bootstrap, Some(("foreground", false)), true)?;
                 let text = payload["embeddedBrowserUrl"].as_str().unwrap_or("");
                 return write_result(parsed, stdout, &payload, text);
             }
@@ -1085,7 +1080,8 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
                 previous_version: None,
                 browser_refresh_required: false,
             };
-            let payload = studio_launch_payload(&result, &bootstrap, Some(("foreground", true)))?;
+            let payload =
+                studio_launch_payload(&result, &bootstrap, Some(("foreground", true)), true)?;
             let text = payload["embeddedBrowserUrl"].as_str().unwrap_or("");
             write_result(parsed, stdout, &payload, text)?;
             stdout
@@ -1961,6 +1957,7 @@ fn studio_launch_payload(
     result: &StudioStartResult,
     bootstrap: &ProjectBootstrap,
     extra: Option<(&str, bool)>,
+    open_required: bool,
 ) -> Result<Value, CliError> {
     let system_browser_url = result
         .session
@@ -1976,7 +1973,7 @@ fn studio_launch_payload(
         "browserRefreshRequired": result.browser_refresh_required,
         "projectReady": true,
         "serverUrl": result.session.server_url,
-        "embeddedBrowserUrl": embedded_browser_url(system_browser_url),
+        "embeddedBrowserUrl": system_browser_url,
         "systemBrowserUrl": system_browser_url,
         "recommendedOpenTarget": "in_app_browser",
         "context": {
@@ -1998,23 +1995,44 @@ fn studio_launch_payload(
     if let Some((key, value)) = extra {
         payload[key] = serde_json::json!(value);
     }
+    if open_required {
+        payload["nextRequiredAction"] = serde_json::json!({
+            "intent": "studio.open",
+            "required": true,
+            "url": system_browser_url,
+            "preferredTarget": "in_app_browser",
+            "fallback": {
+                "intent": "studio.open-system-browser",
+                "command": "myopenpanels studio open-system-browser",
+                "args": [
+                    "--local-only",
+                    "--project-dir",
+                    result.session.project_dir,
+                    "--format",
+                    "json",
+                ],
+            },
+            "completionCriterion": "The Studio URL was accepted by an in-app or system browser opener.",
+        });
+    }
     Ok(payload)
 }
 
-fn embedded_browser_url(url: &str) -> String {
-    if url.contains("myopenpanels-view=embedded") {
-        return url.to_owned();
-    }
-    let (base, fragment) = url
-        .split_once('#')
-        .map_or((url, None), |(base, fragment)| (base, Some(fragment)));
-    let separator = if base.contains('?') { '&' } else { '?' };
-    let mut result = format!("{base}{separator}myopenpanels-view=embedded");
-    if let Some(fragment) = fragment {
-        result.push('#');
-        result.push_str(fragment);
-    }
-    result
+fn studio_system_browser_payload(
+    result: &StudioStartResult,
+    bootstrap: &ProjectBootstrap,
+    opener: impl FnOnce(&str) -> Result<(), CliError>,
+) -> Result<Value, CliError> {
+    let system_url = result
+        .session
+        .system_browser_url
+        .as_deref()
+        .unwrap_or(&result.session.server_url);
+    opener(system_url)?;
+    let mut payload = studio_launch_payload(result, bootstrap, None, false)?;
+    payload["opened"] = serde_json::json!(true);
+    payload["openTarget"] = serde_json::json!("system_browser");
+    Ok(payload)
 }
 
 fn write_result(

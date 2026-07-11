@@ -754,20 +754,77 @@ fn terminate_process(pid: u32) {
     }
 }
 
-pub(crate) fn open_browser(url: &str) {
-    let (command, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
-        ("open", vec![url])
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BrowserPlatform {
+    Macos,
+    Windows,
+    Other,
+}
+
+pub(crate) fn open_browser(url: &str) -> Result<(), CliError> {
+    open_browser_with(url, current_browser_platform(), |program, args| {
+        Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+    })
+}
+
+fn current_browser_platform() -> BrowserPlatform {
+    if cfg!(target_os = "macos") {
+        BrowserPlatform::Macos
     } else if cfg!(target_os = "windows") {
-        ("cmd", vec!["/c", "start", "", url])
+        BrowserPlatform::Windows
     } else {
-        ("xdg-open", vec![url])
-    };
-    let _ = Command::new(command)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+        BrowserPlatform::Other
+    }
+}
+
+fn browser_command(platform: BrowserPlatform, url: &str) -> (&'static str, Vec<String>) {
+    match platform {
+        BrowserPlatform::Macos => ("open", vec![url.to_owned()]),
+        BrowserPlatform::Windows => (
+            "cmd",
+            vec![
+                "/c".to_owned(),
+                "start".to_owned(),
+                String::new(),
+                url.to_owned(),
+            ],
+        ),
+        BrowserPlatform::Other => ("xdg-open", vec![url.to_owned()]),
+    }
+}
+
+fn open_browser_with(
+    url: &str,
+    platform: BrowserPlatform,
+    launch: impl FnOnce(&str, &[String]) -> std::io::Result<bool>,
+) -> Result<(), CliError> {
+    let (program, args) = browser_command(platform, url);
+    match launch(program, &args) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(browser_open_error(
+            url,
+            format!("{program} exited with a non-zero status"),
+        )),
+        Err(error) => Err(browser_open_error(
+            url,
+            format!("failed to launch {program}: {error}"),
+        )),
+    }
+}
+
+fn browser_open_error(url: &str, detail: String) -> CliError {
+    CliError::with_recovery(
+        "browser_open_failed",
+        format!("Failed to open the MyOpenPanels Studio URL {url}: {detail}"),
+        true,
+        format!("Open {url} manually in a browser, or fix the system browser launcher and retry."),
+    )
 }
 
 fn studio_server_args(
@@ -847,6 +904,71 @@ mod tests {
             Some(context_id),
         )
         .expect("paths")
+    }
+
+    #[test]
+    fn browser_commands_cover_supported_platforms() {
+        let url = "http://127.0.0.1:43217/wiki?tab=source";
+        assert_eq!(
+            browser_command(BrowserPlatform::Macos, url),
+            ("open", vec![url.to_owned()])
+        );
+        assert_eq!(
+            browser_command(BrowserPlatform::Windows, url),
+            (
+                "cmd",
+                vec![
+                    "/c".to_owned(),
+                    "start".to_owned(),
+                    String::new(),
+                    url.to_owned(),
+                ]
+            )
+        );
+        assert_eq!(
+            browser_command(BrowserPlatform::Other, url),
+            ("xdg-open", vec![url.to_owned()])
+        );
+    }
+
+    #[test]
+    fn browser_open_succeeds_only_when_launcher_succeeds() {
+        let url = "http://127.0.0.1:43217";
+        let result = open_browser_with(url, BrowserPlatform::Macos, |program, args| {
+            assert_eq!(program, "open");
+            assert_eq!(args, &[url.to_owned()]);
+            Ok(true)
+        });
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn browser_open_reports_non_zero_launcher_status() {
+        let url = "http://127.0.0.1:43217";
+        let error = open_browser_with(url, BrowserPlatform::Other, |_, _| Ok(false))
+            .expect_err("non-zero launcher status");
+
+        assert_eq!(error.code(), Some("browser_open_failed"));
+        assert!(error.retryable());
+        assert!(error.message().contains("non-zero status"));
+        assert!(error.recovery().unwrap().contains(url));
+    }
+
+    #[test]
+    fn browser_open_reports_launcher_start_failure() {
+        let url = "http://127.0.0.1:43217";
+        let error = open_browser_with(url, BrowserPlatform::Windows, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "launcher missing",
+            ))
+        })
+        .expect_err("missing launcher");
+
+        assert_eq!(error.code(), Some("browser_open_failed"));
+        assert!(error.message().contains("launcher missing"));
+        assert!(error.recovery().unwrap().contains(url));
     }
 
     fn fake_studio_server(request_count: usize) -> (u16, thread::JoinHandle<()>) {

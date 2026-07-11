@@ -7,9 +7,11 @@ installed CLI is the sole authority for the current Project, visible panel,
 selection, capabilities, guides, skills, and persistent operations.
 
 The separately installed `myopenpanels` entry Skill detects or installs the
-native CLI, starts or reuses Studio, and opens `embeddedBrowserUrl`. Bootstrap
-is requested only before panel-specific work, not to verify an open-only task.
-The Skill must not duplicate panel workflows or panel-operation parameters.
+native CLI, starts or reuses Studio, and follows the launch response's
+`nextRequiredAction` to open the Studio URL. A successful start only means the
+Studio is ready. Bootstrap is requested only before panel-specific work, not to
+verify an open-only task. The Skill must not duplicate panel workflows or
+panel-operation parameters.
 
 ## Communication Model
 
