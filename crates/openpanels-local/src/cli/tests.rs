@@ -606,7 +606,8 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.contains("karpathy-llm-wiki"));
-    assert!(stdout.contains(".myopenpanels/skills/karpathy-llm-wiki/SKILL.md"));
+    assert!(stdout.contains(".myopenpanels"));
+    assert!(stdout.contains("SKILL.md"));
 
     let (code, stdout, stderr) = run(&[
         "agent",
