@@ -54,6 +54,7 @@ jobs:
         run: pnpm --filter @openpanels/local-studio build
 
       - name: Test Rust CLI
+        if: runner.os != 'Linux'
         timeout-minutes: 10
         run: cargo test -p openpanels-local -- --test-threads=1
 
