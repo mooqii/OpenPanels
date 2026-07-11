@@ -13,7 +13,7 @@ const STUDIO_HEALTH_REQUEST_TIMEOUT_MS: u64 = 700;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioSession {
-    pub browser_url: Option<String>,
+    pub system_browser_url: Option<String>,
     pub context_dir: String,
     pub context_id: String,
     pub context_id_source: String,
@@ -61,7 +61,6 @@ pub enum StudioServerStatus {
 
 pub struct StudioStartOptions {
     pub host: String,
-    pub open_browser: bool,
     pub static_dir: Option<PathBuf>,
 }
 
@@ -88,7 +87,7 @@ pub fn start_studio(
     paths: &MyOpenPanelsPaths,
     options: StudioStartOptions,
 ) -> Result<StudioStartResult, CliError> {
-    if let Some(session) = reuse_existing_studio(paths, options.open_browser)? {
+    if let Some(session) = reuse_existing_studio(paths)? {
         return Ok(StudioStartResult {
             session,
             reused_existing: true,
@@ -99,7 +98,7 @@ pub fn start_studio(
     let port = find_open_port(&options.host)?;
     let local_server_url = format!("http://127.0.0.1:{port}");
     let server_url = local_server_url.clone();
-    let browser_url = server_url.clone();
+    let system_browser_url = server_url.clone();
     let process = spawn_studio_server_process(
         paths,
         port,
@@ -109,7 +108,7 @@ pub fn start_studio(
     )?;
 
     let session = StudioSession {
-        browser_url: Some(browser_url.clone()),
+        system_browser_url: Some(system_browser_url.clone()),
         context_dir: paths.context_dir.display().to_string(),
         context_id: paths.context_id.clone(),
         context_id_source: paths.context_id_source.clone(),
@@ -126,30 +125,16 @@ pub fn start_studio(
     };
     write_studio_session(paths, &session)?;
     wait_for_studio(&local_server_url, Duration::from_secs(10))?;
-    if options.open_browser {
-        open_browser(&browser_url);
-    }
     Ok(StudioStartResult {
         session,
         reused_existing: false,
     })
 }
 
-pub fn reuse_existing_studio(
-    paths: &MyOpenPanelsPaths,
-    open_browser_requested: bool,
-) -> Result<Option<StudioSession>, CliError> {
+pub fn reuse_existing_studio(paths: &MyOpenPanelsPaths) -> Result<Option<StudioSession>, CliError> {
     let current = studio_status(paths)?;
     if current.server == StudioServerStatus::Running {
         if let Some(session) = current.session {
-            if open_browser_requested {
-                open_browser(
-                    session
-                        .browser_url
-                        .as_deref()
-                        .unwrap_or(&session.server_url),
-                );
-            }
             return Ok(Some(session));
         }
     }
@@ -167,14 +152,6 @@ pub fn reuse_existing_studio(
         return Ok(None);
     };
     write_studio_session(paths, &session)?;
-    if open_browser_requested {
-        open_browser(
-            session
-                .browser_url
-                .as_deref()
-                .unwrap_or(&session.server_url),
-        );
-    }
     Ok(Some(session))
 }
 
@@ -378,6 +355,10 @@ pub fn write_studio_session(
     .map_err(to_cli_error)
 }
 
+pub fn discard_studio_session_binding(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
+    remove_file_if_exists(&studio_session_path(paths))
+}
+
 fn studio_session_path(paths: &MyOpenPanelsPaths) -> PathBuf {
     paths.context_dir.join("studio-session.json")
 }
@@ -400,7 +381,9 @@ fn read_current_studio_record(
     }
 }
 
-fn find_running_project_studio(paths: &MyOpenPanelsPaths) -> Result<Option<StudioSession>, CliError> {
+fn find_running_project_studio(
+    paths: &MyOpenPanelsPaths,
+) -> Result<Option<StudioSession>, CliError> {
     Ok(running_project_studios(paths)?.into_iter().next())
 }
 
@@ -487,7 +470,7 @@ fn studio_get(server_url: &str, path: &str) -> Result<ureq::Response, ureq::Erro
 
 fn studio_candidate_label(session: &StudioSession) -> String {
     let url = session
-        .browser_url
+        .system_browser_url
         .as_deref()
         .or(session.local_server_url.as_deref())
         .unwrap_or(&session.server_url);
@@ -617,7 +600,7 @@ fn studio_server_args(
 ) -> Vec<String> {
     let mut args = vec![
         "__serve-studio".to_owned(),
-        "--project".to_owned(),
+        "--project-dir".to_owned(),
         paths.project_dir.display().to_string(),
         "--storage-dir".to_owned(),
         paths.storage_dir.display().to_string(),
@@ -732,7 +715,7 @@ mod tests {
     fn studio_session(paths: &MyOpenPanelsPaths, port: u16) -> StudioSession {
         let server_url = format!("http://127.0.0.1:{port}");
         StudioSession {
-            browser_url: Some(server_url.clone()),
+            system_browser_url: Some(server_url.clone()),
             context_dir: paths.context_dir.display().to_string(),
             context_id: paths.context_id.clone(),
             context_id_source: paths.context_id_source.clone(),
@@ -765,7 +748,6 @@ mod tests {
             &borrower_paths,
             StudioStartOptions {
                 host: "127.0.0.1".to_owned(),
-                open_browser: false,
                 static_dir: None,
             },
         )
@@ -791,7 +773,7 @@ mod tests {
         let owner_session = studio_session(&owner_paths, 65_000);
         write_studio_session(&owner_paths, &owner_session).expect("owner session");
 
-        let result = reuse_existing_studio(&borrower_paths, false).expect("reuse");
+        let result = reuse_existing_studio(&borrower_paths).expect("reuse");
 
         assert!(result.is_none());
         assert!(!studio_session_path(&borrower_paths).exists());
@@ -809,7 +791,7 @@ mod tests {
         owner_session.pid = 0;
         write_studio_session(&owner_paths, &owner_session).expect("owner session");
 
-        let result = reuse_existing_studio(&borrower_paths, false).expect("reuse");
+        let result = reuse_existing_studio(&borrower_paths).expect("reuse");
 
         assert!(result.is_none());
         assert!(!studio_session_path(&owner_paths).exists());

@@ -32,7 +32,7 @@ export function UpdatePrompt({
   const visible = Boolean(status?.updateAvailable || status?.readyToInstall)
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(null)
   const recoveryCommand =
-    'myopenpanels studio start --project "$PWD" --format json --no-open'
+    'myopenpanels studio start --project-dir "$PWD" --format json'
 
   if (
     action === "installing" ||

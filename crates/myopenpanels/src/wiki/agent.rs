@@ -538,7 +538,7 @@ fn local_agent_worker_prompt(paths: &MyOpenPanelsPaths, message: &Value, agent_h
         .unwrap_or("karpathy-llm-wiki");
     let task_id = message.get("taskId").and_then(Value::as_str).unwrap_or("");
     let common_flags = format!(
-        "--project {} --storage-dir {} --context-id {} --format json",
+        "--project-dir {} --storage-dir {} --context-id {} --format json",
         shell_quote(paths.project_dir.display().to_string().as_str()),
         shell_quote(paths.storage_dir.display().to_string().as_str()),
         shell_quote(paths.context_id.as_str())

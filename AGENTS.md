@@ -6,11 +6,10 @@
   exists and is executable; otherwise use `myopenpanels` from `PATH`.
 - When asked to open the MyOpenPanels panel, do not inspect the repository first.
   Start the MyOpenPanels Studio directly with:
-  `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev" scripts/myopenpanels-dev studio start --project "$PWD" --format json --no-open`
-  Then append `myopenpanels-view=embedded` as a query parameter to the returned
-  `browserUrl` and open that URL in the in-app browser. If that command
-  fails or reports a stale server, run the foreground fallback:
-  `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev" scripts/myopenpanels-dev studio serve --project "$PWD" --local-only --format json`
+  `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev" scripts/myopenpanels-dev studio start --project-dir "$PWD" --format json`
+  Then open the returned `embeddedBrowserUrl` unchanged in the in-app browser.
+  If the start command fails or reports a stale server, run the foreground fallback:
+  `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev" scripts/myopenpanels-dev studio serve --project-dir "$PWD" --local-only --format json`
 - Do not run broad `rg` searches before starting MyOpenPanels unless the CLI
   command fails.
 - For MyOpenPanels work after the Studio is running, use only the current
@@ -21,6 +20,10 @@
   explicitly debugging the CLI internals.
 - Do not create a Project unless the user explicitly asks. Project creation is
   done with `scripts/myopenpanels-dev project create`.
+- For an open-only request, do not run Agent Bootstrap. Use Bootstrap only when
+  subsequent Wiki, Canvas, or task work requires the Agent protocol.
+- Use `studio open-system-browser` only when the in-app browser open attempt
+  itself fails or no in-app browser is available.
 - After changing anything that affects the local CLI or bundled Studio server
   (Rust CLI/server code, studio UI assets, or embedded guides/assets),
   rebuild the latest checkout-local CLI with `scripts/myopenpanels-dev`,
@@ -29,7 +32,7 @@
 - If `studio start --format json` returns `"reusedExisting": true` after local
   Studio/CLI changes, the browser is still pointed at an older detached server
   process. Stop that exact session before opening it: use
-  `scripts/myopenpanels-dev studio stop --project "$PWD" --context-id <contextId>`
+  `scripts/myopenpanels-dev studio stop --project-dir "$PWD" --context-id <contextId>`
   from the JSON payload (or terminate the returned `pid` if it is a borrowed
   session), then run `corepack pnpm --dir apps/studio build`
   when UI assets changed, rerun `scripts/myopenpanels-dev` to rebuild the

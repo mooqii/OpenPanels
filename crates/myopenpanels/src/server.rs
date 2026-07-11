@@ -329,7 +329,9 @@ async fn api_bootstrap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<BootstrapQuery>,
 ) -> Response {
-    let _ = record_current_studio(&state.paths, &studio_session_for_state(&state));
+    if let Err(error) = record_current_studio(&state.paths, &studio_session_for_state(&state)) {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message());
+    }
     let request = BootstrapRequest {
         requested_panel_id: query.panel_id,
         requested_panel_kind: query.panel_kind.as_deref().and_then(PanelKind::parse),
@@ -958,7 +960,7 @@ fn spawn_restarted_studio(state: &AppState) -> Result<StudioSession, CliError> {
 
     let local_server_url = format!("http://127.0.0.1:{}", state.port);
     let session = StudioSession {
-        browser_url: Some(local_server_url.clone()),
+        system_browser_url: Some(local_server_url.clone()),
         context_dir: state.paths.context_dir.display().to_string(),
         context_id: state.paths.context_id.clone(),
         context_id_source: state.paths.context_id_source.clone(),
@@ -1349,7 +1351,7 @@ fn with_build_info(payload: impl Serialize, state: &AppState) -> Value {
 fn studio_session_for_state(state: &AppState) -> StudioSession {
     let local_server_url = format!("http://127.0.0.1:{}", state.port);
     StudioSession {
-        browser_url: Some(local_server_url.clone()),
+        system_browser_url: Some(local_server_url.clone()),
         context_dir: state.paths.context_dir.display().to_string(),
         context_id: state.paths.context_id.clone(),
         context_id_source: state.paths.context_id_source.clone(),

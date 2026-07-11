@@ -24,43 +24,42 @@ and built-in agent skills now live in the Rust CLI crate under
 `crates/myopenpanels/src/agent.rs`, with markdown resources in
 `agent-resources/`.
 
-If you do not pass `--project`, MyOpenPanels uses `MYOPENPANELS_PROJECT_DIR` or the
+If you do not pass `--project-dir`, MyOpenPanels uses `MYOPENPANELS_PROJECT_DIR` or the
 current working directory for project metadata. Canvas data is stored in the
 global MyOpenPanels data directory so agents and projects can share the same
 boards and assets.
 
 The current project and studio process are isolated per agent conversation when
 the agent exposes a thread/session environment variable such as
-`CODEX_THREAD_ID` or a Hermes conversation id. A new conversation creates a new
-MyOpenPanels Project on first use, while still allowing the user to switch to
-any existing Project in the studio.
+`CODEX_THREAD_ID` or a Hermes conversation id. A new conversation reuses the
+most recently updated Project, and creates a default Project only when storage
+contains no Projects.
 
 ## Agent Workflow
 
-1. Run `myopenpanels studio start --project <project> --format json`.
-2. Open the returned `browserUrl` in the agent's in-app Browser side panel.
-   `serverUrl` is kept as the localhost URL for same-computer use; `browserUrl`
-   may use a LAN address when another device is viewing the agent.
-3. Run `myopenpanels agent bootstrap --project <project> --format json` before
-   panel-specific work. The returned context lists the current project, active
+1. Run `myopenpanels studio start --project-dir <project> --format json`.
+2. Open the returned `embeddedBrowserUrl` unchanged in the agent's in-app
+   Browser side panel. If the request was only to open the panel, stop here.
+3. Run `myopenpanels agent bootstrap --format json` only before panel-specific
+   work. The returned context lists the current project, active
    panel, available panels, current state, and full command capabilities. The
    startup Bootstrap response may also report a newer MyOpenPanels Skill
    version and its canonical source; the Agent may decide whether to update it
    through the host environment's Skill installer.
-4. Run `myopenpanels panel list --project <project> --format json` or
-   `myopenpanels panel switch --project <project> --kind wiki --format json`
+4. Run `myopenpanels panel list --project-dir <project> --format json` or
+   `myopenpanels panel switch --project-dir <project> --kind wiki --format json`
    to inspect or switch panels.
 5. Before a new Wiki or Canvas operation, load the `activePanelSkill` returned
    by Bootstrap. Wiki authoring tasks load `wiki-panel` first, then the selected
    `karpathy-llm-wiki` or `karpathy-llm-wiki-zh` skill with the task id. Wiki
    queries and generated documents route through references in `wiki-panel`.
-6. For Canvas work, load `canvas-panel`, then run `myopenpanels canvas selection read --project
+6. For Canvas work, load `canvas-panel`, then run `myopenpanels canvas selection read --project-dir
    <project> --format json` to inspect the current canvas selection.
-7. Run `myopenpanels canvas selection read --project <project>
+7. Run `myopenpanels canvas selection read --project-dir <project>
    --include-image-base64 --format json` or `myopenpanels canvas selection
-   export --project <project> --output <path> --format json` when selected pixels
+   export --project-dir <project> --output <path> --format json` when selected pixels
    are needed.
-8. Run `myopenpanels canvas image insert --project <project> --image <path>
+8. Run `myopenpanels canvas image insert --project-dir <project> --image <path>
    --placement right --format json` to place a generated local image into the
    canvas.
 
@@ -68,7 +67,7 @@ any existing Project in the studio.
 
 - `myopenpanels studio start`: start or reuse the MyOpenPanels Studio.
 - `myopenpanels studio status`: show the conversation-scoped MyOpenPanels Studio process status.
-- `myopenpanels studio open`: open the studio URL in the system browser.
+- `myopenpanels studio open-system-browser`: explicitly open the studio URL in the system browser.
 - `myopenpanels studio wait`: wait for the studio HTTP server to become ready.
 - `myopenpanels studio stop`: stop the conversation-scoped MyOpenPanels Studio process.
 - `myopenpanels agent bootstrap`: print the protocol v2 focus, state,

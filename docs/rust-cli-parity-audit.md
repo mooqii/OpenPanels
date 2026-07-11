@@ -47,7 +47,7 @@ Node CLI and its compatibility aliases are not a parity target.
 | Area | Required parity | Rust status | Notes |
 | --- | --- | --- | --- |
 | SQLite schema | `main.sqlite3`, migrations table, WAL, foreign keys, existing tables | partial | Rust creates compatible tables and can read/write sessions, panels, states; artifacts/wiki task sync pending. |
-| Path resolution | `--project`, `MYOPENPANELS_PROJECT_DIR`, `--storage-dir`, `MYOPENPANELS_STORAGE_DIR`, context env vars | partial | Rust path resolver exists; sanitize/fallback must match Node exactly. |
+| Path resolution | `--project-dir`, `MYOPENPANELS_PROJECT_DIR`, `--storage-dir`, `MYOPENPANELS_STORAGE_DIR`, context env vars | partial | Rust path resolver exists; sanitize/fallback must match Node exactly. |
 | Bootstrap | first command creates session, wiki panel, canvas panel, default wiki files | partial | Rust creates sessions and panels and ensures default wiki files when wiki APIs run; bootstrap-time file parity still needs golden checks. |
 | Active state | `contexts/<contextId>/active-session.json` and `active-panel.json` | complete | Rust writes the current JSON shape and preserves context isolation. |
 | Assets | filesystem asset refs under `sessions/<session>/panels/<panel>/assets` | partial | Rust can write/read HTTP assets, read selection assets, and create image assets from `canvas image insert`; broader cross-version asset parity still needs fixtures. |

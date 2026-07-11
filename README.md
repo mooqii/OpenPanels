@@ -87,34 +87,34 @@ requirements live in [docs/release.md](docs/release.md).
 
 ## Use with Shell Agents
 
-MyOpenPanels works in any local agent that can run shell commands. Start the
-studio and open the returned `browserUrl` in the agent's in-app Browser side
-panel. `serverUrl` remains the localhost URL for direct use on the same
-computer; `browserUrl` may use a LAN address so a browser on another device can
-reach the same agent host:
+MyOpenPanels works in any local agent that can run shell commands. `studio
+start` prepares the current Project without opening a browser. Open its returned
+`embeddedBrowserUrl` unchanged in the agent's in-app Browser side panel;
+`systemBrowserUrl` is reserved for an explicit system-browser fallback:
 
 ```bash
-myopenpanels studio start --project /path/to/project --format json
+myopenpanels studio start --project-dir /path/to/project --format json
 ```
 
-Use `myopenpanels studio open` only when you explicitly want the system
-browser instead of the agent side panel.
+Use `myopenpanels studio open-system-browser` only when the host has no in-app
+Browser or an attempted in-app open fails. An open-only request is complete once
+the embedded URL is visible; Bootstrap is needed only for subsequent panel work.
 
 Agents can then use project-backed CLI commands:
 
 ```bash
-myopenpanels agent bootstrap --project /path/to/project --format json
-myopenpanels agent guides --project /path/to/project
-myopenpanels agent skills --project /path/to/project
-myopenpanels agent skill canvas-panel --project /path/to/project
-myopenpanels panel list --project /path/to/project --format json
-myopenpanels panel switch --project /path/to/project --kind wiki --format json
-myopenpanels wiki context --project /path/to/project --format json
-myopenpanels canvas state --project /path/to/project --format json
-myopenpanels canvas selection read --project /path/to/project --format json
-myopenpanels canvas selection read --project /path/to/project --include-image-base64 --format json
-myopenpanels canvas selection export --project /path/to/project --output /tmp/selection.png --format json
-myopenpanels canvas image insert --project /path/to/project --image /tmp/result.png --placement right --format json
+myopenpanels agent bootstrap --project-dir /path/to/project --format json
+myopenpanels agent guides --project-dir /path/to/project
+myopenpanels agent skills --project-dir /path/to/project
+myopenpanels agent skill canvas-panel --project-dir /path/to/project
+myopenpanels panel list --project-dir /path/to/project --format json
+myopenpanels panel switch --project-dir /path/to/project --kind wiki --format json
+myopenpanels wiki context --project-dir /path/to/project --format json
+myopenpanels canvas state --project-dir /path/to/project --format json
+myopenpanels canvas selection read --project-dir /path/to/project --format json
+myopenpanels canvas selection read --project-dir /path/to/project --include-image-base64 --format json
+myopenpanels canvas selection export --project-dir /path/to/project --output /tmp/selection.png --format json
+myopenpanels canvas image insert --project-dir /path/to/project --image /tmp/result.png --placement right --format json
 ```
 
 ## v0.1 Scope

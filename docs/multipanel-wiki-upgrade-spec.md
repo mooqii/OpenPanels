@@ -383,7 +383,7 @@ function WikiPanelPlaceholder({ state }: { state: WikiState }) {
 入口 skill 固定做：
 
 ```bash
-myopenpanels agent context --project "$PWD"
+myopenpanels agent context --project-dir "$PWD"
 ```
 
 然后遵循 CLI 返回的最新说明。
@@ -424,8 +424,8 @@ JSON 结构建议：
     { "id": "panel:...", "kind": "canvas", "title": "Canvas" }
   ],
   "commands": {
-    "studioStart": "myopenpanels studio start --project \"$PWD\" --format json",
-    "agentContext": "myopenpanels agent context --project \"$PWD\""
+    "studioStart": "myopenpanels studio start --project-dir \"$PWD\" --format json",
+    "agentContext": "myopenpanels agent context --project-dir \"$PWD\""
   },
   "panelInstructions": {
     "wiki": "...",
@@ -447,7 +447,7 @@ Markdown 输出面向 agent 直接阅读，内容应包括：
 列出当前 Project 的 panels：
 
 ```bash
-myopenpanels panel list --project "$PWD" --format json
+myopenpanels panel list --project-dir "$PWD" --format json
 ```
 
 #### `panel current` / `panel switch`
@@ -455,9 +455,9 @@ myopenpanels panel list --project "$PWD" --format json
 读取或切换 active panel：
 
 ```bash
-myopenpanels panel current --project "$PWD" --format json
-myopenpanels panel switch --project "$PWD" --kind wiki --format json
-myopenpanels panel switch --project "$PWD" --kind canvas --format json
+myopenpanels panel current --project-dir "$PWD" --format json
+myopenpanels panel switch --project-dir "$PWD" --kind wiki --format json
+myopenpanels panel switch --project-dir "$PWD" --kind canvas --format json
 ```
 
 #### Panel state
@@ -465,8 +465,8 @@ myopenpanels panel switch --project "$PWD" --kind canvas --format json
 使用 panel 对应的 canonical context/state 命令：
 
 ```bash
-myopenpanels wiki context --project "$PWD" --format json
-myopenpanels canvas state --project "$PWD" --format json
+myopenpanels wiki context --project-dir "$PWD" --format json
+myopenpanels canvas state --project-dir "$PWD" --format json
 ```
 
 Canvas 只使用 namespace 命令：
@@ -506,10 +506,10 @@ Set:
 MYOPENPANELS_CLI="${MYOPENPANELS_CLI:-myopenpanels}"
 
 Start or reuse the studio:
-$MYOPENPANELS_CLI studio start --project "$PWD" --format json
+$MYOPENPANELS_CLI studio start --project-dir "$PWD" --format json
 
 Before interacting with any panel, run:
-$MYOPENPANELS_CLI agent context --project "$PWD"
+$MYOPENPANELS_CLI agent context --project-dir "$PWD"
 
 Follow the returned MyOpenPanels instructions. The CLI is the source of truth
 for available panels, commands, and panel-specific workflows.

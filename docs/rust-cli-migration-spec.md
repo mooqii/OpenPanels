@@ -81,7 +81,7 @@ myopenpanels help
 
 myopenpanels studio start
 myopenpanels studio status
-myopenpanels studio open
+myopenpanels studio open-system-browser
 myopenpanels studio serve
 myopenpanels studio wait
 myopenpanels studio stop
@@ -121,7 +121,7 @@ myopenpanels __serve-studio
 通用参数：
 
 ```text
---project <dir>
+--project-dir <dir>
 --storage-dir <dir>
 --context-id <id>
 --host <host>
@@ -346,7 +346,7 @@ myopenpanels --version
 
 当前行为：
 
-1. 根据 `--project`、`--storage-dir`、`--context-id` 解析路径。
+1. 根据 `--project-dir`、`--storage-dir`、`--context-id` 解析路径。
 2. 默认 host 为 `0.0.0.0`，`--local-only` 时使用 `127.0.0.1`。
 3. 若已有同 host 健康 session，复用。
 4. 若旧 pid 还在但不健康，终止旧进程。
@@ -361,7 +361,7 @@ Rust 必须保持同样行为。后台进程启动改为：
 ```text
 std::env::current_exe()
   __serve-studio
-  --project ...
+  --project-dir ...
   --storage-dir ...
   --context-id ...
   --port ...
@@ -383,7 +383,7 @@ Release 模式下不需要传 `--static-dir`，因为资源已内嵌。开发模
 
 ```json
 {
-  "browserUrl": "http://192.168.x.x:12345",
+  "embeddedBrowserUrl": "http://192.168.x.x:12345",
   "contextDir": "...",
   "contextId": "...",
   "contextIdSource": "...",
@@ -404,7 +404,7 @@ Release 模式下不需要传 `--static-dir`，因为资源已内嵌。开发模
 
 Rust 需要迁移 `resolveMyOpenPanelsPaths`：
 
-- `projectDir`：`--project` > `MYOPENPANELS_PROJECT_DIR` > cwd。
+- `projectDir`：`--project-dir` > `MYOPENPANELS_PROJECT_DIR` > cwd。
 - `storageDir`：`--storage-dir` > `MYOPENPANELS_STORAGE_DIR` > `<projectDir>/.myopenpanels`。
 - `contextId`：`--context-id` > agent/thread 环境变量 > cwd-derived default。
 - `contextDir`：`<storageDir>/contexts/<contextId>`。
@@ -476,7 +476,7 @@ Rust 需保留当前安全边界：
 当前 agent 入口依赖：
 
 ```text
-myopenpanels agent context --project "$PWD"
+myopenpanels agent context --project-dir "$PWD"
 ```
 
 迁移后它仍是协议权威。
@@ -511,7 +511,7 @@ Rust server 使用 Axum 实现：
 
 ```text
 myopenpanels __serve-studio
-  --project <dir>
+  --project-dir <dir>
   --storage-dir <dir>
   --context-id <id>
   --port <port>
@@ -715,10 +715,10 @@ pnpm --dir apps/studio build
 可选：
 
 ```bash
-myopenpanels studio start --project <tmp> --format json
-myopenpanels agent context --project <tmp>
-myopenpanels canvas placeholder create --project <tmp> --format json
-myopenpanels studio stop --project <tmp> --format json
+myopenpanels studio start --project-dir <tmp> --format json
+myopenpanels agent context --project-dir <tmp>
+myopenpanels canvas placeholder create --project-dir <tmp> --format json
+myopenpanels studio stop --project-dir <tmp> --format json
 ```
 
 ## 分阶段实施
@@ -775,7 +775,7 @@ Rust 迁移完成时必须满足：
 
 1. 干净机器安装 native binary 后，不安装 Node.js 也能运行
    `myopenpanels --version`、`agent context`、`studio start`。
-2. `studio start` 返回的 `browserUrl` 能打开现有 studio UI。
+2. `studio start` 返回的 `embeddedBrowserUrl` 能打开现有 studio UI。
 3. studio UI 能创建/切换 project、panel，保存 canvas 和 wiki state。
 4. 现有 agent skill 中核心命令继续可用。
 5. `--format json` 输出和旧 CLI 兼容。

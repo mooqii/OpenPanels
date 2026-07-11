@@ -6,6 +6,8 @@ pub struct CliError {
     code: Option<String>,
     message: String,
     exit_code: i32,
+    retryable: bool,
+    recovery: Option<String>,
 }
 
 impl CliError {
@@ -14,6 +16,8 @@ impl CliError {
             code: None,
             message: message.into(),
             exit_code: 1,
+            retryable: false,
+            recovery: None,
         }
     }
 
@@ -22,6 +26,23 @@ impl CliError {
             code: Some(code.into()),
             message: message.into(),
             exit_code: 1,
+            retryable: false,
+            recovery: None,
+        }
+    }
+
+    pub fn with_recovery(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        retryable: bool,
+        recovery: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: Some(code.into()),
+            message: message.into(),
+            exit_code: 1,
+            retryable,
+            recovery: Some(recovery.into()),
         }
     }
 
@@ -35,5 +56,13 @@ impl CliError {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn retryable(&self) -> bool {
+        self.retryable
+    }
+
+    pub fn recovery(&self) -> Option<&str> {
+        self.recovery.as_deref()
     }
 }

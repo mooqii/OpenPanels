@@ -587,7 +587,7 @@ myopenpanels wiki pages write --wiki-space-id <id> --path index.md --file <path>
 agent 可以通过 CLI 添加文档：
 
 ```bash
-myopenpanels wiki raw add --project "$PWD" --file ./notes/report.pdf --format json
+myopenpanels wiki raw add --project-dir "$PWD" --file ./notes/report.pdf --format json
 ```
 
 添加后系统不假设 agent 已完成转换，而是创建 task。上传文件不做类型限制；若 agent 无法转换，写回转换失败状态。若添加的是 Markdown/txt，系统直接写入 Source Markdown、创建 ingest task，并唤醒 agent 更新结构化 wiki。

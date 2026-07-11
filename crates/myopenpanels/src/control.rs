@@ -91,7 +91,12 @@ pub fn ensure_project_bootstrap(
                 .find(|item| item.panel.kind == DEFAULT_ACTIVE_PANEL_KIND)
         })
         .or_else(|| panels.first())
-        .ok_or_else(|| CliError::new(format!("MyOpenPanels project has no panels: {}", session.id)))?
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "MyOpenPanels project has no panels: {}",
+                session.id
+            ))
+        })?
         .clone();
 
     write_active_session(paths, &session.id)?;
@@ -133,9 +138,11 @@ pub fn read_project_bootstrap(
         Some(&sessions),
     )?
     .ok_or_else(|| {
-        CliError::with_code(
+        CliError::with_recovery(
             "no_current_project",
-            "No current MyOpenPanels project is available. Create a project explicitly with `myopenpanels project create`.",
+            "No current MyOpenPanels project is available. Start Studio to prepare the current project context.",
+            true,
+            "Run `myopenpanels studio start --project-dir <dir> --format json`, then retry.",
         )
     })?;
 
@@ -180,7 +187,12 @@ pub fn read_project_bootstrap(
                 .find(|item| item.panel.kind == DEFAULT_ACTIVE_PANEL_KIND)
         })
         .or_else(|| panels.first())
-        .ok_or_else(|| CliError::new(format!("MyOpenPanels project has no panels: {}", session.id)))?
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "MyOpenPanels project has no panels: {}",
+                session.id
+            ))
+        })?
         .clone();
 
     write_active_session(paths, &session.id)?;
@@ -340,7 +352,10 @@ pub fn read_active_session_id(paths: &MyOpenPanelsPaths) -> Result<Option<String
     read_active_session(paths)
 }
 
-pub fn write_active_session_id(paths: &MyOpenPanelsPaths, session_id: &str) -> Result<(), CliError> {
+pub fn write_active_session_id(
+    paths: &MyOpenPanelsPaths,
+    session_id: &str,
+) -> Result<(), CliError> {
     write_active_session(paths, session_id)
 }
 
@@ -362,9 +377,11 @@ fn requested_or_active_session(
         if let Some(session) = storage.read_session(session_id)? {
             return Ok(Some(session));
         }
-        return Err(CliError::with_code(
+        return Err(CliError::with_recovery(
             "project_not_found",
             format!("MyOpenPanels project not found: {session_id}"),
+            false,
+            "Run `myopenpanels project list --format json` and select an existing Project id.",
         ));
     }
     if let Some(session_id) = active_session_id {
@@ -372,15 +389,16 @@ fn requested_or_active_session(
             return Ok(Some(session));
         }
     }
-    Ok(stale_active_fallback.and_then(most_recently_created_session))
+    Ok(stale_active_fallback.and_then(most_recently_updated_session))
 }
 
-fn most_recently_created_session(sessions: &[Session]) -> Option<Session> {
+fn most_recently_updated_session(sessions: &[Session]) -> Option<Session> {
     sessions
         .iter()
         .max_by(|left, right| {
-            left.created_at
-                .cmp(&right.created_at)
+            left.updated_at
+                .cmp(&right.updated_at)
+                .then_with(|| left.created_at.cmp(&right.created_at))
                 .then_with(|| left.id.cmp(&right.id))
         })
         .cloned()
@@ -1095,6 +1113,34 @@ mod tests {
         assert_eq!(first_again.session.id, first.session.id);
         assert_eq!(third.session.id, latest.session.id);
         assert_eq!(third.sessions.len(), 2);
+    }
+
+    #[test]
+    fn newest_project_prefers_updated_time_then_created_time_and_id() {
+        let session = |id: &str, created_at: &str, updated_at: &str| Session {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            created_at: created_at.to_owned(),
+            updated_at: updated_at.to_owned(),
+            panel_ids: Vec::new(),
+        };
+        let sessions = vec![
+            session(
+                "session:older",
+                "2026-07-11T10:00:00Z",
+                "2026-07-11T12:00:00Z",
+            ),
+            session(
+                "session:newer",
+                "2026-07-11T11:00:00Z",
+                "2026-07-11T13:00:00Z",
+            ),
+        ];
+
+        assert_eq!(
+            most_recently_updated_session(&sessions).unwrap().id,
+            "session:newer"
+        );
     }
 
     #[test]

@@ -106,7 +106,7 @@ fn create_cli_project(project_dir: &Path, storage_dir: &Path) {
     let (code, stdout, stderr) = run(&[
         "project",
         "create",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -136,7 +136,7 @@ fn cli_trace_url_falls_back_to_running_studio_session() {
     write_studio_session(
         &paths,
         &StudioSession {
-            browser_url: Some(server_url.clone()),
+            system_browser_url: Some(server_url.clone()),
             context_dir: paths.context_dir.display().to_string(),
             context_id: paths.context_id.clone(),
             context_id_source: paths.context_id_source.clone(),
@@ -158,7 +158,7 @@ fn cli_trace_url_falls_back_to_running_studio_session() {
         "canvas".to_owned(),
         "selection".to_owned(),
         "read".to_owned(),
-        "--project".to_owned(),
+        "--project-dir".to_owned(),
         project_dir.to_str().unwrap().to_owned(),
         "--storage-dir".to_owned(),
         storage_dir.to_str().unwrap().to_owned(),
@@ -187,12 +187,12 @@ fn studio_start_json_reuses_same_project_studio() {
         Some("owner"),
     )
     .expect("owner paths");
-    let (port, server) = fake_studio_server(1);
+    let (port, server) = fake_studio_server(2);
     let server_url = format!("http://127.0.0.1:{port}");
     write_studio_session(
         &owner_paths,
         &StudioSession {
-            browser_url: Some(server_url.clone()),
+            system_browser_url: Some(server_url.clone()),
             context_dir: owner_paths.context_dir.display().to_string(),
             context_id: owner_paths.context_id.clone(),
             context_id_source: owner_paths.context_id_source.clone(),
@@ -217,7 +217,7 @@ fn studio_start_json_reuses_same_project_studio() {
     let (code, stdout, stderr) = run(&[
         "studio",
         "start",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -225,19 +225,39 @@ fn studio_start_json_reuses_same_project_studio() {
         "borrower",
         "--format",
         "json",
-        "--no-open",
     ]);
 
     assert_eq!(code, 0, "{stderr}{stdout}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(payload["browserUrl"], server_url);
-    assert_eq!(payload["contextId"], "owner");
+    assert_eq!(
+        payload["embeddedBrowserUrl"],
+        format!("{server_url}?myopenpanels-view=embedded")
+    );
+    assert_eq!(payload["systemBrowserUrl"], server_url);
+    assert_eq!(payload["context"]["id"], "owner");
+    assert_eq!(payload["projectReady"], true);
     assert_eq!(payload["reusedExisting"], true);
     assert!(storage_dir
         .join("contexts")
         .join("borrower")
         .join("studio-session.json")
         .exists());
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bootstrap",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout).expect("bootstrap")["project"]["id"],
+        payload["project"]["id"]
+    );
     server.join().expect("server thread");
 }
 
@@ -264,7 +284,7 @@ fn panel_commands_follow_borrowed_running_studio_context() {
     write_studio_session(
         &borrower_paths,
         &StudioSession {
-            browser_url: Some(server_url.clone()),
+            system_browser_url: Some(server_url.clone()),
             context_dir: owner_paths.context_dir.display().to_string(),
             context_id: owner_paths.context_id.clone(),
             context_id_source: owner_paths.context_id_source.clone(),
@@ -315,7 +335,7 @@ fn studio_serve_reuses_existing_studio_without_foreground_server() {
     write_studio_session(
         &owner_paths,
         &StudioSession {
-            browser_url: Some(server_url.clone()),
+            system_browser_url: Some(server_url.clone()),
             context_dir: owner_paths.context_dir.display().to_string(),
             context_id: owner_paths.context_id.clone(),
             context_id_source: owner_paths.context_id_source.clone(),
@@ -340,7 +360,7 @@ fn studio_serve_reuses_existing_studio_without_foreground_server() {
     let (code, stdout, stderr) = run(&[
         "studio",
         "serve",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -352,10 +372,111 @@ fn studio_serve_reuses_existing_studio_without_foreground_server() {
 
     assert_eq!(code, 0, "{stderr}{stdout}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(payload["browserUrl"], server_url);
+    assert_eq!(
+        payload["embeddedBrowserUrl"],
+        format!("{server_url}?myopenpanels-view=embedded")
+    );
     assert_eq!(payload["foreground"], false);
     assert_eq!(payload["reusedExisting"], true);
     server.join().expect("server thread");
+}
+
+#[test]
+fn failed_project_prepare_does_not_stop_a_reused_studio() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    let owner_paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("owner"),
+    )
+    .expect("owner paths");
+    let borrower_paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("borrower"),
+    )
+    .expect("borrower paths");
+    let (port, server) = fake_studio_server(1);
+    let session = StudioSession {
+        system_browser_url: Some(format!("http://127.0.0.1:{port}")),
+        context_dir: owner_paths.context_dir.display().to_string(),
+        context_id: owner_paths.context_id.clone(),
+        context_id_source: owner_paths.context_id_source.clone(),
+        host: Some("127.0.0.1".to_owned()),
+        lan_server_urls: Some(Vec::new()),
+        local_server_url: Some(format!("http://127.0.0.1:{port}")),
+        log_path: owner_paths
+            .context_dir
+            .join("studio.log")
+            .display()
+            .to_string(),
+        pid: std::process::id(),
+        port,
+        project_dir: owner_paths.project_dir.display().to_string(),
+        server_url: format!("http://127.0.0.1:{port}"),
+        started_at: "2026-07-11T00:00:00.000Z".to_owned(),
+        storage_dir: owner_paths.storage_dir.display().to_string(),
+    };
+    write_studio_session(&owner_paths, &session).expect("owner session");
+    fs::create_dir_all(&borrower_paths.context_dir).expect("borrower context");
+    fs::write(storage_dir.join("main.sqlite3"), "not sqlite").expect("invalid storage");
+
+    let (code, stdout, stderr) = run(&[
+        "studio",
+        "start",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "borrower",
+        "--format",
+        "json",
+    ]);
+
+    assert_eq!(code, 1, "{stderr}{stdout}");
+    assert!(owner_paths.context_dir.join("studio-session.json").exists());
+    assert_eq!(session.pid, std::process::id());
+    server.join().expect("server thread");
+}
+
+#[test]
+fn studio_binding_failure_is_structured() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_file = temp.path().join("storage-file");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    fs::write(&storage_file, "not a directory").expect("storage file");
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_file.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let session = StudioSession {
+        system_browser_url: Some("http://127.0.0.1:1".to_owned()),
+        context_dir: paths.context_dir.display().to_string(),
+        context_id: paths.context_id.clone(),
+        context_id_source: paths.context_id_source.clone(),
+        host: Some("127.0.0.1".to_owned()),
+        lan_server_urls: Some(Vec::new()),
+        local_server_url: Some("http://127.0.0.1:1".to_owned()),
+        log_path: paths.context_dir.join("studio.log").display().to_string(),
+        pid: std::process::id(),
+        port: 1,
+        project_dir: paths.project_dir.display().to_string(),
+        server_url: "http://127.0.0.1:1".to_owned(),
+        started_at: "2026-07-11T00:00:00.000Z".to_owned(),
+        storage_dir: paths.storage_dir.display().to_string(),
+    };
+
+    let error = bind_and_bootstrap_studio(&paths, &session).expect_err("binding should fail");
+    assert_eq!(error.code(), Some("studio_binding_failed"));
+    assert!(error.retryable());
+    assert!(error.recovery().is_some());
 }
 
 #[test]
@@ -368,7 +489,7 @@ fn project_read_commands_bootstrap_project() {
     let (code, stdout, stderr) = run(&[
         "panel",
         "list",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -395,7 +516,7 @@ fn project_read_commands_bootstrap_project() {
     let (code, stdout, stderr) = run(&[
         "panel",
         "switch",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -415,7 +536,7 @@ fn project_read_commands_bootstrap_project() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bootstrap",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -434,6 +555,119 @@ fn project_read_commands_bootstrap_project() {
 }
 
 #[test]
+fn project_list_marks_current_and_select_switches_focus() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+
+    let create = |title: &str| {
+        let (code, stdout, stderr) = run(&[
+            "project",
+            "create",
+            "--project-dir",
+            project_dir.to_str().unwrap(),
+            "--storage-dir",
+            storage_dir.to_str().unwrap(),
+            "--context-id",
+            "ctx",
+            "--title",
+            title,
+            "--format",
+            "json",
+        ]);
+        assert_eq!(code, 0, "{stderr}{stdout}");
+        serde_json::from_str::<Value>(&stdout).expect("project")
+    };
+    let first = create("First");
+    let second = create("Second");
+
+    let list_args = [
+        "project",
+        "list",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ];
+    let (code, stdout, stderr) = run(&list_args);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let projects = serde_json::from_str::<Value>(&stdout).expect("projects");
+    assert!(projects["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|project| project["id"] == second["project"]["id"] && project["current"] == true));
+
+    let first_id = first["project"]["id"].as_str().unwrap();
+    let (code, stdout, stderr) = run(&[
+        "project",
+        "select",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--id",
+        first_id,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let selected = serde_json::from_str::<Value>(&stdout).expect("selected");
+    assert_eq!(selected["project"]["id"], first_id);
+    assert!(selected["focusRevision"].as_u64().unwrap() > 0);
+
+    let (code, stdout, stderr) = run(&list_args);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let projects = serde_json::from_str::<Value>(&stdout).expect("projects");
+    assert!(projects["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|project| project["id"] == first_id && project["current"] == true));
+}
+
+#[test]
+fn cli_rejects_legacy_unknown_and_inapplicable_project_arguments() {
+    for args in [
+        vec!["project", "create", "--path", ".", "--format", "json"],
+        vec!["project", "list", "--title", "Nope", "--format", "json"],
+        vec!["studio", "start", "--no-open", "--format", "json"],
+        vec!["studio", "start", "--project", ".", "--format", "json"],
+    ] {
+        let (code, stdout, stderr) = run(&args);
+        assert_eq!(code, 1, "unexpected success for {args:?}");
+        assert_eq!(stderr, "");
+        let payload = serde_json::from_str::<Value>(&stdout).expect("error");
+        assert_eq!(payload["code"], "invalid_argument");
+        assert_eq!(payload["retryable"], false);
+        assert!(payload["recovery"].as_str().is_some());
+    }
+
+    let missing = tempfile::tempdir().expect("temp").path().join("missing");
+    let (code, stdout, stderr) = run(&[
+        "studio",
+        "start",
+        "--project-dir",
+        missing.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 1);
+    assert_eq!(stderr, "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout).expect("missing")["code"],
+        "project_directory_not_found"
+    );
+}
+
+#[test]
 fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
@@ -444,7 +678,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bootstrap",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -458,7 +692,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert_eq!(payload["protocolVersion"], 2);
     assert_eq!(payload["cliVersion"], VERSION);
     assert_eq!(payload["entrySkill"]["id"], "myopenpanels");
-    assert_eq!(payload["entrySkill"]["requiredVersion"], "1.2");
+    assert_eq!(payload["entrySkill"]["requiredVersion"], "1.3");
     assert!(payload["entrySkill"]["instruction"]
         .as_str()
         .expect("entry skill instruction")
@@ -540,7 +774,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bootstrap",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -582,7 +816,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bootstrap",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -599,7 +833,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "guides",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -615,7 +849,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "skills",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -630,7 +864,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "skills",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -666,7 +900,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         "agent",
         "skill",
         "wiki-panel",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -682,7 +916,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         "agent",
         "skill",
         "canvas-panel",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -696,7 +930,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let (code, stdout, stderr) = run(&[
         "wiki",
         "context",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -746,7 +980,7 @@ fn canvas_write_commands_insert_and_replace_shapes() {
         "canvas",
         "image",
         "insert",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -774,7 +1008,7 @@ fn canvas_write_commands_insert_and_replace_shapes() {
         "canvas",
         "placeholder",
         "create",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -800,7 +1034,7 @@ fn canvas_write_commands_insert_and_replace_shapes() {
         "canvas",
         "image",
         "insert",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -821,7 +1055,7 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     let (code, stdout, stderr) = run(&[
         "canvas",
         "state",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -851,7 +1085,7 @@ fn canvas_write_commands_insert_and_replace_shapes() {
         "canvas",
         "image",
         "insert",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -879,7 +1113,7 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     let (code, stdout, stderr) = run(&[
         "canvas",
         "state",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -909,7 +1143,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "wiki",
         "documents",
         "create-markdown",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -936,7 +1170,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "wiki",
         "tasks",
         "next",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -954,7 +1188,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bootstrap",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -982,7 +1216,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bootstrap",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1014,7 +1248,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "agent",
         "skill",
         "wiki-panel",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1037,7 +1271,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "list",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1077,7 +1311,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "list",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1097,7 +1331,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "next",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1126,7 +1360,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "next",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1141,7 +1375,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "list",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1160,7 +1394,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "next",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1184,7 +1418,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "next",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1209,7 +1443,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "next",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1234,7 +1468,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bridge",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1256,7 +1490,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, _, stderr) = run(&[
         "tasks",
         "release",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1274,7 +1508,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bridge",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1297,7 +1531,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, _, stderr) = run(&[
         "tasks",
         "release",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1315,7 +1549,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, _, stderr) = run(&[
         "tasks",
         "retry",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1331,7 +1565,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bridge",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1354,7 +1588,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "inspect",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1386,7 +1620,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, _, stderr) = run(&[
         "tasks",
         "release",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1404,7 +1638,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, _, stderr) = run(&[
         "tasks",
         "retry",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1421,7 +1655,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "agent",
         "skill",
         "karpathy-llm-wiki",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1440,7 +1674,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "agent",
         "skill",
         "karpathy-llm-wiki",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1473,7 +1707,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "wiki",
         "pages",
         "write",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1497,7 +1731,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "wiki",
         "tasks",
         "claim",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1529,7 +1763,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "wiki",
         "tasks",
         "complete",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1550,7 +1784,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "list",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1587,7 +1821,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "wiki",
         "documents",
         "add",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1611,7 +1845,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "wiki",
         "tasks",
         "claim",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1636,7 +1870,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "wiki",
         "markdown",
         "write",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1659,7 +1893,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "wiki",
         "tasks",
         "complete",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1695,7 +1929,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         "wiki",
         "documents",
         "create-markdown",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1721,7 +1955,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         "wiki",
         "pages",
         "write",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1771,7 +2005,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         "wiki",
         "selection",
         "read",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1791,7 +2025,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     let (code, stdout, stderr) = run(&[
         "agent",
         "bootstrap",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1818,7 +2052,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         "agent",
         "skill",
         "wiki-panel",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1838,7 +2072,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         "wiki",
         "pages",
         "search",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -1980,7 +2214,7 @@ fn wiki_mdx_upload_skips_conversion_and_queues_ingest() {
         "wiki",
         "documents",
         "add",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2024,7 +2258,7 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
         "wiki",
         "documents",
         "create-markdown",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2048,7 +2282,7 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
     let (code, stdout, _stderr) = run(&[
         "agent",
         "bridge",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2067,7 +2301,7 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "list",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2086,7 +2320,7 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
         "agent",
         "bridge",
         "status",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2113,7 +2347,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
         "wiki",
         "documents",
         "create-markdown",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2135,7 +2369,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "list",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2154,7 +2388,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
         "agent",
         "targets",
         "register",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2177,7 +2411,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "claim-next",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2199,7 +2433,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
     let (code, _, _) = run(&[
         "tasks",
         "heartbeat",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2219,7 +2453,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "complete",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2242,7 +2476,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "list",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2265,7 +2499,7 @@ fn claim_next_respects_target_priority() {
     fs::create_dir_all(&project_dir).expect("project dir");
     create_cli_project(&project_dir, &storage_dir);
     let common = [
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2365,7 +2599,7 @@ fn command_bridge_owns_task_lifecycle_by_default() {
         "wiki",
         "documents",
         "create-markdown",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2383,7 +2617,7 @@ fn command_bridge_owns_task_lifecycle_by_default() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bridge",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2420,7 +2654,7 @@ fn webhook_delivery_is_signed_and_does_not_claim_the_task() {
         "wiki",
         "documents",
         "create-markdown",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2473,7 +2707,7 @@ fn webhook_delivery_is_signed_and_does_not_claim_the_task() {
         "agent",
         "targets",
         "register",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2510,7 +2744,7 @@ fn webhook_delivery_is_signed_and_does_not_claim_the_task() {
     let (code, stdout, stderr) = run(&[
         "tasks",
         "list",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2537,7 +2771,7 @@ fn concurrent_claim_next_assigns_a_task_once() {
         "wiki",
         "documents",
         "create-markdown",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2605,7 +2839,7 @@ fn studio_status_reports_missing_session() {
     let (code, stdout, stderr) = run(&[
         "studio",
         "status",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2661,7 +2895,7 @@ fn selection_reads_sqlite_panel_selection() {
         "canvas",
         "selection",
         "read",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2759,7 +2993,7 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
         "canvas",
         "selection",
         "read",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2782,7 +3016,7 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
         "canvas",
         "selection",
         "export",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2798,7 +3032,7 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
         "canvas",
         "selection",
         "export",
-        "--project",
+        "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
@@ -2935,11 +3169,40 @@ fn unknown_command_prints_json_error() {
     let (code, stdout, stderr) = run(&["nope", "--format=json"]);
 
     assert_eq!(code, 1);
-    assert_eq!(
-        stdout,
-        "{\n  \"ok\": false,\n  \"error\": \"Unknown command: nope\"\n}\n"
-    );
+    let payload = serde_json::from_str::<Value>(&stdout).expect("json error");
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["code"], "command_failed");
+    assert_eq!(payload["error"], "Unknown command: nope");
+    assert_eq!(payload["retryable"], false);
+    assert!(payload["recovery"].as_str().is_some());
     assert_eq!(stderr, "");
+}
+
+#[test]
+fn embedded_browser_url_adds_one_marker_before_the_fragment() {
+    assert_eq!(
+        embedded_browser_url("http://127.0.0.1:3000"),
+        "http://127.0.0.1:3000?myopenpanels-view=embedded"
+    );
+    assert_eq!(
+        embedded_browser_url("http://127.0.0.1:3000/?tab=canvas#selection"),
+        "http://127.0.0.1:3000/?tab=canvas&myopenpanels-view=embedded#selection"
+    );
+    assert_eq!(
+        embedded_browser_url("http://127.0.0.1:3000/?tab=canvas&myopenpanels-view=embedded"),
+        "http://127.0.0.1:3000/?tab=canvas&myopenpanels-view=embedded"
+    );
+}
+
+#[test]
+fn entry_skill_prioritizes_embedded_open_without_bootstrap_gating() {
+    let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
+    assert!(skill.contains("version: \"1.3\""));
+    assert!(skill.contains("embeddedBrowserUrl"));
+    assert!(skill.contains("If the user only asked to open the panel"));
+    assert!(skill.contains("Do not request Agent Bootstrap merely to verify"));
+    assert!(skill.contains("studio open-system-browser"));
+    assert!(!skill.contains("--no-open"));
 }
 
 fn seed_selection_database(

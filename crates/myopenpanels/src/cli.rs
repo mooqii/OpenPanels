@@ -5,7 +5,10 @@ use crate::agent::{
 };
 use crate::bridge::{read_bridge_status, run_bridge, BridgeOptions};
 use crate::canvas::{insert_image, insert_placeholder, InsertImageInput, InsertPlaceholderInput};
-use crate::control::{create_project, read_project_bootstrap, BootstrapRequest};
+use crate::control::{
+    create_project, ensure_project_bootstrap, read_active_session_id, read_focus_revision,
+    read_project_bootstrap, BootstrapRequest,
+};
 use crate::error::CliError;
 use crate::operations;
 use crate::paths::resolve_myopenpanels_paths;
@@ -13,9 +16,10 @@ use crate::selection::{read_selection, read_selection_asset_to_file};
 use crate::server::run_server;
 use crate::storage::Storage;
 use crate::studio::{
-    find_open_port, record_current_studio, resolve_current_studio_session, reuse_existing_studio,
-    start_studio, stop_studio_session, studio_status, wait_for_existing_studio,
-    write_studio_session, StudioServerStatus, StudioSession, StudioStartOptions,
+    discard_studio_session_binding, find_open_port, open_browser, record_current_studio,
+    resolve_current_studio_session, reuse_existing_studio, start_studio, stop_studio_session,
+    studio_status, wait_for_existing_studio, write_studio_session, StudioServerStatus,
+    StudioSession, StudioStartOptions, StudioStartResult,
 };
 use crate::tasks;
 use crate::trace::{self, TraceEventInput};
@@ -57,6 +61,7 @@ pub const HELP_TEXT: &str = concat!(
     "  project current           Read the current user-visible project\n",
     "  project list              List available projects\n",
     "  project create            Create a project explicitly\n",
+    "  project select            Select the current project by id\n",
     "  panel list                List panels in the current project\n",
     "  panel current             Read the current panel\n",
     "  panel switch              Switch the active panel by kind\n",
@@ -81,14 +86,14 @@ pub const HELP_TEXT: &str = concat!(
     "  wiki pages list|search|read|write\n",
     "  studio start              Start or reuse the MyOpenPanels Studio\n",
     "  studio status             Show MyOpenPanels Studio status\n",
-    "  studio open               Open the MyOpenPanels Studio in a browser\n",
+    "  studio open-system-browser Open the MyOpenPanels Studio in the system browser\n",
     "  studio serve              Run the MyOpenPanels Studio in the foreground\n",
     "  studio wait               Wait for the MyOpenPanels Studio to become ready\n",
     "  studio stop               Stop the MyOpenPanels Studio\n",
     "  update                    Install the latest GitHub Releases binary\n",
     "  update check              Check GitHub Releases for a newer binary\n\n",
     "Options:\n",
-    "  --project <dir>           Project directory (default: cwd or MYOPENPANELS_PROJECT_DIR; data is global)\n",
+    "  --project-dir <dir>       Project directory (default: cwd or MYOPENPANELS_PROJECT_DIR; data is global)\n",
     "  --host <host>             Studio bind host (default: 0.0.0.0; set 127.0.0.1 for local-only)\n",
     "  --local-only              Bind the studio to 127.0.0.1\n",
     "  --port <port>             Studio port for foreground serving\n",
@@ -124,9 +129,10 @@ struct VersionPayload<'a> {
 #[derive(Debug, Serialize)]
 struct ErrorPayload<'a> {
     ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<&'a str>,
+    code: &'a str,
     error: &'a str,
+    retryable: bool,
+    recovery: &'a str,
 }
 
 pub fn run_cli(argv: &[String]) -> i32 {
@@ -261,6 +267,7 @@ fn run_parsed_cli(
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<(), CliError> {
+    validate_args(parsed)?;
     let command = parsed.positionals.first().map(String::as_str);
 
     if has_flag(parsed, "version") || command == Some("version") {
@@ -366,8 +373,13 @@ fn command_help_text(parsed: &ParsedArgs) -> String {
                 "Create a Project explicitly.",
                 &["--title <title>"],
             ),
+            ["select", ..] => help_block(
+                "myopenpanels project select --id <session-id>",
+                "Select the current user-visible Project by id.",
+                &["--id <session-id>"],
+            ),
             _ => help_block(
-                "myopenpanels project <current|list|create>",
+                "myopenpanels project <current|list|create|select>",
                 "Project commands.",
                 &[],
             ),
@@ -774,16 +786,35 @@ fn run_project_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(
         }
         Some("list") => {
             let fallback = parsed_paths(parsed)?;
-            let paths = parsed_current_paths(parsed).unwrap_or(fallback);
+            let paths = match parsed_current_paths(parsed) {
+                Ok(paths) => paths,
+                Err(error) if error.code() == Some("no_current_project") => fallback,
+                Err(error) => return Err(error),
+            };
             let storage = Storage::open(&paths)?;
             let sessions = storage.list_sessions()?;
-            let payload = serde_json::json!({ "projects": sessions });
+            let current_id = read_active_session_id(&paths)?;
+            let projects = sessions
+                .into_iter()
+                .map(|session| {
+                    let current = current_id.as_deref() == Some(session.id.as_str());
+                    let mut value = serde_json::to_value(session)
+                        .map_err(|error| CliError::new(error.to_string()))?;
+                    value["current"] = serde_json::json!(current);
+                    Ok(value)
+                })
+                .collect::<Result<Vec<_>, CliError>>()?;
+            let payload = serde_json::json!({ "projects": projects });
             let count = payload["projects"].as_array().map(Vec::len).unwrap_or(0);
             write_result(parsed, stdout, &payload, &format!("{count} project(s)"))
         }
         Some("create") => {
             let fallback = parsed_paths(parsed)?;
-            let paths = parsed_current_paths(parsed).unwrap_or(fallback);
+            let paths = match parsed_current_paths(parsed) {
+                Ok(paths) => paths,
+                Err(error) if error.code() == Some("no_current_project") => fallback,
+                Err(error) => return Err(error),
+            };
             let bootstrap = create_project(&paths, string_flag(parsed, "title"))?;
             let payload = serde_json::json!({
                 "project": bootstrap.session,
@@ -796,8 +827,35 @@ fn run_project_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(
             });
             write_result(parsed, stdout, &payload, &bootstrap.session.title)
         }
+        Some("select") => {
+            let fallback = parsed_paths(parsed)?;
+            let paths = match parsed_current_paths(parsed) {
+                Ok(paths) => paths,
+                Err(error) if error.code() == Some("no_current_project") => fallback,
+                Err(error) => return Err(error),
+            };
+            let session_id = required_flag(parsed, "id")?;
+            let bootstrap = ensure_project_bootstrap(
+                &paths,
+                BootstrapRequest {
+                    requested_panel_id: None,
+                    requested_panel_kind: None,
+                    requested_session_id: Some(session_id.to_owned()),
+                },
+            )?;
+            let payload = serde_json::json!({
+                "project": bootstrap.session,
+                "activePanel": {
+                    "id": bootstrap.active_panel_id,
+                    "kind": bootstrap.active_panel_kind,
+                    "title": bootstrap.panel.title,
+                },
+                "focusRevision": read_focus_revision(&paths)?,
+            });
+            write_result(parsed, stdout, &payload, session_id)
+        }
         _ => Err(CliError::new(
-            "Expected project subcommand: current, list, or create.",
+            "Expected project subcommand: current, list, create, or select.",
         )),
     }
 }
@@ -924,19 +982,21 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
                 &paths,
                 StudioStartOptions {
                     host: studio_host(parsed),
-                    open_browser: !has_flag(parsed, "no-open"),
                     static_dir: string_flag(parsed, "static-dir").map(std::path::PathBuf::from),
                 },
             )?;
-            let _ = record_current_studio(&paths, &result.session);
-            let payload = studio_session_payload(
-                &result.session,
-                &[
-                    ("ok", serde_json::json!(true)),
-                    ("reusedExisting", serde_json::json!(result.reused_existing)),
-                ],
-            )?;
-            write_result(parsed, stdout, &payload, &result.session.server_url)
+            let bootstrap = match bind_and_bootstrap_studio(&paths, &result.session) {
+                Ok(bootstrap) => bootstrap,
+                Err(error) => {
+                    if !result.reused_existing {
+                        let _ = stop_studio_session(&paths);
+                    }
+                    return Err(error);
+                }
+            };
+            let payload = studio_launch_payload(&result, &bootstrap, None)?;
+            let text = payload["embeddedBrowserUrl"].as_str().unwrap_or("");
+            write_result(parsed, stdout, &payload, text)
         }
         Some("status") => {
             let paths = parsed_paths(parsed)?;
@@ -944,53 +1004,53 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
             let text = studio_status_text(status.server);
             write_result(parsed, stdout, &status, &text)
         }
-        Some("open") => {
+        Some("open-system-browser") => {
             let paths = parsed_paths(parsed)?;
             sync_builtin_agent_skills(&paths)?;
             let result = start_studio(
                 &paths,
                 StudioStartOptions {
                     host: studio_host(parsed),
-                    open_browser: true,
                     static_dir: string_flag(parsed, "static-dir").map(std::path::PathBuf::from),
                 },
             )?;
-            let _ = record_current_studio(&paths, &result.session);
-            let payload = studio_session_payload(
-                &result.session,
-                &[
-                    ("ok", serde_json::json!(true)),
-                    ("opened", serde_json::json!(true)),
-                    ("reusedExisting", serde_json::json!(result.reused_existing)),
-                ],
-            )?;
-            write_result(
-                parsed,
-                stdout,
-                &payload,
-                &format!("Opened {}", result.session.server_url),
-            )
+            let bootstrap = match bind_and_bootstrap_studio(&paths, &result.session) {
+                Ok(bootstrap) => bootstrap,
+                Err(error) => {
+                    if !result.reused_existing {
+                        let _ = stop_studio_session(&paths);
+                    }
+                    return Err(error);
+                }
+            };
+            let system_url = result
+                .session
+                .system_browser_url
+                .as_deref()
+                .unwrap_or(&result.session.server_url);
+            open_browser(system_url);
+            let payload = studio_launch_payload(&result, &bootstrap, Some(("opened", true)))?;
+            write_result(parsed, stdout, &payload, &format!("Opened {system_url}"))
         }
         Some("serve") => {
             let paths = parsed_paths(parsed)?;
             sync_builtin_agent_skills(&paths)?;
-            if let Some(session) = reuse_existing_studio(&paths, false)? {
-                let _ = record_current_studio(&paths, &session);
-                let payload = studio_session_payload(
-                    &session,
-                    &[
-                        ("ok", serde_json::json!(true)),
-                        ("foreground", serde_json::json!(false)),
-                        ("reusedExisting", serde_json::json!(true)),
-                    ],
-                )?;
-                return write_result(parsed, stdout, &payload, &session.server_url);
+            if let Some(session) = reuse_existing_studio(&paths)? {
+                let bootstrap = bind_and_bootstrap_studio(&paths, &session)?;
+                let result = StudioStartResult {
+                    session,
+                    reused_existing: true,
+                };
+                let payload =
+                    studio_launch_payload(&result, &bootstrap, Some(("foreground", false)))?;
+                let text = payload["embeddedBrowserUrl"].as_str().unwrap_or("");
+                return write_result(parsed, stdout, &payload, text);
             }
             let host = studio_host(parsed);
             let port = studio_port(parsed)?.unwrap_or(find_open_port(&host)?);
             let local_server_url = format!("http://127.0.0.1:{port}");
             let session = StudioSession {
-                browser_url: Some(local_server_url.clone()),
+                system_browser_url: Some(local_server_url.clone()),
                 context_dir: paths.context_dir.display().to_string(),
                 context_id: paths.context_id.clone(),
                 context_id_source: paths.context_id_source.clone(),
@@ -1005,17 +1065,19 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
                 started_at: crate::control::now_iso(),
                 storage_dir: paths.storage_dir.display().to_string(),
             };
+            let bootstrap = ensure_project_bootstrap(&paths, BootstrapRequest::new())?;
             write_studio_session(&paths, &session)?;
-            let _ = record_current_studio(&paths, &session);
-            let payload = studio_session_payload(
-                &session,
-                &[
-                    ("ok", serde_json::json!(true)),
-                    ("foreground", serde_json::json!(true)),
-                    ("reusedExisting", serde_json::json!(false)),
-                ],
-            )?;
-            write_result(parsed, stdout, &payload, &session.server_url)?;
+            if let Err(error) = record_current_studio(&paths, &session) {
+                let _ = discard_studio_session_binding(&paths);
+                return Err(studio_binding_error(error));
+            }
+            let result = StudioStartResult {
+                session,
+                reused_existing: false,
+            };
+            let payload = studio_launch_payload(&result, &bootstrap, Some(("foreground", true)))?;
+            let text = payload["embeddedBrowserUrl"].as_str().unwrap_or("");
+            write_result(parsed, stdout, &payload, text)?;
             stdout
                 .flush()
                 .map_err(|error| CliError::new(error.to_string()))?;
@@ -1057,7 +1119,7 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
             write_result(parsed, stdout, &payload, text)
         }
         _ => Err(CliError::new(
-            "Expected studio subcommand: start, status, open, serve, wait, or stop.",
+            "Expected studio subcommand: start, status, open-system-browser, serve, wait, or stop.",
         )),
     }
 }
@@ -1750,7 +1812,7 @@ impl From<ProjectBootstrap> for CanvasBootstrapPayload {
 
 fn parsed_paths(parsed: &ParsedArgs) -> Result<crate::paths::MyOpenPanelsPaths, CliError> {
     resolve_myopenpanels_paths(
-        string_flag(parsed, "project"),
+        string_flag(parsed, "project-dir"),
         string_flag(parsed, "storage-dir"),
         string_flag(parsed, "context-id"),
     )
@@ -1762,9 +1824,11 @@ fn parsed_current_paths(parsed: &ParsedArgs) -> Result<crate::paths::MyOpenPanel
         return Ok(paths);
     }
     let Some(session) = resolve_current_studio_session(&paths)? else {
-        return Err(CliError::with_code(
+        return Err(CliError::with_recovery(
             "no_current_project",
-            "No current MyOpenPanels project is available. Focus an open Studio window or create a project explicitly with `myopenpanels project create`.",
+            "No running MyOpenPanels Studio is bound to this project directory.",
+            true,
+            "Run `myopenpanels studio start --project-dir <dir> --format json`, then retry.",
         ));
     };
     resolve_myopenpanels_paths(
@@ -1863,6 +1927,82 @@ fn studio_session_payload(
     Ok(value)
 }
 
+fn bind_and_bootstrap_studio(
+    paths: &crate::paths::MyOpenPanelsPaths,
+    session: &StudioSession,
+) -> Result<ProjectBootstrap, CliError> {
+    record_current_studio(paths, session).map_err(studio_binding_error)?;
+    ensure_project_bootstrap(paths, BootstrapRequest::new())
+}
+
+fn studio_binding_error(error: CliError) -> CliError {
+    CliError::with_recovery(
+        "studio_binding_failed",
+        format!(
+            "Failed to bind the MyOpenPanels Studio: {}",
+            error.message()
+        ),
+        true,
+        "Fix access to the MyOpenPanels storage directory, then retry `studio start`.",
+    )
+}
+
+fn studio_launch_payload(
+    result: &StudioStartResult,
+    bootstrap: &ProjectBootstrap,
+    extra: Option<(&str, bool)>,
+) -> Result<Value, CliError> {
+    let system_browser_url = result
+        .session
+        .system_browser_url
+        .as_deref()
+        .unwrap_or(&result.session.server_url);
+    let mut payload = serde_json::json!({
+        "ok": true,
+        "reusedExisting": result.reused_existing,
+        "projectReady": true,
+        "serverUrl": result.session.server_url,
+        "embeddedBrowserUrl": embedded_browser_url(system_browser_url),
+        "systemBrowserUrl": system_browser_url,
+        "recommendedOpenTarget": "in_app_browser",
+        "context": {
+            "id": result.session.context_id,
+            "source": result.session.context_id_source,
+            "projectDir": result.session.project_dir,
+            "storageDir": result.session.storage_dir,
+        },
+        "project": {
+            "id": bootstrap.session.id,
+            "title": bootstrap.session.title,
+        },
+        "activePanel": {
+            "id": bootstrap.active_panel_id,
+            "kind": bootstrap.active_panel_kind,
+            "title": bootstrap.panel.title,
+        },
+    });
+    if let Some((key, value)) = extra {
+        payload[key] = serde_json::json!(value);
+    }
+    Ok(payload)
+}
+
+fn embedded_browser_url(url: &str) -> String {
+    if url.contains("myopenpanels-view=embedded") {
+        return url.to_owned();
+    }
+    let (base, fragment) = url
+        .split_once('#')
+        .map_or((url, None), |(base, fragment)| (base, Some(fragment)));
+    let separator = if base.contains('?') { '&' } else { '?' };
+    let mut result = format!("{base}{separator}myopenpanels-view=embedded");
+    if let Some(fragment) = fragment {
+        result.push('#');
+        result.push_str(fragment);
+    }
+    result
+}
+
 fn write_result(
     parsed: &ParsedArgs,
     stdout: &mut impl Write,
@@ -1889,8 +2029,12 @@ fn write_error(
         OutputFormat::Json => {
             let payload = ErrorPayload {
                 ok: false,
-                code: error.code(),
+                code: error.code().unwrap_or("command_failed"),
                 error: error.message(),
+                retryable: error.retryable(),
+                recovery: error
+                    .recovery()
+                    .unwrap_or("Review the command help and retry with valid arguments."),
             };
             let _ = serde_json::to_writer_pretty(&mut *stdout, &payload);
             let _ = stdout.write_all(b"\n");

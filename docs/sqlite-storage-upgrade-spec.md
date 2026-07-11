@@ -458,8 +458,8 @@ HTTP/CLI 输出字段尽量保持稳定，方便 agent 和 studio 调用：
 新增诊断命令建议：
 
 ```bash
-myopenpanels storage status --project "$PWD" --format json
-myopenpanels storage migrate --project "$PWD" --format json
+myopenpanels storage status --project-dir "$PWD" --format json
+myopenpanels storage migrate --project-dir "$PWD" --format json
 ```
 
 `storage status` 输出：

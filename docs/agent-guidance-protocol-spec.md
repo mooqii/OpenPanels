@@ -6,9 +6,10 @@ MyOpenPanels exposes one Agent protocol entry point: `agent bootstrap`. The
 installed CLI is the sole authority for the current Project, visible panel,
 selection, capabilities, guides, skills, and persistent operations.
 
-The separately installed `myopenpanels` entry Skill only detects or installs the
-native CLI, starts or reuses Studio, opens `browserUrl`, and requests Bootstrap.
-It must not duplicate panel workflows or CLI parameters.
+The separately installed `myopenpanels` entry Skill detects or installs the
+native CLI, starts or reuses Studio, and opens `embeddedBrowserUrl`. Bootstrap
+is requested only before panel-specific work, not to verify an open-only task.
+The Skill must not duplicate panel workflows or panel-operation parameters.
 
 ## Communication Model
 

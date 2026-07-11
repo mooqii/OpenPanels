@@ -31,6 +31,17 @@ pub fn resolve_myopenpanels_paths(
         },
     };
     let project_dir = absolutize(&project_dir)?;
+    if !project_dir.is_dir() {
+        return Err(CliError::with_recovery(
+            "project_directory_not_found",
+            format!(
+                "MyOpenPanels project directory does not exist: {}",
+                project_dir.display()
+            ),
+            false,
+            "Pass an existing filesystem directory with `--project-dir <dir>`.",
+        ));
+    }
     let storage_dir = match storage_dir {
         Some(value) if !value.trim().is_empty() => PathBuf::from(value),
         _ => default_storage_dir()?,
