@@ -512,10 +512,12 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         .iter()
         .any(|skill| skill["skill"]["id"] == "karpathy-llm-wiki"
             && skill["source"] == "builtin"
-            && skill["localPath"]
-                .as_str()
-                .unwrap_or("")
-                .ends_with(".myopenpanels/skills/karpathy-llm-wiki/SKILL.md")));
+            && Path::new(skill["localPath"].as_str().unwrap_or("")).ends_with(
+                Path::new(".myopenpanels")
+                    .join("skills")
+                    .join("karpathy-llm-wiki")
+                    .join("SKILL.md")
+            )));
     assert!(payload["availableSkills"]
         .as_array()
         .expect("available skills")
@@ -1394,10 +1396,14 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(code, 0, "{stderr}");
     let skill_payload = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(skill_payload["skill"]["id"], "karpathy-llm-wiki");
-    assert!(skill_payload["localPath"]
-        .as_str()
-        .unwrap_or("")
-        .ends_with(".myopenpanels/skills/karpathy-llm-wiki/SKILL.md"));
+    assert!(
+        Path::new(skill_payload["localPath"].as_str().unwrap_or("")).ends_with(
+            Path::new(".myopenpanels")
+                .join("skills")
+                .join("karpathy-llm-wiki")
+                .join("SKILL.md")
+        )
+    );
     assert!(skill_payload["markdown"]
         .as_str()
         .unwrap_or("")
