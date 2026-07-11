@@ -1,35 +1,31 @@
+import { Button, Checkbox, Dropdown, Surface, Tooltip } from "@heroui/react"
 import {
-  Button,
-  Dropdown,
-  Header,
-  ListBox,
-  Select,
-  Surface,
-} from "@heroui/react"
-import {
-  BookOpen,
+  ChevronDown,
+  ChevronRight,
   Edit3,
   ExternalLink,
   Eye,
-  FilePlus,
+  FileOutput,
+  FileText,
+  Folder,
   FolderOpen,
+  Info,
   MoreHorizontal,
+  Pencil,
+  Plus,
   RefreshCw,
   Trash2,
-  Upload,
 } from "lucide-react"
 import {
   type DragEvent,
   type ReactNode,
   useCallback,
+  useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react"
-import {
-  OPENPANELS_LOCALE_LABELS,
-  type OpenPanelsLocale,
-  useOpenPanelsI18n,
-} from "../../canvas"
+import { useOpenPanelsI18n } from "../../canvas"
 import {
   apiFetch,
   fileToDataUrl,
@@ -38,20 +34,35 @@ import {
   wikiRawOriginalUrl,
 } from "../../lib/api"
 import type {
+  AgentSkillListing,
   OpenPanelsTransport,
+  WikiGeneratedDocument,
   WikiRawDocument,
   WikiState,
 } from "../../types"
-import { ConfirmDialog, MarkdownDialog, OriginalPreviewDialog } from "./Dialogs"
+import {
+  ConfirmDialog,
+  GeneratedDocumentDialog,
+  MarkdownDialog,
+  OriginalPreviewDialog,
+  RenameDocumentDialog,
+} from "./Dialogs"
 import {
   documentIndexStatus,
   formatWikiPageType,
-  isWikiLanguage,
   WikiIndexStatus,
   WikiStatus,
 } from "./helpers"
+import { buildWikiPageTree, type WikiPageTreeNode } from "./page-tree"
 
-const WIKI_LANGUAGE_OPTIONS: OpenPanelsLocale[] = ["en", "zh-CN"]
+const DEFAULT_WIKI_AGENT_SKILL_ID = "karpathy-llm-wiki"
+type WikiModule = "raw" | "structured" | "generated"
+
+interface WikiAgentSelection {
+  isWikiSelected: boolean
+  selectedGeneratedDocumentIds: string[]
+  selectedRawDocumentIds: string[]
+}
 
 export function WikiPanel({
   chromeContent,
@@ -64,14 +75,12 @@ export function WikiPanel({
   state: WikiState
   transport: OpenPanelsTransport
 }) {
-  const { locale, t } = useOpenPanelsI18n()
-  const initialWikiLanguageRef = useRef<OpenPanelsLocale>(locale)
+  const { t } = useOpenPanelsI18n()
   const activeSpace =
     state.wikiSpaces.find((space) => space.id === state.activeWikiSpaceId) ??
     state.wikiSpaces[0]
-  const wikiLanguage = isWikiLanguage(state.wikiLanguage)
-    ? state.wikiLanguage
-    : initialWikiLanguageRef.current
+  const wikiAgentSkillId = state.wikiAgentSkillId || DEFAULT_WIKI_AGENT_SKILL_ID
+  const [agentSkills, setAgentSkills] = useState<AgentSkillListing[]>([])
   const [markdownDialog, setMarkdownDialog] = useState<{
     content: string
     document: WikiRawDocument
@@ -85,12 +94,253 @@ export function WikiPanel({
   } | null>(null)
   const [pendingDeleteDocument, setPendingDeleteDocument] =
     useState<WikiRawDocument | null>(null)
+  const [pendingDeleteGeneratedDocument, setPendingDeleteGeneratedDocument] =
+    useState<WikiGeneratedDocument | null>(null)
+  const [pendingRenameGeneratedDocument, setPendingRenameGeneratedDocument] =
+    useState<WikiGeneratedDocument | null>(null)
+  const [generatedDocumentDialog, setGeneratedDocumentDialog] = useState<{
+    content: string
+    document: WikiGeneratedDocument
+  } | null>(null)
   const [originalPreviewDocument, setOriginalPreviewDocument] =
     useState<WikiRawDocument | null>(null)
   const [isBusy, setIsBusy] = useState(false)
+  const [isSelectionBusy, setIsSelectionBusy] = useState(true)
+  const [agentSelection, setAgentSelection] = useState<WikiAgentSelection>({
+    isWikiSelected: false,
+    selectedGeneratedDocumentIds: [],
+    selectedRawDocumentIds: [],
+  })
   const [isRawDragActive, setIsRawDragActive] = useState(false)
+  const [collapsedWikiFolders, setCollapsedWikiFolders] = useState<Set<string>>(
+    () => new Set()
+  )
+  const [collapsedModules, setCollapsedModules] = useState<Set<WikiModule>>(
+    () => new Set()
+  )
   const rawDragDepthRef = useRef(0)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const wikiPageTree = useMemo(
+    () =>
+      buildWikiPageTree(
+        activeSpace?.pageIndex.length
+          ? activeSpace.pageIndex
+          : [
+              {
+                path: "index.md",
+                summary: "",
+                title: "Index",
+                type: "overview",
+                updatedAt: "",
+              },
+            ]
+      ),
+    [activeSpace?.pageIndex]
+  )
+
+  const toggleWikiFolder = useCallback((folderPath: string) => {
+    setCollapsedWikiFolders((current) => {
+      const next = new Set(current)
+      if (next.has(folderPath)) next.delete(folderPath)
+      else next.add(folderPath)
+      return next
+    })
+  }, [])
+
+  const toggleModule = useCallback((module: WikiModule) => {
+    setCollapsedModules((current) => {
+      const next = new Set(current)
+      if (next.has(module)) next.delete(module)
+      else next.add(module)
+      return next
+    })
+  }, [])
+
+  const moduleHeaderToggle = (module: WikiModule, title: string) => {
+    const isCollapsed = collapsedModules.has(module)
+    return (
+      <button
+        aria-expanded={!isCollapsed}
+        aria-label={`${isCollapsed ? t`Expand module` : t`Collapse module`}: ${title}`}
+        className="op-wiki-column__header-toggle"
+        onClick={() => toggleModule(module)}
+        type="button"
+      />
+    )
+  }
+
+  const moduleInfo = (label: string, description: string) => (
+    <Tooltip closeDelay={0} delay={0}>
+      <Button
+        aria-label={`${t`About module`}: ${label}`}
+        className="op-wiki-module-info"
+        isIconOnly
+        size="sm"
+        variant="ghost"
+      >
+        <Info size={15} />
+      </Button>
+      <Tooltip.Content className="op-wiki-module-tooltip" placement="bottom">
+        {description}
+      </Tooltip.Content>
+    </Tooltip>
+  )
+
+  const renderWikiPageNodes = (nodes: WikiPageTreeNode[]): ReactNode => (
+    <div className="op-wiki-tree-list">
+      {nodes.map((node) => {
+        if (node.kind === "folder") {
+          const isCollapsed = collapsedWikiFolders.has(node.path)
+          return (
+            <div className="op-wiki-tree-folder" key={node.path}>
+              <button
+                aria-expanded={!isCollapsed}
+                aria-label={`${isCollapsed ? t`Expand folder` : t`Collapse folder`}: ${node.name}`}
+                className="op-wiki-tree-folder__row"
+                onClick={() => toggleWikiFolder(node.path)}
+                type="button"
+              >
+                <ChevronRight
+                  className="op-wiki-tree-folder__chevron"
+                  data-expanded={!isCollapsed || undefined}
+                  size={15}
+                />
+                {isCollapsed ? <Folder size={16} /> : <FolderOpen size={16} />}
+                <strong>{node.name}</strong>
+              </button>
+              {!isCollapsed && (
+                <div className="op-wiki-tree-children">
+                  {renderWikiPageNodes(node.children)}
+                </div>
+              )}
+            </div>
+          )
+        }
+
+        const secondaryLabel =
+          node.page.summary ||
+          (node.page.title && node.page.title !== node.fileName
+            ? t(node.page.title)
+            : node.page.path)
+        return (
+          <button
+            className="op-wiki-page-row"
+            key={node.page.path}
+            onClick={() => openWikiPage(node.page.path)}
+            type="button"
+          >
+            <span className="op-wiki-page-row__icon">
+              <FileText size={16} />
+            </span>
+            <span className="op-wiki-page-row__body">
+              <strong className="op-wiki-list-item__title">
+                {node.fileName}
+              </strong>
+              <span className="op-wiki-page-row__summary">
+                {secondaryLabel}
+              </span>
+            </span>
+            <span className="op-wiki-page-row__side">
+              <span className="op-wiki-page-row__type">
+                {formatWikiPageType(node.page.type, t)}
+              </span>
+              <Edit3 className="op-wiki-page-row__edit" size={14} />
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+
+  useEffect(() => {
+    let isCancelled = false
+    apiFetch(transport.apiBase, "/api/agent/skills")
+      .then(async (response) => {
+        const data = (await response.json()) as { skills?: AgentSkillListing[] }
+        if (!isCancelled) {
+          setAgentSkills(
+            (data.skills ?? []).filter(
+              (item) =>
+                item.skill.appliesTo.includes("wiki") &&
+                item.skill.taskTypes.length > 0
+            )
+          )
+        }
+      })
+      .catch((error) => {
+        if (!isCancelled) {
+          console.error("Failed to load wiki agent skills", error)
+        }
+      })
+    return () => {
+      isCancelled = true
+    }
+  }, [transport.apiBase])
+
+  useEffect(() => {
+    let isCancelled = false
+    setIsSelectionBusy(true)
+    apiFetch(transport.apiBase, "/api/wiki/selection")
+      .then(async (response) => {
+        const data = (await response.json()) as {
+          selection?: Partial<WikiAgentSelection>
+        }
+        if (!isCancelled) {
+          setAgentSelection({
+            isWikiSelected: Boolean(data.selection?.isWikiSelected),
+            selectedGeneratedDocumentIds:
+              data.selection?.selectedGeneratedDocumentIds ?? [],
+            selectedRawDocumentIds:
+              data.selection?.selectedRawDocumentIds ?? [],
+          })
+        }
+      })
+      .catch((error) => {
+        if (!isCancelled) {
+          console.error("Failed to load Wiki agent selection", error)
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) setIsSelectionBusy(false)
+      })
+    return () => {
+      isCancelled = true
+    }
+  }, [transport.apiBase])
+
+  const updateAgentSelection = useCallback(
+    async (next: WikiAgentSelection) => {
+      const previous = agentSelection
+      setAgentSelection(next)
+      setIsSelectionBusy(true)
+      try {
+        const response = await apiFetch(
+          transport.apiBase,
+          "/api/wiki/selection",
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(next),
+          }
+        )
+        const data = (await response.json()) as {
+          selection?: Partial<WikiAgentSelection>
+        }
+        setAgentSelection({
+          isWikiSelected: Boolean(data.selection?.isWikiSelected),
+          selectedGeneratedDocumentIds:
+            data.selection?.selectedGeneratedDocumentIds ?? [],
+          selectedRawDocumentIds: data.selection?.selectedRawDocumentIds ?? [],
+        })
+      } catch (error) {
+        setAgentSelection(previous)
+        throw error
+      } finally {
+        setIsSelectionBusy(false)
+      }
+    },
+    [agentSelection, transport.apiBase]
+  )
 
   const openMarkdown = useCallback(
     async (document: WikiRawDocument) => {
@@ -277,52 +527,6 @@ export function WikiPanel({
     [addFiles]
   )
 
-  const createRawMarkdown = useCallback(async () => {
-    const title = t`Untitled note`
-    setIsBusy(true)
-    try {
-      await apiFetch(transport.apiBase, "/api/wiki/raw-documents", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          content: `# ${title}\n\n`,
-          fileName: "untitled-note.md",
-          mimeType: "text/markdown",
-          title,
-          source: "user",
-          wikiSpaceId: activeSpace?.id,
-        }),
-      })
-      await onReload()
-    } finally {
-      setIsBusy(false)
-    }
-  }, [activeSpace?.id, onReload, t, transport])
-
-  const createWikiPage = useCallback(async () => {
-    const pagePath = `topics/untitled-${Date.now().toString(36)}.md`
-    const title = t`Untitled page`
-    setIsBusy(true)
-    try {
-      await apiFetch(
-        transport.apiBase,
-        `/api/wiki/spaces/${encodeURIComponent(activeSpace?.id ?? "wiki:default")}/pages`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            pagePath,
-            title,
-            content: `---\ntitle: "${title}"\ntype: "topic"\nsummary: ""\ntags: []\nsourceDocumentIds: []\nupdatedAt: "${new Date().toISOString()}"\n---\n\n# ${title}\n\n`,
-          }),
-        }
-      )
-      await onReload()
-    } finally {
-      setIsBusy(false)
-    }
-  }, [activeSpace?.id, onReload, t, transport])
-
   const openWikiPage = useCallback(
     async (pagePath: string) => {
       const response = await apiFetch(
@@ -373,23 +577,101 @@ export function WikiPanel({
     }
   }, [activeSpace, onReload, pageDialog, transport])
 
-  const updateWikiLanguage = useCallback(
-    async (language: OpenPanelsLocale) => {
+  const updateWikiAgentSkill = useCallback(
+    async (agentSkillId: string) => {
       setIsBusy(true)
       try {
         const response = await apiFetch(
           transport.apiBase,
-          "/api/wiki/language",
+          "/api/wiki/agent-skill",
           {
             method: "PUT",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ language }),
+            body: JSON.stringify({ agentSkillId }),
           }
         )
         if (!response.ok) {
           if (response.status === 404) return
-          throw new Error(`Failed to update wiki language: ${response.status}`)
+          throw new Error(
+            `Failed to update wiki agent skill: ${response.status}`
+          )
         }
+        await onReload()
+      } finally {
+        setIsBusy(false)
+      }
+    },
+    [onReload, transport.apiBase]
+  )
+
+  const openGeneratedDocument = useCallback(
+    async (document: WikiGeneratedDocument) => {
+      const response = await apiFetch(
+        transport.apiBase,
+        `/api/wiki/generated-documents/${encodeURIComponent(document.id)}`
+      )
+      const data = (await response.json()) as { content?: string }
+      setGeneratedDocumentDialog({
+        content: data.content ?? "",
+        document,
+      })
+    },
+    [transport.apiBase]
+  )
+
+  const publishGeneratedDocument = useCallback(
+    async (document: WikiGeneratedDocument) => {
+      setIsBusy(true)
+      try {
+        await apiFetch(
+          transport.apiBase,
+          `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/publish`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ wikiSpaceId: activeSpace?.id }),
+          }
+        )
+        await onReload()
+      } finally {
+        setIsBusy(false)
+      }
+    },
+    [activeSpace?.id, onReload, transport.apiBase]
+  )
+
+  const renameGeneratedDocument = useCallback(
+    async (document: WikiGeneratedDocument, title: string) => {
+      setIsBusy(true)
+      try {
+        await apiFetch(
+          transport.apiBase,
+          `/api/wiki/generated-documents/${encodeURIComponent(document.id)}`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ title }),
+          }
+        )
+        setPendingRenameGeneratedDocument(null)
+        await onReload()
+      } finally {
+        setIsBusy(false)
+      }
+    },
+    [onReload, transport.apiBase]
+  )
+
+  const deleteGeneratedDocument = useCallback(
+    async (document: WikiGeneratedDocument) => {
+      setIsBusy(true)
+      try {
+        await apiFetch(
+          transport.apiBase,
+          `/api/wiki/generated-documents/${encodeURIComponent(document.id)}`,
+          { method: "DELETE" }
+        )
+        setPendingDeleteGeneratedDocument(null)
         await onReload()
       } finally {
         setIsBusy(false)
@@ -405,9 +687,11 @@ export function WikiPanel({
         <div className="op-wiki-workbench">
           <aside
             className={
-              isRawDragActive
-                ? "op-wiki-column op-wiki-column--raw op-wiki-column--drop-active"
-                : "op-wiki-column op-wiki-column--raw"
+              collapsedModules.has("raw")
+                ? "op-wiki-column op-wiki-column--raw op-wiki-column--collapsed"
+                : isRawDragActive
+                  ? "op-wiki-column op-wiki-column--raw op-wiki-column--drop-active"
+                  : "op-wiki-column op-wiki-column--raw"
             }
             onDragEnter={handleRawDragEnter}
             onDragLeave={handleRawDragLeave}
@@ -416,30 +700,25 @@ export function WikiPanel({
           >
             <div className="op-wiki-drop-hint">{t`Drop files to upload`}</div>
             <div className="op-wiki-column__header">
-              <div>
-                <div className="op-wiki-panel__label">{t`Raw`}</div>
+              {moduleHeaderToggle("raw", t`Raw Documents`)}
+              <div className="op-wiki-column__title">
                 <h2>{t`Raw Documents`}</h2>
+                {moduleInfo(
+                  t`Raw Documents`,
+                  t`Source files live here. Added content is converted to Markdown and indexed into the Wiki. Selecting a document lets the agent discover it and load its content when needed.`
+                )}
               </div>
               <div className="op-wiki-actions">
                 <Button
                   aria-label={t`Upload document`}
+                  className="op-wiki-add-button"
                   isDisabled={isBusy}
                   isIconOnly
                   onPress={() => fileInputRef.current?.click()}
                   size="sm"
                   variant="ghost"
                 >
-                  <Upload size={16} />
-                </Button>
-                <Button
-                  aria-label={t`New Markdown`}
-                  isDisabled={isBusy}
-                  isIconOnly
-                  onPress={createRawMarkdown}
-                  size="sm"
-                  variant="ghost"
-                >
-                  <FilePlus size={16} />
+                  <Plus size={16} />
                 </Button>
               </div>
               <input
@@ -453,7 +732,7 @@ export function WikiPanel({
                 type="file"
               />
             </div>
-            <div className="op-wiki-list">
+            <div className="op-wiki-list op-wiki-column__content">
               {state.rawDocuments.length ? (
                 state.rawDocuments.map((document) => {
                   const previewKind = originalPreviewKind(document)
@@ -471,6 +750,40 @@ export function WikiPanel({
                       }
                       key={document.id}
                     >
+                      <Checkbox
+                        aria-label={`${t`Select for agent context`}: ${document.title}`}
+                        className="op-wiki-selection-checkbox op-wiki-selection-checkbox--document"
+                        isDisabled={isSelectionBusy}
+                        isSelected={agentSelection.selectedRawDocumentIds.includes(
+                          document.id
+                        )}
+                        onChange={(isSelected) => {
+                          const selectedRawDocumentIds = isSelected
+                            ? [
+                                ...agentSelection.selectedRawDocumentIds,
+                                document.id,
+                              ]
+                            : agentSelection.selectedRawDocumentIds.filter(
+                                (documentId) => documentId !== document.id
+                              )
+                          updateAgentSelection({
+                            ...agentSelection,
+                            selectedRawDocumentIds,
+                          }).catch((error) => {
+                            console.error(
+                              "Failed to update raw document selection",
+                              error
+                            )
+                          })
+                        }}
+                        variant="secondary"
+                      >
+                        <Checkbox.Content>
+                          <Checkbox.Control>
+                            <Checkbox.Indicator />
+                          </Checkbox.Control>
+                        </Checkbox.Content>
+                      </Checkbox>
                       <button
                         className="op-wiki-list-item__body"
                         disabled={!(hasMarkdown || previewKind)}
@@ -608,98 +921,259 @@ export function WikiPanel({
             </div>
           </aside>
 
-          <section className="op-wiki-column op-wiki-column--structured">
+          <section
+            className={`op-wiki-column op-wiki-column--structured${
+              collapsedModules.has("structured")
+                ? "op-wiki-column--collapsed"
+                : ""
+            }`}
+          >
             <div className="op-wiki-column__header">
-              <div>
-                <div className="op-wiki-panel__label">Wiki</div>
-                <h2>
-                  {activeSpace?.title
-                    ? t(activeSpace.title)
-                    : t`Structured Wiki`}
-                </h2>
-              </div>
-              <Button
-                isDisabled={isBusy}
-                onPress={createWikiPage}
-                size="sm"
-                variant="secondary"
-              >
-                <FilePlus size={15} />
-                <span>{t`New Markdown`}</span>
-              </Button>
-            </div>
-            <div className="op-wiki-page-grid">
-              {(activeSpace?.pageIndex.length
-                ? activeSpace.pageIndex
-                : [
-                    {
-                      path: "index.md",
-                      title: t`Index`,
-                      summary: "",
-                      type: "overview",
-                      updatedAt: "",
-                    },
-                  ]
-              ).map((page) => (
-                <button
-                  className="op-wiki-page-row"
-                  key={page.path}
-                  onClick={() => openWikiPage(page.path)}
-                  type="button"
+              {moduleHeaderToggle("structured", activeSpace?.title || t`Wiki`)}
+              <div className="op-wiki-column__title">
+                <Checkbox
+                  aria-label={t`Select Wiki for agent context`}
+                  className="op-wiki-selection-checkbox"
+                  isDisabled={isSelectionBusy}
+                  isSelected={agentSelection.isWikiSelected}
+                  onChange={(isWikiSelected) => {
+                    updateAgentSelection({
+                      ...agentSelection,
+                      isWikiSelected,
+                    }).catch((error) => {
+                      console.error("Failed to update Wiki selection", error)
+                    })
+                  }}
+                  variant="secondary"
                 >
-                  <span className="op-wiki-page-row__icon">
-                    <BookOpen size={16} />
-                  </span>
-                  <span className="op-wiki-page-row__body">
-                    <strong className="op-wiki-list-item__title">
-                      {page.title ? t(page.title) : page.path}
-                    </strong>
-                    <span className="op-wiki-page-row__summary">
-                      {page.summary || page.path}
-                    </span>
-                  </span>
-                  <span className="op-wiki-page-row__side">
-                    <span className="op-wiki-page-row__type">
-                      {formatWikiPageType(page.type, t)}
-                    </span>
-                    <Edit3 className="op-wiki-page-row__edit" size={14} />
-                  </span>
-                </button>
-              ))}
-            </div>
-            <div className="op-wiki-column__footer">
-              <Select
-                aria-label={t`Wiki language`}
-                className="op-wiki-language-select"
-                isDisabled={isBusy}
-                onSelectionChange={(key) => {
-                  if (key) {
-                    updateWikiLanguage(String(key) as OpenPanelsLocale).catch(
-                      () => undefined
-                    )
-                  }
-                }}
-                selectedKey={wikiLanguage}
-              >
-                <Select.Trigger>
-                  <Select.Value>
-                    {OPENPANELS_LOCALE_LABELS[wikiLanguage]}
-                  </Select.Value>
-                  <Select.Indicator />
-                </Select.Trigger>
-                <Select.Popover>
-                  <ListBox>
-                    <ListBox.Section>
-                      <Header>{t`Wiki language`}</Header>
-                      {WIKI_LANGUAGE_OPTIONS.map((language) => (
-                        <ListBox.Item id={language} key={language}>
-                          {OPENPANELS_LOCALE_LABELS[language]}
-                        </ListBox.Item>
+                  <Checkbox.Content>
+                    <Checkbox.Control>
+                      <Checkbox.Indicator />
+                    </Checkbox.Control>
+                  </Checkbox.Content>
+                </Checkbox>
+                <h2>{activeSpace?.title ? t(activeSpace.title) : t`Wiki`}</h2>
+                {moduleInfo(
+                  activeSpace?.title || t`Wiki`,
+                  t`Structured knowledge pages generated from your sources live here. Agents can search and update this Wiki. Selecting it lets the agent discover the Wiki and load relevant pages when needed.`
+                )}
+              </div>
+              <div className="op-wiki-actions">
+                <Dropdown>
+                  <Dropdown.Trigger>
+                    <Button
+                      className="op-wiki-agent-skill-trigger"
+                      isDisabled={isBusy || agentSkills.length === 0}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <span>
+                        {agentSkills.find(
+                          (item) => item.skill.id === wikiAgentSkillId
+                        )?.skill.title ?? wikiAgentSkillId}
+                      </span>
+                      <ChevronDown size={14} />
+                    </Button>
+                  </Dropdown.Trigger>
+                  <Dropdown.Popover>
+                    <Dropdown.Menu
+                      onAction={(key) => {
+                        updateWikiAgentSkill(String(key)).catch(() => undefined)
+                      }}
+                      selectedKeys={[wikiAgentSkillId]}
+                      selectionMode="single"
+                    >
+                      {agentSkills.map((item) => (
+                        <Dropdown.Item id={item.skill.id} key={item.skill.id}>
+                          {item.skill.title}
+                        </Dropdown.Item>
                       ))}
-                    </ListBox.Section>
-                  </ListBox>
-                </Select.Popover>
-              </Select>
+                    </Dropdown.Menu>
+                  </Dropdown.Popover>
+                </Dropdown>
+              </div>
+            </div>
+            <div className="op-wiki-page-tree op-wiki-column__content">
+              {renderWikiPageNodes(wikiPageTree)}
+            </div>
+          </section>
+
+          <section
+            className={`op-wiki-column op-wiki-column--generated${
+              collapsedModules.has("generated")
+                ? "op-wiki-column--collapsed"
+                : ""
+            }`}
+          >
+            <div className="op-wiki-column__header">
+              {moduleHeaderToggle("generated", t`Generated Documents`)}
+              <div className="op-wiki-column__title">
+                <h2>{t`Generated Documents`}</h2>
+                {moduleInfo(
+                  t`Generated Documents`,
+                  t`Drafts created by agents live here before they become source material. Agents can create and edit these documents. Selecting a document lets the agent discover it and load its latest content when needed.`
+                )}
+              </div>
+            </div>
+            <div className="op-wiki-list op-wiki-column__content">
+              {state.generatedDocuments.length ? (
+                state.generatedDocuments.map((document) => {
+                  const isGenerating =
+                    document.generation?.status === "generating"
+                  const generationFailed =
+                    document.generation?.status === "failed"
+                  return (
+                    <div
+                      className="op-wiki-list-item op-wiki-list-item--interactive"
+                      key={document.id}
+                    >
+                      <Checkbox
+                        aria-label={`${t`Select for agent context`}: ${document.title}`}
+                        className="op-wiki-selection-checkbox op-wiki-selection-checkbox--document"
+                        isDisabled={isSelectionBusy}
+                        isSelected={agentSelection.selectedGeneratedDocumentIds.includes(
+                          document.id
+                        )}
+                        onChange={(isSelected) => {
+                          const selectedGeneratedDocumentIds = isSelected
+                            ? [
+                                ...agentSelection.selectedGeneratedDocumentIds,
+                                document.id,
+                              ]
+                            : agentSelection.selectedGeneratedDocumentIds.filter(
+                                (documentId) => documentId !== document.id
+                              )
+                          updateAgentSelection({
+                            ...agentSelection,
+                            selectedGeneratedDocumentIds,
+                          }).catch((error) => {
+                            console.error(
+                              "Failed to update generated document selection",
+                              error
+                            )
+                          })
+                        }}
+                        variant="secondary"
+                      >
+                        <Checkbox.Content>
+                          <Checkbox.Control>
+                            <Checkbox.Indicator />
+                          </Checkbox.Control>
+                        </Checkbox.Content>
+                      </Checkbox>
+                      <button
+                        className="op-wiki-list-item__body"
+                        disabled={isGenerating}
+                        onClick={() => {
+                          openGeneratedDocument(document).catch((error) => {
+                            console.error(
+                              "Failed to open generated document",
+                              error
+                            )
+                          })
+                        }}
+                        type="button"
+                      >
+                        <div>
+                          <strong className="op-wiki-list-item__title">
+                            {document.title}
+                          </strong>
+                          <span className="op-wiki-list-item__meta">
+                            {document.format === "markdown"
+                              ? t`Markdown`
+                              : t`Plain text`}
+                            {" · "}
+                            {new Date(document.updatedAt).toLocaleString()}
+                          </span>
+                        </div>
+                      </button>
+                      <div className="op-wiki-list-item__tools">
+                        {isGenerating || generationFailed ? (
+                          <span
+                            className={`op-generated-document-status${
+                              generationFailed
+                                ? "op-generated-document-status--failed"
+                                : ""
+                            }`}
+                            title={document.generation?.error ?? undefined}
+                          >
+                            <RefreshCw
+                              className={
+                                isGenerating ? "op-wiki-spin" : undefined
+                              }
+                              size={14}
+                            />
+                            {isGenerating
+                              ? t`Generating`
+                              : t`Generation failed`}
+                          </span>
+                        ) : null}
+                        <Dropdown>
+                          <Dropdown.Trigger>
+                            <Button
+                              aria-label={t`Document actions`}
+                              isIconOnly
+                              size="sm"
+                              variant="ghost"
+                            >
+                              <MoreHorizontal size={16} />
+                            </Button>
+                          </Dropdown.Trigger>
+                          <Dropdown.Popover>
+                            <Dropdown.Menu
+                              disabledKeys={[
+                                ...(isBusy
+                                  ? ["publish", "rename", "delete"]
+                                  : []),
+                              ]}
+                              onAction={(key) => {
+                                if (key === "publish") {
+                                  publishGeneratedDocument(document).catch(
+                                    (error) => {
+                                      console.error(
+                                        "Failed to publish generated document",
+                                        error
+                                      )
+                                    }
+                                  )
+                                } else if (key === "rename") {
+                                  setPendingRenameGeneratedDocument(document)
+                                } else if (key === "delete") {
+                                  setPendingDeleteGeneratedDocument(document)
+                                }
+                              }}
+                            >
+                              <Dropdown.Item id="publish">
+                                <FileOutput size={14} />
+                                <span>
+                                  {document.publishHistory.length
+                                    ? t`Add latest version to raw documents`
+                                    : t`Add to raw documents`}
+                                </span>
+                              </Dropdown.Item>
+                              <Dropdown.Item id="rename">
+                                <Pencil size={14} />
+                                <span>{t`Rename`}</span>
+                              </Dropdown.Item>
+                              <Dropdown.Item
+                                className="text-danger"
+                                id="delete"
+                              >
+                                <Trash2 size={14} />
+                                <span>{t`Delete`}</span>
+                              </Dropdown.Item>
+                            </Dropdown.Menu>
+                          </Dropdown.Popover>
+                        </Dropdown>
+                      </div>
+                    </div>
+                  )
+                })
+              ) : (
+                <div className="op-wiki-empty-inline">
+                  {t`No generated documents yet`}
+                </div>
+              )}
             </div>
           </section>
         </div>
@@ -752,6 +1226,57 @@ export function WikiPanel({
             originalPreviewDocument
           )}
           titleLabel={t`Original file`}
+        />
+      ) : null}
+
+      {generatedDocumentDialog ? (
+        <GeneratedDocumentDialog
+          closeLabel={t`Close`}
+          content={generatedDocumentDialog.content}
+          onClose={() => setGeneratedDocumentDialog(null)}
+          title={generatedDocumentDialog.document.title}
+          titleLabel={
+            generatedDocumentDialog.document.format === "markdown"
+              ? t`Markdown`
+              : t`Plain text`
+          }
+        />
+      ) : null}
+
+      {pendingRenameGeneratedDocument ? (
+        <RenameDocumentDialog
+          cancelLabel={t`Cancel`}
+          confirmLabel={t`Rename`}
+          isBusy={isBusy}
+          onCancel={() => setPendingRenameGeneratedDocument(null)}
+          onConfirm={(title) =>
+            renameGeneratedDocument(
+              pendingRenameGeneratedDocument,
+              title
+            ).catch((error) => {
+              console.error("Failed to rename generated document", error)
+            })
+          }
+          title={t`Rename generated document`}
+          value={pendingRenameGeneratedDocument.title}
+        />
+      ) : null}
+
+      {pendingDeleteGeneratedDocument ? (
+        <ConfirmDialog
+          cancelLabel={t`Cancel`}
+          confirmLabel={t`Delete`}
+          isBusy={isBusy}
+          message={t`This generated document will be removed. Published raw documents will be kept.`}
+          onCancel={() => setPendingDeleteGeneratedDocument(null)}
+          onConfirm={() =>
+            deleteGeneratedDocument(pendingDeleteGeneratedDocument).catch(
+              (error) => {
+                console.error("Failed to delete generated document", error)
+              }
+            )
+          }
+          title={t`Delete generated document?`}
         />
       ) : null}
 

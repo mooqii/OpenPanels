@@ -1,4 +1,4 @@
-import { Button, Modal, TextArea } from "@heroui/react"
+import { Button, Input, Modal, TextArea } from "@heroui/react"
 import { Save, Trash2, X, ZoomIn, ZoomOut } from "lucide-react"
 import { useState } from "react"
 import {
@@ -7,6 +7,97 @@ import {
   originalPreviewKind,
 } from "../../lib/api"
 import type { WikiRawDocument } from "../../types"
+
+export function GeneratedDocumentDialog({
+  closeLabel,
+  content,
+  onClose,
+  title,
+  titleLabel,
+}: {
+  closeLabel: string
+  content: string
+  onClose: () => void
+  title: string
+  titleLabel: string
+}) {
+  return (
+    <Modal.Backdrop isOpen onOpenChange={(isOpen) => !isOpen && onClose()}>
+      <Modal.Container size="cover">
+        <Modal.Dialog className="op-markdown-dialog__panel">
+          <Modal.CloseTrigger aria-label={closeLabel} />
+          <Modal.Header>
+            <div>
+              <div className="op-wiki-panel__label">{titleLabel}</div>
+              <Modal.Heading>{title}</Modal.Heading>
+            </div>
+          </Modal.Header>
+          <Modal.Body>
+            <TextArea
+              aria-label={title}
+              className="op-markdown-dialog__editor"
+              fullWidth
+              readOnly
+              value={content}
+              variant="secondary"
+            />
+          </Modal.Body>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
+  )
+}
+
+export function RenameDocumentDialog({
+  cancelLabel,
+  confirmLabel,
+  isBusy,
+  onCancel,
+  onConfirm,
+  title,
+  value,
+}: {
+  cancelLabel: string
+  confirmLabel: string
+  isBusy: boolean
+  onCancel: () => void
+  onConfirm: (title: string) => void
+  title: string
+  value: string
+}) {
+  const [nextTitle, setNextTitle] = useState(value)
+  return (
+    <Modal.Backdrop isOpen onOpenChange={(isOpen) => !isOpen && onCancel()}>
+      <Modal.Container>
+        <Modal.Dialog className="op-confirm-dialog__panel">
+          <Modal.Header>
+            <Modal.Heading>{title}</Modal.Heading>
+          </Modal.Header>
+          <Modal.Body>
+            <Input
+              aria-label={title}
+              autoFocus
+              onChange={(event) => setNextTitle(event.currentTarget.value)}
+              value={nextTitle}
+            />
+          </Modal.Body>
+          <Modal.Footer className="op-confirm-dialog__actions">
+            <Button isDisabled={isBusy} onPress={onCancel} variant="secondary">
+              {cancelLabel}
+            </Button>
+            <Button
+              isDisabled={isBusy || !nextTitle.trim()}
+              onPress={() => onConfirm(nextTitle.trim())}
+              variant="primary"
+            >
+              {confirmLabel}
+            </Button>
+          </Modal.Footer>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
+  )
+}
 
 export function MarkdownDialog({
   content,

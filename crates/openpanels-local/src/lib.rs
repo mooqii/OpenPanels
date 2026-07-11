@@ -4,6 +4,7 @@ pub mod canvas;
 pub mod cli;
 pub mod control;
 pub mod error;
+pub mod operations;
 pub mod paths;
 pub mod selection;
 pub mod server;

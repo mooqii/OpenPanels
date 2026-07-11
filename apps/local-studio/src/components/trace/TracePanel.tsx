@@ -348,6 +348,7 @@ function TaskList({
   if (!tasks.length) {
     return (
       <div className="op-agent-tasks">
+        <WorkerStatusCard workerStatus={workerStatus} />
         <div className="op-trace-panel__empty">No project tasks yet.</div>
       </div>
     )
@@ -433,6 +434,12 @@ function TaskList({
                       {task.maxAttempts ? `/${task.maxAttempts}` : ""}
                     </span>
                   ) : null}
+                  {task.dispatchState ? (
+                    <span>{formatDispatchState(task.dispatchState)}</span>
+                  ) : null}
+                  {task.assignedTarget ? (
+                    <span>{task.assignedTarget.name}</span>
+                  ) : null}
                   <span>{task.panelKind}</span>
                   <span>{task.targetId || task.id}</span>
                 </span>
@@ -448,6 +455,10 @@ function TaskList({
                 ) : task.lease?.expiresAt && task.blockedReason === "leased" ? (
                   <span className="op-agent-task__note">
                     Lease until {formatTaskTime(task.lease.expiresAt)}
+                  </span>
+                ) : task.lastDelivery?.lastError ? (
+                  <span className="op-agent-task__note">
+                    Delivery: {task.lastDelivery.lastError}
                   </span>
                 ) : null}
                 <code>{task.id}</code>
@@ -502,9 +513,16 @@ function WorkerStatusCard({
 }: {
   workerStatus?: AgentWorkerStatus
 }) {
-  const status = workerStatus?.status ?? "idle"
+  const dispatcher = workerStatus?.dispatcher
+  const status = dispatcher?.status ?? workerStatus?.status ?? "idle"
   const tone =
-    status === "running" ? "active" : status === "error" ? "danger" : "success"
+    status === "running" || status === "delivering"
+      ? "active"
+      : status === "error" || status === "noTarget"
+        ? "danger"
+        : status === "retry"
+          ? "warning"
+          : "success"
   return (
     <div className={`op-agent-worker op-agent-worker--${tone}`}>
       <span>
@@ -512,7 +530,17 @@ function WorkerStatusCard({
         Worker
       </span>
       <strong>{formatWorkerStatus(status)}</strong>
-      {workerStatus?.lastError ? <em>{workerStatus.lastError}</em> : null}
+      {dispatcher ? (
+        <small>
+          {dispatcher.onlineTargetCount ?? 0}/{dispatcher.targetCount ?? 0}{" "}
+          targets
+        </small>
+      ) : null}
+      {(workerStatus?.lastError ?? dispatcher?.lastDelivery?.lastError) ? (
+        <em>
+          {workerStatus?.lastError ?? dispatcher?.lastDelivery?.lastError}
+        </em>
+      ) : null}
       {workerStatus?.heartbeatAt ? (
         <small>{formatTaskTime(workerStatus.heartbeatAt)}</small>
       ) : null}
@@ -523,15 +551,11 @@ function WorkerStatusCard({
 function taskCommand(
   task: ProjectTask
 ): { label: string; value: string } | null {
-  if (task.queue !== "wiki") return null
   if (task.status !== "queued" && task.status !== "failed") return null
   if (!task.ready) return null
   return {
-    label:
-      task.status === "failed"
-        ? "Retry with Wiki task API"
-        : "Claim with Wiki task API",
-    value: `openpanels-local wiki tasks claim --task-id ${shellQuote(task.id)} --format json`,
+    label: "Claim with a registered target",
+    value: `openpanels-local tasks claim --task-id ${shellQuote(task.id)} --target-id <target-id> --format json`,
   }
 }
 
@@ -798,8 +822,25 @@ function formatWorkerStatus(status: string): string {
       return "Running"
     case "error":
       return "Error"
+    case "noTarget":
+      return "No target"
+    case "delivering":
+      return "Delivering"
+    case "retry":
+      return "Retry"
     default:
       return "Idle"
+  }
+}
+
+function formatDispatchState(status: string): string {
+  switch (status) {
+    case "noTarget":
+      return "no target"
+    case "deliveryFailed":
+      return "delivery failed"
+    default:
+      return status
   }
 }
 

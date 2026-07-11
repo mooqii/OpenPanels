@@ -17,6 +17,7 @@ function ensureRustCli() {
     join(repoRoot, "crates", "openpanels-local", "Cargo.toml"),
     join(repoRoot, "crates", "openpanels-local", "src"),
     join(repoRoot, "crates", "openpanels-local", "build.rs"),
+    join(repoRoot, "agent-resources"),
     join(repoRoot, "apps", "local-studio", "dist"),
   ]
   if (isOutdated(rustBin, sourcePaths)) {

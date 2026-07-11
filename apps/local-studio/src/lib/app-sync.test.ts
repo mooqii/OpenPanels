@@ -4,6 +4,7 @@ import { PageId } from "../canvas/types/ids"
 import { createEmptySnapshot } from "../canvas/types/records"
 import type { OpenPanelsPanel, OpenPanelsPanelKind } from "../protocol"
 import type {
+  AgentOperation,
   AppState,
   BootstrapResponse,
   PanelStateSnapshot,
@@ -58,6 +59,33 @@ describe("mergeLiveProjectBootstrap", () => {
     expect(result.appState.tasks).toEqual([task])
   })
 
+  it("updates operation status without reloading or clearing the canvas", () => {
+    const localCanvas = canvasSnapshot("Local edits", 120)
+    const active = agentOperation("active")
+    const current = appState({
+      agentOperations: [active],
+      canvasRevision: 7,
+      canvasSnapshot: localCanvas,
+    })
+    const remote = appState({
+      agentOperations: [{ ...active, status: "completed" }],
+      canvasRevision: 7,
+      canvasSnapshot: canvasSnapshot("Server snapshot", -10),
+    })
+
+    const result = mergeLiveProjectBootstrap({
+      current,
+      currentCanvasRevision: 7,
+      currentCanvasSnapshot: localCanvas,
+      remote,
+    })
+
+    expect(result.changed).toBe(true)
+    expect(result.shouldReloadCanvas).toBe(false)
+    expect(result.canvasSnapshot).toBe(localCanvas)
+    expect(result.appState.agentOperations?.[0]?.status).toBe("completed")
+  })
+
   it("reloads remote canvas state only when the canvas revision increases", () => {
     const localCanvas = canvasSnapshot("Local edits", 120)
     const remoteCanvas = canvasSnapshot("Remote insert", -10)
@@ -98,11 +126,13 @@ describe("canvasAssetStoreKey", () => {
 })
 
 function appState({
+  agentOperations = [],
   canvasRevision,
   canvasSnapshot,
   pendingTaskCount = 0,
   tasks = [],
 }: {
+  agentOperations?: AgentOperation[]
   canvasRevision: number
   canvasSnapshot: StoreSnapshot
   pendingTaskCount?: number
@@ -130,6 +160,7 @@ function appState({
   return {
     activePanelId: canvasPanel.id,
     activePanelKind: "canvas",
+    agentOperations,
     panel: canvasPanel,
     panels: [wikiSnapshot, canvasPanelSnapshot],
     pendingTaskCount,
@@ -137,6 +168,22 @@ function appState({
     session,
     state: canvasSnapshot,
     tasks,
+  }
+}
+
+function agentOperation(status: AgentOperation["status"]): AgentOperation {
+  return {
+    completedAt: status === "active" ? null : "2026-07-09T00:01:00.000Z",
+    createdAt: "2026-07-09T00:00:00.000Z",
+    error: null,
+    id: "operation:1",
+    intent: "canvas.image.generate",
+    panelId: "panel:canvas",
+    panelKind: "canvas",
+    result: null,
+    sessionId: "session:1",
+    status,
+    updatedAt: "2026-07-09T00:01:00.000Z",
   }
 }
 
@@ -173,8 +220,9 @@ function wikiState(): WikiState {
     activeWikiPagePath: "index.md",
     activeWikiSpaceId: "wiki:default",
     rawDocuments: [],
+    generatedDocuments: [],
     ruleSets: [],
-    schemaVersion: 2,
+    schemaVersion: 3,
     tasks: [],
     wikiSpaces: [],
   }

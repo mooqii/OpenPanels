@@ -1,4 +1,3 @@
-import type { OpenPanelsLocale } from "./canvas"
 import type {
   OpenPanelsPanel,
   OpenPanelsPanelKind,
@@ -8,27 +7,88 @@ import type {
 export interface BootstrapResponse {
   activePanelId: string
   activePanelKind: OpenPanelsPanelKind
+  agentOperations?: AgentOperation[]
   agentWorker?: AgentWorkerStatus
+  blockedCount?: number
   buildInfo?: OpenPanelsBuildInfo
   panel: OpenPanelsPanel
   panels: PanelStateSnapshot[]
   pendingTaskCount?: number
+  readyCount?: number
   revision: number
+  runningCount?: number
   session: OpenPanelsSession
   sessions?: OpenPanelsSession[]
   state: unknown
   tasks?: ProjectTask[]
+  unhandledCount?: number
+}
+
+export interface AgentOperation {
+  completedAt: string | null
+  createdAt: string
+  error: { message?: string } | null
+  id: string
+  intent: string
+  panelId: string
+  panelKind: OpenPanelsPanelKind
+  panelTitle?: string
+  projectTitle?: string
+  result: unknown
+  sessionId: string
+  status: "active" | "completed" | "failed" | "cancelled"
+  updatedAt: string
 }
 
 export interface AppState extends BootstrapResponse {}
 
 export interface AgentWorkerStatus {
   currentTask?: ProjectTask | null
+  dispatcher?: AgentDispatcherStatus
   heartbeatAt?: string | null
   lastError?: string | null
   lastTask?: unknown
   status: "idle" | "running" | "error" | string
   updatedAt?: string | null
+}
+
+export interface AgentDispatcherStatus {
+  lastDelivery?: TaskDelivery | null
+  onlineTargetCount?: number
+  pendingCount?: number
+  retryCount?: number
+  runningCount?: number
+  status: string
+  targetCount?: number
+  targets?: AgentTarget[]
+  unhandledCount?: number
+  updatedAt?: string | null
+}
+
+export interface AgentTarget {
+  capabilities: string[]
+  endpoint?: string | null
+  host: string
+  id: string
+  lastError?: string | null
+  lastHeartbeatAt?: string | null
+  name: string
+  priority: number
+  status: string
+  transport: "webhook" | "poll" | "command" | string
+}
+
+export interface TaskDelivery {
+  acknowledgedAt?: string | null
+  attempts: number
+  deliveredAt?: string | null
+  id: string
+  lastError?: string | null
+  nextAttemptAt?: string | null
+  status: string
+  targetId: string
+  taskId: string
+  updatedAt: string
 }
 
 export interface OpenPanelsBuildInfo {
@@ -99,18 +159,32 @@ export interface TraceSnapshotResponse {
 }
 
 export interface ProjectTask {
+  assignedTarget?: AgentTarget | null
+  assignedTargetId?: string | null
   attempt?: number
   blockedReason?: "attemptsExceeded" | "leased" | "retryLater" | string | null
   capability?: string
+  completedAt?: string | null
   createdAt: string
+  dispatchState?:
+    | "eligible"
+    | "noTarget"
+    | "delivering"
+    | "running"
+    | "retry"
+    | "deliveryFailed"
+    | "done"
+    | string
   error?: unknown
   id: string
   input?: unknown
+  lastDelivery?: TaskDelivery | null
   lease?: {
     expiresAt?: string | null
     heartbeatAt?: string | null
     owner?: string | null
   }
+  matchedTargetCount?: number
   maxAttempts?: number
   nextRunAt?: string | null
   panelId: string
@@ -138,12 +212,54 @@ export interface WikiState {
   activeRawDocumentId: string | null
   activeWikiPagePath: string | null
   activeWikiSpaceId: string | null
+  generatedDocuments: WikiGeneratedDocument[]
   rawDocuments: WikiRawDocument[]
   ruleSets: unknown[]
-  schemaVersion: 2
+  schemaVersion: 3
   tasks: WikiTask[]
-  wikiLanguage?: OpenPanelsLocale | null
+  wikiAgentSkillId?: string | null
   wikiSpaces: WikiSpace[]
+}
+
+export interface WikiGeneratedDocument {
+  contentRef: string
+  contentVersion: number
+  createdAt: string
+  format: "markdown" | "text"
+  generation?: {
+    error: string | null
+    operationId?: string
+    status: "generating" | "completed" | "failed"
+  }
+  id: string
+  mimeType: "text/markdown" | "text/plain"
+  originalFileName: string
+  publishHistory: Array<{
+    generatedVersion: number
+    publishedAt: string
+    rawDocumentId: string
+  }>
+  taskId: string | null
+  threadId: string | null
+  title: string
+  updatedAt: string
+}
+
+export interface AgentSkillListing {
+  localDir: string
+  localPath: string
+  skill: {
+    appliesTo: string[]
+    description: string
+    id: string
+    loadWhen: string[]
+    requiresCapabilities: string[]
+    source: string
+    taskTypes: string[]
+    title: string
+    tokens: string
+  }
+  source: string
 }
 
 export interface WikiRawDocument {

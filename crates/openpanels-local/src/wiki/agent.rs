@@ -53,6 +53,13 @@ pub(super) fn wake_queued_wiki_tasks(
     task_ids: Option<&[String]>,
     allow_local_worker_from_agent_worker: bool,
 ) -> Result<(), CliError> {
+    if env::var("OPENPANELS_ENABLE_LEGACY_LOCAL_AGENT")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return Ok(());
+    }
     let targets = read_agent_targets(paths)?;
     let wakeups_dir = paths.context_dir.join("wakeups");
     let runs_dir = paths.context_dir.join("agent-runs");
@@ -100,8 +107,7 @@ pub(super) fn wake_queued_wiki_tasks(
                     "targetId": message["targetId"],
                     "documentId": message["documentId"],
                     "wikiSpaceId": message["wikiSpaceId"],
-                    "wikiLanguage": message["wikiLanguage"],
-                    "wikiLanguageLabel": message["wikiLanguageLabel"],
+                    "wikiAgentSkillId": message["wikiAgentSkillId"],
                     "createdAt": message["createdAt"],
                     "originalFilePath": message["originalFilePath"],
                     "target": target,
@@ -134,8 +140,7 @@ fn wiki_wakeup_message(paths: &OpenPanelsPaths, wiki: &WikiBootstrapValue, task:
         "targetId": task.get("targetId").cloned().unwrap_or(Value::Null),
         "documentId": task.get("documentId").cloned().unwrap_or(Value::Null),
         "wikiSpaceId": task.get("wikiSpaceId").cloned().unwrap_or(Value::Null),
-        "wikiLanguage": wiki.state.get("wikiLanguage").cloned().unwrap_or(Value::Null),
-        "wikiLanguageLabel": wiki_language_label(wiki.state.get("wikiLanguage").and_then(Value::as_str)),
+        "wikiAgentSkillId": super::selected_agent_skill_id(&wiki.state),
         "createdAt": now_iso(),
         "originalFilePath": original_file_path_for_task(paths, wiki, task),
     })
@@ -441,6 +446,13 @@ fn hermes_worker(paths: &OpenPanelsPaths, message: &Value, executable: String) -
 }
 
 fn should_wake_local_agent_worker(allow_local_worker_from_agent_worker: bool) -> bool {
+    if env::var("OPENPANELS_ENABLE_LEGACY_LOCAL_AGENT")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return false;
+    }
     if env::var("OPENPANELS_DISABLE_LOCAL_AGENT").ok().as_deref() == Some("1") {
         return false;
     }
@@ -517,10 +529,10 @@ fn local_agent_worker_prompt(paths: &OpenPanelsPaths, message: &Value, agent_hos
         .get("wikiSpaceId")
         .and_then(Value::as_str)
         .unwrap_or("wiki:default");
-    let wiki_language = message
-        .get("wikiLanguageLabel")
+    let wiki_agent_skill_id = message
+        .get("wikiAgentSkillId")
         .and_then(Value::as_str)
-        .unwrap_or("the wiki panel language selected by the user");
+        .unwrap_or("karpathy-llm-wiki");
     let task_id = message.get("taskId").and_then(Value::as_str).unwrap_or("");
     let common_flags = format!(
         "--project {} --storage-dir {} --context-id {} --format json",
@@ -537,17 +549,23 @@ Do not modify application source code. Only read project files as needed and wri
 Task:
 {}
 
+Selected wiki generation skill: {}
+
 Use this CLI command prefix:
 {} {}
 
 Required workflow:
 1. Claim the task:
    {} {} wiki tasks claim --task-id {} --agent-host {} --thread-id {}
-2. Process according to taskType.
-   - Use {} for any newly generated structured wiki pages, index entries, summaries, and log text. Do not rewrite already-generated wiki content solely to translate it.
-3. On success, call:
+2. Resolve the selected skill package and task context:
+   {} {} agent skill {} --task-id {}
+   Then read the returned localPath (`SKILL.md`) directly from disk and follow
+   the relevant references from the returned localDir.
+3. Process according to taskType.
+   - Follow the selected skill for language, structure, and writing style.
+4. On success, call:
    {} {} wiki tasks complete --task-id {}
-4. If the task cannot be completed reliably, call:
+5. If the task cannot be completed reliably, call:
    {} {} wiki tasks fail --task-id {} --message <short reason>
 
 For taskType={}:
@@ -561,17 +579,18 @@ For taskType={}:
 - ingest_markdown_into_wiki:
   - Read source Markdown:
     {} {} wiki markdown read --document-id {}
-  - Update the target wiki space {}: create/update a source page under sources/, update relevant topic/category pages when useful, update index.md, and append log.md.
+  - Update the target wiki space {}: synthesize useful evidence into relevant topic/category/entity pages, update index.md, and append log.md. Do not create raw-document mirror pages; the wiki panel already maintains raw documents separately.
   - Use page writes with --task-id {} so your own wiki edits do not enqueue redundant rebuild tasks:
     {} {} wiki pages write --wiki-space-id {} --path <page-path> --file <md-file> --task-id {}
   - Complete the task.
 - rebuild_wiki_index:
-  - Read current pages for wiki space {}, rebuild index.md and append log.md so deleted/edited sources are reflected.
+  - Read current pages for wiki space {}, rebuild index.md and append log.md so deleted or edited wiki pages are reflected.
   - Use wiki pages write with --task-id {}.
   - Complete the task.
 
 Keep the final response brief."#,
         serde_json::to_string_pretty(message).unwrap_or_else(|_| "{}".to_owned()),
+        wiki_agent_skill_id,
         cli,
         common_flags,
         cli,
@@ -579,7 +598,10 @@ Keep the final response brief."#,
         shell_quote(task_id),
         shell_quote(agent_host),
         shell_quote(local_agent_thread_id(agent_host).as_str()),
-        wiki_language,
+        cli,
+        common_flags,
+        shell_quote(wiki_agent_skill_id),
+        shell_quote(task_id),
         cli,
         common_flags,
         shell_quote(task_id),
@@ -654,14 +676,6 @@ fn original_file_path_for_task(
     ) {
         Ok(path) => json!(path),
         Err(_) => Value::Null,
-    }
-}
-
-fn wiki_language_label(language: Option<&str>) -> &'static str {
-    match language {
-        Some("zh-CN") => "Simplified Chinese",
-        Some("en") => "English",
-        _ => "the wiki panel language selected by the user",
     }
 }
 

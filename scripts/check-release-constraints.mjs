@@ -26,6 +26,7 @@ function assert(condition, message) {
 }
 
 const rootVersion = readJson("package.json").version
+const studioVersion = readJson("apps/local-studio/package.json").version
 const rustVersion = readCargoVersion("crates/openpanels-local/Cargo.toml")
 const tag =
   process.env.GITHUB_REF_NAME || process.env.RELEASE_TAG || `v${rootVersion}`
@@ -35,6 +36,68 @@ assert(
   rootVersion === rustVersion,
   `Root package version ${rootVersion} does not match Rust CLI version ${rustVersion}.`
 )
+assert(
+  rootVersion === studioVersion,
+  `Root package version ${rootVersion} does not match Studio version ${studioVersion}.`
+)
+
+const entrySkill = readFileSync(
+  new URL("skills/myopenpanels/SKILL.md", ROOT),
+  "utf8"
+)
+const entrySkillVersion = entrySkill.match(
+  /^\s+version:\s*["']([^"']+)["']/m
+)?.[1]
+const cliSource = readFileSync(
+  new URL("crates/openpanels-local/src/cli.rs", ROOT),
+  "utf8"
+)
+const agentSource = readFileSync(
+  new URL("crates/openpanels-local/src/agent.rs", ROOT),
+  "utf8"
+)
+assert(
+  !cliSource.includes('"  agent context'),
+  "Protocol v1 agent context must not return to the public CLI surface."
+)
+assert(
+  entrySkillVersion,
+  "MyOpenPanels entry skill must declare metadata.version."
+)
+assert(
+  agentSource.includes(
+    `MYOPENPANELS_SKILL_VERSION: &str = "${entrySkillVersion}"`
+  ),
+  `CLI required MyOpenPanels Skill version must match ${entrySkillVersion}.`
+)
+for (const required of [
+  "install-openpanels-local.sh",
+  "install-openpanels-local.ps1",
+  "agent bootstrap",
+  "drawing",
+  "organizing or comparing materials",
+  "writing",
+  "open or launch OpenPanels",
+  "打开面板",
+]) {
+  assert(
+    entrySkill.includes(required),
+    `MyOpenPanels entry skill must retain ${required}.`
+  )
+}
+for (const forbidden of [
+  "canvas selection",
+  "canvas generation",
+  "wiki generation",
+  "--context-id",
+  "Do not use package-manager",
+  "Node-based fallback",
+]) {
+  assert(
+    !entrySkill.includes(forbidden),
+    `MyOpenPanels entry skill must not embed panel workflow detail: ${forbidden}.`
+  )
+}
 assert(
   tag === `v${rootVersion}`,
   `Release tag must be v${rootVersion}; got ${tag}.`

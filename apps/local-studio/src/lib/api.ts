@@ -53,6 +53,7 @@ export function normalizeBootstrap(data: BootstrapResponse): AppState {
     activePanelId: activePanel.id,
     activePanelKind: activePanel.kind,
     agentWorker: data.agentWorker ?? { status: "idle" },
+    agentOperations: data.agentOperations ?? [],
     panel: activePanel,
     panels: normalizedPanels,
     pendingTaskCount: data.pendingTaskCount ?? 0,
@@ -100,8 +101,9 @@ export function wikiStateFromAppState(appState: AppState): WikiState {
 
 export function emptyWikiState(): WikiState {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     rawDocuments: [],
+    generatedDocuments: [],
     ruleSets: [],
     wikiSpaces: [],
     activeRawDocumentId: null,
@@ -115,8 +117,11 @@ export function isWikiState(state: unknown): state is WikiState {
   return (
     typeof state === "object" &&
     state !== null &&
-    (state as { schemaVersion?: unknown }).schemaVersion === 2 &&
+    (state as { schemaVersion?: unknown }).schemaVersion === 3 &&
     Array.isArray((state as { rawDocuments?: unknown }).rawDocuments) &&
+    Array.isArray(
+      (state as { generatedDocuments?: unknown }).generatedDocuments
+    ) &&
     Array.isArray((state as { wikiSpaces?: unknown }).wikiSpaces) &&
     Array.isArray((state as { tasks?: unknown }).tasks)
   )
@@ -129,6 +134,7 @@ export function serializeBootstrapForCompare(appState: AppState): string {
     panelIds: appState.panels.map(({ panel }) => panel.id),
     pendingTaskCount: appState.pendingTaskCount ?? 0,
     agentWorker: appState.agentWorker ?? { status: "idle" },
+    agentOperations: appState.agentOperations ?? [],
     session: appState.session,
     states: appState.panels.map(({ panel, state }) => ({
       id: panel.id,
@@ -353,6 +359,9 @@ export async function loadBootstrap(
     url.searchParams.set("sessionId", sessionId)
   }
   const response = await apiFetch(transport.apiBase, url)
+  if (!response.ok) {
+    throw new Error(await apiErrorMessage(response))
+  }
   return (await response.json()) as BootstrapResponse
 }
 

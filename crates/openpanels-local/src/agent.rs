@@ -3,14 +3,21 @@ use crate::error::CliError;
 use crate::paths::OpenPanelsPaths;
 use crate::selection::read_selection;
 use crate::types::{PanelKind, ProjectBootstrap};
+use crate::wiki::{read_agent_selection, selected_agent_skill_id, WIKI_QUERY_SKILL_ID};
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-static AGENT_GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-guides");
+static AGENT_GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/guides");
+static AGENT_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/skills");
+const WIKI_KNOWLEDGE_GUIDE_ID: &str = "wiki.knowledge-context";
+const WIKI_GENERATED_DOCUMENTS_GUIDE_ID: &str = "wiki.generated-documents";
+pub const MYOPENPANELS_SKILL_VERSION: &str = "1.0";
+const MYOPENPANELS_SKILL_SOURCE: &str =
+    "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,19 +44,99 @@ pub struct AgentGuideReadPayload {
     pub markdown: String,
 }
 
-pub fn agent_context(
-    paths: &OpenPanelsPaths,
-    cli_version: &str,
-    panel_kind: Option<PanelKind>,
-) -> Result<(Value, String), CliError> {
-    let mut request = BootstrapRequest::new();
-    request.requested_panel_kind = panel_kind;
-    let bootstrap = read_project_bootstrap(paths, request)?;
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkillMetadata {
+    pub applies_to: Vec<String>,
+    pub description: String,
+    pub id: String,
+    pub load_when: Vec<String>,
+    pub requires_capabilities: Vec<String>,
+    pub source: String,
+    pub task_types: Vec<String>,
+    pub title: String,
+    pub tokens: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentSkill {
+    pub metadata: AgentSkillMetadata,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkillListing {
+    pub skill: AgentSkillMetadata,
+    pub local_dir: String,
+    pub local_path: String,
+    pub source: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkillReadPayload {
+    pub skill: AgentSkillMetadata,
+    pub local_dir: String,
+    pub local_path: String,
+    pub markdown: String,
+}
+
+pub fn agent_bootstrap(paths: &OpenPanelsPaths, cli_version: &str) -> Result<Value, CliError> {
+    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let guides = list_agent_guides()?;
+    let skills = list_agent_skills(paths)?;
     let selection = read_selection(paths, None, false).ok();
-    let payload = agent_context_payload(&bootstrap, cli_version, &guides, selection.as_ref());
-    let markdown = agent_context_markdown(&bootstrap, cli_version, &guides, selection.as_ref());
-    Ok((payload, markdown))
+    let wiki_selection = read_agent_selection(paths).ok();
+    let mut payload = agent_bootstrap_payload(
+        &bootstrap,
+        cli_version,
+        &guides,
+        &skills,
+        selection.as_ref(),
+        wiki_selection.as_ref(),
+    );
+    let applicable_guides = guides
+        .iter()
+        .filter(|guide| {
+            guide
+                .applies_to
+                .iter()
+                .any(|kind| kind == bootstrap.active_panel_kind.as_str())
+                || guide.applies_to.iter().any(|kind| kind == "any")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let operations = crate::storage::Storage::open(paths)?
+        .list_agent_operations(Some(&paths.context_id), Some("active"))?;
+    payload["protocolVersion"] = json!(crate::operations::AGENT_PROTOCOL_VERSION);
+    payload["activePanelId"] = json!(bootstrap.active_panel_id);
+    payload["activePanelKind"] = json!(bootstrap.active_panel_kind);
+    payload["focus"] = json!({
+        "focusRevision": crate::control::read_focus_revision(paths)?,
+        "projectId": bootstrap.session.id,
+        "panelId": bootstrap.panel.id,
+        "panelKind": bootstrap.panel.kind,
+    });
+    payload["studioBinding"] = json!({
+        "contextId": paths.context_id,
+        "contextIdSource": paths.context_id_source,
+        "projectDir": paths.project_dir,
+    });
+    payload["applicableGuides"] = json!(applicable_guides);
+    payload["activeOperations"] = json!(operations);
+    payload["entrySkill"] = json!({
+        "id": "myopenpanels",
+        "requiredVersion": MYOPENPANELS_SKILL_VERSION,
+        "source": MYOPENPANELS_SKILL_SOURCE,
+        "updateWhen": "Update only during this startup Bootstrap when the loaded Skill version is missing or lower than requiredVersion.",
+        "instruction": "Compare the loaded MyOpenPanels Skill metadata.version with requiredVersion. If it is missing or lower, use the Agent environment's Skill installer to reinstall or update MyOpenPanels from source, then continue with this Bootstrap response. Do not update when the installed version is equal or newer."
+    });
+    payload["nextRequiredAction"] = json!({
+        "intent": "match-user-request",
+        "instruction": "Match the user request against applicableGuides.loadWhen. Start complex writes with the advertised generation workflow before invoking an external model."
+    });
+    Ok(payload)
 }
 
 pub fn list_agent_guides() -> Result<Vec<AgentGuideMetadata>, CliError> {
@@ -70,9 +157,69 @@ pub fn read_agent_guide(
         .ok_or_else(|| CliError::new(format!("OpenPanels agent guide not found: {guide_id}")))?;
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let selection = read_selection(paths, None, false).ok();
-    let markdown = render_agent_guide(&guide, &bootstrap, selection.as_ref(), task_id)?;
+    let wiki_selection = read_agent_selection(paths).ok();
+    let markdown = render_agent_guide(
+        &guide,
+        &bootstrap,
+        selection.as_ref(),
+        wiki_selection.as_ref(),
+        task_id,
+    )?;
     Ok(AgentGuideReadPayload {
         guide: guide.metadata,
+        markdown,
+    })
+}
+
+pub fn sync_builtin_agent_skills(paths: &OpenPanelsPaths) -> Result<(), CliError> {
+    let skills_dir = paths.storage_dir.join("skills");
+    fs::create_dir_all(&skills_dir).map_err(to_cli_error)?;
+    for (skill, skill_dir) in load_agent_skill_dirs()? {
+        let local_dir = skills_dir.join(&skill.metadata.id);
+        if local_dir.exists() {
+            fs::remove_dir_all(&local_dir).map_err(to_cli_error)?;
+        }
+        fs::create_dir_all(&local_dir).map_err(to_cli_error)?;
+        extract_embedded_dir_contents(skill_dir, skill_dir.path(), &local_dir)?;
+    }
+    Ok(())
+}
+
+pub fn list_agent_skills(paths: &OpenPanelsPaths) -> Result<Vec<AgentSkillListing>, CliError> {
+    sync_builtin_agent_skills(paths)?;
+    Ok(load_agent_skills()?
+        .into_iter()
+        .map(|skill| agent_skill_listing(paths, skill.metadata))
+        .collect())
+}
+
+pub fn read_agent_skill(
+    paths: &OpenPanelsPaths,
+    skill_id: &str,
+    task_id: Option<&str>,
+) -> Result<AgentSkillReadPayload, CliError> {
+    sync_builtin_agent_skills(paths)?;
+    let skill = load_agent_skills()?
+        .into_iter()
+        .find(|skill| skill.metadata.id == skill_id)
+        .ok_or_else(|| CliError::new(format!("OpenPanels agent skill not found: {skill_id}")))?;
+    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    let selection = read_selection(paths, None, false).ok();
+    let wiki_selection = read_agent_selection(paths).ok();
+    let (local_dir, local_path) = agent_skill_local_paths(paths, &skill.metadata.id);
+    let markdown = render_agent_skill(
+        &skill,
+        &bootstrap,
+        selection.as_ref(),
+        wiki_selection.as_ref(),
+        task_id,
+        &local_dir,
+        &local_path,
+    )?;
+    Ok(AgentSkillReadPayload {
+        skill: skill.metadata,
+        local_dir: local_dir.display().to_string(),
+        local_path: local_path.display().to_string(),
         markdown,
     })
 }
@@ -80,10 +227,10 @@ pub fn read_agent_guide(
 pub fn capabilities() -> Vec<Value> {
     vec![
         capability(
-            "agent.context.read",
-            "Read current agent context",
-            "openpanels-local agent context",
-            "current_user_project",
+            "agent.bootstrap.read",
+            "Read protocol v2 context, guides, and active operations",
+            "openpanels-local agent bootstrap",
+            "current_studio_or_storage",
             false,
             vec![],
         ),
@@ -96,16 +243,27 @@ pub fn capabilities() -> Vec<Value> {
             vec![],
         ),
         capability(
+            "agent.skills.list",
+            "List loadable agent skills",
+            "openpanels-local agent skills",
+            "current_user_project",
+            false,
+            vec![],
+        ),
+        capability(
             "agent.bridge.run",
             "Run the task bridge",
             "openpanels-local agent bridge",
             "current_user_project",
             false,
             vec![
-                arg("command", "--command", "string", false),
+                arg("command", "--command", "string", true),
+                arg("capability", "--capability", "string", false),
+                arg("name", "--name", "string", false),
                 arg("once", "--once", "bool", false),
                 arg("queue", "--queue", "string", false),
                 arg("timeoutMs", "--timeout-ms", "number", false),
+                arg("manualLifecycle", "--manual-lifecycle", "bool", false),
             ],
         ),
         capability(
@@ -117,9 +275,61 @@ pub fn capabilities() -> Vec<Value> {
             vec![],
         ),
         capability(
+            "agent.targets.list",
+            "List registered agent targets",
+            "openpanels-local agent targets list",
+            "current_user_project",
+            false,
+            vec![],
+        ),
+        capability(
+            "agent.targets.register",
+            "Register an agent target",
+            "openpanels-local agent targets register",
+            "current_user_project",
+            false,
+            vec![
+                arg("name", "--name", "string", true),
+                enum_arg(
+                    "transport",
+                    "--transport",
+                    true,
+                    &["webhook", "poll", "command"],
+                    None,
+                ),
+                arg("capability", "--capability", "string", true),
+                arg("endpoint", "--endpoint", "string", false),
+                arg("priority", "--priority", "number", false),
+            ],
+        ),
+        capability(
+            "agent.targets.heartbeat",
+            "Heartbeat an agent target",
+            "openpanels-local agent targets heartbeat",
+            "current_user_project",
+            false,
+            vec![arg("targetId", "--target-id", "string", true)],
+        ),
+        capability(
+            "agent.targets.remove",
+            "Remove an agent target",
+            "openpanels-local agent targets remove",
+            "current_user_project",
+            false,
+            vec![arg("targetId", "--target-id", "string", true)],
+        ),
+        capability(
             "agent.guide.read",
             "Read one full agent guide",
             "openpanels-local agent guide <guide-id>",
+            "current_user_project",
+            false,
+            vec![arg("taskId", "--task-id", "string", false)],
+        ),
+        capability(
+            "agent.skill.read",
+            "Read one full agent skill",
+            "openpanels-local agent skill <skill-id>",
             "current_user_project",
             false,
             vec![arg("taskId", "--task-id", "string", false)],
@@ -206,15 +416,51 @@ pub fn capabilities() -> Vec<Value> {
             ],
         ),
         capability(
-            "canvas.placeholder.create",
-            "Insert a generation placeholder",
-            "openpanels-local canvas placeholder create",
+            "canvas.generation.begin",
+            "Start a target-bound Canvas image generation and create its placeholder",
+            "openpanels-local canvas generation begin",
             "current_user_project.current_canvas",
             false,
             vec![
-                arg("displayWidth", "--display-width", "number", true),
-                arg("displayHeight", "--display-height", "number", true),
+                arg("displayWidth", "--display-width", "number", false),
+                arg("displayHeight", "--display-height", "number", false),
+                arg("useSelection", "--use-selection", "bool", false),
                 arg("text", "--text", "string", false),
+            ],
+        ),
+        capability(
+            "canvas.generation.complete",
+            "Complete a Canvas generation against its captured target",
+            "openpanels-local canvas generation complete",
+            "agent_operation.target_canvas",
+            false,
+            vec![
+                arg("operationId", "--operation-id", "string", true),
+                arg("image", "--image", "path", true),
+                arg("metadataFile", "--metadata-file", "path", true),
+            ],
+        ),
+        capability(
+            "wiki.generation.begin",
+            "Start a target-bound Wiki document generation",
+            "openpanels-local wiki generation begin",
+            "current_user_project.current_wiki",
+            false,
+            vec![
+                arg("title", "--title", "string", true),
+                arg("documentFormat", "--document-format", "enum", false),
+                arg("documentId", "--document-id", "string", false),
+            ],
+        ),
+        capability(
+            "wiki.generation.complete",
+            "Complete a Wiki generation against its captured target",
+            "openpanels-local wiki generation complete",
+            "agent_operation.target_wiki",
+            false,
+            vec![
+                arg("operationId", "--operation-id", "string", true),
+                arg("file", "--file", "path", true),
             ],
         ),
         capability(
@@ -268,9 +514,103 @@ pub fn capabilities() -> Vec<Value> {
             vec![arg("taskId", "--task-id", "string", true)],
         ),
         capability(
+            "tasks.claimNext",
+            "Atomically claim the next matching task",
+            "openpanels-local tasks claim-next",
+            "current_user_project",
+            false,
+            vec![
+                arg("targetId", "--target-id", "string", true),
+                arg("capability", "--capability", "string", false),
+                arg("waitMs", "--wait-ms", "number", false),
+            ],
+        ),
+        capability(
+            "tasks.claim",
+            "Atomically claim one task",
+            "openpanels-local tasks claim",
+            "current_user_project",
+            false,
+            vec![
+                arg("taskId", "--task-id", "string", true),
+                arg("targetId", "--target-id", "string", true),
+            ],
+        ),
+        capability(
+            "tasks.heartbeat",
+            "Extend a task lease",
+            "openpanels-local tasks heartbeat",
+            "current_user_project",
+            false,
+            vec![
+                arg("taskId", "--task-id", "string", true),
+                arg("leaseToken", "--lease-token", "string", true),
+            ],
+        ),
+        capability(
+            "tasks.complete",
+            "Complete a claimed task",
+            "openpanels-local tasks complete",
+            "current_user_project",
+            false,
+            vec![
+                arg("taskId", "--task-id", "string", true),
+                arg("leaseToken", "--lease-token", "string", true),
+                arg("resultFile", "--result-file", "path", false),
+            ],
+        ),
+        capability(
+            "tasks.fail",
+            "Fail a claimed task",
+            "openpanels-local tasks fail",
+            "current_user_project",
+            false,
+            vec![
+                arg("taskId", "--task-id", "string", true),
+                arg("leaseToken", "--lease-token", "string", true),
+                arg("message", "--message", "string", true),
+                arg("retryAfter", "--retry-after", "string", false),
+            ],
+        ),
+        capability(
+            "tasks.release",
+            "Release a claimed task",
+            "openpanels-local tasks release",
+            "current_user_project",
+            false,
+            vec![
+                arg("taskId", "--task-id", "string", true),
+                arg("leaseToken", "--lease-token", "string", true),
+            ],
+        ),
+        capability(
+            "tasks.retry",
+            "Manually retry a failed task",
+            "openpanels-local tasks retry",
+            "current_user_project",
+            false,
+            vec![arg("taskId", "--task-id", "string", true)],
+        ),
+        capability(
+            "tasks.cancel",
+            "Cancel a task",
+            "openpanels-local tasks cancel",
+            "current_user_project",
+            false,
+            vec![arg("taskId", "--task-id", "string", true)],
+        ),
+        capability(
             "wiki.context.read",
             "Read current wiki context",
             "openpanels-local wiki context",
+            "current_user_project.current_wiki",
+            false,
+            vec![],
+        ),
+        capability(
+            "wiki.selection.read",
+            "Read the user-selected Wiki and raw documents",
+            "openpanels-local wiki selection read",
             "current_user_project.current_wiki",
             false,
             vec![],
@@ -324,6 +664,52 @@ pub fn capabilities() -> Vec<Value> {
                 arg("documentId", "--document-id", "string", true),
                 arg("file", "--file", "path", true),
                 arg("taskId", "--task-id", "string", false),
+            ],
+        ),
+        capability(
+            "wiki.generatedDocument.list",
+            "List agent-generated documents",
+            "openpanels-local wiki generated-documents list",
+            "current_user_project.current_wiki",
+            false,
+            vec![],
+        ),
+        capability(
+            "wiki.generatedDocument.read",
+            "Read an agent-generated document",
+            "openpanels-local wiki generated-documents read",
+            "current_user_project.current_wiki",
+            false,
+            vec![arg("documentId", "--document-id", "string", true)],
+        ),
+        capability(
+            "wiki.generatedDocument.rename",
+            "Rename an agent-generated document",
+            "openpanels-local wiki generated-documents rename",
+            "current_user_project.current_wiki",
+            false,
+            vec![
+                arg("documentId", "--document-id", "string", true),
+                arg("title", "--title", "string", true),
+            ],
+        ),
+        capability(
+            "wiki.generatedDocument.delete",
+            "Delete an agent-generated document",
+            "openpanels-local wiki generated-documents delete",
+            "current_user_project.current_wiki",
+            false,
+            vec![arg("documentId", "--document-id", "string", true)],
+        ),
+        capability(
+            "wiki.generatedDocument.publish",
+            "Publish an agent-generated document as a raw Wiki document",
+            "openpanels-local wiki generated-documents publish",
+            "current_user_project.current_wiki",
+            false,
+            vec![
+                arg("documentId", "--document-id", "string", true),
+                arg("wikiSpaceId", "--wiki-space-id", "string", false),
             ],
         ),
         capability(
@@ -405,6 +791,18 @@ pub fn capabilities() -> Vec<Value> {
             ],
         ),
         capability(
+            "wiki.page.search",
+            "Search generated Wiki pages",
+            "openpanels-local wiki pages search",
+            "current_user_project.current_wiki",
+            false,
+            vec![
+                arg("wikiSpaceId", "--wiki-space-id", "string", true),
+                arg("query", "--query", "string", true),
+                arg("limit", "--limit", "number", false),
+            ],
+        ),
+        capability(
             "wiki.page.write",
             "Write one wiki page",
             "openpanels-local wiki pages write",
@@ -452,6 +850,20 @@ fn capability(
     creates_project: bool,
     args: Vec<Value>,
 ) -> Value {
+    let related_guides = if intent.starts_with("canvas.generation") {
+        json!(["canvas.image-generation"])
+    } else if intent.starts_with("wiki.generation") {
+        json!(["wiki.generated-documents"])
+    } else {
+        json!([])
+    };
+    let preconditions = if intent.ends_with("generation.complete") {
+        json!(["active_operation"])
+    } else if intent.ends_with("generation.begin") {
+        json!(["fresh_agent_bootstrap", "matching_active_panel"])
+    } else {
+        json!([])
+    };
     json!({
         "intent": intent,
         "title": title,
@@ -460,6 +872,9 @@ fn capability(
         "createsProject": creates_project,
         "args": args,
         "output": "json",
+        "relatedGuides": related_guides,
+        "preconditions": preconditions,
+        "workflowIntent": if intent.contains("generation") { Some(intent) } else { None },
     })
 }
 
@@ -496,17 +911,27 @@ pub fn render_agent_guides_markdown(guides: &[AgentGuideMetadata]) -> String {
     )
 }
 
-fn agent_context_payload(
+pub fn render_agent_skills_markdown(skills: &[AgentSkillListing]) -> String {
+    format!(
+        "# OpenPanels Agent Skills\n\n{}\n",
+        render_skill_table(skills)
+    )
+}
+
+fn agent_bootstrap_payload(
     bootstrap: &ProjectBootstrap,
     cli_version: &str,
     guides: &[AgentGuideMetadata],
+    skills: &[AgentSkillListing],
     selection: Option<&crate::selection::SelectionPayload>,
+    wiki_selection: Option<&Value>,
 ) -> Value {
-    let wiki = wiki_summary(bootstrap);
+    let wiki = wiki_summary(bootstrap, wiki_selection);
+    let knowledge = knowledge_context(&wiki);
     let tasks = project_tasks_summary(bootstrap);
     let canvas = canvas_summary(selection);
     json!({
-        "protocolVersion": 1,
+        "protocolVersion": crate::operations::AGENT_PROTOCOL_VERSION,
         "cliVersion": cli_version,
         "project": {
             "id": bootstrap.session.id,
@@ -527,87 +952,19 @@ fn agent_context_payload(
             "wiki": wiki,
             "canvas": canvas,
         },
+        "knowledgeContext": knowledge,
         "capabilities": capabilities(),
-        "suggestedCommands": suggested_commands(bootstrap, guides),
+        "suggestedCommands": suggested_commands(bootstrap, guides, skills, wiki_selection),
         "availableGuides": guides,
+        "availableSkills": skills,
     })
-}
-
-fn agent_context_markdown(
-    bootstrap: &ProjectBootstrap,
-    cli_version: &str,
-    guides: &[AgentGuideMetadata],
-    selection: Option<&crate::selection::SelectionPayload>,
-) -> String {
-    let wiki = wiki_summary(bootstrap);
-    let tasks = project_tasks_summary(bootstrap);
-    let canvas = canvas_summary(selection);
-    let panels = bootstrap
-        .panels
-        .iter()
-        .map(|snapshot| {
-            let marker = if snapshot.panel.id == bootstrap.active_panel_id {
-                "*"
-            } else {
-                "-"
-            };
-            format!(
-                "{marker} {}: {} ({})",
-                snapshot.panel.kind.as_str(),
-                snapshot.panel.title,
-                snapshot.panel.id
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let caps = capabilities()
-        .iter()
-        .map(|capability| {
-            format!(
-                "### `{}`\n\n{}\n\nCommand:\n\n```bash\n{}\n```\n\nOutput:\n\n- {}",
-                capability["intent"].as_str().unwrap_or(""),
-                capability["title"].as_str().unwrap_or(""),
-                capability["command"].as_str().unwrap_or(""),
-                capability["output"].as_str().unwrap_or("")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let suggested = suggested_commands(bootstrap, guides)
-        .into_iter()
-        .map(|item| {
-            format!(
-                "### `{}`\n\n```bash\n{}\n```",
-                item["intent"].as_str().unwrap_or(""),
-                item["command"].as_str().unwrap_or("")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    format!(
-        "# OpenPanels Agent Context\n\nProtocol version: 1\nCLI version: {cli_version}\nProject: {} ({})\nActive panel: {} ({})\n\n## Panels\n\n{panels}\n\n## State\n\n### Tasks\n\n- total task count: {}\n- pending task count: {}\n- next task: {}\n\n### Wiki\n\n- language: {}\n- pending task count: {}\n- next task: {}\n\n### Canvas\n\n- has selection: {}\n- selected shape count: {}\n- selected image asset: {}\n- fallback: {}\n\n## Capabilities\n\n{caps}\n\n## Suggested Next Commands\n\n{suggested}\n\n## Available Guides\n\n{}\n",
-        bootstrap.session.title,
-        bootstrap.session.id,
-        bootstrap.active_panel_kind.as_str(),
-        bootstrap.panel.title,
-        tasks["totalTaskCount"].as_u64().unwrap_or(0),
-        tasks["pendingTaskCount"].as_u64().unwrap_or(0),
-        format_next_task(tasks.get("nextTask")),
-        wiki["language"].as_str().unwrap_or("not set"),
-        wiki["pendingTaskCount"].as_u64().unwrap_or(0),
-        format_next_task(wiki.get("nextTask")),
-        canvas["hasSelection"].as_bool().unwrap_or(false),
-        canvas["selectedShapeCount"].as_u64().unwrap_or(0),
-        canvas["hasSelectedImageAsset"].as_bool().unwrap_or(false),
-        canvas["fallback"].as_str().unwrap_or("none"),
-        render_guide_table(guides)
-    )
 }
 
 fn render_agent_guide(
     guide: &AgentGuide,
     bootstrap: &ProjectBootstrap,
     selection: Option<&crate::selection::SelectionPayload>,
+    wiki_selection: Option<&Value>,
     task_id: Option<&str>,
 ) -> Result<String, CliError> {
     let task = task_id.and_then(|id| find_wiki_task(bootstrap, id));
@@ -623,9 +980,38 @@ fn render_agent_guide(
         guide.metadata.title,
         guide.metadata.source,
         if guide.metadata.applies_to.is_empty() { "any".to_owned() } else { guide.metadata.applies_to.join(", ") },
-        render_current_context(bootstrap, selection, task.as_ref()),
+        render_current_context(bootstrap, selection, wiki_selection, task.as_ref()),
         render_guide_commands(guide, task.as_ref()),
         guide.body.trim(),
+    ))
+}
+
+fn render_agent_skill(
+    skill: &AgentSkill,
+    bootstrap: &ProjectBootstrap,
+    selection: Option<&crate::selection::SelectionPayload>,
+    wiki_selection: Option<&Value>,
+    task_id: Option<&str>,
+    local_dir: &Path,
+    local_path: &Path,
+) -> Result<String, CliError> {
+    let task = task_id.and_then(|id| find_wiki_task(bootstrap, id));
+    if task_id.is_some() && task.is_none() {
+        return Err(CliError::new(format!(
+            "Wiki task not found: {}",
+            task_id.unwrap_or_default()
+        )));
+    }
+    Ok(format!(
+        "# Skill: {}\n\nTitle: {}\nSource: {}\nLocal dir: {}\nLocal path: {}\nApplies to: {}\n\n## How To Load This Skill\n\nRead `SKILL.md` directly from the local path above. Treat this CLI output as the task-specific loader and command context, not as the skill body. Resolve referenced files relative to the local dir above.\n\n## Current Context\n\n{}\n\n## Commands For This Skill\n\n{}\n",
+        skill.metadata.id,
+        skill.metadata.title,
+        skill.metadata.source,
+        local_dir.display(),
+        local_path.display(),
+        if skill.metadata.applies_to.is_empty() { "any".to_owned() } else { skill.metadata.applies_to.join(", ") },
+        render_current_context(bootstrap, selection, wiki_selection, task.as_ref()),
+        render_skill_commands(skill, task.as_ref(), wiki_selection),
     ))
 }
 
@@ -663,6 +1049,59 @@ fn load_agent_guides_from_dir(dir: PathBuf) -> Result<Vec<AgentGuide>, CliError>
     Ok(guides)
 }
 
+fn load_agent_skills() -> Result<Vec<AgentSkill>, CliError> {
+    let mut skills = load_agent_skill_dirs()?
+        .into_iter()
+        .map(|(skill, _dir)| skill)
+        .collect::<Vec<_>>();
+    skills.sort_by(|left, right| left.metadata.id.cmp(&right.metadata.id));
+    Ok(skills)
+}
+
+fn load_agent_skill_dirs() -> Result<Vec<(AgentSkill, &'static Dir<'static>)>, CliError> {
+    let mut seen = BTreeSet::new();
+    let mut skills = Vec::new();
+    for dir in AGENT_SKILLS.dirs() {
+        let skill_path = dir.path().join("SKILL.md");
+        let file = AGENT_SKILLS.get_file(&skill_path).ok_or_else(|| {
+            CliError::new(format!(
+                "OpenPanels agent skill is missing SKILL.md: {}",
+                dir.path().display()
+            ))
+        })?;
+        let source = std::str::from_utf8(file.contents()).map_err(to_cli_error)?;
+        let skill = parse_skill(source, &skill_path.display().to_string())?;
+        if !seen.insert(skill.metadata.id.clone()) {
+            return Err(CliError::new(format!(
+                "Duplicate OpenPanels agent skill id: {}",
+                skill.metadata.id
+            )));
+        }
+        skills.push((skill, dir));
+    }
+    skills.sort_by(|left, right| left.0.metadata.id.cmp(&right.0.metadata.id));
+    Ok(skills)
+}
+
+fn extract_embedded_dir_contents(
+    dir: &Dir<'_>,
+    root: &Path,
+    destination: &Path,
+) -> Result<(), CliError> {
+    for file in dir.files() {
+        let relative_path = file.path().strip_prefix(root).map_err(to_cli_error)?;
+        let target_path = destination.join(relative_path);
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent).map_err(to_cli_error)?;
+        }
+        fs::write(target_path, file.contents()).map_err(to_cli_error)?;
+    }
+    for child_dir in dir.dirs() {
+        extract_embedded_dir_contents(child_dir, root, destination)?;
+    }
+    Ok(())
+}
+
 fn parse_guide(source: &str, file_name: &str) -> Result<AgentGuide, CliError> {
     let normalized_source;
     let source = if source.contains("\r\n") {
@@ -685,6 +1124,41 @@ fn parse_guide(source: &str, file_name: &str) -> Result<AgentGuide, CliError> {
     Ok(AgentGuide {
         metadata: AgentGuideMetadata {
             applies_to: list(&frontmatter, "appliesTo"),
+            id,
+            load_when: list(&frontmatter, "loadWhen"),
+            requires_capabilities: list(&frontmatter, "requiresCapabilities"),
+            source: scalar(&frontmatter, "source").unwrap_or_else(|| "builtin".to_owned()),
+            task_types: list(&frontmatter, "taskTypes"),
+            title,
+            tokens: scalar(&frontmatter, "tokens").unwrap_or_else(|| "medium".to_owned()),
+        },
+        body: body.trim_start_matches('\n').to_owned(),
+    })
+}
+
+fn parse_skill(source: &str, file_name: &str) -> Result<AgentSkill, CliError> {
+    let normalized_source;
+    let source = if source.contains("\r\n") {
+        normalized_source = source.replace("\r\n", "\n");
+        normalized_source.as_str()
+    } else {
+        source
+    };
+    let rest = source
+        .strip_prefix("---\n")
+        .ok_or_else(|| CliError::new(format!("Agent skill is missing frontmatter: {file_name}")))?;
+    let (frontmatter, body) = rest
+        .split_once("\n---")
+        .ok_or_else(|| CliError::new(format!("Agent skill is missing frontmatter: {file_name}")))?;
+    let frontmatter = parse_frontmatter(frontmatter);
+    let id = scalar(&frontmatter, "id")
+        .ok_or_else(|| CliError::new(format!("Agent skill requires id and title: {file_name}")))?;
+    let title = scalar(&frontmatter, "title")
+        .ok_or_else(|| CliError::new(format!("Agent skill requires id and title: {file_name}")))?;
+    Ok(AgentSkill {
+        metadata: AgentSkillMetadata {
+            applies_to: list(&frontmatter, "appliesTo"),
+            description: scalar(&frontmatter, "description").unwrap_or_default(),
             id,
             load_when: list(&frontmatter, "loadWhen"),
             requires_capabilities: list(&frontmatter, "requiresCapabilities"),
@@ -758,7 +1232,44 @@ fn render_guide_table(guides: &[AgentGuideMetadata]) -> String {
     format!("| ID | Source | Applies To | Task Types | Load When |\n| --- | --- | --- | --- | --- |\n{rows}")
 }
 
-fn wiki_summary(bootstrap: &ProjectBootstrap) -> Value {
+fn render_skill_table(skills: &[AgentSkillListing]) -> String {
+    if skills.is_empty() {
+        return "- none".to_owned();
+    }
+    let rows = skills
+        .iter()
+        .map(|item| {
+            format!(
+                "| `{}` | {} | {} | {} | {} |",
+                item.skill.id,
+                item.source,
+                item.skill.applies_to.join(", "),
+                item.skill.task_types.join(", "),
+                item.local_path
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("| ID | Source | Applies To | Task Types | Local Path |\n| --- | --- | --- | --- | --- |\n{rows}")
+}
+
+fn agent_skill_listing(paths: &OpenPanelsPaths, skill: AgentSkillMetadata) -> AgentSkillListing {
+    let (local_dir, local_path) = agent_skill_local_paths(paths, &skill.id);
+    AgentSkillListing {
+        source: skill.source.clone(),
+        skill,
+        local_dir: local_dir.display().to_string(),
+        local_path: local_path.display().to_string(),
+    }
+}
+
+fn agent_skill_local_paths(paths: &OpenPanelsPaths, skill_id: &str) -> (PathBuf, PathBuf) {
+    let local_dir = paths.storage_dir.join("skills").join(skill_id);
+    let local_path = local_dir.join("SKILL.md");
+    (local_dir, local_path)
+}
+
+fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Value {
     let state = bootstrap
         .panels
         .iter()
@@ -787,10 +1298,90 @@ fn wiki_summary(bootstrap: &ProjectBootstrap) -> Value {
         })
         .or_else(|| tasks.first())
         .cloned();
+    let active_space_id = state
+        .get("activeWikiSpaceId")
+        .and_then(Value::as_str)
+        .unwrap_or("wiki:default");
+    let active_space = state
+        .get("wikiSpaces")
+        .and_then(Value::as_array)
+        .and_then(|spaces| {
+            spaces
+                .iter()
+                .find(|space| space.get("id").and_then(Value::as_str) == Some(active_space_id))
+                .or_else(|| spaces.first())
+        });
+    let selected_documents = selection
+        .and_then(|value| value.get("selectedRawDocuments"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|document| {
+            json!({
+                "documentId": document.get("id").cloned().unwrap_or(Value::Null),
+                "title": document.get("title").cloned().unwrap_or(Value::Null),
+                "mimeType": document.get("mimeType").cloned().unwrap_or(Value::Null),
+                "markdownVersion": document.get("markdownVersion").cloned().unwrap_or(Value::Null),
+                "originalFilePath": document.get("originalFilePath").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let selected_generated_documents = selection
+        .and_then(|value| value.get("selectedGeneratedDocuments"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|document| {
+            json!({
+                "documentId": document.get("id").cloned().unwrap_or(Value::Null),
+                "title": document.get("title").cloned().unwrap_or(Value::Null),
+                "format": document.get("format").cloned().unwrap_or(Value::Null),
+                "contentVersion": document.get("contentVersion").cloned().unwrap_or(Value::Null),
+                "contentFilePath": document.get("contentFilePath").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
     json!({
-        "language": if matches!(state.get("wikiLanguage").and_then(Value::as_str), Some("en" | "zh-CN")) { state.get("wikiLanguage").cloned().unwrap_or(Value::Null) } else { Value::Null },
+        "agentSkillId": selected_agent_skill_id(state),
+        "available": state.get("wikiSpaces").and_then(Value::as_array).is_some_and(|spaces| !spaces.is_empty()),
+        "selected": selection.and_then(|value| value.get("selection")).and_then(|value| value.get("isWikiSelected")).and_then(Value::as_bool).unwrap_or(false),
+        "wikiSpaceId": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("wikiSpaceId")).cloned().unwrap_or_else(|| json!(active_space_id)),
+        "wikiTitle": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("title")).cloned().or_else(|| active_space.and_then(|space| space.get("title")).cloned()).unwrap_or_else(|| json!("Wiki")),
+        "pageCount": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("pageCount")).cloned().unwrap_or_else(|| json!(active_space.and_then(|space| space.get("pageIndex")).and_then(Value::as_array).map(Vec::len).unwrap_or(0))),
+        "querySkillId": WIKI_QUERY_SKILL_ID,
+        "querySkillLoadCommand": format!("openpanels-local agent skill {WIKI_QUERY_SKILL_ID} --format json"),
+        "selectedRawDocumentCount": selected_documents.len(),
+        "selectedRawDocuments": selected_documents,
+        "selectedGeneratedDocumentCount": selected_generated_documents.len(),
+        "selectedGeneratedDocuments": selected_generated_documents,
         "nextTask": next_task,
         "pendingTaskCount": tasks.len(),
+    })
+}
+
+fn knowledge_context(wiki: &Value) -> Value {
+    json!({
+        "guideId": WIKI_KNOWLEDGE_GUIDE_ID,
+        "guideLoadCommand": format!("openpanels-local agent guide {WIKI_KNOWLEDGE_GUIDE_ID} --format json"),
+        "wiki": {
+            "available": wiki.get("available").cloned().unwrap_or_else(|| json!(false)),
+            "selected": wiki.get("selected").cloned().unwrap_or_else(|| json!(false)),
+            "wikiSpaceId": wiki.get("wikiSpaceId").cloned().unwrap_or(Value::Null),
+            "title": wiki.get("wikiTitle").cloned().unwrap_or(Value::Null),
+            "pageCount": wiki.get("pageCount").cloned().unwrap_or_else(|| json!(0)),
+            "querySkillId": wiki.get("querySkillId").cloned().unwrap_or_else(|| json!(WIKI_QUERY_SKILL_ID)),
+            "loadCommand": wiki.get("querySkillLoadCommand").cloned().unwrap_or(Value::Null),
+        },
+        "rawDocuments": {
+            "selected": wiki.get("selectedRawDocuments").cloned().unwrap_or_else(|| json!([])),
+        },
+        "generatedDocuments": {
+            "guideId": WIKI_GENERATED_DOCUMENTS_GUIDE_ID,
+            "guideLoadCommand": format!("openpanels-local agent guide {WIKI_GENERATED_DOCUMENTS_GUIDE_ID} --format json"),
+            "selected": wiki.get("selectedGeneratedDocuments").cloned().unwrap_or_else(|| json!([])),
+        },
     })
 }
 
@@ -827,11 +1418,13 @@ fn canvas_summary(selection: Option<&crate::selection::SelectionPayload>) -> Val
     })
 }
 
-fn suggested_commands(bootstrap: &ProjectBootstrap, guides: &[AgentGuideMetadata]) -> Vec<Value> {
-    let mut commands = vec![json!({
-        "intent": "agent.context.read",
-        "command": "openpanels-local agent context --format json",
-    })];
+fn suggested_commands(
+    bootstrap: &ProjectBootstrap,
+    guides: &[AgentGuideMetadata],
+    skills: &[AgentSkillListing],
+    wiki_selection: Option<&Value>,
+) -> Vec<Value> {
+    let mut commands = Vec::new();
     if let Some(task) = next_project_task(bootstrap) {
         commands.push(json!({
             "intent": "tasks.next",
@@ -844,14 +1437,82 @@ fn suggested_commands(bootstrap: &ProjectBootstrap, guides: &[AgentGuideMetadata
             }));
         }
     }
-    let wiki = wiki_summary(bootstrap);
+    let wiki = wiki_summary(bootstrap, wiki_selection);
+    let has_selected_knowledge = wiki
+        .get("selected")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || wiki
+            .get("selectedRawDocumentCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+        || wiki
+            .get("selectedGeneratedDocumentCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0;
+    if (bootstrap.active_panel_kind == PanelKind::Wiki || has_selected_knowledge)
+        && guides
+            .iter()
+            .any(|guide| guide.id == WIKI_KNOWLEDGE_GUIDE_ID)
+    {
+        commands.push(json!({
+            "intent": "agent.guide.read",
+            "command": format!("openpanels-local agent guide {WIKI_KNOWLEDGE_GUIDE_ID} --format json"),
+        }));
+    }
+    let has_wiki_panel = bootstrap
+        .panels
+        .iter()
+        .any(|snapshot| snapshot.panel.kind == PanelKind::Wiki);
+    if has_wiki_panel
+        && guides
+            .iter()
+            .any(|guide| guide.id == WIKI_GENERATED_DOCUMENTS_GUIDE_ID)
+    {
+        commands.push(json!({
+            "intent": "agent.guide.read",
+            "command": format!("openpanels-local agent guide {WIKI_GENERATED_DOCUMENTS_GUIDE_ID} --format json"),
+        }));
+    }
     if let Some(task) = wiki.get("nextTask").filter(|value| !value.is_null()) {
         commands.push(json!({
             "intent": "wiki.task.next",
             "command": "openpanels-local wiki tasks next --format json",
         }));
         if let Some(task_type) = task.get("type").and_then(Value::as_str) {
-            if let Some(guide) = guides.iter().find(|guide| {
+            let selected_skill_id = wiki
+                .get("agentSkillId")
+                .and_then(Value::as_str)
+                .unwrap_or("karpathy-llm-wiki");
+            let selected_skill = skills
+                .iter()
+                .find(|skill| {
+                    skill.skill.id == selected_skill_id
+                        && skill
+                            .skill
+                            .task_types
+                            .iter()
+                            .any(|candidate| candidate == task_type)
+                })
+                .or_else(|| {
+                    skills.iter().find(|skill| {
+                        skill
+                            .skill
+                            .task_types
+                            .iter()
+                            .any(|candidate| candidate == task_type)
+                    })
+                });
+            if let Some(skill) = selected_skill {
+                if let Some(task_id) = task.get("id").and_then(Value::as_str) {
+                    commands.push(json!({
+                        "intent": "agent.skill.read",
+                        "command": format!("openpanels-local agent skill {} --task-id {} --format json", skill.skill.id, task_id),
+                    }));
+                }
+            } else if let Some(guide) = guides.iter().find(|guide| {
                 guide
                     .task_types
                     .iter()
@@ -889,22 +1550,6 @@ fn next_project_task(bootstrap: &ProjectBootstrap) -> Option<&Value> {
         })
 }
 
-fn format_next_task(task: Option<&Value>) -> String {
-    let Some(task) = task.filter(|value| !value.is_null()) else {
-        return "none".to_owned();
-    };
-    format!(
-        "{} / {} / {}",
-        task.get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown"),
-        task.get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown"),
-        task.get("id").and_then(Value::as_str).unwrap_or("unknown")
-    )
-}
-
 fn shell_quote(value: &str) -> String {
     if value
         .chars()
@@ -919,9 +1564,10 @@ fn shell_quote(value: &str) -> String {
 fn render_current_context(
     bootstrap: &ProjectBootstrap,
     selection: Option<&crate::selection::SelectionPayload>,
+    wiki_selection: Option<&Value>,
     task: Option<&Value>,
 ) -> String {
-    let wiki = wiki_summary(bootstrap);
+    let wiki = wiki_summary(bootstrap, wiki_selection);
     let selected_shape_count = canvas_summary(selection)["selectedShapeCount"]
         .as_u64()
         .unwrap_or(0);
@@ -936,8 +1582,16 @@ fn render_current_context(
             bootstrap.panel.title
         ),
         format!(
-            "- wiki language: {}",
-            wiki["language"].as_str().unwrap_or("not set")
+            "- wiki agent skill: {}",
+            wiki["agentSkillId"].as_str().unwrap_or("karpathy-llm-wiki")
+        ),
+        format!(
+            "- wiki selected as context: {}",
+            wiki["selected"].as_bool().unwrap_or(false)
+        ),
+        format!(
+            "- selected raw document count: {}",
+            wiki["selectedRawDocumentCount"].as_u64().unwrap_or(0)
         ),
         format!("- canvas selected shape count: {selected_shape_count}"),
     ];
@@ -964,12 +1618,17 @@ fn render_current_context(
 }
 
 fn render_guide_commands(guide: &AgentGuide, task: Option<&Value>) -> String {
+    if guide.metadata.id == WIKI_KNOWLEDGE_GUIDE_ID {
+        return format!(
+            "```bash\nopenpanels-local wiki selection read --format json\nopenpanels-local agent skill {WIKI_QUERY_SKILL_ID} --format json\n```"
+        );
+    }
     if let Some(task) = task {
         let task_id = task["id"].as_str().unwrap_or("<task-id>");
         let document_id = task["documentId"].as_str().unwrap_or("<document-id>");
         let wiki_space_id = task["wikiSpaceId"].as_str().unwrap_or("<wiki-space-id>");
         return format!(
-            "```bash\nopenpanels-local wiki tasks claim --task-id {task_id} --format json\nopenpanels-local wiki markdown read --document-id {document_id} --format json\nopenpanels-local wiki pages write --wiki-space-id {wiki_space_id} --path <page-path> --file <md-file> --task-id {task_id} --format json\nopenpanels-local wiki tasks complete --task-id {task_id} --format json\n```"
+            "```bash\nopenpanels-local tasks claim --task-id {task_id} --target-id <target-id> --format json\nopenpanels-local wiki markdown read --document-id {document_id} --format json\nopenpanels-local wiki pages write --wiki-space-id {wiki_space_id} --path <page-path> --file <md-file> --task-id {task_id} --format json\nopenpanels-local tasks complete --task-id {task_id} --lease-token \"$OPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
         );
     }
     if guide
@@ -978,7 +1637,54 @@ fn render_guide_commands(guide: &AgentGuide, task: Option<&Value>) -> String {
         .iter()
         .any(|value| value == "canvas")
     {
-        return "```bash\nopenpanels-local canvas selection read --format json\nopenpanels-local canvas placeholder create --display-width <w> --display-height <h> --format json\nopenpanels-local canvas image insert --image <generated-path> --replace-shape-id <placeholder-shape-id> --format json\n```".to_owned();
+        return "```bash\nopenpanels-local canvas generation begin --display-width <w> --display-height <h> [--use-selection] --format json\nopenpanels-local canvas generation complete --operation-id <operation-id> --image <generated-path> --metadata-file <metadata.json> --format json\n```".to_owned();
+    }
+    "- No task-specific commands.".to_owned()
+}
+
+fn render_skill_commands(
+    skill: &AgentSkill,
+    task: Option<&Value>,
+    wiki_selection: Option<&Value>,
+) -> String {
+    if skill.metadata.id == WIKI_QUERY_SKILL_ID {
+        let wiki_space_id = wiki_selection
+            .and_then(|selection| selection.get("wiki"))
+            .and_then(|wiki| wiki.get("wikiSpaceId"))
+            .and_then(Value::as_str)
+            .unwrap_or("<wiki-space-id>");
+        return format!(
+            "```bash\nopenpanels-local wiki selection read --format json\nopenpanels-local wiki pages read --wiki-space-id {wiki_space_id} --path SCHEMA.md --format json\nopenpanels-local wiki pages read --wiki-space-id {wiki_space_id} --path index.md --format json\nopenpanels-local wiki pages search --wiki-space-id {wiki_space_id} --query <query> --format json\nopenpanels-local wiki pages read --wiki-space-id {wiki_space_id} --path <relevant-page> --format json\n```"
+        );
+    }
+    if let Some(task) = task {
+        let task_id = task["id"].as_str().unwrap_or("<task-id>");
+        let document_id = task["documentId"].as_str().unwrap_or("<document-id>");
+        let wiki_space_id = task["wikiSpaceId"].as_str().unwrap_or("<wiki-space-id>");
+        let task_type = task["type"].as_str().unwrap_or("");
+        if task_type == "convert_document_to_markdown" {
+            return format!(
+                "```bash\nopenpanels-local tasks claim --task-id {task_id} --target-id <target-id> --format json\nopenpanels-local wiki documents list --format json\nopenpanels-local wiki markdown write --document-id {document_id} --file <md-file> --task-id {task_id} --format json\nopenpanels-local tasks complete --task-id {task_id} --lease-token \"$OPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+            );
+        }
+        if task_type == "ingest_markdown_into_wiki" {
+            return format!(
+                "```bash\nopenpanels-local tasks claim --task-id {task_id} --target-id <target-id> --format json\nopenpanels-local wiki markdown read --document-id {document_id} --format json\nopenpanels-local wiki pages list --wiki-space-id {wiki_space_id} --format json\nopenpanels-local wiki pages read --wiki-space-id {wiki_space_id} --path <page-path> --format json\nopenpanels-local wiki pages write --wiki-space-id {wiki_space_id} --path <page-path> --file <md-file> --task-id {task_id} --format json\nopenpanels-local tasks complete --task-id {task_id} --lease-token \"$OPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+            );
+        }
+        if task_type == "rebuild_wiki_index" {
+            return format!(
+                "```bash\nopenpanels-local tasks claim --task-id {task_id} --target-id <target-id> --format json\nopenpanels-local wiki pages list --wiki-space-id {wiki_space_id} --format json\nopenpanels-local wiki pages read --wiki-space-id {wiki_space_id} --path <page-path> --format json\nopenpanels-local wiki pages write --wiki-space-id {wiki_space_id} --path <page-path> --file <md-file> --task-id {task_id} --format json\nopenpanels-local tasks complete --task-id {task_id} --lease-token \"$OPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+            );
+        }
+    }
+    if skill
+        .metadata
+        .applies_to
+        .iter()
+        .any(|value| value == "wiki")
+    {
+        return "```bash\nopenpanels-local wiki tasks next --format json\nopenpanels-local agent skill karpathy-llm-wiki --task-id <task-id> --format json\n```".to_owned();
     }
     "- No task-specific commands.".to_owned()
 }

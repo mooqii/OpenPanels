@@ -1,8 +1,7 @@
 use crate::error::CliError;
 use crate::paths::{sanitize_path_part, OpenPanelsPaths};
-use crate::tasks::{self, TaskListFilter};
+use crate::tasks;
 use crate::trace::{self, TraceEventInput};
-use crate::wiki;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{Read, Write};
@@ -13,29 +12,53 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
 const DEFAULT_WORKER_INTERVAL_MS: u64 = 2000;
+const DEFAULT_LOCAL_AGENT_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 
 #[derive(Debug, Clone)]
 pub struct BridgeOptions<'a> {
+    pub agent_prompt: bool,
+    pub capabilities: Vec<String>,
     pub command: Option<&'a str>,
+    pub host: Option<&'a str>,
     pub interval_ms: u64,
+    pub manual_lifecycle: bool,
+    pub name: Option<&'a str>,
     pub once: bool,
+    pub priority: i64,
     pub queue: Option<&'a str>,
     pub timeout_ms: u64,
 }
 
 pub fn run_bridge(paths: &OpenPanelsPaths, options: BridgeOptions<'_>) -> Result<Value, CliError> {
+    let command = options.command.ok_or_else(|| {
+        CliError::new("Task bridge requires --command <command>. Register webhook and polling targets with agent targets register.")
+    })?;
+    let default_name = format!("command-bridge:{}", std::process::id());
+    let registration = tasks::register_target(
+        paths,
+        tasks::TargetRegistration {
+            name: options.name.unwrap_or(&default_name),
+            host: options.host.or(Some("command-bridge")),
+            transport: "command",
+            endpoint: None,
+            capabilities: if options.capabilities.is_empty() {
+                vec!["*".to_owned()]
+            } else {
+                options.capabilities.clone()
+            },
+            priority: options.priority,
+        },
+    )?;
+    let target_id = registration["target"]["id"]
+        .as_str()
+        .ok_or_else(|| CliError::new("Command bridge target id is missing."))?
+        .to_owned();
     write_bridge_status(paths, "idle", None, None, None)?;
     let interval_ms = options.interval_ms.max(250);
     loop {
         write_bridge_status(paths, "idle", None, None, None)?;
-        let payload = tasks::next_task(
-            paths,
-            TaskListFilter {
-                pending: true,
-                queue: options.queue,
-                status: None,
-            },
-        )?;
+        tasks::heartbeat_target(paths, &target_id)?;
+        let payload = tasks::claim_next_filtered(paths, &target_id, None, options.queue, Some(0))?;
         let Some(task) = payload.get("task").filter(|value| !value.is_null()) else {
             if options.once {
                 return Ok(json!({ "ran": false, "task": null }));
@@ -45,11 +68,71 @@ pub fn run_bridge(paths: &OpenPanelsPaths, options: BridgeOptions<'_>) -> Result
         };
 
         write_bridge_status(paths, "running", Some(task), None, None)?;
-        let result = if let Some(command) = options.command {
-            run_task_command(paths, command, options.timeout_ms, task)?
-        } else {
-            run_builtin_task(paths, task)?
-        };
+        let lease_token = payload
+            .get("leaseToken")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new("Claimed task lease token is missing."))?;
+        let mut result = run_task_command(
+            paths,
+            command,
+            options.timeout_ms,
+            task,
+            &target_id,
+            lease_token,
+            options.agent_prompt,
+        )?;
+        result["targetId"] = json!(target_id);
+        if options.manual_lifecycle {
+            result["leaseToken"] = json!(lease_token);
+        }
+        if !options.manual_lifecycle {
+            let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
+            let lifecycle_result = if result.get("success").and_then(Value::as_bool) == Some(true) {
+                let command_result = result
+                    .get("stdout")
+                    .and_then(Value::as_str)
+                    .and_then(|stdout| serde_json::from_str::<Value>(stdout.trim()).ok())
+                    .map(|value| value.get("result").cloned().unwrap_or(value))
+                    .or_else(|| {
+                        options.agent_prompt.then(|| {
+                            json!({
+                                "executor": options.host.unwrap_or("local-agent"),
+                                "targetId": target_id,
+                            })
+                        })
+                    });
+                tasks::complete_task(paths, task_id, lease_token, command_result)
+            } else {
+                let message = if result.get("timedOut").and_then(Value::as_bool) == Some(true) {
+                    "Bridge command timed out.".to_owned()
+                } else {
+                    result
+                        .get("stderr")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|value| value.trim().chars().take(500).collect())
+                        .unwrap_or_else(|| "Bridge command failed.".to_owned())
+                };
+                tasks::fail_task(paths, task_id, lease_token, &message, None)
+            };
+            match lifecycle_result {
+                Ok(lifecycle) => {
+                    result["lifecycle"] = lifecycle;
+                }
+                Err(error) => {
+                    let lifecycle = recover_lifecycle_after_error(paths, task_id, &error)?;
+                    result["lifecycle"] = lifecycle;
+                    result["lifecycleError"] = json!({
+                        "code": error.code(),
+                        "message": error.message(),
+                    });
+                    if !task_is_terminal(&result["lifecycle"]["task"]) {
+                        result["success"] = json!(false);
+                        result["error"] = json!(error.message());
+                    }
+                }
+            }
+        }
         let status = if result.get("success").and_then(Value::as_bool) == Some(true) {
             "idle"
         } else {
@@ -59,7 +142,11 @@ pub fn run_bridge(paths: &OpenPanelsPaths, options: BridgeOptions<'_>) -> Result
             .get("error")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        write_bridge_status(paths, status, None, Some(&result), error.as_deref())?;
+        let mut status_result = result.clone();
+        if let Some(object) = status_result.as_object_mut() {
+            object.remove("leaseToken");
+        }
+        write_bridge_status(paths, status, None, Some(&status_result), error.as_deref())?;
         if options.once {
             return Ok(result);
         }
@@ -68,20 +155,31 @@ pub fn run_bridge(paths: &OpenPanelsPaths, options: BridgeOptions<'_>) -> Result
 }
 
 pub fn start_builtin_worker_loop(paths: OpenPanelsPaths) {
-    if std::env::var("OPENPANELS_DISABLE_BUILTIN_WORKER")
-        .ok()
-        .as_deref()
-        == Some("1")
+    if cfg!(test)
+        || std::env::var("NODE_ENV").ok().as_deref() == Some("test")
+        || std::env::var("OPENPANELS_DISABLE_LOCAL_AGENT")
+            .ok()
+            .as_deref()
+            == Some("1")
     {
         return;
     }
+    let Some(worker) = resolve_local_agent_bridge(&paths) else {
+        return;
+    };
     thread::spawn(move || {
         let options = BridgeOptions {
-            command: None,
+            agent_prompt: worker.agent_prompt,
+            capabilities: vec!["*".to_owned()],
+            command: Some(&worker.command),
+            host: Some(&worker.host),
             interval_ms: DEFAULT_WORKER_INTERVAL_MS,
+            manual_lifecycle: worker.manual_lifecycle,
+            name: Some(&worker.name),
             once: false,
+            priority: -100,
             queue: None,
-            timeout_ms: 600_000,
+            timeout_ms: DEFAULT_LOCAL_AGENT_TIMEOUT_MS,
         };
         if let Err(error) = run_bridge(&paths, options) {
             let _ = write_bridge_status(&paths, "error", None, None, Some(error.message()));
@@ -101,139 +199,26 @@ pub fn start_builtin_worker_loop(paths: OpenPanelsPaths) {
 }
 
 pub fn read_bridge_status(paths: &OpenPanelsPaths) -> Result<Value, CliError> {
+    let dispatcher = tasks::dispatcher_status(paths)?;
     let path = bridge_status_path(paths);
     if !path.exists() {
         return Ok(json!({
-            "status": "idle",
+            "status": dispatcher["status"],
             "heartbeatAt": Value::Null,
             "currentTask": Value::Null,
             "lastTask": Value::Null,
             "lastError": Value::Null,
             "updatedAt": Value::Null,
+            "dispatcher": dispatcher,
         }));
     }
     let raw = fs::read_to_string(path).map_err(to_cli_error)?;
-    serde_json::from_str(&raw).map_err(to_cli_error)
-}
-
-fn run_builtin_task(paths: &OpenPanelsPaths, task: &Value) -> Result<Value, CliError> {
-    let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
-    let queue = task.get("queue").and_then(Value::as_str).unwrap_or("");
-    let capability = task.get("capability").and_then(Value::as_str).unwrap_or("");
-    if queue == "wiki" && capability == "wiki.ingestMarkdown" {
-        return run_builtin_wiki_ingest(paths, task);
+    let mut status = serde_json::from_str::<Value>(&raw).map_err(to_cli_error)?;
+    status["dispatcher"] = dispatcher.clone();
+    if status.get("currentTask").is_none_or(Value::is_null) {
+        status["status"] = dispatcher["status"].clone();
     }
-    let payload = json!({
-        "ran": true,
-        "success": false,
-        "status": "no_executor",
-        "error": format!("No built-in executor for {queue}:{capability}"),
-        "task": task,
-    });
-    write_bridge_run(paths, task_id, &payload)?;
-    Ok(payload)
-}
-
-fn run_builtin_wiki_ingest(paths: &OpenPanelsPaths, task: &Value) -> Result<Value, CliError> {
-    let task_id = task
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| CliError::new("Task id is required."))?;
-    let document_id = task
-        .get("input")
-        .and_then(|input| input.get("documentId"))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            task.get("source")
-                .and_then(|source| source.get("documentId"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| {
-            task.get("task")
-                .and_then(|task| task.get("documentId"))
-                .and_then(Value::as_str)
-        })
-        .ok_or_else(|| CliError::new("Wiki document id is required."))?;
-    let wiki_space_id = task
-        .get("input")
-        .and_then(|input| input.get("wikiSpaceId"))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            task.get("source")
-                .and_then(|source| source.get("wikiSpaceId"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| {
-            task.get("task")
-                .and_then(|task| task.get("wikiSpaceId"))
-                .and_then(Value::as_str)
-        })
-        .unwrap_or("wiki:default");
-
-    let _claim = wiki::claim_task(paths, task_id, Some("builtin-wiki"), None)?;
-    let source = wiki::read_markdown(paths, document_id)?;
-    let markdown = source.get("markdown").and_then(Value::as_str).unwrap_or("");
-    if markdown.trim().is_empty() {
-        let message = "Source markdown is empty.";
-        let failed = wiki::fail_task(paths, task_id, message)?;
-        let payload = json!({
-            "ran": true,
-            "success": false,
-            "status": "failed",
-            "error": message,
-            "task": failed["task"],
-        });
-        write_bridge_run(paths, task_id, &payload)?;
-        return Ok(payload);
-    }
-
-    let document = source.get("document").cloned().unwrap_or(Value::Null);
-    let title = document
-        .get("title")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(document_id);
-    let page_path = builtin_wiki_import_page_path(title, document_id);
-    let content = builtin_wiki_page_content(title, document_id, markdown);
-    let _page = wiki::write_page(
-        paths,
-        wiki_space_id,
-        &page_path,
-        &content,
-        Some(title),
-        Some(task_id),
-    )?;
-    let result = json!({
-        "executor": "builtin-wiki",
-        "pagePath": page_path,
-        "documentId": document_id,
-    });
-    let completed = wiki::complete_task(paths, task_id, Some(result.clone()))?;
-    let payload = json!({
-        "ran": true,
-        "success": true,
-        "status": "completed",
-        "result": result,
-        "task": completed["task"],
-    });
-    write_bridge_run(paths, task_id, &payload)?;
-    Ok(payload)
-}
-
-fn builtin_wiki_import_page_path(title: &str, document_id: &str) -> String {
-    let raw = title.trim();
-    let candidate = if raw.is_empty() { document_id } else { raw };
-    let stem = candidate.strip_suffix(".md").unwrap_or(candidate);
-    format!("imports/{}.md", sanitize_path_part(stem))
-}
-
-fn builtin_wiki_page_content(title: &str, document_id: &str, markdown: &str) -> String {
-    let mut content = format!(
-        "# {title}\n\nSource document: `{document_id}`\n\n---\n\n{}",
-        markdown.trim()
-    );
-    content.push('\n');
-    content
+    Ok(status)
 }
 
 fn run_task_command(
@@ -241,11 +226,18 @@ fn run_task_command(
     command: &str,
     timeout_ms: u64,
     task: &Value,
+    target_id: &str,
+    lease_token: &str,
+    agent_prompt: bool,
 ) -> Result<Value, CliError> {
     let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
     let queue = task.get("queue").and_then(Value::as_str).unwrap_or("");
     let capability = task.get("capability").and_then(Value::as_str).unwrap_or("");
-    let task_json = serde_json::to_string_pretty(task).map_err(to_cli_error)?;
+    let task_input = if agent_prompt {
+        local_agent_task_prompt(paths, task)?
+    } else {
+        serde_json::to_string_pretty(task).map_err(to_cli_error)?
+    };
     let mut child = shell_command(command)
         .env("OPENPANELS_PROJECT_DIR", &paths.project_dir)
         .env("OPENPANELS_STORAGE_DIR", &paths.storage_dir)
@@ -253,6 +245,8 @@ fn run_task_command(
         .env("OPENPANELS_TASK_ID", task_id)
         .env("OPENPANELS_TASK_QUEUE", queue)
         .env("OPENPANELS_TASK_CAPABILITY", capability)
+        .env("OPENPANELS_TARGET_ID", target_id)
+        .env("OPENPANELS_TASK_LEASE_TOKEN", lease_token)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -261,7 +255,7 @@ fn run_task_command(
 
     if let Some(stdin) = child.stdin.as_mut() {
         stdin
-            .write_all(task_json.as_bytes())
+            .write_all(task_input.as_bytes())
             .map_err(to_cli_error)?;
         stdin.write_all(b"\n").map_err(to_cli_error)?;
     }
@@ -274,17 +268,39 @@ fn run_task_command(
     let timeout = Duration::from_millis(timeout_ms.max(1));
     let started = Instant::now();
     let mut timed_out = false;
+    let heartbeat_paths = paths.clone();
+    let heartbeat_task_id = task_id.to_owned();
+    let heartbeat_token = lease_token.to_owned();
+    let heartbeat_target_id = target_id.to_owned();
+    let heartbeat_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let heartbeat_flag = heartbeat_running.clone();
+    let heartbeat = std::thread::spawn(move || {
+        let mut last_heartbeat = Instant::now();
+        while heartbeat_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(250));
+            if heartbeat_flag.load(std::sync::atomic::Ordering::Relaxed)
+                && last_heartbeat.elapsed() >= Duration::from_secs(30)
+            {
+                let _ =
+                    tasks::heartbeat_task(&heartbeat_paths, &heartbeat_task_id, &heartbeat_token);
+                let _ = tasks::heartbeat_target(&heartbeat_paths, &heartbeat_target_id);
+                last_heartbeat = Instant::now();
+            }
+        }
+    });
     let status = loop {
         if let Some(status) = child.try_wait().map_err(to_cli_error)? {
             break status;
         }
         if started.elapsed() >= timeout {
             timed_out = true;
-            let _ = child.kill();
+            terminate_child_process(&mut child);
             break child.wait().map_err(to_cli_error)?;
         }
         std::thread::sleep(Duration::from_millis(25));
     };
+    heartbeat_running.store(false, std::sync::atomic::Ordering::Relaxed);
+    let _ = heartbeat.join();
     let stdout = stdout_reader
         .join()
         .map_err(|_| CliError::new("Bridge stdout reader failed."))?
@@ -308,12 +324,180 @@ fn run_task_command(
     Ok(payload)
 }
 
+#[derive(Debug)]
+struct LocalAgentBridge {
+    agent_prompt: bool,
+    command: String,
+    host: String,
+    manual_lifecycle: bool,
+    name: String,
+}
+
+fn resolve_local_agent_bridge(paths: &OpenPanelsPaths) -> Option<LocalAgentBridge> {
+    if let Ok(command) = std::env::var("OPENPANELS_AGENT_COMMAND") {
+        if !command.trim().is_empty() {
+            return Some(LocalAgentBridge {
+                agent_prompt: false,
+                command,
+                host: "configured-agent".to_owned(),
+                manual_lifecycle: false,
+                name: format!("local-agent:{}", paths.context_id),
+            });
+        }
+    }
+    if std::env::var("OPENPANELS_ENABLE_LEGACY_LOCAL_AGENT")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        if let Ok(command) = std::env::var("OPENPANELS_LEGACY_AGENT_COMMAND") {
+            if !command.trim().is_empty() {
+                return Some(LocalAgentBridge {
+                    agent_prompt: false,
+                    command,
+                    host: "legacy-local-agent".to_owned(),
+                    manual_lifecycle: true,
+                    name: format!("legacy-local-agent:{}", paths.context_id),
+                });
+            }
+        }
+    }
+    if has_codex_environment() {
+        let executable =
+            find_executable("codex", std::env::var("OPENPANELS_CODEX_EXECUTABLE").ok())?;
+        return Some(LocalAgentBridge {
+            agent_prompt: true,
+            command: format!(
+                "{} exec --ignore-user-config --cd {} --add-dir {} --dangerously-bypass-approvals-and-sandbox -",
+                shell_quote(&executable),
+                shell_quote(&paths.project_dir.display().to_string()),
+                shell_quote(&paths.storage_dir.display().to_string()),
+            ),
+            host: "codex-cli".to_owned(),
+            manual_lifecycle: false,
+            name: format!("local-codex:{}", paths.context_id),
+        });
+    }
+    None
+}
+
+fn local_agent_task_prompt(paths: &OpenPanelsPaths, task: &Value) -> Result<String, CliError> {
+    let task_json = serde_json::to_string_pretty(task).map_err(to_cli_error)?;
+    let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
+    let capability = task.get("capability").and_then(Value::as_str).unwrap_or("");
+    let task_type = task.get("type").and_then(Value::as_str).unwrap_or("");
+    let document_id = task
+        .get("input")
+        .and_then(|input| input.get("documentId"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            task.get("source")
+                .and_then(|source| source.get("documentId"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("");
+    let wiki_space_id = task
+        .get("input")
+        .and_then(|input| input.get("wikiSpaceId"))
+        .and_then(Value::as_str)
+        .unwrap_or("wiki:default");
+    let cli = std::env::var("OPENPANELS_LOCAL_CLI")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .map(|path| path.display().to_string())
+        })
+        .unwrap_or_else(|| "openpanels-local".to_owned());
+    let wiki_skill = if task.get("queue").and_then(Value::as_str) == Some("wiki") {
+        crate::wiki::wiki_context(paths)
+            .ok()
+            .map(|context| crate::wiki::selected_agent_skill_id(&context["state"]).to_owned())
+            .unwrap_or_else(|| "karpathy-llm-wiki".to_owned())
+    } else {
+        String::new()
+    };
+    let wiki_steps = match task_type {
+        "ingest_markdown_into_wiki" => format!(
+            "Read the source with `{cli} wiki markdown read --document-id {document_id} --format json`. Load the selected Wiki skill with `{cli} agent skill {wiki_skill} --task-id {task_id} --format json`, read its SKILL.md, then update useful Wiki pages in `{wiki_space_id}` using `wiki pages write --task-id {task_id}`. Update index.md and log.md as the skill requires."
+        ),
+        "convert_document_to_markdown" => format!(
+            "Load the selected Wiki skill with `{cli} agent skill {wiki_skill} --task-id {task_id} --format json`. Inspect the raw document metadata, convert its original file to clean Markdown, and save it with `{cli} wiki markdown write --document-id {document_id} --file <markdown-file> --task-id {task_id} --format json`."
+        ),
+        "rebuild_wiki_index" => format!(
+            "Load the selected Wiki skill with `{cli} agent skill {wiki_skill} --task-id {task_id} --format json`, inspect the current pages in `{wiki_space_id}`, and update index.md and log.md using `wiki pages write --task-id {task_id}`."
+        ),
+        _ if task.get("queue").and_then(Value::as_str) == Some("wiki") => format!(
+            "Load the task skill or guide exposed by `{cli} agent capabilities --format json`, then perform the requested Wiki writes using `--task-id {task_id}`."
+        ),
+        _ => format!(
+            "Use `{cli} agent capabilities --format json` to find the commands for capability `{capability}`, then perform the requested panel writes."
+        ),
+    };
+    Ok(format!(
+        "You are the local OpenPanels agent target. Process exactly one already-claimed task, then stop.\n\nDo not modify OpenPanels application source code. Use the agent-facing CLI commands only. The bridge owns claim, heartbeat, complete, fail, and retry; do not call task lifecycle commands yourself. Exit nonzero if you cannot perform the requested panel writes reliably.\n\nCapability: {capability}\nTask id: {task_id}\n\n{wiki_steps}\n\nVerify the requested writes before exiting. Keep the final response brief.\n\nTask JSON:\n{task_json}\n\nProject: {}\nContext: {}",
+        paths.project_dir.display(),
+        paths.context_id,
+    ))
+}
+
+fn has_codex_environment() -> bool {
+    std::env::var("CODEX_THREAD_ID").is_ok()
+        || std::env::var("CODEX_SHELL").is_ok()
+        || std::env::var("CODEX_INTERNAL_ORIGINATOR_OVERRIDE").is_ok()
+}
+
+fn find_executable(name: &str, override_path: Option<String>) -> Option<String> {
+    if let Some(path) = override_path.filter(|path| std::path::Path::new(path).is_file()) {
+        return Some(path);
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .map(|directory| directory.join(name))
+        .find(|path| path.is_file())
+        .map(|path| path.display().to_string())
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':'))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
 fn read_pipe(mut pipe: Option<impl Read>) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     if let Some(pipe) = pipe.as_mut() {
         pipe.read_to_end(&mut bytes)?;
     }
     Ok(bytes)
+}
+
+fn recover_lifecycle_after_error(
+    paths: &OpenPanelsPaths,
+    task_id: &str,
+    error: &CliError,
+) -> Result<Value, CliError> {
+    let task = tasks::inspect_task(paths, task_id)?;
+    if matches!(error.code(), Some("invalid_lease" | "lease_expired"))
+        && task_is_terminal(&task["task"])
+    {
+        return Ok(task);
+    }
+    Ok(task)
+}
+
+fn task_is_terminal(task: &Value) -> bool {
+    matches!(
+        task.get("status").and_then(Value::as_str),
+        Some("succeeded" | "failed" | "cancelled")
+    )
 }
 
 fn truncate_output(bytes: &[u8], limit: usize) -> String {
@@ -400,9 +584,33 @@ fn bridge_status_path(paths: &OpenPanelsPaths) -> PathBuf {
 
 #[cfg(unix)]
 fn shell_command(command: &str) -> Command {
+    use std::os::unix::process::CommandExt;
+
     let mut child = Command::new("sh");
     child.arg("-c").arg(command);
+    child.process_group(0);
     child
+}
+
+#[cfg(unix)]
+fn terminate_child_process(child: &mut std::process::Child) {
+    let process_group = format!("-{}", child.id());
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(&process_group)
+        .status();
+    std::thread::sleep(Duration::from_millis(250));
+    if matches!(child.try_wait(), Ok(None)) {
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(&process_group)
+            .status();
+    }
+}
+
+#[cfg(windows)]
+fn terminate_child_process(child: &mut std::process::Child) {
+    let _ = child.kill();
 }
 
 #[cfg(windows)]

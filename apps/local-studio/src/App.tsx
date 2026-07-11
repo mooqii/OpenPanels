@@ -48,6 +48,7 @@ import type {
   OpenPanelsSession,
 } from "./protocol"
 import type {
+  AgentOperation,
   AppState,
   BootstrapResponse,
   OpenPanelsTransport,
@@ -81,13 +82,39 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
   const [isTraceOpen, setIsTraceOpen] = useState(false)
   const [agentPanelTab, setAgentPanelTab] = useState<AgentPanelTab>("tasks")
   const [agentTaskFilter, setAgentTaskFilter] = useState<TaskFilter>("pending")
+  const [operationNotice, setOperationNotice] = useState<AgentOperation | null>(
+    null
+  )
   const appStateRef = useRef<AppState | null>(null)
   const canvasSnapshotRef = useRef<StoreSnapshot | null>(null)
   const canvasRevisionRef = useRef(0)
   const skipNextCanvasSaveRef = useRef(false)
+  const operationStatusesRef = useRef<Map<string, string> | null>(null)
 
   useEffect(() => {
     appStateRef.current = appState
+  }, [appState])
+
+  useEffect(() => {
+    if (!appState) return
+    const next = new Map(
+      (appState.agentOperations ?? []).map((operation) => [
+        operation.id,
+        operation.status,
+      ])
+    )
+    const previous = operationStatusesRef.current
+    operationStatusesRef.current = next
+    if (!previous) return
+    const completed = (appState.agentOperations ?? []).find(
+      (operation) =>
+        previous.get(operation.id) === "active" &&
+        (operation.status === "completed" || operation.status === "failed")
+    )
+    if (!completed) return
+    setOperationNotice(completed)
+    const timer = window.setTimeout(() => setOperationNotice(null), 6000)
+    return () => window.clearTimeout(timer)
   }, [appState])
 
   useEffect(() => {
@@ -661,6 +688,27 @@ export function App({ transport }: { transport: OpenPanelsTransport }) {
           onSwitchPanel={switchPanel}
           panels={appState.panels.map(({ panel }) => panel)}
         />
+        {operationNotice ? (
+          <div
+            className={`op-operation-notice${
+              operationNotice.status === "failed"
+                ? "op-operation-notice--failed"
+                : ""
+            }`}
+            role="status"
+          >
+            <strong>
+              {operationNotice.status === "completed"
+                ? t`Agent work completed`
+                : t`Agent work failed`}
+            </strong>
+            <span>
+              {operationNotice.projectTitle ?? operationNotice.sessionId}
+              {" · "}
+              {operationNotice.panelTitle ?? operationNotice.panelKind}
+            </span>
+          </div>
+        ) : null}
         <div className="op-status-cluster">
           {appState.buildInfo ? (
             <BuildVersionBadge

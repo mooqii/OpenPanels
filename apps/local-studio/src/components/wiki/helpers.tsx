@@ -1,6 +1,6 @@
 import { Button, Chip } from "@heroui/react"
 import { FileText } from "lucide-react"
-import { type OpenPanelsLocale, useOpenPanelsI18n } from "../../canvas"
+import { useOpenPanelsI18n } from "../../canvas"
 import type { WikiRawDocument } from "../../types"
 
 export function WikiStatus({
@@ -142,10 +142,4 @@ export function documentIndexStatus(
     return { kind: "running", label: "Indexing" }
   }
   return { kind: "pending", label: "Pending index" }
-}
-
-export function isWikiLanguage(
-  language: unknown
-): language is OpenPanelsLocale {
-  return language === "en" || language === "zh-CN"
 }

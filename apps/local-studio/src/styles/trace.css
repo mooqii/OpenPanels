@@ -101,6 +101,10 @@
   border-left-color: var(--danger);
 }
 
+.op-agent-worker--warning {
+  border-left-color: var(--warning, #d89a2b);
+}
+
 .op-agent-worker span {
   display: inline-flex;
   gap: 5px;

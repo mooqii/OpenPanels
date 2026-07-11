@@ -36,9 +36,12 @@ pub fn ensure_project_bootstrap(
     let storage = Storage::open(paths)?;
     let sessions = storage.list_sessions()?;
     let active_session_id = read_active_session(paths)?;
-    let mut session = if let Some(session) =
-        requested_or_active_session(&storage, &request, active_session_id.as_deref())?
-    {
+    let mut session = if let Some(session) = requested_or_active_session(
+        &storage,
+        &request,
+        active_session_id.as_deref(),
+        Some(&sessions),
+    )? {
         session
     } else {
         create_session(&storage, next_project_title(&sessions))?
@@ -123,14 +126,18 @@ pub fn read_project_bootstrap(
     let storage = Storage::open(paths)?;
     let sessions = storage.list_sessions()?;
     let active_session_id = read_active_session(paths)?;
-    let session =
-        requested_or_active_session(&storage, &request, active_session_id.as_deref())?
-            .ok_or_else(|| {
-                CliError::with_code(
-                    "no_current_project",
-                    "No current MyOpenPanels project is available. Create a project explicitly with `openpanels-local project create`.",
-                )
-            })?;
+    let session = requested_or_active_session(
+        &storage,
+        &request,
+        active_session_id.as_deref(),
+        Some(&sessions),
+    )?
+    .ok_or_else(|| {
+        CliError::with_code(
+            "no_current_project",
+            "No current MyOpenPanels project is available. Create a project explicitly with `openpanels-local project create`.",
+        )
+    })?;
 
     let panels = read_panel_snapshots(&storage, &session)?;
     for snapshot in &panels {
@@ -349,18 +356,34 @@ fn requested_or_active_session(
     storage: &Storage,
     request: &BootstrapRequest,
     active_session_id: Option<&str>,
+    stale_active_fallback: Option<&[Session]>,
 ) -> Result<Option<Session>, CliError> {
     if let Some(session_id) = request.requested_session_id.as_deref() {
         if let Some(session) = storage.read_session(session_id)? {
             return Ok(Some(session));
         }
+        return Err(CliError::with_code(
+            "project_not_found",
+            format!("OpenPanels project not found: {session_id}"),
+        ));
     }
     if let Some(session_id) = active_session_id {
         if let Some(session) = storage.read_session(session_id)? {
             return Ok(Some(session));
         }
     }
-    Ok(None)
+    Ok(stale_active_fallback.and_then(most_recently_created_session))
+}
+
+fn most_recently_created_session(sessions: &[Session]) -> Option<Session> {
+    sessions
+        .iter()
+        .max_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        })
+        .cloned()
 }
 
 fn create_session(storage: &Storage, title: String) -> Result<Session, CliError> {
@@ -502,11 +525,28 @@ fn migrate_wiki_state(
         });
     };
     match state.get("schemaVersion").and_then(Value::as_i64) {
+        Some(3) => {
+            if is_wiki_state_v3(&state) {
+                let normalized = normalize_wiki_state_v3(state);
+                Ok(PanelStateMigrationResult {
+                    changed: normalized.changed,
+                    state: normalized.state,
+                })
+            } else {
+                Err(CliError::new(
+                    "Malformed wiki panel state: schemaVersion 3 is missing required arrays.",
+                ))
+            }
+        }
         Some(2) => {
             if is_wiki_state_v2(&state) {
+                let mut migrated = state;
+                migrated["schemaVersion"] = json!(3);
+                migrated["generatedDocuments"] = json!([]);
+                let normalized = normalize_wiki_state_v3(migrated);
                 Ok(PanelStateMigrationResult {
-                    state,
-                    changed: false,
+                    changed: true,
+                    state: normalized.state,
                 })
             } else {
                 Err(CliError::new(
@@ -515,7 +555,7 @@ fn migrate_wiki_state(
             }
         }
         Some(1) => Ok(PanelStateMigrationResult {
-            state: migrate_wiki_state_v1_to_v2(storage, session, panel, &state)?,
+            state: migrate_wiki_state_v1_to_v3(storage, session, panel, &state)?,
             changed: true,
         }),
         Some(version) => Err(CliError::new(format!(
@@ -527,6 +567,52 @@ fn migrate_wiki_state(
     }
 }
 
+fn normalize_wiki_state_v2(mut state: Value) -> PanelStateMigrationResult {
+    let mut changed = false;
+    if let Some(object) = state.as_object_mut() {
+        if object.remove("wikiLanguage").is_some() {
+            changed = true;
+        }
+        let current_skill = object
+            .get("wikiAgentSkillId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let normalized_skill = match current_skill {
+            "karpathy-llm-wiki" => Some("karpathy-llm-wiki"),
+            "karpathy-llm-wiki-zh" => Some("karpathy-llm-wiki-zh"),
+            _ => None,
+        };
+        if normalized_skill != Some(current_skill) {
+            object.insert(
+                "wikiAgentSkillId".to_owned(),
+                json!(normalized_skill.unwrap_or("karpathy-llm-wiki")),
+            );
+            changed = true;
+        }
+        if let Some(spaces) = object.get_mut("wikiSpaces").and_then(Value::as_array_mut) {
+            for space in spaces {
+                let is_default_space =
+                    space.get("id").and_then(Value::as_str) == Some(DEFAULT_WIKI_SPACE_ID);
+                let has_legacy_title =
+                    space.get("title").and_then(Value::as_str) == Some("Default Wiki");
+                if is_default_space && has_legacy_title {
+                    space["title"] = json!("Wiki");
+                    changed = true;
+                }
+            }
+        }
+    }
+    PanelStateMigrationResult { state, changed }
+}
+
+fn normalize_wiki_state_v3(state: Value) -> PanelStateMigrationResult {
+    normalize_wiki_state_v2(state)
+}
+
+fn is_wiki_state_v3(state: &Value) -> bool {
+    is_wiki_state_v2(state) && state.get("generatedDocuments").is_some_and(Value::is_array)
+}
+
 fn is_wiki_state_v2(state: &Value) -> bool {
     state.get("rawDocuments").is_some_and(Value::is_array)
         && state.get("ruleSets").is_some_and(Value::is_array)
@@ -534,7 +620,7 @@ fn is_wiki_state_v2(state: &Value) -> bool {
         && state.get("tasks").is_some_and(Value::is_array)
 }
 
-fn migrate_wiki_state_v1_to_v2(
+fn migrate_wiki_state_v1_to_v3(
     storage: &Storage,
     session: &Session,
     panel: &Panel,
@@ -687,8 +773,9 @@ fn empty_canvas_snapshot() -> Value {
 fn empty_wiki_state() -> Value {
     let now = now_iso();
     json!({
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "rawDocuments": [],
+        "generatedDocuments": [],
         "ruleSets": [{
             "id": DEFAULT_WIKI_RULE_SET_ID,
             "title": "Default LLM Wiki",
@@ -701,7 +788,7 @@ fn empty_wiki_state() -> Value {
         }],
         "wikiSpaces": [{
             "id": DEFAULT_WIKI_SPACE_ID,
-            "title": "Default Wiki",
+            "title": "Wiki",
             "ruleSetId": DEFAULT_WIKI_RULE_SET_ID,
             "ruleSetVersion": 1,
             "rootRef": "wikis/wiki:default",
@@ -714,7 +801,7 @@ fn empty_wiki_state() -> Value {
         "activeWikiPagePath": "index.md",
         "agentProcesses": [],
         "tasks": [],
-        "wikiLanguage": null,
+        "wikiAgentSkillId": "karpathy-llm-wiki",
     })
 }
 
@@ -786,14 +873,35 @@ fn read_active_panel(paths: &OpenPanelsPaths) -> Result<Option<ActivePanel>, Cli
 }
 
 fn write_active_panel(paths: &OpenPanelsPaths, panel: &Panel) -> Result<(), CliError> {
+    let current = read_json_object_or_null(&paths.context_dir.join("active-panel.json"))?;
+    let unchanged = current.as_ref().is_some_and(|value| {
+        value.get("sessionId").and_then(Value::as_str) == Some(panel.session_id.as_str())
+            && value.get("panelId").and_then(Value::as_str) == Some(panel.id.as_str())
+            && value.get("kind").and_then(Value::as_str) == Some(panel.kind.as_str())
+    });
+    let focus_revision = current
+        .as_ref()
+        .and_then(|value| value.get("focusRevision"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        + u64::from(!unchanged);
     write_json(
         &paths.context_dir.join("active-panel.json"),
         &json!({
             "sessionId": panel.session_id,
             "panelId": panel.id,
             "kind": panel.kind,
+            "focusRevision": focus_revision,
             "updatedAt": now_iso(),
         }),
+    )
+}
+
+pub fn read_focus_revision(paths: &OpenPanelsPaths) -> Result<u64, CliError> {
+    Ok(
+        read_json_object_or_null(&paths.context_dir.join("active-panel.json"))?
+            .and_then(|value| value.get("focusRevision").and_then(Value::as_u64))
+            .unwrap_or(0),
     )
 }
 
@@ -863,7 +971,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["wiki", "canvas"]
         );
-        assert_eq!(bootstrap.state["schemaVersion"], json!(2));
+        assert_eq!(bootstrap.state["schemaVersion"], json!(3));
+        assert_eq!(bootstrap.state["wikiSpaces"][0]["title"], json!("Wiki"));
         assert!(paths.context_dir.join("active-session.json").exists());
         assert!(paths.context_dir.join("active-panel.json").exists());
         assert!(storage_dir
@@ -872,7 +981,64 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_keeps_contexts_isolated_by_context_id() {
+    fn normalize_wiki_state_renames_the_legacy_default_space() {
+        let mut state = empty_wiki_state();
+        state["wikiSpaces"][0]["title"] = json!("Default Wiki");
+
+        let normalized = normalize_wiki_state_v2(state);
+
+        assert!(normalized.changed);
+        assert_eq!(normalized.state["wikiSpaces"][0]["title"], json!("Wiki"));
+    }
+
+    #[test]
+    fn migrate_wiki_v2_to_v3_preserves_existing_content() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_openpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let bootstrap =
+            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let wiki_panel = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
+            .expect("wiki panel")
+            .panel
+            .clone();
+        let mut state = empty_wiki_state();
+        state["schemaVersion"] = json!(2);
+        state["rawDocuments"] = json!([{ "id": "raw:kept" }]);
+        state
+            .as_object_mut()
+            .expect("state")
+            .remove("generatedDocuments");
+        let migrated = migrate_wiki_state(
+            &Storage::open(&paths).expect("storage"),
+            &bootstrap.session,
+            &wiki_panel,
+            Some(state),
+        )
+        .expect("migration");
+        assert!(migrated.changed);
+        assert_eq!(migrated.state["schemaVersion"], 3);
+        assert_eq!(migrated.state["rawDocuments"][0]["id"], "raw:kept");
+        assert_eq!(
+            migrated.state["generatedDocuments"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn bootstrap_reuses_the_latest_project_for_a_new_context() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -889,21 +1055,95 @@ mod tests {
             Some("thread-b"),
         )
         .expect("second paths");
+        let third_paths = resolve_openpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("thread-c"),
+        )
+        .expect("third paths");
 
         let first = ensure_project_bootstrap(&first_paths, BootstrapRequest::new()).expect("first");
-        let second =
-            ensure_project_bootstrap(&second_paths, BootstrapRequest::new()).expect("second");
+        let latest = create_project(&second_paths, Some("Latest")).expect("latest");
+        let third =
+            ensure_project_bootstrap(&third_paths, BootstrapRequest::new()).expect("new context");
         let first_again =
             ensure_project_bootstrap(&first_paths, BootstrapRequest::new()).expect("again");
 
-        assert_ne!(first.session.id, second.session.id);
         assert_eq!(first.session.title, "Project 1");
-        assert_eq!(second.session.title, "Project 2");
-        assert_eq!(first.session.id, first_again.session.id);
+        assert_eq!(first_again.session.id, first.session.id);
+        assert_eq!(third.session.id, latest.session.id);
+        assert_eq!(third.sessions.len(), 2);
     }
 
     #[test]
-    fn bootstrap_migrates_wiki_v1_state_to_v2_without_clearing_pages() {
+    fn bootstrap_errors_for_missing_requested_project_instead_of_creating_one() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_openpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+
+        create_project(&paths, Some("Demo")).expect("demo project");
+        write_active_session_id(&paths, "session:deleted").expect("stale active project");
+
+        let error = ensure_project_bootstrap(
+            &paths,
+            BootstrapRequest {
+                requested_panel_id: None,
+                requested_panel_kind: None,
+                requested_session_id: Some("session:deleted".to_owned()),
+            },
+        )
+        .expect_err("missing requested project should fail");
+
+        assert_eq!(error.code(), Some("project_not_found"));
+        let sessions = Storage::open(&paths)
+            .expect("storage")
+            .list_sessions()
+            .expect("sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title, "Demo");
+    }
+
+    #[test]
+    fn bootstrap_recovers_stale_active_project_without_creating_one() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_openpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+
+        let demo = create_project(&paths, Some("Demo")).expect("demo project");
+        write_active_session_id(&paths, "session:deleted").expect("stale active project");
+
+        let recovered =
+            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+
+        assert_eq!(recovered.session.id, demo.session.id);
+        let sessions = Storage::open(&paths)
+            .expect("storage")
+            .list_sessions()
+            .expect("sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title, "Demo");
+        assert_eq!(
+            read_active_session_id(&paths).expect("active project"),
+            Some(demo.session.id)
+        );
+    }
+
+    #[test]
+    fn bootstrap_migrates_wiki_v1_state_to_v3_without_clearing_pages() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -946,7 +1186,7 @@ mod tests {
         drop(storage);
 
         let migrated = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("migrated");
-        assert_eq!(migrated.state["schemaVersion"], json!(2));
+        assert_eq!(migrated.state["schemaVersion"], json!(3));
         assert_eq!(
             migrated.state["activeWikiPagePath"],
             json!("research/notes.md")
@@ -1033,7 +1273,7 @@ mod tests {
             .write_panel_state(
                 &bootstrap.session.id,
                 &wiki_panel.id,
-                &json!({ "schemaVersion": 3, "rawDocuments": [] }),
+                &json!({ "schemaVersion": 4, "rawDocuments": [] }),
             )
             .expect("write future wiki state");
         drop(storage);

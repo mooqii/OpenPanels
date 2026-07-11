@@ -1,10 +1,13 @@
 use crate::agent::{
-    agent_context, capabilities, list_agent_guides, read_agent_guide, render_agent_guides_markdown,
+    agent_bootstrap, capabilities, list_agent_guides, list_agent_skills, read_agent_guide,
+    read_agent_skill, render_agent_guides_markdown, render_agent_skills_markdown,
+    sync_builtin_agent_skills,
 };
 use crate::bridge::{read_bridge_status, run_bridge, BridgeOptions};
 use crate::canvas::{insert_image, insert_placeholder, InsertImageInput, InsertPlaceholderInput};
 use crate::control::{create_project, read_project_bootstrap, BootstrapRequest};
 use crate::error::CliError;
+use crate::operations;
 use crate::paths::resolve_openpanels_paths;
 use crate::selection::{read_selection, read_selection_asset_to_file};
 use crate::server::run_server;
@@ -42,11 +45,15 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const HELP_TEXT: &str = concat!(
     "openpanels-local <command> [options]\n\n",
     "Commands:\n",
-    "  agent context             Read current agent context and instructions\n",
+    "  agent bootstrap           Read protocol v2 context, guides, and operations\n",
+    "  agent operations list|inspect\n",
     "  agent capabilities        List the current agent-facing command set\n",
-    "  agent bridge              Run a generic task bridge command\n",
+    "  agent bridge              Run a registered command task bridge\n",
+    "  agent targets list|register|heartbeat|remove\n",
     "  agent guides              List loadable agent guides\n",
     "  agent guide <id>          Print one full agent guide\n",
+    "  agent skills              List loadable agent skills\n",
+    "  agent skill <id>          Print one full agent skill\n",
     "  project current           Read the current user-visible project\n",
     "  project list              List available projects\n",
     "  project create            Create a project explicitly\n",
@@ -56,18 +63,22 @@ pub const HELP_TEXT: &str = concat!(
     "  canvas state              Read current canvas state\n",
     "  canvas selection read     Read current canvas selection\n",
     "  canvas selection export   Export selected canvas pixels to a file\n",
-    "  canvas placeholder create Insert a generation placeholder\n",
-    "  canvas image insert       Insert a local image into the current canvas\n",
+    "  canvas generation begin|complete|fail|cancel|inspect\n",
+    "  canvas image insert       Insert a non-generated local image\n",
     "  tasks list|next|inspect   Read project tasks across panels\n",
+    "  tasks claim-next|claim|heartbeat|complete|fail|release|retry|cancel\n",
     "  wiki context              Read current wiki context\n",
+    "  wiki selection read       Read the user-selected Wiki and raw documents\n",
     "  wiki documents list       List raw wiki documents\n",
     "  wiki documents add        Add a raw wiki document\n",
     "  wiki documents create-markdown Create markdown raw document\n",
     "  wiki markdown read        Read source markdown for a document\n",
     "  wiki markdown write       Write source markdown for a document\n",
+    "  wiki generated-documents list|read|rename|delete|publish\n",
+    "  wiki generation begin|complete|fail|cancel|inspect\n",
     "  wiki tasks list|next|claim|complete|fail\n",
     "  wiki spaces list|switch\n",
-    "  wiki pages list|read|write\n",
+    "  wiki pages list|search|read|write\n",
     "  studio start              Start or reuse the local studio\n",
     "  studio status             Show local studio status\n",
     "  studio open               Open the local studio in a browser\n",
@@ -456,6 +467,18 @@ fn command_help_text(parsed: &ParsedArgs) -> String {
                 "Write markdown for a raw document. Does not create a Project.",
                 &["--document-id <id>", "--file <path>", "--task-id <id>"],
             ),
+            ["generated-documents", action, ..] => help_block(
+                &format!("openpanels-local wiki generated-documents {action}"),
+                "Manage agent-generated Markdown and text documents. Does not create a Project.",
+                &[
+                    "--document-id <id>",
+                    "--file <path>",
+                    "--title <title>",
+                    "--task-id <id>",
+                    "--thread-id <id>",
+                    "--wiki-space-id <id>",
+                ],
+            ),
             ["tasks", action, ..] => help_block(
                 &format!("openpanels-local wiki tasks {action}"),
                 "Operate on wiki tasks. Does not create a Project.",
@@ -477,15 +500,15 @@ fn command_help_text(parsed: &ParsedArgs) -> String {
                 &["--wiki-space-id <id>", "--path <path>", "--file <path>"],
             ),
             _ => help_block(
-                "openpanels-local wiki <context|documents|markdown|tasks|spaces|pages>",
+                "openpanels-local wiki <context|documents|generated-documents|markdown|tasks|spaces|pages>",
                 "Wiki commands for the current Project.",
                 &[],
             ),
         },
         [command, rest @ ..] if *command == "agent" => match rest {
-            ["context", ..] => help_block(
-                "openpanels-local agent context",
-                "Read current agent context. Does not create a Project.",
+            ["bootstrap", ..] => help_block(
+                "openpanels-local agent bootstrap",
+                "Read the current Agent protocol, focus, guides, and operations.",
                 &[],
             ),
             ["capabilities", ..] => help_block(
@@ -498,10 +521,26 @@ fn command_help_text(parsed: &ParsedArgs) -> String {
                 "Run the task bridge or read bridge status. Does not create a Project.",
                 &[
                     "--command <command>",
+                    "--capability <name>",
+                    "--name <name>",
                     "--once",
                     "--queue <queue>",
                     "--interval-ms <ms>",
                     "--timeout-ms <ms>",
+                    "--manual-lifecycle",
+                ],
+            ),
+            ["targets", action, ..] => help_block(
+                &format!("openpanels-local agent targets {action}"),
+                "Register, inspect, heartbeat, or remove project agent targets.",
+                &[
+                    "--target-id <id>",
+                    "--name <name>",
+                    "--host <host>",
+                    "--transport <webhook|poll|command>",
+                    "--endpoint <url>",
+                    "--capability <name>",
+                    "--priority <number>",
                 ],
             ),
             ["guides", ..] => help_block(
@@ -514,14 +553,24 @@ fn command_help_text(parsed: &ParsedArgs) -> String {
                 "Read one full agent guide. Does not create a Project.",
                 &["--task-id <id>"],
             ),
+            ["skills", ..] => help_block(
+                "openpanels-local agent skills",
+                "List loadable agent skills.",
+                &[],
+            ),
+            ["skill", ..] => help_block(
+                "openpanels-local agent skill <skill-id>",
+                "Read one full agent skill. Does not create a Project.",
+                &["--task-id <id>"],
+            ),
             _ => help_block(
-                "openpanels-local agent <context|capabilities|bridge|guides|guide>",
+                "openpanels-local agent <context|capabilities|bridge|guides|guide|skills|skill>",
                 "Agent discovery and context commands.",
                 &[],
             ),
         },
         [command, rest @ ..] if *command == "tasks" => match rest {
-            ["list", ..] | [] => help_block(
+            ["list", ..] => help_block(
                 "openpanels-local tasks list",
                 "List project tasks across panels. Does not create a Project.",
                 &["--queue <queue>", "--status <status>", "--pending"],
@@ -534,6 +583,37 @@ fn command_help_text(parsed: &ParsedArgs) -> String {
             ["inspect", ..] => help_block(
                 "openpanels-local tasks inspect --task-id <id>",
                 "Read one project task by id. Does not create a Project.",
+                &["--task-id <id>"],
+            ),
+            ["claim-next", ..] => help_block(
+                "openpanels-local tasks claim-next --target-id <id>",
+                "Atomically claim the next matching project task.",
+                &["--target-id <id>", "--capability <name>", "--wait-ms <ms>"],
+            ),
+            ["claim", ..] => help_block(
+                "openpanels-local tasks claim --task-id <id> --target-id <id>",
+                "Atomically claim one project task.",
+                &["--task-id <id>", "--target-id <id>"],
+            ),
+            ["heartbeat", ..] | ["complete", ..] | ["fail", ..] | ["release", ..] => help_block(
+                &format!("openpanels-local tasks {}", rest[0]),
+                "Update a claimed project task using its lease token.",
+                &[
+                    "--task-id <id>",
+                    "--lease-token <token>",
+                    "--result-file <json>",
+                    "--message <text>",
+                    "--retry-after <time>",
+                ],
+            ),
+            ["retry", ..] | ["cancel", ..] => help_block(
+                &format!("openpanels-local tasks {}", rest[0]),
+                "Manually retry or cancel a project task.",
+                &["--task-id <id>"],
+            ),
+            ["deliveries", ..] => help_block(
+                "openpanels-local tasks deliveries",
+                "Read task delivery history.",
                 &["--task-id <id>"],
             ),
             _ => HELP_TEXT.to_owned(),
@@ -554,7 +634,7 @@ fn help_block(usage: &str, description: &str, flags: &[&str]) -> String {
 fn run_tasks_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
-        None | Some("list") => {
+        Some("list") => {
             let paths = parsed_current_paths(parsed)?;
             let result = tasks::list_tasks(&paths, task_list_filter(parsed))?;
             let count = result["tasks"].as_array().map(Vec::len).unwrap_or(0);
@@ -572,8 +652,97 @@ fn run_tasks_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
             let result = tasks::inspect_task(&paths, task_id)?;
             write_result(parsed, stdout, &result, task_id)
         }
+        Some("claim-next") => {
+            let paths = parsed_current_paths(parsed)?;
+            let target_id = required_flag(parsed, "target-id")?;
+            let wait_ms = string_flag(parsed, "wait-ms")
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| CliError::new("Expected --wait-ms to be a number."))
+                })
+                .transpose()?;
+            let result = tasks::claim_next(
+                &paths,
+                target_id,
+                string_flag(parsed, "capability"),
+                wait_ms,
+            )?;
+            let text = result["task"]["id"]
+                .as_str()
+                .unwrap_or("No matching task");
+            write_result(parsed, stdout, &result, text)
+        }
+        Some("claim") => {
+            let paths = parsed_current_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let target_id = required_flag(parsed, "target-id")?;
+            let result = tasks::claim_task(&paths, task_id, target_id)?;
+            write_result(parsed, stdout, &result, &format!("Claimed {task_id}"))
+        }
+        Some("heartbeat") => {
+            let paths = parsed_current_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let lease_token = required_flag(parsed, "lease-token")?;
+            let result = tasks::heartbeat_task(&paths, task_id, lease_token)?;
+            write_result(parsed, stdout, &result, &format!("Heartbeat {task_id}"))
+        }
+        Some("complete") => {
+            let paths = parsed_current_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let lease_token = required_flag(parsed, "lease-token")?;
+            let result_value = string_flag(parsed, "result-file")
+                .map(|path| {
+                    let raw = fs::read_to_string(path)
+                        .map_err(|error| CliError::new(error.to_string()))?;
+                    serde_json::from_str::<Value>(&raw)
+                        .map_err(|error| CliError::new(error.to_string()))
+                })
+                .transpose()?;
+            let result = tasks::complete_task(&paths, task_id, lease_token, result_value)?;
+            write_result(parsed, stdout, &result, &format!("Completed {task_id}"))
+        }
+        Some("fail") => {
+            let paths = parsed_current_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let lease_token = required_flag(parsed, "lease-token")?;
+            let message = required_flag(parsed, "message")?;
+            let result = tasks::fail_task(
+                &paths,
+                task_id,
+                lease_token,
+                message,
+                string_flag(parsed, "retry-after"),
+            )?;
+            write_result(parsed, stdout, &result, &format!("Failed {task_id}"))
+        }
+        Some("release") => {
+            let paths = parsed_current_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let lease_token = required_flag(parsed, "lease-token")?;
+            let result = tasks::release_task(&paths, task_id, lease_token)?;
+            write_result(parsed, stdout, &result, &format!("Released {task_id}"))
+        }
+        Some("retry") => {
+            let paths = parsed_current_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = tasks::retry_task(&paths, task_id)?;
+            write_result(parsed, stdout, &result, &format!("Retried {task_id}"))
+        }
+        Some("cancel") => {
+            let paths = parsed_current_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = tasks::cancel_task(&paths, task_id)?;
+            write_result(parsed, stdout, &result, &format!("Cancelled {task_id}"))
+        }
+        Some("deliveries") => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = tasks::list_deliveries(&paths, string_flag(parsed, "task-id"))?;
+            let count = result["deliveries"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(parsed, stdout, &result, &format!("{count} delivery record(s)"))
+        }
         _ => Err(CliError::new(
-            "Expected tasks subcommand: list, next, or inspect.",
+            "Expected tasks subcommand: list, next, inspect, claim-next, claim, heartbeat, complete, fail, release, retry, cancel, or deliveries.",
         )),
     }
 }
@@ -589,7 +758,7 @@ fn task_list_filter<'a>(parsed: &'a ParsedArgs) -> tasks::TaskListFilter<'a> {
 fn run_project_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
-        None | Some("current") => {
+        Some("current") => {
             let paths = parsed_current_paths(parsed)?;
             let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new())?;
             let payload = serde_json::json!({
@@ -636,11 +805,11 @@ fn run_project_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(
 fn run_panel_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
-        None | Some("current") => run_project_read_command(parsed, stdout, "active-panel"),
-        Some("list") => run_project_read_command(parsed, stdout, "panels"),
+        Some("current") => run_project_read_command(parsed, stdout, ProjectReadView::PanelCurrent),
+        Some("list") => run_project_read_command(parsed, stdout, ProjectReadView::PanelList),
         Some("switch") => {
             let _ = required_flag(parsed, "kind")?;
-            run_project_read_command(parsed, stdout, "active-panel")
+            run_project_read_command(parsed, stdout, ProjectReadView::PanelSwitch)
         }
         _ => Err(CliError::new(
             "Expected panel subcommand: current, list, or switch.",
@@ -652,8 +821,44 @@ fn run_canvas_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     let action = parsed.positionals.get(2).map(String::as_str);
     match (subcommand, action) {
-        (None, _) | (Some("state"), _) => run_project_read_command(parsed, stdout, "canvas-state"),
-        (Some("selection"), None | Some("read")) => {
+        (Some("generation"), Some("begin")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = operations::begin_canvas(
+                &paths,
+                number_flag(parsed, "display-width")?,
+                number_flag(parsed, "display-height")?,
+                has_flag(parsed, "use-selection"),
+                string_flag(parsed, "text"),
+            )?;
+            write_result(parsed, stdout, &result, result["operation"]["id"].as_str().unwrap_or("Started canvas generation"))
+        }
+        (Some("generation"), Some("complete")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = operations::complete_canvas(
+                &paths,
+                required_flag(parsed, "operation-id")?,
+                required_flag(parsed, "image")?,
+                image_metadata_flag(parsed)?.ok_or_else(|| CliError::with_code("generation_metadata_required", "Missing --metadata-file"))?,
+            )?;
+            write_result(parsed, stdout, &result, "Completed canvas generation")
+        }
+        (Some("generation"), Some("fail")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = operations::finish_canvas(&paths, required_flag(parsed, "operation-id")?, "failed", Some(required_flag(parsed, "message")?))?;
+            write_result(parsed, stdout, &result, "Failed canvas generation")
+        }
+        (Some("generation"), Some("cancel")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = operations::finish_canvas(&paths, required_flag(parsed, "operation-id")?, "cancelled", None)?;
+            write_result(parsed, stdout, &result, "Cancelled canvas generation")
+        }
+        (Some("generation"), Some("inspect")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = operations::inspect(&paths, required_flag(parsed, "operation-id")?)?;
+            write_result(parsed, stdout, &result, result["status"].as_str().unwrap_or("unknown"))
+        }
+        (Some("state"), _) => run_project_read_command(parsed, stdout, ProjectReadView::CanvasState),
+        (Some("selection"), Some("read")) => {
             let paths = parsed_current_paths(parsed)?;
             let result = read_selection(&paths, None, has_flag(parsed, "include-image-base64"))?;
             let text = format!(
@@ -714,6 +919,7 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
     match subcommand {
         Some("start") => {
             let paths = parsed_paths(parsed)?;
+            sync_builtin_agent_skills(&paths)?;
             let result = start_studio(
                 &paths,
                 StudioStartOptions {
@@ -740,6 +946,7 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
         }
         Some("open") => {
             let paths = parsed_paths(parsed)?;
+            sync_builtin_agent_skills(&paths)?;
             let result = start_studio(
                 &paths,
                 StudioStartOptions {
@@ -766,6 +973,7 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
         }
         Some("serve") => {
             let paths = parsed_paths(parsed)?;
+            sync_builtin_agent_skills(&paths)?;
             if let Some(session) = reuse_existing_studio(&paths, false)? {
                 let _ = record_current_studio(&paths, &session);
                 let payload = studio_session_payload(
@@ -857,10 +1065,24 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
 fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
-        None | Some("context") => {
+        Some("bootstrap") => {
             let paths = parsed_current_paths(parsed)?;
-            let (payload, markdown) = agent_context(&paths, VERSION, None)?;
-            write_result(parsed, stdout, &payload, &markdown)
+            let payload = agent_bootstrap(&paths, VERSION)?;
+            write_result(parsed, stdout, &payload, "OpenPanels agent protocol v2 bootstrap")
+        }
+        Some("operations") => {
+            let paths = parsed_current_paths(parsed)?;
+            match parsed.positionals.get(2).map(String::as_str) {
+                Some("list") => {
+                    let payload = operations::list(&paths, string_flag(parsed, "status"))?;
+                    write_result(parsed, stdout, &payload, "Agent operations")
+                }
+                Some("inspect") => {
+                    let payload = operations::inspect(&paths, required_flag(parsed, "operation-id")?)?;
+                    write_result(parsed, stdout, &payload, payload["status"].as_str().unwrap_or("unknown"))
+                }
+                _ => Err(CliError::new("Expected agent operations subcommand: list or inspect.")),
+            }
         }
         Some("capabilities") => {
             let capabilities = capabilities();
@@ -898,9 +1120,15 @@ fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
             let result = run_bridge(
                 &paths,
                 BridgeOptions {
+                    agent_prompt: false,
+                    capabilities: string_list_flag(parsed, "capability"),
                     command: string_flag(parsed, "command"),
+                    host: None,
                     interval_ms,
+                    manual_lifecycle: has_flag(parsed, "manual-lifecycle"),
+                    name: string_flag(parsed, "name"),
                     once: has_flag(parsed, "once"),
+                    priority: 0,
                     queue: string_flag(parsed, "queue"),
                     timeout_ms,
                 },
@@ -911,6 +1139,56 @@ fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
                 "No pending task"
             };
             write_result(parsed, stdout, &result, text)
+        }
+        Some("targets") => {
+            let paths = parsed_current_paths(parsed)?;
+            match parsed.positionals.get(2).map(String::as_str) {
+                Some("list") => {
+                    let result = tasks::list_targets(&paths)?;
+                    let count = result["targets"].as_array().map(Vec::len).unwrap_or(0);
+                    write_result(parsed, stdout, &result, &format!("{count} target(s)"))
+                }
+                Some("register") => {
+                    let priority = string_flag(parsed, "priority")
+                        .map(|value| {
+                            value.parse::<i64>().map_err(|_| {
+                                CliError::new("Expected --priority to be an integer.")
+                            })
+                        })
+                        .transpose()?
+                        .unwrap_or(0);
+                    let result = tasks::register_target(
+                        &paths,
+                        tasks::TargetRegistration {
+                            name: required_flag(parsed, "name")?,
+                            host: string_flag(parsed, "host"),
+                            transport: required_flag(parsed, "transport")?,
+                            endpoint: string_flag(parsed, "endpoint"),
+                            capabilities: string_list_flag(parsed, "capability"),
+                            priority,
+                        },
+                    )?;
+                    write_result(
+                        parsed,
+                        stdout,
+                        &result,
+                        result["target"]["id"].as_str().unwrap_or("Registered target"),
+                    )
+                }
+                Some("heartbeat") => {
+                    let target_id = required_flag(parsed, "target-id")?;
+                    let result = tasks::heartbeat_target(&paths, target_id)?;
+                    write_result(parsed, stdout, &result, &format!("Heartbeat {target_id}"))
+                }
+                Some("remove") => {
+                    let target_id = required_flag(parsed, "target-id")?;
+                    let result = tasks::remove_target(&paths, target_id)?;
+                    write_result(parsed, stdout, &result, &format!("Removed {target_id}"))
+                }
+                _ => Err(CliError::new(
+                    "Expected agent targets subcommand: list, register, heartbeat, or remove.",
+                )),
+            }
         }
         Some("guides") => {
             let guides = list_agent_guides()?;
@@ -932,8 +1210,29 @@ fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
             let markdown = payload.markdown.clone();
             write_result(parsed, stdout, &payload, &markdown)
         }
+        Some("skills") => {
+            let paths = parsed_current_paths(parsed)?;
+            let skills = list_agent_skills(&paths)?;
+            let payload = serde_json::json!({ "skills": skills });
+            write_result(
+                parsed,
+                stdout,
+                &payload,
+                &render_agent_skills_markdown(&skills),
+            )
+        }
+        Some("skill") => {
+            let skill_id = parsed
+                .positionals
+                .get(2)
+                .ok_or_else(|| CliError::new("Missing skill id."))?;
+            let paths = parsed_current_paths(parsed)?;
+            let payload = read_agent_skill(&paths, skill_id, string_flag(parsed, "task-id"))?;
+            let markdown = payload.markdown.clone();
+            write_result(parsed, stdout, &payload, &markdown)
+        }
         _ => Err(CliError::new(
-            "Expected agent subcommand: context, capabilities, bridge, guides, or guide.",
+            "Expected agent subcommand: bootstrap, capabilities, operations, bridge, guides, guide, skills, or skill.",
         )),
     }
 }
@@ -942,10 +1241,85 @@ fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), 
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     let action = parsed.positionals.get(2).map(String::as_str);
     match (subcommand, action) {
-        (None, _) | (Some("context"), _) => {
+        (Some("generation"), Some("begin")) => {
             let paths = parsed_current_paths(parsed)?;
-            let (payload, markdown) = agent_context(&paths, VERSION, Some(PanelKind::Wiki))?;
-            write_result(parsed, stdout, &payload, &markdown)
+            let result = operations::begin_wiki(
+                &paths,
+                required_flag(parsed, "title")?,
+                string_flag(parsed, "document-format").unwrap_or("markdown"),
+                string_flag(parsed, "document-id"),
+            )?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                result["operation"]["id"]
+                    .as_str()
+                    .unwrap_or("Started wiki generation"),
+            )
+        }
+        (Some("generation"), Some("complete")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = operations::complete_wiki(
+                &paths,
+                required_flag(parsed, "operation-id")?,
+                required_flag(parsed, "file")?,
+            )?;
+            write_result(parsed, stdout, &result, "Completed wiki generation")
+        }
+        (Some("generation"), Some("fail")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = operations::finish_wiki(
+                &paths,
+                required_flag(parsed, "operation-id")?,
+                "failed",
+                Some(required_flag(parsed, "message")?),
+            )?;
+            write_result(parsed, stdout, &result, "Failed wiki generation")
+        }
+        (Some("generation"), Some("cancel")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = operations::finish_wiki(
+                &paths,
+                required_flag(parsed, "operation-id")?,
+                "cancelled",
+                None,
+            )?;
+            write_result(parsed, stdout, &result, "Cancelled wiki generation")
+        }
+        (Some("generation"), Some("inspect")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = operations::inspect(&paths, required_flag(parsed, "operation-id")?)?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                result["status"].as_str().unwrap_or("unknown"),
+            )
+        }
+        (Some("context"), _) => {
+            let paths = parsed_current_paths(parsed)?;
+            let payload = wiki::wiki_context(&paths)?;
+            write_result(parsed, stdout, &payload, "Wiki context")
+        }
+        (Some("selection"), Some("read")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = wiki::read_agent_selection(&paths)?;
+            let text = format!(
+                "Wiki selected: {}; raw documents selected: {}; generated documents selected: {}",
+                result["selection"]["isWikiSelected"]
+                    .as_bool()
+                    .unwrap_or(false),
+                result["selectedRawDocuments"]
+                    .as_array()
+                    .map(Vec::len)
+                    .unwrap_or(0),
+                result["selectedGeneratedDocuments"]
+                    .as_array()
+                    .map(Vec::len)
+                    .unwrap_or(0)
+            );
+            write_result(parsed, stdout, &result, &text)
         }
         (Some("documents"), Some("create-markdown")) => {
             let paths = parsed_current_paths(parsed)?;
@@ -1000,13 +1374,120 @@ fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), 
             );
             write_result(parsed, stdout, &result, &text)
         }
-        (Some("documents"), None | Some("list")) => {
+        (Some("documents"), Some("list")) => {
             let paths = parsed_current_paths(parsed)?;
             let result = wiki::wiki_context(&paths)?;
             let documents = result["state"]["rawDocuments"].clone();
             let payload = serde_json::json!({ "documents": documents });
             let count = payload["documents"].as_array().map(Vec::len).unwrap_or(0);
             write_result(parsed, stdout, &payload, &format!("{count} document(s)"))
+        }
+        (Some("generated-documents"), Some("list")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let result = wiki::list_generated_documents(&paths)?;
+            let count = result["documents"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("{count} generated document(s)"),
+            )
+        }
+        (Some("generated-documents"), Some("create")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let file = required_flag(parsed, "file")?;
+            let content = fs::read(file).map_err(|error| CliError::new(error.to_string()))?;
+            let file_name = std::path::Path::new(file)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("document.md");
+            let result = wiki::create_generated_document(
+                &paths,
+                file_name,
+                string_flag(parsed, "title"),
+                string_flag(parsed, "mime-type"),
+                string_flag(parsed, "task-id"),
+                string_flag(parsed, "thread-id"),
+                &content,
+            )?;
+            let id = result["document"]["id"].as_str().unwrap_or_default();
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("Created generated document {id}"),
+            )
+        }
+        (Some("generated-documents"), Some("read")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let document_id = required_flag(parsed, "document-id")?;
+            let result = wiki::read_generated_document(&paths, document_id)?;
+            let text = result["content"].as_str().unwrap_or("");
+            write_result(parsed, stdout, &result, text)
+        }
+        (Some("generated-documents"), Some("write")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let document_id = required_flag(parsed, "document-id")?;
+            let file = required_flag(parsed, "file")?;
+            let content = fs::read(file).map_err(|error| CliError::new(error.to_string()))?;
+            let file_name = std::path::Path::new(file)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("document.md");
+            let result = wiki::write_generated_document(
+                &paths,
+                document_id,
+                file_name,
+                string_flag(parsed, "mime-type"),
+                &content,
+            )?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("Updated generated document {document_id}"),
+            )
+        }
+        (Some("generated-documents"), Some("rename")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let document_id = required_flag(parsed, "document-id")?;
+            let result = wiki::rename_generated_document(
+                &paths,
+                document_id,
+                required_flag(parsed, "title")?,
+            )?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("Renamed generated document {document_id}"),
+            )
+        }
+        (Some("generated-documents"), Some("delete")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let document_id = required_flag(parsed, "document-id")?;
+            let result = wiki::delete_generated_document(&paths, document_id)?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("Deleted generated document {document_id}"),
+            )
+        }
+        (Some("generated-documents"), Some("publish")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let document_id = required_flag(parsed, "document-id")?;
+            let result = wiki::publish_generated_document(
+                &paths,
+                document_id,
+                string_flag(parsed, "wiki-space-id"),
+            )?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("Published generated document {document_id}"),
+            )
         }
         (Some("markdown"), Some("read")) => {
             let paths = parsed_current_paths(parsed)?;
@@ -1034,7 +1515,7 @@ fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), 
                 &format!("Wrote markdown {document_id}"),
             )
         }
-        (Some("tasks"), None | Some("list")) => {
+        (Some("tasks"), Some("list")) => {
             let paths = parsed_current_paths(parsed)?;
             let result = wiki::list_tasks(&paths, string_flag(parsed, "status"))?;
             let count = result["tasks"].as_array().map(Vec::len).unwrap_or(0);
@@ -1084,7 +1565,7 @@ fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), 
                 &format!("Active wiki space {wiki_space_id}"),
             )
         }
-        (Some("spaces"), None | Some("list")) => {
+        (Some("spaces"), Some("list")) => {
             let paths = parsed_current_paths(parsed)?;
             let result = wiki::list_spaces(&paths)?;
             let count = result["spaces"].as_array().map(Vec::len).unwrap_or(0);
@@ -1099,6 +1580,23 @@ fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), 
             )?;
             let text = result["markdown"].as_str().unwrap_or("");
             write_result(parsed, stdout, &result, text)
+        }
+        (Some("pages"), Some("search")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let limit = number_flag(parsed, "limit")?.unwrap_or(20.0) as usize;
+            let result = wiki::search_pages(
+                &paths,
+                required_flag(parsed, "wiki-space-id")?,
+                required_flag(parsed, "query")?,
+                limit,
+            )?;
+            let count = result["matches"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("{count} matching page(s)"),
+            )
         }
         (Some("pages"), Some("write")) => {
             let paths = parsed_current_paths(parsed)?;
@@ -1117,7 +1615,7 @@ fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), 
             )?;
             write_result(parsed, stdout, &result, &format!("Wrote page {page_path}"))
         }
-        (Some("pages"), None | Some("list")) => {
+        (Some("pages"), Some("list")) => {
             let paths = parsed_current_paths(parsed)?;
             let result = wiki::list_pages(&paths, required_flag(parsed, "wiki-space-id")?)?;
             let count = result["pages"].as_array().map(Vec::len).unwrap_or(0);
@@ -1127,24 +1625,42 @@ fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), 
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ProjectReadView {
+    CanvasState,
+    PanelCurrent,
+    PanelList,
+    PanelSwitch,
+}
+
 fn run_project_read_command(
     parsed: &ParsedArgs,
     stdout: &mut impl Write,
-    command: &str,
+    view: ProjectReadView,
 ) -> Result<(), CliError> {
     let paths = parsed_current_paths(parsed)?;
     let mut request = BootstrapRequest::new();
-    request.requested_panel_kind = if command == "canvas-state" {
-        Some(PanelKind::Canvas)
-    } else {
-        string_flag(parsed, "kind")
+    request.requested_panel_kind = match view {
+        ProjectReadView::CanvasState => Some(PanelKind::Canvas),
+        ProjectReadView::PanelSwitch => string_flag(parsed, "kind")
             .map(parse_panel_kind)
-            .transpose()?
+            .transpose()?,
+        ProjectReadView::PanelCurrent | ProjectReadView::PanelList => None,
     };
     let bootstrap = read_project_bootstrap(&paths, request)?;
 
-    match command {
-        "panels" => {
+    if view == ProjectReadView::PanelSwitch {
+        let payload = agent_bootstrap(&paths, VERSION)?;
+        return write_result(
+            parsed,
+            stdout,
+            &payload,
+            "Panel switched; use the returned protocol v2 focus and guides.",
+        );
+    }
+
+    match view {
+        ProjectReadView::PanelList => {
             let payload = serde_json::json!({
                 "activePanelId": bootstrap.active_panel_id,
                 "activePanelKind": bootstrap.active_panel_kind,
@@ -1173,7 +1689,7 @@ fn run_project_read_command(
                 .join("\n");
             write_result(parsed, stdout, &payload, &text)
         }
-        "active-panel" => {
+        ProjectReadView::PanelCurrent => {
             let payload = serde_json::json!({
                 "activePanelId": bootstrap.active_panel_id,
                 "activePanelKind": bootstrap.active_panel_kind,
@@ -1187,19 +1703,8 @@ fn run_project_read_command(
             );
             write_result(parsed, stdout, &payload, &text)
         }
-        "panel-state" => {
-            let payload = serde_json::json!({
-                "activePanelId": bootstrap.active_panel_id,
-                "activePanelKind": bootstrap.active_panel_kind,
-                "panel": bootstrap.panel,
-                "project": bootstrap.session,
-                "revision": bootstrap.revision,
-                "state": bootstrap.state,
-            });
-            let text = format!("{} state ready", bootstrap.active_panel_kind.as_str());
-            write_result(parsed, stdout, &payload, &text)
-        }
-        "canvas-state" => {
+        ProjectReadView::PanelSwitch => unreachable!(),
+        ProjectReadView::CanvasState => {
             let text = format!("Canvas ready at {}", bootstrap.storage_dir);
             write_result(
                 parsed,
@@ -1208,7 +1713,6 @@ fn run_project_read_command(
                 &text,
             )
         }
-        _ => Err(CliError::new(format!("Unknown command: {command}"))),
     }
 }
 

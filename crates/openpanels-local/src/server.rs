@@ -1,8 +1,9 @@
+use crate::agent as agent_resources;
 use crate::bridge;
 use crate::control::{
     create_project, create_runtime_session, delete_session, ensure_project_bootstrap, now_iso,
-    open_runtime_panel, read_active_panel_value, read_active_session_id, rename_session,
-    write_active_session_id, BootstrapRequest,
+    open_runtime_panel, read_active_panel_value, rename_session, write_active_session_id,
+    BootstrapRequest,
 };
 use crate::error::CliError;
 use crate::paths::OpenPanelsPaths;
@@ -17,7 +18,7 @@ use crate::update::{check_for_update, download_update, install_update};
 use crate::wiki;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -88,6 +89,7 @@ async fn run_server_async(
     std::env::set_var("OPENPANELS_TRACE_URL", trace::trace_url_for_port(port));
     std::env::set_var("OPENPANELS_TRACE_AUDIENCE", build_info.channel);
     bridge::start_builtin_worker_loop(paths.clone());
+    tasks::start_dispatcher_loop(paths.clone(), format!("http://127.0.0.1:{port}"));
     let std_listener = TcpListener::bind((host, port)).map_err(to_cli_error)?;
     std_listener.set_nonblocking(true).map_err(to_cli_error)?;
     let listener = tokio::net::TcpListener::from_std(std_listener).map_err(to_cli_error)?;
@@ -138,7 +140,29 @@ fn build_router(
         .route("/api/events", get(api_project_events))
         .route("/api/tasks", get(api_tasks))
         .route("/api/tasks/next", get(api_next_task))
+        .route("/api/tasks/claim-next", post(api_claim_next_task))
         .route("/api/tasks/{task_id}", get(api_inspect_task))
+        .route("/api/tasks/{task_id}/claim", post(api_claim_task))
+        .route("/api/tasks/{task_id}/heartbeat", post(api_task_heartbeat))
+        .route("/api/tasks/{task_id}/complete", post(api_task_complete))
+        .route("/api/tasks/{task_id}/fail", post(api_task_fail))
+        .route("/api/tasks/{task_id}/release", post(api_task_release))
+        .route("/api/tasks/{task_id}/retry", post(api_task_retry))
+        .route("/api/tasks/{task_id}/cancel", post(api_task_cancel))
+        .route("/api/tasks/{task_id}/deliveries", get(api_task_deliveries))
+        .route(
+            "/api/agent/targets",
+            get(api_agent_targets).post(api_register_agent_target),
+        )
+        .route(
+            "/api/agent/targets/{target_id}",
+            delete(api_remove_agent_target),
+        )
+        .route(
+            "/api/agent/targets/{target_id}/heartbeat",
+            post(api_agent_target_heartbeat),
+        )
+        .route("/api/agent/skills", get(api_agent_skills))
         .route("/api/agent/bridge/status", get(api_bridge_status))
         .route("/api/sessions", get(api_sessions).post(api_create_session))
         .route(
@@ -148,6 +172,10 @@ fn build_router(
         .route("/api/panels", post(api_open_panel))
         .route("/api/artifacts", post(api_insert_artifact))
         .route("/api/wiki/context", get(api_wiki_context))
+        .route(
+            "/api/wiki/selection",
+            get(api_wiki_selection).put(api_wiki_set_selection),
+        )
         .route(
             "/api/wiki/raw-documents",
             get(api_wiki_raw_documents).post(api_wiki_add_raw_document),
@@ -176,6 +204,20 @@ fn build_router(
             "/api/wiki/raw-documents/{document_id}",
             delete(api_wiki_delete_raw_document),
         )
+        .route(
+            "/api/wiki/generated-documents",
+            get(api_wiki_generated_documents).post(api_wiki_create_generated_document),
+        )
+        .route(
+            "/api/wiki/generated-documents/{document_id}",
+            get(api_wiki_read_generated_document)
+                .put(api_wiki_update_generated_document)
+                .delete(api_wiki_delete_generated_document),
+        )
+        .route(
+            "/api/wiki/generated-documents/{document_id}/publish",
+            post(api_wiki_publish_generated_document),
+        )
         .route("/api/wiki/tasks", get(api_wiki_tasks))
         .route("/api/wiki/tasks/next", get(api_wiki_next_task))
         .route("/api/wiki/tasks/{task_id}/claim", post(api_wiki_claim_task))
@@ -193,10 +235,10 @@ fn build_router(
             get(api_wiki_active_space).put(api_wiki_set_active_space),
         )
         .route(
-            "/api/wiki/language",
-            get(api_wiki_language)
-                .put(api_wiki_set_language)
-                .post(api_wiki_set_language),
+            "/api/wiki/agent-skill",
+            get(api_wiki_agent_skill)
+                .put(api_wiki_set_agent_skill)
+                .post(api_wiki_set_agent_skill),
         )
         .route("/api/wiki/spaces", get(api_wiki_spaces))
         .route(
@@ -293,7 +335,7 @@ async fn api_bootstrap(
     };
     match ensure_project_bootstrap(&state.paths, request) {
         Ok(bootstrap) => json_response(StatusCode::OK, &with_build_info(bootstrap, &state)),
-        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
     }
 }
 
@@ -378,6 +420,230 @@ async fn api_tasks(
 async fn api_bridge_status(State(state): State<Arc<AppState>>) -> Response {
     match bridge::read_bridge_status(&state.paths) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_agent_targets(State(state): State<Arc<AppState>>) -> Response {
+    match tasks::list_targets(&state.paths) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentTargetRegistrationBody {
+    name: String,
+    host: Option<String>,
+    transport: String,
+    endpoint: Option<String>,
+    capabilities: Vec<String>,
+    priority: Option<i64>,
+}
+
+async fn api_register_agent_target(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<AgentTargetRegistrationBody>,
+) -> Response {
+    match tasks::register_target(
+        &state.paths,
+        tasks::TargetRegistration {
+            name: &body.name,
+            host: body.host.as_deref(),
+            transport: &body.transport,
+            endpoint: body.endpoint.as_deref(),
+            capabilities: body.capabilities,
+            priority: body.priority.unwrap_or(0),
+        },
+    ) {
+        Ok(payload) => json_response(StatusCode::CREATED, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_agent_target_heartbeat(
+    State(state): State<Arc<AppState>>,
+    Path(target_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = verify_http_target(&state.paths, &target_id, &headers) {
+        return json_error(status_for_cli_error(&error), error.message());
+    }
+    match tasks::heartbeat_target(&state.paths, &target_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_remove_agent_target(
+    State(state): State<Arc<AppState>>,
+    Path(target_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = verify_http_target(&state.paths, &target_id, &headers) {
+        return json_error(status_for_cli_error(&error), error.message());
+    }
+    match tasks::remove_target(&state.paths, &target_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskClaimBody {
+    target_id: String,
+    capability: Option<String>,
+    wait_ms: Option<u64>,
+}
+
+async fn api_claim_next_task(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<TaskClaimBody>,
+) -> Response {
+    if let Err(error) = verify_http_target(&state.paths, &body.target_id, &headers) {
+        return json_error(status_for_cli_error(&error), error.message());
+    }
+    let paths = state.paths.clone();
+    let target_id = body.target_id;
+    let capability = body.capability;
+    let wait_ms = body.wait_ms;
+    let result = tokio::task::spawn_blocking(move || {
+        tasks::claim_next(&paths, &target_id, capability.as_deref(), wait_ms)
+    })
+    .await
+    .map_err(to_cli_error)
+    .and_then(|result| result);
+    match result {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_claim_task(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<TaskClaimBody>,
+) -> Response {
+    if let Err(error) = verify_http_target(&state.paths, &body.target_id, &headers) {
+        return json_error(status_for_cli_error(&error), error.message());
+    }
+    match tasks::claim_task(&state.paths, &task_id, &body.target_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskLeaseBody {
+    lease_token: String,
+    message: Option<String>,
+    result: Option<Value>,
+    retry_after: Option<String>,
+}
+
+async fn api_task_heartbeat(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    Json(body): Json<TaskLeaseBody>,
+) -> Response {
+    match tasks::heartbeat_task(&state.paths, &task_id, &body.lease_token) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_task_complete(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    Json(body): Json<TaskLeaseBody>,
+) -> Response {
+    match tasks::complete_task(&state.paths, &task_id, &body.lease_token, body.result) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_task_fail(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    Json(body): Json<TaskLeaseBody>,
+) -> Response {
+    match tasks::fail_task(
+        &state.paths,
+        &task_id,
+        &body.lease_token,
+        body.message.as_deref().unwrap_or("Task failed."),
+        body.retry_after.as_deref(),
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_task_release(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    Json(body): Json<TaskLeaseBody>,
+) -> Response {
+    match tasks::release_task(&state.paths, &task_id, &body.lease_token) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_task_retry(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+) -> Response {
+    match tasks::retry_task(&state.paths, &task_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_task_cancel(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+) -> Response {
+    match tasks::cancel_task(&state.paths, &task_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_task_deliveries(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+) -> Response {
+    match tasks::list_deliveries(&state.paths, Some(&task_id)) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+fn verify_http_target(
+    paths: &OpenPanelsPaths,
+    target_id: &str,
+    headers: &HeaderMap,
+) -> Result<(), CliError> {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .ok_or_else(|| {
+            CliError::with_code("unauthorized_target", "Missing target bearer token.")
+        })?;
+    tasks::verify_target_token(paths, target_id, token)
+}
+
+async fn api_agent_skills(State(state): State<Arc<AppState>>) -> Response {
+    match agent_resources::list_agent_skills(&state.paths) {
+        Ok(skills) => json_response(StatusCode::OK, &json!({ "skills": skills })),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
 }
@@ -695,8 +961,11 @@ fn schedule_current_server_exit() {
 }
 
 async fn api_active_session(State(state): State<Arc<AppState>>) -> Response {
-    match read_active_session_id(&state.paths) {
-        Ok(session_id) => json_response(StatusCode::OK, &json!({ "sessionId": session_id })),
+    match ensure_project_bootstrap(&state.paths, BootstrapRequest::new()) {
+        Ok(bootstrap) => json_response(
+            StatusCode::OK,
+            &json!({ "sessionId": bootstrap.session.id }),
+        ),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
 }
@@ -1026,6 +1295,29 @@ fn with_build_info(payload: impl Serialize, state: &AppState) -> Value {
             bridge::read_bridge_status(&state.paths)
                 .unwrap_or_else(|_| json!({ "status": "idle" })),
         );
+        if let Ok(operations) = Storage::open(&state.paths)
+            .and_then(|storage| storage.list_agent_operations(Some(&state.paths.context_id), None))
+        {
+            object.insert("agentOperations".to_owned(), json!(operations));
+        }
+        if let Ok(task_payload) = tasks::list_tasks(&state.paths, tasks::TaskListFilter::default())
+        {
+            for key in [
+                "tasks",
+                "pendingCount",
+                "readyCount",
+                "blockedCount",
+                "unhandledCount",
+                "runningCount",
+            ] {
+                if let Some(task_value) = task_payload.get(key) {
+                    object.insert(key.to_owned(), task_value.clone());
+                }
+            }
+            if let Some(pending_count) = task_payload.get("pendingCount") {
+                object.insert("pendingTaskCount".to_owned(), pending_count.clone());
+            }
+        }
     }
     value
 }
@@ -1106,6 +1398,18 @@ fn json_error(status: StatusCode, message: &str) -> Response {
             .into_bytes(),
         "application/json",
     )
+}
+
+fn status_for_cli_error(error: &CliError) -> StatusCode {
+    match error.code() {
+        Some(
+            "no_current_project" | "project_not_found" | "task_not_found" | "target_not_found",
+        ) => StatusCode::NOT_FOUND,
+        Some("unauthorized_target" | "invalid_lease" | "lease_expired") => StatusCode::UNAUTHORIZED,
+        Some("task_not_claimable") => StatusCode::CONFLICT,
+        Some("invalid_target" | "invalid_retry_after") => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 fn bytes_response(status: StatusCode, bytes: Vec<u8>, content_type: &str) -> Response {

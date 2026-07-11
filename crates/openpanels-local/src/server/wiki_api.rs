@@ -7,6 +7,156 @@ pub(super) async fn api_wiki_context(State(state): State<Arc<AppState>>) -> Resp
     }
 }
 
+pub(super) async fn api_wiki_selection(State(state): State<Arc<AppState>>) -> Response {
+    match wiki::read_agent_selection(&state.paths) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WikiSelectionBody {
+    is_wiki_selected: Option<bool>,
+    selected_raw_document_ids: Option<Vec<String>>,
+    selected_generated_document_ids: Option<Vec<String>>,
+}
+
+pub(super) async fn api_wiki_set_selection(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<WikiSelectionBody>,
+) -> Response {
+    match wiki::write_agent_selection(
+        &state.paths,
+        body.is_wiki_selected.unwrap_or(false),
+        body.selected_raw_document_ids.as_deref().unwrap_or(&[]),
+        body.selected_generated_document_ids
+            .as_deref()
+            .unwrap_or(&[]),
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+fn wiki_document_error(error: CliError) -> Response {
+    let status = match error.code() {
+        Some("not_found") => StatusCode::NOT_FOUND,
+        Some("invalid_generated_document" | "already_published") => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    json_error(status, error.message())
+}
+
+pub(super) async fn api_wiki_generated_documents(State(state): State<Arc<AppState>>) -> Response {
+    match wiki::list_generated_documents(&state.paths) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => wiki_document_error(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GeneratedDocumentBody {
+    content: Option<String>,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    task_id: Option<String>,
+    thread_id: Option<String>,
+    title: Option<String>,
+}
+
+pub(super) async fn api_wiki_create_generated_document(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<GeneratedDocumentBody>,
+) -> Response {
+    let file_name = body.file_name.as_deref().unwrap_or("document.md");
+    match wiki::create_generated_document(
+        &state.paths,
+        file_name,
+        body.title.as_deref(),
+        body.mime_type.as_deref(),
+        body.task_id.as_deref(),
+        body.thread_id.as_deref(),
+        body.content.unwrap_or_default().as_bytes(),
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => wiki_document_error(error),
+    }
+}
+
+pub(super) async fn api_wiki_read_generated_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<String>,
+) -> Response {
+    match wiki::read_generated_document(&state.paths, &document_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => wiki_document_error(error),
+    }
+}
+
+pub(super) async fn api_wiki_update_generated_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<String>,
+    Json(body): Json<GeneratedDocumentBody>,
+) -> Response {
+    let result = if let Some(content) = body.content {
+        let existing_file_name = wiki::read_generated_document(&state.paths, &document_id)
+            .ok()
+            .and_then(|payload| {
+                payload["document"]["originalFileName"]
+                    .as_str()
+                    .map(str::to_owned)
+            });
+        wiki::write_generated_document(
+            &state.paths,
+            &document_id,
+            body.file_name
+                .as_deref()
+                .or(existing_file_name.as_deref())
+                .unwrap_or("document.md"),
+            body.mime_type.as_deref(),
+            content.as_bytes(),
+        )
+    } else if let Some(title) = body.title {
+        wiki::rename_generated_document(&state.paths, &document_id, &title)
+    } else {
+        Err(CliError::with_code(
+            "invalid_generated_document",
+            "Generated document update requires content or title.",
+        ))
+    };
+    match result {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => wiki_document_error(error),
+    }
+}
+
+pub(super) async fn api_wiki_delete_generated_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<String>,
+) -> Response {
+    match wiki::delete_generated_document(&state.paths, &document_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => wiki_document_error(error),
+    }
+}
+
+pub(super) async fn api_wiki_publish_generated_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<String>,
+    Json(body): Json<WikiSpaceQuery>,
+) -> Response {
+    match wiki::publish_generated_document(
+        &state.paths,
+        &document_id,
+        body.wiki_space_id.as_deref(),
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => wiki_document_error(error),
+    }
+}
+
 pub(super) async fn api_wiki_raw_documents(State(state): State<Arc<AppState>>) -> Response {
     match wiki::wiki_context(&state.paths) {
         Ok(payload) => json_response(
@@ -324,29 +474,33 @@ pub(super) async fn api_wiki_set_active_space(
     }
 }
 
-pub(super) async fn api_wiki_language(State(state): State<Arc<AppState>>) -> Response {
+pub(super) async fn api_wiki_agent_skill(State(state): State<Arc<AppState>>) -> Response {
     match wiki::wiki_context(&state.paths) {
         Ok(payload) => json_response(
             StatusCode::OK,
-            &json!({ "language": payload["state"]["wikiLanguage"] }),
+            &json!({
+                "agentSkillId": wiki::selected_agent_skill_id(&payload["state"]),
+                "state": payload["state"],
+            }),
         ),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
 }
 
 #[derive(Debug, Deserialize)]
-pub(super) struct LanguageBody {
-    language: Option<String>,
+#[serde(rename_all = "camelCase")]
+pub(super) struct AgentSkillBody {
+    agent_skill_id: Option<String>,
 }
 
-pub(super) async fn api_wiki_set_language(
+pub(super) async fn api_wiki_set_agent_skill(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<LanguageBody>,
+    Json(body): Json<AgentSkillBody>,
 ) -> Response {
-    let Some(language) = body.language else {
-        return json_error(StatusCode::BAD_REQUEST, "Missing language");
+    let Some(agent_skill_id) = body.agent_skill_id else {
+        return json_error(StatusCode::BAD_REQUEST, "Missing agentSkillId");
     };
-    match wiki::set_language(&state.paths, &language) {
+    match wiki::set_agent_skill(&state.paths, &agent_skill_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }

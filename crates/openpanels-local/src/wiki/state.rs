@@ -30,6 +30,46 @@ pub(super) fn get_wiki_bootstrap(paths: &OpenPanelsPaths) -> Result<WikiBootstra
     })
 }
 
+pub(super) fn get_wiki_target(
+    paths: &OpenPanelsPaths,
+    session_id: &str,
+    panel_id: &str,
+) -> Result<WikiBootstrapValue, CliError> {
+    let storage = Storage::open(paths)?;
+    let session = storage.read_session(session_id)?.ok_or_else(|| {
+        CliError::with_code(
+            "target_not_found",
+            format!("Project not found: {session_id}"),
+        )
+    })?;
+    let panel = storage.read_panel(session_id, panel_id)?.ok_or_else(|| {
+        CliError::with_code(
+            "target_not_found",
+            format!("Wiki panel not found: {panel_id}"),
+        )
+    })?;
+    if panel.kind != PanelKind::Wiki {
+        return Err(CliError::with_code(
+            "target_not_found",
+            "Operation target is not a Wiki panel",
+        ));
+    }
+    let state = storage
+        .read_panel_state(session_id, panel_id)?
+        .ok_or_else(|| {
+            CliError::with_code(
+                "target_not_found",
+                format!("Wiki state not found: {panel_id}"),
+            )
+        })?;
+    ensure_default_wiki_files(paths, session_id, panel_id, &state)?;
+    Ok(WikiBootstrapValue {
+        session,
+        panel,
+        state,
+    })
+}
+
 pub(super) fn save_wiki_state(
     paths: &OpenPanelsPaths,
     wiki: &WikiBootstrapValue,
@@ -195,6 +235,41 @@ pub(super) fn find_document_mut<'a>(
         .iter_mut()
         .find(|document| document.get("id").and_then(Value::as_str) == Some(document_id))
         .ok_or_else(|| CliError::new(format!("Wiki raw document not found: {document_id}")))
+}
+
+pub(super) fn find_generated_document<'a>(
+    state: &'a Value,
+    document_id: &str,
+) -> Result<&'a Value, CliError> {
+    state
+        .get("generatedDocuments")
+        .and_then(Value::as_array)
+        .and_then(|documents| {
+            documents
+                .iter()
+                .find(|document| document.get("id").and_then(Value::as_str) == Some(document_id))
+        })
+        .ok_or_else(|| {
+            CliError::with_code(
+                "not_found",
+                format!("Wiki generated document not found: {document_id}"),
+            )
+        })
+}
+
+pub(super) fn find_generated_document_mut<'a>(
+    state: &'a mut Value,
+    document_id: &str,
+) -> Result<&'a mut Value, CliError> {
+    state_array_mut(state, "generatedDocuments")?
+        .iter_mut()
+        .find(|document| document.get("id").and_then(Value::as_str) == Some(document_id))
+        .ok_or_else(|| {
+            CliError::with_code(
+                "not_found",
+                format!("Wiki generated document not found: {document_id}"),
+            )
+        })
 }
 
 pub(super) fn resolve_wiki_space(
@@ -387,7 +462,7 @@ pub(super) fn is_plain_text_file(file_name: &str, mime_type: Option<&str>) -> bo
         .to_ascii_lowercase();
     matches!(
         extension.as_str(),
-        "md" | "markdown" | "txt" | "text" | "json" | "csv"
+        "md" | "markdown" | "mdx" | "txt" | "text" | "json" | "csv"
     ) || mime_type.is_some_and(|value| value.starts_with("text/") || value.contains("markdown"))
 }
 

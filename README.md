@@ -36,10 +36,14 @@ local studio, and opens the MyOpenPanels panel URL returned by the CLI.
 
 The entry skill keeps itself small and stable. It uses the Rust-native
 `openpanels-local` CLI from GitHub Releases, then asks the CLI for
-`agent context`, which is the source of truth for wiki, canvas, and future panel
-workflows. The compact context includes state and the full command capability
-set; longer workflow guides live in top-level `agent-guides/` markdown files
-and load on demand.
+`agent bootstrap`, which is the source of truth for wiki, canvas, and future panel
+workflows. Bootstrap also publishes the required entry Skill version and its
+canonical update source. On Studio startup, the Agent updates a missing or older
+Skill through its own Skill installer; equal or newer Skills are left alone.
+The compact context includes state and the full command capability
+set; longer built-in agent resources live under `agent-resources/` and load on
+demand. Wiki generation now uses the `karpathy-llm-wiki` skill, which the CLI
+syncs into `.myopenpanels/skills/` at runtime.
 
 ## Development
 
@@ -99,17 +103,17 @@ browser instead of the agent side panel.
 Agents can then use project-backed CLI commands:
 
 ```bash
-openpanels-local agent context --project /path/to/project
+openpanels-local agent bootstrap --project /path/to/project --format json
 openpanels-local agent guides --project /path/to/project
 openpanels-local agent guide canvas.image-generation --project /path/to/project
-openpanels-local panels --project /path/to/project --format json
-openpanels-local active-panel --project /path/to/project --kind wiki --format json
-openpanels-local panel-state --project /path/to/project --kind wiki --format json
-openpanels-local canvas-state --project /path/to/project --format json
-openpanels-local selection --project /path/to/project --format json
-openpanels-local selection --project /path/to/project --include-image-base64 --format json
-openpanels-local read-selection-asset --project /path/to/project --output /tmp/selection.png --format json
-openpanels-local insert-image --project /path/to/project --image /tmp/result.png --placement right --format json
+openpanels-local panel list --project /path/to/project --format json
+openpanels-local panel switch --project /path/to/project --kind wiki --format json
+openpanels-local wiki context --project /path/to/project --format json
+openpanels-local canvas state --project /path/to/project --format json
+openpanels-local canvas selection read --project /path/to/project --format json
+openpanels-local canvas selection read --project /path/to/project --include-image-base64 --format json
+openpanels-local canvas selection export --project /path/to/project --output /tmp/selection.png --format json
+openpanels-local canvas image insert --project /path/to/project --image /tmp/result.png --placement right --format json
 ```
 
 ## v0.1 Scope

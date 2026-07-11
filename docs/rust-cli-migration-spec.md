@@ -1,5 +1,9 @@
 # OpenPanels Rust CLI Migration Spec
 
+> Historical migration document. References to `agent context` describe the
+> removed Protocol v1 surface. The current contract uses `agent bootstrap` and
+> is defined in `agent-guidance-protocol-spec.md`.
+
 ## 背景
 
 OpenPanels 迁移前的 `openpanels-local` 由 TypeScript/Node.js 实现，运行时依赖
@@ -67,7 +71,8 @@ agent context/capabilities/guides rendering
 
 ### 当前命令面
 
-Rust CLI 必须覆盖这些命令和兼容 alias：
+Rust CLI 只支持当前 capability manifest 和 help 中列出的 namespace 命令，不保留
+旧命令 alias：
 
 ```text
 openpanels-local version
@@ -77,44 +82,38 @@ openpanels-local help
 openpanels-local studio start
 openpanels-local studio status
 openpanels-local studio open
+openpanels-local studio serve
 openpanels-local studio wait
 openpanels-local studio stop
 
 openpanels-local agent context
 openpanels-local agent capabilities
+openpanels-local agent bridge
+openpanels-local agent bridge status
+openpanels-local agent targets list|register|heartbeat|remove
 openpanels-local agent guides
 openpanels-local agent guide <id>
-openpanels-local agent-context
+openpanels-local agent skills
+openpanels-local agent skill <id>
 
-openpanels-local panels
-openpanels-local active-panel
-openpanels-local panel-state
-openpanels-local canvas-state
-openpanels-local selection
-openpanels-local read-selection-asset
-openpanels-local insert-placeholder
-openpanels-local insert-image
+openpanels-local project current|list|create
+openpanels-local panel list|current|switch
+openpanels-local canvas state
+openpanels-local canvas selection read|export
+openpanels-local canvas placeholder create
+openpanels-local canvas image insert
+openpanels-local tasks list|next|inspect|claim-next|claim|heartbeat|complete|fail|release|retry|cancel|deliveries
 
 openpanels-local wiki context
-openpanels-local wiki agent-target register
-openpanels-local wiki agent-target list
-openpanels-local wiki raw add
-openpanels-local wiki raw new-markdown
-openpanels-local wiki raw add-text
-openpanels-local wiki raw list
+openpanels-local wiki selection read
+openpanels-local wiki documents list|add|create-markdown
 openpanels-local wiki markdown read
 openpanels-local wiki markdown write
-openpanels-local wiki tasks list
-openpanels-local wiki tasks next
-openpanels-local wiki tasks claim
-openpanels-local wiki tasks complete
-openpanels-local wiki tasks fail
-openpanels-local wiki spaces list
-openpanels-local wiki spaces active
-openpanels-local wiki pages list
-openpanels-local wiki pages read
-openpanels-local wiki pages create
-openpanels-local wiki pages write
+openpanels-local wiki tasks list|next|claim|complete|fail
+openpanels-local wiki spaces list|switch
+openpanels-local wiki pages list|search|read|write
+
+openpanels-local update check|download|install
 
 openpanels-local __serve-studio
 ```
@@ -173,9 +172,9 @@ GET  /api/wiki/agent-targets
 POST /api/wiki/agent-targets
 GET  /api/wiki/active-space
 PUT  /api/wiki/active-space
-GET  /api/wiki/language
-PUT  /api/wiki/language
-POST /api/wiki/language
+GET  /api/wiki/agent-skill
+PUT  /api/wiki/agent-skill
+POST /api/wiki/agent-skill
 GET  /api/wiki/spaces
 POST /api/wiki/spaces/{wikiSpaceId}/reindex
 GET  /api/wiki/spaces/{wikiSpaceId}/pages
@@ -223,7 +222,9 @@ OpenPanels/
         canvas.rs
         process.rs
   apps/local-studio/
-  agent-guides/
+  agent-resources/
+    guides/
+    skills/
   docs/
 ```
 
@@ -275,7 +276,7 @@ walkdir = "2"
 
 - `rusqlite` 更适合当前同步 SQLite 使用方式；如果未来需要 async pool，可再切换
   `sqlx`。
-- `include_dir` 用于嵌入 `apps/local-studio/dist`、`agent-guides` 和 capabilities
+- `include_dir` 用于嵌入 `apps/local-studio/dist`、`agent-resources` 和 capabilities
   manifest。
 - `open` 可以替代手写 `open/cmd/xdg-open`。
 
@@ -485,22 +486,24 @@ openpanels-local agent context --project "$PWD"
 迁移前计划把 capability manifest 迁移为语言无关文件：
 
 ```text
-agent-guides/capabilities.json
+agent-resources/capabilities.json
 ```
 
-当前第一版直接由 `crates/openpanels-local/src/agent.rs` 维护 capability 和 guide
-渲染；如果前端后续也需要消费同一份能力列表，再拆成共享 JSON。
+当前第一版直接由 `crates/openpanels-local/src/agent.rs` 维护 capability 和
+guide/skill 渲染；如果前端后续也需要消费同一份能力列表，再拆成共享 JSON。
 
-### Guides
+### Agent resources
 
 继续使用顶层：
 
 ```text
-agent-guides/*.md
+agent-resources/guides/*.md
+agent-resources/skills/*/SKILL.md
 ```
 
-Rust binary release 时嵌入这些 markdown。`agent guide <id>` 必须支持当前
-task context 注入逻辑，尤其是 wiki task guide 里的命令模板。
+Rust binary release 时嵌入这些 markdown。`agent guide <id>` 和
+`agent skill <id>` 必须支持当前 task context 注入逻辑，尤其是 wiki task skill
+里的命令模板。
 
 ## 本地 HTTP Server
 
@@ -542,11 +545,11 @@ Rust 需要提供 canvas CLI 操作：
 
 行为要求：
 
-- `selection --include-image-base64` 可返回 selected shapes 和 PNG base64。
-- `read-selection-asset --output <path>` 写出 selection asset。
-- `insert-image` 支持 `--placement right|left|below`、`--anchor-shape-id`、
+- `canvas selection read --include-image-base64` 可返回 selected shapes 和 PNG base64。
+- `canvas selection export --output <path>` 写出 selection asset。
+- `canvas image insert` 支持 `--placement right|left|below`、`--anchor-shape-id`、
   `--replace-shape-id`、`--display-width`、`--display-height`、`--file-name`。
-- `insert-placeholder` 支持 `--display-width`、`--display-height`、
+- `canvas placeholder create` 支持 `--display-width`、`--display-height`、
   `--anchor-shape-id`、`--text`。
 - shape ID、asset ref、panel state JSON 结构不能变化。
 
@@ -563,7 +566,7 @@ Rust 需要提供 wiki control 行为：
 - agent target register/list
 - space list/active
 - page list/read/write/create
-- language get/set API
+- agent skill get/set API
 - raw original read/reveal/extract/reindex/delete API
 
 要求：
@@ -663,8 +666,8 @@ tests/golden/
   help.txt
   version.txt
   studio-status-missing.json
-  panels-empty.json
-  agent-context.md
+  panel-list-empty.json
+  agent-output.md
   wiki-tasks-empty.json
 ```
 
@@ -683,7 +686,7 @@ Rust 迁移后逐项对比。重点锁定：
 2. Rust 写入数据库，TS studio 读取。
 3. Rust 写入 panel state，studio 前端打开正常。
 4. Rust 写入 wiki task，CLI 和 studio 都能列出。
-5. Rust 写入 selection asset，`read-selection-asset` 能导出。
+5. Rust 写入 selection asset，`canvas selection export` 能导出。
 
 ### HTTP API tests
 
@@ -714,7 +717,7 @@ pnpm --filter @openpanels/local-studio build
 ```bash
 openpanels-local studio start --project <tmp> --format json
 openpanels-local agent context --project <tmp>
-openpanels-local insert-placeholder --project <tmp> --format json
+openpanels-local canvas placeholder create --project <tmp> --format json
 openpanels-local studio stop --project <tmp> --format json
 ```
 
@@ -740,7 +743,7 @@ openpanels-local studio stop --project <tmp> --format json
 - 迁移 SQLite migrations 和 storage CRUD。
 - 迁移 project bootstrap、session/panel/artifact 操作。
 - 迁移 active session/panel 和 context paths。
-- 完成 `panels`、`active-panel`、`panel-state`、`canvas-state`。
+- 完成 `panel list/current/switch`、`wiki context` 和 `canvas state`。
 
 ### Phase 3: Studio Server
 
@@ -752,7 +755,8 @@ openpanels-local studio stop --project <tmp> --format json
 ### Phase 4: Agent + Canvas + Wiki
 
 - 迁移 agent context/capabilities/guides。
-- 迁移 selection、read-selection-asset、insert-placeholder、insert-image。
+- 迁移 `canvas selection read/export`、`canvas placeholder create` 和
+  `canvas image insert`。
 - 迁移 wiki CLI 和 wiki HTTP API。
 - 对齐 agent guides 中所有命令示例。
 

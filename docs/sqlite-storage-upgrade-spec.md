@@ -159,8 +159,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 - migration 必须幂等到“只执行一次”的级别，即依赖 `schema_migrations` 控制，不依赖重复执行。
 - 所有应用代码只支持迁移到最新 schema，不支持降级。
 - 启动时如果发现未知 migration、非连续历史或 checksum mismatch，必须明确报错。
-- 当前项目尚未上线，`0001_initial` 定义当前完整 SQLite schema；不写旧库或
-  占位 checksum 兼容逻辑。
+- `0001_initial` 保持不可变；通用 agent target、task delivery 和 lease token
+  字段由 `0002_agent_task_dispatch` 增量升级。
 - 测试必须覆盖空库初始化、migration 重入、checksum mismatch、未知 migration
   和失败回滚。
 
@@ -447,11 +447,12 @@ selection.json
 
 HTTP/CLI 输出字段尽量保持稳定，方便 agent 和 studio 调用：
 
-- `openpanels-local panels --format json`
-- `openpanels-local active-panel --format json`
-- `openpanels-local panel-state --format json`
-- `openpanels-local canvas-state --format json`
-- `openpanels-local selection --format json`
+- `openpanels-local panel list --format json`
+- `openpanels-local panel current --format json`
+- `openpanels-local panel switch --kind <kind> --format json`
+- `openpanels-local wiki context --format json`
+- `openpanels-local canvas state --format json`
+- `openpanels-local canvas selection read --format json`
 - wiki task/read/write commands
 
 新增诊断命令建议：
@@ -468,8 +469,8 @@ openpanels-local storage migrate --project "$PWD" --format json
   "storageDir": ".../.myopenpanels",
   "databasePath": ".../.myopenpanels/main.sqlite3",
   "databaseExists": true,
-  "latestMigrationId": "0001_initial",
-  "appliedMigrations": ["0001_initial"]
+  "latestMigrationId": "0002_agent_task_dispatch",
+  "appliedMigrations": ["0001_initial", "0002_agent_task_dispatch"]
 }
 ```
 

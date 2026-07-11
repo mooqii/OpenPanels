@@ -14,24 +14,35 @@ pub(super) fn parse_args(argv: &[String]) -> ParsedArgs {
 
         let raw = &arg[2..];
         if let Some((name, value)) = raw.split_once('=') {
-            flags.insert(name.to_owned(), FlagValue::String(value.to_owned()));
+            insert_flag(&mut flags, name, FlagValue::String(value.to_owned()));
             index += 1;
             continue;
         }
 
         if let Some(next) = argv.get(index + 1) {
             if !next.starts_with("--") {
-                flags.insert(raw.to_owned(), FlagValue::String(next.clone()));
+                insert_flag(&mut flags, raw, FlagValue::String(next.clone()));
                 index += 2;
                 continue;
             }
         }
 
-        flags.insert(raw.to_owned(), FlagValue::Bool);
+        insert_flag(&mut flags, raw, FlagValue::Bool);
         index += 1;
     }
 
     ParsedArgs { flags, positionals }
+}
+
+fn insert_flag(flags: &mut BTreeMap<String, FlagValue>, name: &str, value: FlagValue) {
+    if let (Some(FlagValue::String(current)), FlagValue::String(next)) =
+        (flags.get_mut(name), &value)
+    {
+        current.push(',');
+        current.push_str(next);
+        return;
+    }
+    flags.insert(name.to_owned(), value);
 }
 
 pub(super) fn has_flag(parsed: &ParsedArgs, name: &str) -> bool {
@@ -43,6 +54,16 @@ pub(super) fn string_flag<'a>(parsed: &'a ParsedArgs, name: &str) -> Option<&'a 
         Some(FlagValue::String(value)) => Some(value),
         _ => None,
     }
+}
+
+pub(super) fn string_list_flag(parsed: &ParsedArgs, name: &str) -> Vec<String> {
+    string_flag(parsed, name)
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 pub(super) fn required_flag<'a>(parsed: &'a ParsedArgs, name: &str) -> Result<&'a str, CliError> {

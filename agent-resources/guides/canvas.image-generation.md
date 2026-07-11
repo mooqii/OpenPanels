@@ -6,10 +6,8 @@ appliesTo:
   - canvas
 taskTypes:
 requiresCapabilities:
-  - canvas.selection.read
-  - canvas.selection.asset.read
-  - canvas.placeholder.create
-  - canvas.image.insert
+  - canvas.generation.begin
+  - canvas.generation.complete
 loadWhen:
   - User asks to generate, redraw, restyle, or edit an image on the canvas.
 tokens: medium
@@ -20,34 +18,29 @@ OpenPanels canvas.
 
 Workflow:
 
-1. Read the current canvas selection.
-2. If the user referred to selected canvas content and `isExplicitSelection` is
-   false, stop and ask the user to select the intended canvas item. Do not use
-   fallback images as references unless the user explicitly asks for fallback.
-3. If selected pixels are useful as reference context, export them with
-   `canvas selection export`.
-4. Create a placeholder before calling the image model. Use the intended aspect
-   ratio and place it near the selected/reference item.
-5. Generate or edit the bitmap with the current agent's image tool. Do not
+1. Start a Canvas generation operation before calling the image model. Declare
+   whether the current explicit selection is a reference and provide the intended
+   display dimensions. The CLI exports references, captures the original target,
+   and creates the placeholder atomically.
+2. If reference generation reports `explicit_selection_required`, stop and ask
+   the user to select the intended Canvas item. Never use fallback images.
+3. Generate or edit the bitmap with the current agent's image tool. Do not
    replace this step with hand-written Pillow, SVG, or canvas drawing unless the
    user explicitly asks for manual/vector rendering.
-6. If the image tool does not clearly return an output file, locate the generated
+4. If the image tool does not clearly return an output file, locate the generated
    image file or report the image tool failure. Do not switch to a manual drawing
    fallback.
-7. Write a small metadata JSON file for the generated image. Store the exact
+5. Write a small metadata JSON file for the generated image. Store the exact
    prompt sent to the image model under `generateOptions.prompt`, the model id
    under `generateOptions.model` when known, and every reference image under
    `generateOptions.referenceImages`. For local reference images, include the
    local file path. For canvas references, include any available `shapeId`,
    `assetRef`, and exported local path from `canvas selection export`.
-8. Insert the exact generated bitmap with `--replace-shape-id` using the
-   placeholder id.
-   Pass the metadata file with `--metadata-file <metadata.json>`.
-   If the placeholder no longer exists, the CLI will still insert the image into
-   clear canvas space instead of failing the task.
-9. Verify once that `canvas image insert` succeeded and the latest `canvas state`
-   contains the returned shape and asset ids.
-10. Do not reload the browser after insertion; the studio syncs project state into
+6. Complete the captured operation with the exact bitmap and metadata file. The
+   CLI replaces the placeholder in the original Canvas even if the user switched
+   panels or Projects. If the placeholder was removed, it inserts into clear space.
+7. On model failure, mark the operation failed. On user cancellation, cancel it.
+8. Do not reload the browser after completion; the studio syncs project state into
    the open canvas.
 
 Recommended metadata shape:
@@ -79,7 +72,7 @@ Placement rules:
 Completion criteria:
 
 - The generated bitmap is inserted into OpenPanels.
-- The placeholder is replaced when it still exists; otherwise the generated
+- The operation is completed and its placeholder is replaced when it still exists; otherwise the generated
   image is inserted into clear canvas space.
 - The image asset metadata includes the generation prompt and reference-image
   records when a generated/edited bitmap used a prompt or references.

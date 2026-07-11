@@ -43,6 +43,14 @@ impl Storage {
         })
     }
 
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
+    pub(crate) fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.connection
+    }
+
     pub fn list_sessions(&self) -> Result<Vec<Session>, CliError> {
         let mut statement = self
             .connection
@@ -253,6 +261,115 @@ impl Storage {
         self.write_panel_state(session_id, panel_id, state).map(Ok)
     }
 
+    pub fn write_agent_operation(&self, operation: &Value) -> Result<(), CliError> {
+        let required = |name: &str| {
+            operation
+                .get(name)
+                .and_then(Value::as_str)
+                .ok_or_else(|| CliError::new(format!("Agent operation is missing {name}")))
+        };
+        self.connection
+            .execute(
+                r#"
+                INSERT INTO agent_operations (
+                  id, owner_context_id, intent, status, session_id, panel_id,
+                  panel_kind, guide_id, protocol_version, target_json, input_json,
+                  result_json, error_json, created_at, updated_at, completed_at,
+                  operation_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  status = excluded.status,
+                  target_json = excluded.target_json,
+                  input_json = excluded.input_json,
+                  result_json = excluded.result_json,
+                  error_json = excluded.error_json,
+                  updated_at = excluded.updated_at,
+                  completed_at = excluded.completed_at,
+                  operation_json = excluded.operation_json
+                "#,
+                params![
+                    required("id")?,
+                    required("ownerContextId")?,
+                    required("intent")?,
+                    required("status")?,
+                    required("sessionId")?,
+                    required("panelId")?,
+                    required("panelKind")?,
+                    operation.get("guideId").and_then(Value::as_str),
+                    operation
+                        .get("protocolVersion")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(2),
+                    serde_json::to_string(operation.get("target").unwrap_or(&Value::Null))
+                        .map_err(to_cli_error)?,
+                    serde_json::to_string(operation.get("input").unwrap_or(&Value::Null))
+                        .map_err(to_cli_error)?,
+                    operation
+                        .get("result")
+                        .filter(|value| !value.is_null())
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(to_cli_error)?,
+                    operation
+                        .get("error")
+                        .filter(|value| !value.is_null())
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(to_cli_error)?,
+                    required("createdAt")?,
+                    required("updatedAt")?,
+                    operation.get("completedAt").and_then(Value::as_str),
+                    serde_json::to_string(operation).map_err(to_cli_error)?,
+                ],
+            )
+            .map_err(to_cli_error)?;
+        self.record_change(
+            "agent_operation",
+            operation.get("sessionId").and_then(Value::as_str),
+            operation.get("panelId").and_then(Value::as_str),
+        )?;
+        Ok(())
+    }
+
+    pub fn read_agent_operation(&self, operation_id: &str) -> Result<Option<Value>, CliError> {
+        self.connection
+            .query_row(
+                "SELECT operation_json FROM agent_operations WHERE id = ?",
+                params![operation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(to_cli_error)?
+            .map(|raw| serde_json::from_str(&raw).map_err(to_cli_error))
+            .transpose()
+    }
+
+    pub fn list_agent_operations(
+        &self,
+        owner_context_id: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<Vec<Value>, CliError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT operation_json FROM agent_operations
+             WHERE (?1 IS NULL OR owner_context_id = ?1)
+               AND (?2 IS NULL OR status = ?2)
+             ORDER BY updated_at DESC, id ASC",
+            )
+            .map_err(to_cli_error)?;
+        let rows = statement
+            .query_map(params![owner_context_id, status], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(to_cli_error)?;
+        rows.map(|row| {
+            let raw = row.map_err(to_cli_error)?;
+            serde_json::from_str(&raw).map_err(to_cli_error)
+        })
+        .collect()
+    }
+
     pub fn sync_wiki_tasks(
         &self,
         session_id: &str,
@@ -338,12 +455,7 @@ impl Storage {
         state: &Value,
     ) -> Result<(), CliError> {
         let existing_task_runtime = self.read_project_task_runtime(session_id, panel_id, queue)?;
-        self.connection
-            .execute(
-                "DELETE FROM project_tasks WHERE session_id = ? AND panel_id = ? AND queue = ?",
-                params![session_id, panel_id, queue],
-            )
-            .map_err(to_cli_error)?;
+        let mut seen_task_ids = HashSet::new();
         for task in state
             .get("tasks")
             .and_then(Value::as_array)
@@ -354,6 +466,7 @@ impl Storage {
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| CliError::new("Project task id is required."))?;
+            seen_task_ids.insert(id.to_owned());
             let existing_runtime = existing_task_runtime.get(id);
             let created_at = task
                 .get("createdAt")
@@ -361,12 +474,25 @@ impl Storage {
                 .map(str::to_owned)
                 .or_else(|| existing_runtime.map(|runtime| runtime.created_at.clone()))
                 .unwrap_or_else(crate::control::now_iso);
-            let updated_at = task
-                .get("updatedAt")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .or_else(|| existing_runtime.map(|runtime| runtime.updated_at.clone()))
-                .unwrap_or_else(|| created_at.clone());
+            let updated_at = if existing_runtime.is_some_and(|runtime| runtime.status == "reserved")
+            {
+                existing_runtime
+                    .map(|runtime| runtime.updated_at.clone())
+                    .unwrap_or_else(|| created_at.clone())
+            } else {
+                task.get("updatedAt")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| existing_runtime.map(|runtime| runtime.updated_at.clone()))
+                    .unwrap_or_else(|| created_at.clone())
+            };
+            let status = if existing_runtime.is_some_and(|runtime| runtime.status == "reserved") {
+                "reserved"
+            } else {
+                task.get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("queued")
+            };
             let attempts = task
                 .get("attempt")
                 .and_then(Value::as_i64)
@@ -401,6 +527,44 @@ impl Storage {
                 .unwrap_or_else(|| {
                     existing_runtime.and_then(|runtime| runtime.retry_after.clone())
                 });
+            let capability = task
+                .get("capability")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| existing_runtime.and_then(|runtime| runtime.capability.clone()))
+                .unwrap_or_else(|| {
+                    project_task_capability(
+                        queue,
+                        task.get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown"),
+                    )
+                });
+            let assigned_target_id =
+                existing_runtime.and_then(|runtime| runtime.assigned_target_id.clone());
+            let lease_token_hash =
+                existing_runtime.and_then(|runtime| runtime.lease_token_hash.clone());
+            let result_json = match task.get("result") {
+                Some(value) if value.is_null() => None,
+                Some(value) => Some(serde_json::to_string(value).map_err(to_cli_error)?),
+                None => existing_runtime.and_then(|runtime| runtime.result_json.clone()),
+            };
+            let error_json = match task.get("error") {
+                Some(value) if value.is_null() => None,
+                Some(value) => Some(serde_json::to_string(value).map_err(to_cli_error)?),
+                None => existing_runtime.and_then(|runtime| runtime.error_json.clone()),
+            };
+            let completed_at = if matches!(
+                task.get("status").and_then(Value::as_str),
+                Some("succeeded" | "cancelled")
+            ) {
+                task.get("updatedAt")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| existing_runtime.and_then(|runtime| runtime.completed_at.clone()))
+            } else {
+                existing_runtime.and_then(|runtime| runtime.completed_at.clone())
+            };
             self.connection
                 .execute(
                     r#"
@@ -408,25 +572,63 @@ impl Storage {
                       id, queue, session_id, panel_id, panel_kind, type, status,
                       target_id, created_at, updated_at, attempts, max_attempts,
                       lease_owner, lease_expires_at, last_heartbeat_at, retry_after,
-                      task_json
+                      capability, assigned_target_id, lease_token_hash, result_json,
+                      error_json, completed_at, task_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                       queue = excluded.queue,
                       session_id = excluded.session_id,
                       panel_id = excluded.panel_id,
                       panel_kind = excluded.panel_kind,
                       type = excluded.type,
-                      status = excluded.status,
+                      status = CASE
+                        WHEN project_tasks.assigned_target_id IS NOT NULL
+                          AND project_tasks.status IN ('reserved', 'running', 'claimed', 'converting', 'indexing')
+                        THEN project_tasks.status
+                        ELSE excluded.status
+                      END,
                       target_id = excluded.target_id,
                       created_at = excluded.created_at,
-                      updated_at = excluded.updated_at,
-                      attempts = excluded.attempts,
+                      updated_at = CASE
+                        WHEN project_tasks.assigned_target_id IS NOT NULL
+                          AND project_tasks.status IN ('reserved', 'running', 'claimed', 'converting', 'indexing')
+                        THEN project_tasks.updated_at
+                        ELSE excluded.updated_at
+                      END,
+                      attempts = CASE
+                        WHEN project_tasks.assigned_target_id IS NOT NULL
+                          AND project_tasks.status IN ('reserved', 'running', 'claimed', 'converting', 'indexing')
+                        THEN project_tasks.attempts
+                        ELSE excluded.attempts
+                      END,
                       max_attempts = excluded.max_attempts,
-                      lease_owner = excluded.lease_owner,
-                      lease_expires_at = excluded.lease_expires_at,
-                      last_heartbeat_at = excluded.last_heartbeat_at,
-                      retry_after = excluded.retry_after,
+                      lease_owner = CASE
+                        WHEN project_tasks.assigned_target_id IS NOT NULL
+                        THEN project_tasks.lease_owner
+                        ELSE excluded.lease_owner
+                      END,
+                      lease_expires_at = CASE
+                        WHEN project_tasks.assigned_target_id IS NOT NULL
+                        THEN project_tasks.lease_expires_at
+                        ELSE excluded.lease_expires_at
+                      END,
+                      last_heartbeat_at = CASE
+                        WHEN project_tasks.assigned_target_id IS NOT NULL
+                        THEN project_tasks.last_heartbeat_at
+                        ELSE excluded.last_heartbeat_at
+                      END,
+                      retry_after = CASE
+                        WHEN project_tasks.assigned_target_id IS NOT NULL
+                        THEN project_tasks.retry_after
+                        ELSE excluded.retry_after
+                      END,
+                      capability = excluded.capability,
+                      assigned_target_id = COALESCE(project_tasks.assigned_target_id, excluded.assigned_target_id),
+                      lease_token_hash = COALESCE(project_tasks.lease_token_hash, excluded.lease_token_hash),
+                      result_json = excluded.result_json,
+                      error_json = excluded.error_json,
+                      completed_at = excluded.completed_at,
                       task_json = excluded.task_json
                     "#,
                     params![
@@ -438,9 +640,7 @@ impl Storage {
                         task.get("type")
                             .and_then(Value::as_str)
                             .unwrap_or("unknown"),
-                        task.get("status")
-                            .and_then(Value::as_str)
-                            .unwrap_or("queued"),
+                        status,
                         task.get("targetId").and_then(Value::as_str).unwrap_or(""),
                         created_at,
                         updated_at,
@@ -450,8 +650,25 @@ impl Storage {
                         lease_expires_at,
                         last_heartbeat_at,
                         retry_after,
+                        capability,
+                        assigned_target_id,
+                        lease_token_hash,
+                        result_json,
+                        error_json,
+                        completed_at,
                         serde_json::to_string(task).map_err(to_cli_error)?,
                     ],
+                )
+                .map_err(to_cli_error)?;
+        }
+        for stale_task_id in existing_task_runtime
+            .keys()
+            .filter(|id| !seen_task_ids.contains(*id))
+        {
+            self.connection
+                .execute(
+                    "DELETE FROM project_tasks WHERE id = ? AND session_id = ? AND panel_id = ? AND queue = ?",
+                    params![stale_task_id, session_id, panel_id, queue],
                 )
                 .map_err(to_cli_error)?;
         }
@@ -470,7 +687,9 @@ impl Storage {
                 r#"
                 SELECT
                   id, created_at, updated_at, attempts, max_attempts,
-                  lease_owner, lease_expires_at, last_heartbeat_at, retry_after
+                  lease_owner, lease_expires_at, last_heartbeat_at, retry_after,
+                  capability, assigned_target_id, lease_token_hash, result_json,
+                  error_json, completed_at, status
                 FROM project_tasks
                 WHERE session_id = ? AND panel_id = ? AND queue = ?
                 "#,
@@ -489,6 +708,13 @@ impl Storage {
                         lease_expires_at: row.get::<_, Option<String>>(6)?,
                         last_heartbeat_at: row.get::<_, Option<String>>(7)?,
                         retry_after: row.get::<_, Option<String>>(8)?,
+                        capability: row.get::<_, Option<String>>(9)?,
+                        assigned_target_id: row.get::<_, Option<String>>(10)?,
+                        lease_token_hash: row.get::<_, Option<String>>(11)?,
+                        result_json: row.get::<_, Option<String>>(12)?,
+                        error_json: row.get::<_, Option<String>>(13)?,
+                        completed_at: row.get::<_, Option<String>>(14)?,
+                        status: row.get::<_, String>(15)?,
                     },
                 ))
             })
@@ -505,6 +731,7 @@ impl Storage {
                   id, queue, session_id, panel_id, panel_kind, type, status,
                   target_id, created_at, updated_at, attempts, max_attempts,
                   lease_owner, lease_expires_at, last_heartbeat_at, retry_after,
+                  capability, assigned_target_id, result_json, error_json, completed_at,
                   task_json
                 FROM project_tasks
                 WHERE session_id = ?
@@ -514,7 +741,7 @@ impl Storage {
             .map_err(to_cli_error)?;
         let rows = statement
             .query_map(params![session_id], |row| {
-                let task_json: String = row.get(16)?;
+                let task_json: String = row.get(21)?;
                 let task = serde_json::from_str::<Value>(&task_json).unwrap_or_else(|_| json!({}));
                 let queue = row.get::<_, String>(1)?;
                 let panel_kind = row.get::<_, String>(4)?;
@@ -527,6 +754,11 @@ impl Storage {
                 let lease_expires_at = row.get::<_, Option<String>>(13)?;
                 let last_heartbeat_at = row.get::<_, Option<String>>(14)?;
                 let retry_after = row.get::<_, Option<String>>(15)?;
+                let capability = row.get::<_, Option<String>>(16)?;
+                let assigned_target_id = row.get::<_, Option<String>>(17)?;
+                let result_json = row.get::<_, Option<String>>(18)?;
+                let error_json = row.get::<_, Option<String>>(19)?;
+                let completed_at = row.get::<_, Option<String>>(20)?;
                 Ok(json!({
                     "id": row.get::<_, String>(0)?,
                     "queue": queue,
@@ -541,16 +773,26 @@ impl Storage {
                     "attempt": attempts,
                     "maxAttempts": max_attempts,
                     "lease": {
-                        "owner": lease_owner,
+                        "owner": assigned_target_id.clone().or(lease_owner),
                         "expiresAt": lease_expires_at,
                         "heartbeatAt": last_heartbeat_at,
                     },
                     "retryAfter": retry_after,
-                    "capability": project_task_capability(&queue, &task_type),
+                    "capability": capability.unwrap_or_else(|| project_task_capability(&queue, &task_type)),
+                    "assignedTargetId": assigned_target_id,
+                    "completedAt": completed_at,
                     "input": project_task_input(&task),
                     "source": project_task_source(&task),
-                    "result": task.get("result").cloned().unwrap_or(Value::Null),
-                    "error": task.get("error").cloned().unwrap_or(Value::Null),
+                    "result": result_json
+                        .as_deref()
+                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                        .or_else(|| task.get("result").cloned())
+                        .unwrap_or(Value::Null),
+                    "error": error_json
+                        .as_deref()
+                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                        .or_else(|| task.get("error").cloned())
+                        .unwrap_or(Value::Null),
                     "task": task,
                 }))
             })
@@ -640,6 +882,25 @@ impl Storage {
             .map_err(to_cli_error)?;
         self.record_change("panel_selection", Some(session_id), Some(panel_id))?;
         Ok(())
+    }
+
+    pub fn read_panel_selection(
+        &self,
+        session_id: &str,
+        panel_id: &str,
+    ) -> Result<Option<Value>, CliError> {
+        let selection_json = self
+            .connection
+            .query_row(
+                "SELECT selection_json FROM panel_selections WHERE session_id = ? AND panel_id = ?",
+                params![session_id, panel_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(to_cli_error)?;
+        selection_json
+            .map(|raw| serde_json::from_str::<Value>(&raw).map_err(to_cli_error))
+            .transpose()
     }
 
     pub fn write_asset_from_buffer(
@@ -773,6 +1034,13 @@ struct ProjectTaskRuntime {
     lease_expires_at: Option<String>,
     last_heartbeat_at: Option<String>,
     retry_after: Option<String>,
+    capability: Option<String>,
+    assigned_target_id: Option<String>,
+    lease_token_hash: Option<String>,
+    result_json: Option<String>,
+    error_json: Option<String>,
+    completed_at: Option<String>,
+    status: String,
 }
 
 fn project_task_capability(queue: &str, task_type: &str) -> String {
@@ -1024,6 +1292,112 @@ CREATE INDEX storage_changes_seq_idx
   ON storage_changes(seq);
 "#;
 
+const MIGRATION_0002_SQL: &str = r#"
+ALTER TABLE project_tasks ADD COLUMN capability TEXT;
+ALTER TABLE project_tasks ADD COLUMN assigned_target_id TEXT;
+ALTER TABLE project_tasks ADD COLUMN lease_token_hash TEXT;
+ALTER TABLE project_tasks ADD COLUMN result_json TEXT;
+ALTER TABLE project_tasks ADD COLUMN error_json TEXT;
+ALTER TABLE project_tasks ADD COLUMN completed_at TEXT;
+
+UPDATE project_tasks
+SET capability = CASE
+  WHEN queue = 'wiki' AND type = 'convert_document_to_markdown' THEN 'wiki.convertDocument'
+  WHEN queue = 'wiki' AND type = 'ingest_markdown_into_wiki' THEN 'wiki.ingestMarkdown'
+  WHEN queue = 'wiki' AND type = 'rebuild_wiki_index' THEN 'wiki.rebuildIndex'
+  ELSE queue || '.' || replace(type, '_', '.')
+END
+WHERE capability IS NULL OR capability = '';
+
+CREATE INDEX project_tasks_session_capability_idx
+  ON project_tasks(session_id, capability, status, updated_at ASC);
+CREATE INDEX project_tasks_lease_idx
+  ON project_tasks(session_id, lease_expires_at, status);
+
+CREATE TABLE agent_targets (
+  id TEXT PRIMARY KEY NOT NULL,
+  session_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  transport TEXT NOT NULL,
+  endpoint TEXT,
+  capabilities_json TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'online',
+  token_hash TEXT NOT NULL,
+  last_error TEXT,
+  last_heartbeat_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX agent_targets_session_status_idx
+  ON agent_targets(session_id, status, priority DESC, last_heartbeat_at DESC);
+
+CREATE TABLE task_deliveries (
+  id TEXT PRIMARY KEY NOT NULL,
+  task_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
+  last_error TEXT,
+  delivered_at TEXT,
+  acknowledged_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(task_id, target_id),
+  FOREIGN KEY (task_id) REFERENCES project_tasks(id) ON DELETE CASCADE,
+  FOREIGN KEY (target_id) REFERENCES agent_targets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX task_deliveries_due_idx
+  ON task_deliveries(status, next_attempt_at, updated_at);
+CREATE INDEX task_deliveries_task_idx
+  ON task_deliveries(task_id, updated_at DESC);
+
+CREATE TABLE task_delivery_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  delivery_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (delivery_id) REFERENCES task_deliveries(id) ON DELETE CASCADE
+);
+
+CREATE INDEX task_delivery_attempts_delivery_idx
+  ON task_delivery_attempts(delivery_id, attempt DESC);
+"#;
+
+const MIGRATION_0003_SQL: &str = r#"
+CREATE TABLE agent_operations (
+  id TEXT PRIMARY KEY NOT NULL,
+  owner_context_id TEXT NOT NULL,
+  intent TEXT NOT NULL,
+  status TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  panel_id TEXT NOT NULL,
+  panel_kind TEXT NOT NULL,
+  guide_id TEXT,
+  protocol_version INTEGER NOT NULL,
+  target_json TEXT NOT NULL,
+  input_json TEXT NOT NULL,
+  result_json TEXT,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  operation_json TEXT NOT NULL
+);
+
+CREATE INDEX agent_operations_owner_status_idx
+  ON agent_operations(owner_context_id, status, updated_at DESC);
+CREATE INDEX agent_operations_target_idx
+  ON agent_operations(session_id, panel_id, updated_at DESC);
+"#;
+
 struct Migration {
     id: &'static str,
     description: &'static str,
@@ -1037,12 +1411,26 @@ struct AppliedMigration {
 }
 
 fn migrations() -> &'static [Migration] {
-    &[Migration {
-        id: "0001_initial",
-        description: "Create initial OpenPanels SQLite storage schema",
-        checksum_material: MIGRATION_0001_SQL,
-        up: migration_0001,
-    }]
+    &[
+        Migration {
+            id: "0001_initial",
+            description: "Create initial OpenPanels SQLite storage schema",
+            checksum_material: MIGRATION_0001_SQL,
+            up: migration_0001,
+        },
+        Migration {
+            id: "0002_agent_task_dispatch",
+            description: "Add generic agent targets and task delivery state",
+            checksum_material: MIGRATION_0002_SQL,
+            up: migration_0002,
+        },
+        Migration {
+            id: "0003_agent_operations",
+            description: "Add persistent agent operations",
+            checksum_material: MIGRATION_0003_SQL,
+            up: migration_0003,
+        },
+    ]
 }
 
 fn migrate(connection: &mut Connection) -> Result<(), CliError> {
@@ -1177,6 +1565,14 @@ fn migration_0001(tx: &Transaction<'_>) -> Result<(), CliError> {
     tx.execute_batch(MIGRATION_0001_SQL).map_err(to_cli_error)
 }
 
+fn migration_0002(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0002_SQL).map_err(to_cli_error)
+}
+
+fn migration_0003(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0003_SQL).map_err(to_cli_error)
+}
+
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {
     CliError::new(error.to_string())
 }
@@ -1296,6 +1692,25 @@ mod tests {
             .expect("migration count");
         assert_eq!(migration_count, 1);
 
+        let dispatch_migration_count: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE id = '0002_agent_task_dispatch'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("dispatch migration count");
+        assert_eq!(dispatch_migration_count, 1);
+        let operations_migration_count: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE id = '0003_agent_operations'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("operations migration count");
+        assert_eq!(operations_migration_count, 1);
+
         let table_count: i64 = storage
             .connection
             .query_row(
@@ -1322,6 +1737,37 @@ mod tests {
             )
             .expect("project_tasks runtime columns");
         assert_eq!(runtime_column_count, 6);
+
+        let dispatch_column_count: i64 = storage
+            .connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM pragma_table_info('project_tasks')
+                WHERE name IN (
+                  'capability', 'assigned_target_id', 'lease_token_hash',
+                  'result_json', 'error_json', 'completed_at'
+                )
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("project_tasks dispatch columns");
+        assert_eq!(dispatch_column_count, 6);
+
+        let dispatch_table_count: i64 = storage
+            .connection
+            .query_row(
+                r#"
+                SELECT COUNT(*) FROM sqlite_master
+                WHERE type = 'table'
+                  AND name IN ('agent_targets', 'task_deliveries', 'task_delivery_attempts')
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("dispatch tables");
+        assert_eq!(dispatch_table_count, 3);
     }
 
     #[test]
@@ -1349,6 +1795,89 @@ mod tests {
             .map(|row| row.expect("row"))
             .collect();
         assert_eq!(applied_after, applied_before);
+    }
+
+    #[test]
+    fn migration_upgrades_existing_task_queue_to_dispatch_protocol() {
+        let temp = tempdir().expect("tempdir");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&storage_dir).expect("storage dir");
+        let database_path = storage_dir.join(DATABASE_FILE_NAME);
+        let mut connection = Connection::open(&database_path).expect("legacy database");
+        connection
+            .execute_batch(SCHEMA_MIGRATIONS_SQL)
+            .expect("migration table");
+        let migration = &migrations()[0];
+        let tx = connection.transaction().expect("legacy transaction");
+        migration_0001(&tx).expect("initial schema");
+        tx.execute(
+            "INSERT INTO schema_migrations (id, description, checksum, applied_at) VALUES (?, ?, ?, ?)",
+            params![
+                migration.id,
+                migration.description,
+                migration_checksum(migration),
+                "2026-01-01T00:00:00.000Z"
+            ],
+        )
+        .expect("initial migration record");
+        tx.execute(
+            r#"
+            INSERT INTO sessions (id, title, created_at, updated_at, panel_ids_json, session_json)
+            VALUES ('session:test', 'Test', '2026-01-01T00:00:00.000Z',
+                    '2026-01-01T00:00:00.000Z', '["panel:wiki"]',
+                    '{"id":"session:test","title":"Test","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","panelIds":["panel:wiki"]}')
+            "#,
+            [],
+        )
+        .expect("legacy session");
+        tx.execute(
+            r#"
+            INSERT INTO panels (id, session_id, kind, title, created_at, updated_at, state_ref, panel_json)
+            VALUES ('panel:wiki', 'session:test', 'wiki', 'Wiki',
+                    '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL,
+                    '{"id":"panel:wiki","sessionId":"session:test","kind":"wiki","title":"Wiki","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","stateRef":null}')
+            "#,
+            [],
+        )
+        .expect("legacy panel");
+        tx.execute(
+            r#"
+            INSERT INTO project_tasks (
+              id, queue, session_id, panel_id, panel_kind, type, status,
+              target_id, created_at, updated_at, task_json
+            ) VALUES (
+              'task:test', 'wiki', 'session:test', 'panel:wiki', 'wiki',
+              'convert_document_to_markdown', 'queued', 'raw:test',
+              '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
+              '{"id":"task:test","type":"convert_document_to_markdown","status":"queued","targetId":"raw:test"}'
+            )
+            "#,
+            [],
+        )
+        .expect("legacy task");
+        tx.commit().expect("legacy commit");
+        drop(connection);
+
+        let paths = paths_for(storage_dir);
+        let storage = Storage::open(&paths).expect("upgraded storage");
+        let capability: String = storage
+            .connection
+            .query_row(
+                "SELECT capability FROM project_tasks WHERE id = 'task:test'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("backfilled capability");
+        assert_eq!(capability, "wiki.convertDocument");
+        let migration_count: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE id = '0002_agent_task_dispatch'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("dispatch migration");
+        assert_eq!(migration_count, 1);
     }
 
     #[test]

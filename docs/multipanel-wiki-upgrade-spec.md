@@ -1,5 +1,8 @@
 # MyOpenPanels Multi-Panel Wiki Upgrade Spec
 
+> Historical upgrade document. Its `agent context` examples are superseded by
+> Protocol v2 `agent bootstrap`; see `agent-guidance-protocol-spec.md`.
+
 ## 背景
 
 MyOpenPanels 当前已经有一套接近多面板的底层模型：
@@ -27,7 +30,7 @@ Project(Session)
 2. 用户通过 studio 底部 HeroUI 3 Tabs 在 `文档库` 和 `Canvas` 之间切换。
 3. 切换面板不改变当前 Project 名称、不改变当前 active session。
 4. 初期 wiki 面板只提供空状态和占位 UI，不做完整编辑器功能。
-5. 建立面向未来的多面板 API、CLI 和 agent-context 架构。
+5. 建立面向未来的多面板 API、CLI 和 agent context 架构。
 6. 将 MyOpenPanels agent skill 简化为稳定入口：只负责安装/调用最新 CLI，具体面板说明由 CLI 返回。
 
 ## 非目标
@@ -385,18 +388,20 @@ openpanels-local agent context --project "$PWD"
 
 然后遵循 CLI 返回的最新说明。
 
-### 新增命令
+### 当前 canonical 命令
 
-第一阶段建议增加：
+CLI 不保留旧的扁平命令或隐式子命令。面板发现与读取使用：
 
 ```text
-openpanels-local agent-context
-openpanels-local panels
-openpanels-local active-panel
-openpanels-local panel-state
+openpanels-local agent context
+openpanels-local panel list
+openpanels-local panel current
+openpanels-local panel switch
+openpanels-local wiki context
+openpanels-local canvas state
 ```
 
-#### `agent-context`
+#### `agent context`
 
 返回给 agent 的最新工作说明。
 
@@ -437,53 +442,41 @@ Markdown 输出面向 agent 直接阅读，内容应包括：
 - canvas 相关命令。
 - wiki 当前阶段说明：可以识别 wiki 面板，但暂不支持写入具体页面。
 
-#### `panels`
+#### `panel list`
 
 列出当前 Project 的 panels：
 
 ```bash
-openpanels-local panels --project "$PWD" --format json
+openpanels-local panel list --project "$PWD" --format json
 ```
 
-#### `active-panel`
+#### `panel current` / `panel switch`
 
 读取或切换 active panel：
 
 ```bash
-openpanels-local active-panel --project "$PWD" --format json
-openpanels-local active-panel --project "$PWD" --kind wiki --format json
-openpanels-local active-panel --project "$PWD" --kind canvas --format json
+openpanels-local panel current --project "$PWD" --format json
+openpanels-local panel switch --project "$PWD" --kind wiki --format json
+openpanels-local panel switch --project "$PWD" --kind canvas --format json
 ```
 
-#### `panel-state`
+#### Panel state
 
-读取任意 panel state：
+使用 panel 对应的 canonical context/state 命令：
 
 ```bash
-openpanels-local panel-state --project "$PWD" --kind wiki --format json
-openpanels-local panel-state --project "$PWD" --kind canvas --format json
+openpanels-local wiki context --project "$PWD" --format json
+openpanels-local canvas state --project "$PWD" --format json
 ```
 
-### 兼容现有命令
-
-保留：
-
-```text
-canvas-state
-selection
-read-selection-asset
-insert-placeholder
-insert-image
-```
-
-后续可以新增 namespace 风格命令，但不要立刻破坏旧 skill：
+Canvas 只使用 namespace 命令：
 
 ```text
 canvas state
-canvas selection
-canvas insert-image
-wiki read
-wiki upsert-page
+canvas selection read
+canvas selection export
+canvas placeholder create
+canvas image insert
 ```
 
 ## Agent Skill 策略
@@ -494,8 +487,8 @@ wiki upsert-page
 
 1. 确保全局 `openpanels-local` native binary 已安装且最新。
 2. 启动 studio。
-3. 调用 `agent-context`。
-4. 严格遵循 `agent-context` 返回的最新 panel 说明。
+3. 调用 `agent context`。
+4. 严格遵循 `agent context` 返回的最新 panel 说明。
 
 不建议让用户分别安装：
 
@@ -516,7 +509,7 @@ Start or reuse the studio:
 $OPENPANELS_LOCAL_CLI studio start --project "$PWD" --format json
 
 Before interacting with any panel, run:
-$OPENPANELS_LOCAL_CLI agent-context --project "$PWD" --format markdown
+$OPENPANELS_LOCAL_CLI agent context --project "$PWD"
 
 Follow the returned MyOpenPanels instructions. The CLI is the source of truth
 for available panels, commands, and panel-specific workflows.
@@ -535,7 +528,7 @@ Scope:
 - Update studio bootstrap to return all panels.
 - Add bottom HeroUI Tabs.
 - Render wiki placeholder.
-- Keep old canvas commands working.
+- Expose canonical namespace-based canvas commands.
 
 Acceptance criteria:
 
@@ -543,33 +536,31 @@ Acceptance criteria:
 - Switching tabs does not change Project title.
 - Canvas content persists after switching to wiki and back.
 - Old Project with only canvas gets a wiki panel automatically.
-- Existing `selection` and `insert-image` commands still operate on canvas.
+- `canvas selection read` and `canvas image insert` operate on canvas.
 
 ### Phase 2: CLI capability discovery
 
 Scope:
 
-- Add `agent-context`.
-- Add `panels`.
-- Add `active-panel`.
-- Add `panel-state`.
+- Add `agent context`.
+- Add `panel list/current/switch`.
+- Add `wiki context` and `canvas state`.
 - Update docs for stable MyOpenPanels entry skill.
 
 Acceptance criteria:
 
-- `agent-context --format markdown` gives enough instructions for agent to understand wiki/canvas.
-- `active-panel --kind wiki` switches the studio active panel state.
-- `panel-state --kind wiki` returns wiki state.
+- `agent context` gives enough instructions for agent to understand wiki/canvas.
+- `panel switch --kind wiki` switches the studio active panel state.
+- `wiki context` returns Wiki state and agent guidance.
 - User does not need `MyOpenPanels-wiki` skill to discover wiki panel.
 
 ### Phase 3: Wiki write API
 
 Scope:
 
-- Add `wiki read`.
-- Add `wiki upsert-page`.
-- Add `wiki delete-page`.
-- Optionally add markdown import/export.
+- Add `wiki pages list/search/read/write`.
+- Add `wiki documents list/add/create-markdown`.
+- Add `wiki markdown read/write`.
 
 Acceptance criteria:
 
@@ -602,14 +593,14 @@ Acceptance criteria:
 - Insert image via CLI while canvas tab is active, then switch away/back.
 - Verify wiki panel does not trigger canvas selection saves.
 
-## Migration and Compatibility
+## Migration
 
 - Existing sessions remain valid.
 - Existing canvas state files remain untouched.
 - First bootstrap lazily creates missing wiki panel.
-- Existing CLI commands remain valid.
+- Only commands advertised by the current CLI remain valid; compatibility aliases are removed.
 - The only maintained skill entry point is `myopenpanels`.
-- Panel-specific skills such as `myopenpanels-canvas` are intentionally removed; agents should always fetch the latest CLI-provided `agent-context`.
+- Panel-specific skills such as `myopenpanels-canvas` are intentionally removed; agents should always fetch the latest CLI-provided `agent context`.
 
 ## Open Questions
 
@@ -617,7 +608,7 @@ Acceptance criteria:
 2. Wiki display name: Chinese UI uses `文档库`; should English title be `Wiki`, `Docs`, or `Knowledge Base`?
 3. Should active panel be context-local only, or should each Project remember its last active panel globally?
 4. Should wiki markdown eventually be stored inside `.myopenpanels` only, or also export/sync to real project files such as `docs/`?
-5. Should `agent-context` default to markdown for agent readability, or JSON for easier machine routing?
+5. Should `agent context` default to markdown for agent readability, or JSON for easier machine routing?
 
 ## Recommended Defaults
 
@@ -625,5 +616,5 @@ Acceptance criteria:
 - Active panel default: `wiki` for new Project.
 - Active panel persistence: context-local for now, matching active session behavior.
 - Entry skill: one stable `MyOpenPanels` skill only.
-- CLI source of truth: `agent-context` generated by latest Rust native CLI.
-- Backward compatibility: keep all existing canvas commands until a later major version.
+- CLI source of truth: `agent context` and the capability manifest generated by the latest Rust native CLI.
+- Command surface: canonical namespace commands only, with no compatibility aliases.
