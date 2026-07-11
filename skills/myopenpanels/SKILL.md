@@ -48,10 +48,6 @@ capabilities, guides, commands, and workflows.
 6. Before Wiki, Canvas, or task work, request `agent bootstrap --format json`,
    then follow only the capabilities, guides, preconditions, and commands
    returned by the installed CLI version.
-7. Do not respond to a Bootstrap error by creating or listing Projects,
-   guessing Project ids, inspecting CLI help, or opening the system browser.
-   The browser fallback above is part of the Studio-open step, not Bootstrap
-   recovery.
 
 Do not keep panel commands, guide IDs, selection rules, generation steps, or
 panel-operation flags in this skill. Never substitute remembered MyOpenPanels
