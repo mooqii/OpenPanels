@@ -458,7 +458,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert_eq!(payload["protocolVersion"], 2);
     assert_eq!(payload["cliVersion"], VERSION);
     assert_eq!(payload["entrySkill"]["id"], "myopenpanels");
-    assert_eq!(payload["entrySkill"]["requiredVersion"], "1.1");
+    assert_eq!(payload["entrySkill"]["requiredVersion"], "1.2");
     assert!(payload["entrySkill"]["instruction"]
         .as_str()
         .expect("entry skill instruction")

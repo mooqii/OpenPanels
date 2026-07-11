@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 static AGENT_GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/guides");
 static AGENT_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/skills");
 pub const CANVAS_PANEL_SKILL_ID: &str = "canvas-panel";
-pub const MYOPENPANELS_SKILL_VERSION: &str = "1.1";
+pub const MYOPENPANELS_SKILL_VERSION: &str = "1.2";
 const MYOPENPANELS_SKILL_SOURCE: &str =
     "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels";
 

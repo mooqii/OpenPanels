@@ -2,7 +2,7 @@
 name: myopenpanels
 description: "Use MyOpenPanels when a persistent visual and knowledge workspace would help: drawing, image generation or editing, diagrams, moodboards, brainstorming, visual planning, organizing or comparing materials, research and summaries, drafting, writing, revising, and maintaining project knowledge in a local Wiki or infinite Canvas. Also use for explicit requests such as open or launch MyOpenPanels, MyOpenPanels, the MyOpenPanels panel, the panel, or 打开面板."
 metadata:
-  version: "1.1"
+  version: "1.2"
 ---
 
 # MyOpenPanels
@@ -29,9 +29,10 @@ capabilities, guides, commands, and workflows.
    Verify the installed native CLI version and stop with the exact error if
    installation or verification fails.
 3. Use the CLI's stable Studio start entry point to start or reuse the Studio
-   for the current project. When opening the returned `browserUrl` in the
-   in-app browser, append `myopenpanels-view=embedded` as a query parameter. Do
-   not append this marker when opening the URL in a standalone browser.
+   for the current project. When an in-app browser is available, start Studio
+   with `--no-open` and open the returned `browserUrl` there unchanged. When no
+   in-app browser is available, allow Studio to open the system browser. If an
+   attempted in-app open fails, use `myopenpanels studio open` as the fallback.
 4. Immediately request the CLI's stable `agent bootstrap` response, then follow
    only the capabilities, guides, preconditions, and commands returned by that
    installed CLI version.

@@ -1,10 +1,10 @@
-export const EMBEDDED_VIEW_PARAM = "myopenpanels-view"
-export const EMBEDDED_VIEW_VALUE = "embedded"
+const EMBEDDED_BROWSER_MARKERS = /\b(?:Codex|Electron)\b/i
+const STANDALONE_BROWSER_MARKERS =
+  /\b(?:Chrome|CriOS|Edg|EdgiOS|EdgA|Firefox|FxiOS|OPR|Opera|Safari)\//i
 
-export function isEmbeddedPanelView(search: string): boolean {
-  return (
-    new URLSearchParams(search).get(EMBEDDED_VIEW_PARAM) === EMBEDDED_VIEW_VALUE
-  )
+export function shouldShowOpenInBrowserPrompt(userAgent: string): boolean {
+  if (EMBEDDED_BROWSER_MARKERS.test(userAgent)) return true
+  return !STANDALONE_BROWSER_MARKERS.test(userAgent)
 }
 
 export function externalBrowserPath(location: {
@@ -12,8 +12,5 @@ export function externalBrowserPath(location: {
   pathname: string
   search: string
 }): string {
-  const search = new URLSearchParams(location.search)
-  search.delete(EMBEDDED_VIEW_PARAM)
-  const query = search.toString()
-  return `${location.pathname}${query ? `?${query}` : ""}${location.hash}`
+  return `${location.pathname}${location.search}${location.hash}`
 }

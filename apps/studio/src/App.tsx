@@ -44,7 +44,10 @@ import {
   wikiStateFromAppState,
 } from "./lib/api"
 import { mergeLiveProjectBootstrap } from "./lib/app-sync"
-import { externalBrowserPath, isEmbeddedPanelView } from "./lib/browser-context"
+import {
+  externalBrowserPath,
+  shouldShowOpenInBrowserPrompt,
+} from "./lib/browser-context"
 import type {
   MyOpenPanelsPanel,
   MyOpenPanelsPanelKind,
@@ -93,7 +96,9 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   const canvasRevisionRef = useRef(0)
   const skipNextCanvasSaveRef = useRef(false)
   const operationStatusesRef = useRef<Map<string, string> | null>(null)
-  const isEmbeddedView = isEmbeddedPanelView(window.location.search)
+  const showOpenInBrowserPrompt = shouldShowOpenInBrowserPrompt(
+    window.navigator.userAgent
+  )
 
   const openInDefaultBrowser = useCallback(async () => {
     await apiFetch(transport.apiBase, "/api/studio/open-browser", {
@@ -676,7 +681,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       className={`design-shell ${isTraceOpen ? "design-shell--trace-open" : ""}`}
     >
       <section className="design-shell__workspace">
-        {isEmbeddedView ? (
+        {showOpenInBrowserPrompt ? (
           <Button
             className="op-open-browser-prompt"
             onPress={() => {
