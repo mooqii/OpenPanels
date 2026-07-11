@@ -55,7 +55,7 @@ jobs:
 
       - name: Test Rust CLI
         timeout-minutes: 10
-        run: cargo test -p openpanels-local
+        run: cargo test -p openpanels-local -- --test-threads=1
 
       - name: Build Rust CLI
         timeout-minutes: 20

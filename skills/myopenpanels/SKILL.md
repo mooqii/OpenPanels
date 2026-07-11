@@ -1,6 +1,6 @@
 ---
 name: myopenpanels
-description: "Use MyOpenPanels when a persistent visual and knowledge workspace would help: drawing, image generation or editing, diagrams, moodboards, brainstorming, visual planning, organizing or comparing materials, research and summaries, drafting, writing, revising, and maintaining project knowledge in a local Wiki or infinite Canvas. Also use for explicit requests such as open or launch OpenPanels, MyOpenPanels, the OpenPanels panel, or the panel."
+description: "Use MyOpenPanels when a persistent visual and knowledge workspace would help: drawing, image generation or editing, diagrams, moodboards, brainstorming, visual planning, organizing or comparing materials, research and summaries, drafting, writing, revising, and maintaining project knowledge in a local Wiki or infinite Canvas. Also use for explicit requests such as open or launch OpenPanels, MyOpenPanels, the OpenPanels panel, the panel, or 打开面板."
 metadata:
   version: "1.0"
 ---
