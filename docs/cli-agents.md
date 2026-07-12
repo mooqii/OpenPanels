@@ -24,9 +24,11 @@ and built-in agent skills now live in the Rust CLI crate under
 `crates/myopenpanels/src/agent.rs`, with markdown resources in
 `agent-resources/`.
 
-If you do not pass `--project-dir`, MyOpenPanels uses `MYOPENPANELS_PROJECT_DIR` or the
-current working directory for project metadata. Canvas data is stored in the
-global MyOpenPanels data directory so agents and projects can share the same
+For most commands, omitting `--project-dir` uses `MYOPENPANELS_PROJECT_DIR` or
+the current working directory for project metadata. Agent Bootstrap is the
+exception: its parameterless stable entry resolves the user-visible running
+Studio, independent of the Agent's working directory. Canvas data is stored in
+the global MyOpenPanels data directory so agents and projects can share the same
 boards and assets.
 
 The current project and studio process are isolated per agent conversation when
@@ -44,18 +46,18 @@ contains no Projects.
    URL opener, or execute `data.nextRequiredAction.fallback.argv` with the same
    resolved CLI executable when that capability is absent, fails, or cannot
    report success. Stop an open-only task only after an opener succeeds.
-3. Run `myopenpanels agent bootstrap --project-dir <project> --format json`
+3. Run `myopenpanels agent bootstrap --format json`
    only before panel-specific
-   work. Read the compact Protocol v4 payload from `data`; the complete envelope
+   work. Read the compact Protocol v5 payload from `data`; the complete envelope
    is capped at 8192 UTF-8 bytes. It identifies the current focus, bounded Panel
    context, work counts, and discovery references rather than embedding full
    commands or documents.
-4. Follow `data.nextRequiredAction`. A rare `update-entry-skill` response must
-   update or verify the Agent-host Entry Skill, execute its acknowledgement, and
-   rerun Bootstrap before panel work. Otherwise, sequentially complete every
-   `data.nextActions` entry referenced by `actionRefs`: execute `cli` actions
-   with their `argv`, follow `agent-host` instructions without expecting an
-   `argv`, and read every returned Skill file before choosing remaining actions.
+4. Complete `data.nextRequiredAction.steps` sequentially. For normal panel work,
+   read each prepared Skill's `contextPath` and then `localPath`. A rare
+   `reason: update-entry-skill` response instead updates or verifies the
+   Agent-host Entry Skill, executes its acknowledgement step, and requires a
+   fresh Bootstrap. Only after all required steps may the Agent choose applicable
+   `data.nextActions` according to `loadWhen`.
 5. Repeat the same response-driven loop. Never infer a business command from
    remembered paths, flags, or display command strings.
 
@@ -66,11 +68,11 @@ contains no Projects.
 - `myopenpanels studio open-system-browser`: explicitly open the studio URL in the system browser.
 - `myopenpanels studio wait`: wait for the studio HTTP server to become ready.
 - `myopenpanels studio stop`: stop the conversation-scoped MyOpenPanels Studio process.
-- `myopenpanels agent bootstrap`: print the compact Protocol v4 focus, bounded
-  context, work summaries, mandatory Skill action references, and
-  progressive-discovery references. Load every referenced Skill before
-  evaluating any other action; this includes the active Panel Skill and, when a
-  ready Wiki Task exists, its captured authoring Skill.
+- `myopenpanels agent bootstrap`: print the compact Protocol v5 focus, bounded
+  context, work summaries, prepared required Skill files, and optional
+  progressive-discovery actions. Read every required Skill context and body
+  before evaluating any other action; this includes the active Panel Skill and,
+  when a ready Wiki Task exists, its captured authoring Skill.
 - `myopenpanels agent entry-skill acknowledge`: confirm that the current Agent
   context has installed or verified the one-time required Entry Skill version.
 - `myopenpanels agent capability list`: list scopes, or compact intents with
@@ -87,7 +89,8 @@ contains no Projects.
 - `myopenpanels agent skill read --skill-id canvas-panel`: load Canvas selection,
   generation, placement, and workflow-skill routing rules.
 - `myopenpanels panel selection read`: read the active panel's explicit selection
-  through its Panel Module.
+  through its Panel Module. Canvas reads return a directly usable local image
+  path when the selection has image pixels; composites are rendered lazily.
 - `myopenpanels wiki page search`: search the selected Wiki space before
   reading relevant pages.
 - `myopenpanels agent skill read --skill-id task-queue`: load the generic Task
@@ -97,7 +100,10 @@ contains no Projects.
 - `myopenpanels panel activate`: activate a Project panel; this is the only panel command that changes focus.
 - `myopenpanels panel context read`: read compact context from the active Panel Module.
 - `myopenpanels panel state read`: read the potentially large raw active-panel state.
-- `myopenpanels canvas selection export`: write the explicit Canvas selection PNG to a file.
+- `myopenpanels canvas selection export`: exceptional, explicitly requested copy
+  operation. It is not a Canvas Panel Skill requirement; Agents normally use the
+  local path returned by selection read and should discover this capability only
+  when the user requests a file at a particular path.
 - `myopenpanels canvas image insert`: add a local image file as a Canvas image shape.
 - `myopenpanels task ...`: operate the sole public Task lifecycle.
 - `myopenpanels operation ...`: inspect and finish persistent Canvas or Wiki Operations.

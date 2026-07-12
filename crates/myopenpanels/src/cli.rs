@@ -15,9 +15,9 @@ use crate::server::run_server;
 use crate::storage::Storage;
 use crate::studio::{
     discard_studio_session_binding, find_open_port, open_browser, record_current_studio,
-    resolve_current_studio_session, reuse_existing_studio, start_studio, stop_studio_session,
-    studio_status, wait_for_existing_studio, write_studio_session, StudioServerStatus,
-    StudioSession, StudioStartOptions, StudioStartResult,
+    resolve_current_studio_session, resolve_focused_studio_session, reuse_existing_studio,
+    start_studio, stop_studio_session, studio_status, wait_for_existing_studio,
+    write_studio_session, StudioServerStatus, StudioSession, StudioStartOptions, StudioStartResult,
 };
 use crate::tasks;
 use crate::trace::{self, TraceEventInput};
@@ -862,9 +862,9 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
         Some("bootstrap") => {
-            let paths = parsed_current_paths(parsed)?;
+            let paths = parsed_bootstrap_paths(parsed)?;
             let payload = agent_bootstrap(&paths, VERSION)?;
-            write_result(parsed, stdout, &payload, "MyOpenPanels agent protocol v4 bootstrap")
+            write_result(parsed, stdout, &payload, "MyOpenPanels agent protocol v5 bootstrap")
         }
         Some("entry-skill") => match parsed.positionals.get(2).map(String::as_str) {
             Some("acknowledge") => {
@@ -1618,6 +1618,29 @@ fn parsed_current_paths(parsed: &Invocation) -> Result<crate::paths::MyOpenPanel
             "No running MyOpenPanels Studio is bound to this project directory.",
             true,
             "Run `myopenpanels studio start --project-dir <dir> --format json`, then retry.",
+        ));
+    };
+    resolve_myopenpanels_paths(
+        Some(&session.project_dir),
+        Some(&session.storage_dir),
+        Some(&session.context_id),
+    )
+}
+
+fn parsed_bootstrap_paths(
+    parsed: &Invocation,
+) -> Result<crate::paths::MyOpenPanelsPaths, CliError> {
+    if string_flag(parsed, "project-dir").is_some() || string_flag(parsed, "context-id").is_some() {
+        return parsed_current_paths(parsed);
+    }
+
+    let paths = parsed_paths(parsed)?;
+    let Some(session) = resolve_focused_studio_session(&paths)? else {
+        return Err(CliError::with_recovery(
+            "no_current_studio",
+            "No running user-visible MyOpenPanels Studio is available for Agent Bootstrap.",
+            true,
+            "Run `myopenpanels studio start --local-only --project-dir <dir> --format json`, open the returned URL, then retry `myopenpanels agent bootstrap --format json`.",
         ));
     };
     resolve_myopenpanels_paths(

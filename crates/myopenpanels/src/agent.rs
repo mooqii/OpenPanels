@@ -14,14 +14,8 @@ use std::path::{Path, PathBuf};
 static AGENT_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/skills");
 pub const CANVAS_PANEL_SKILL_ID: &str = "canvas-panel";
 pub const TASK_QUEUE_SKILL_ID: &str = "task-queue";
-pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 4;
+pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 5;
 pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
-const MYOPENPANELS_SKILL_SOURCE: &str =
-    "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels";
-const ACTIVE_PANEL_SKILL_ACTION_REF: &str = "active-panel-skill";
-const TASK_AUTHORING_SKILL_ACTION_REF: &str = "next-task-authoring-skill";
-const ENTRY_SKILL_UPDATE_ACTION_REF: &str = "entry-skill-update";
-const ENTRY_SKILL_ACK_ACTION_REF: &str = "entry-skill-update-ack";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,6 +70,8 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
             &update,
         ));
     }
+    sync_builtin_agent_skills(paths)?;
+    let skills = load_agent_skills()?;
     let operations = storage.list_agent_operations(Some(&paths.context_id), Some("active"))?;
     let focus_revision = crate::control::read_focus_revision(paths)?;
     let focus = json!({
@@ -117,16 +113,6 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
                 "summary": { "itemCount": 0 },
             })
         });
-    let active_panel_skill = panel_skill_id(bootstrap.active_panel_kind)
-        .map(|skill_id| {
-            json!({
-                "id": skill_id,
-                "readCommand": format!("myopenpanels agent skill read --skill-id {skill_id} --format json"),
-                "loadWhen": "Always before reading from or operating on the active panel.",
-                "required": true,
-            })
-        })
-        .unwrap_or(Value::Null);
     let recommended_scopes = [
         "panel",
         bootstrap.active_panel_kind.as_str(),
@@ -137,50 +123,48 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
     .collect::<BTreeSet<_>>()
     .into_iter()
     .collect::<Vec<_>>();
-    let mut next_actions = Vec::new();
-    let mut required_action_refs = Vec::new();
+    let detailed_selection = read_selection(paths, None, false).ok();
+    let wiki_selection = read_agent_selection(paths).ok();
+    let mut required_skills = Vec::new();
+    let mut required_capabilities = BTreeSet::new();
     if let Some(skill_id) = panel_skill_id(bootstrap.active_panel_kind) {
-        let mut action = project_command_action(
+        let skill = required_agent_skill(&skills, skill_id)?;
+        required_capabilities.extend(skill.metadata.requires_capabilities.iter().cloned());
+        required_skills.push(write_required_skill_loader(
             paths,
-            "agent.skill.read",
-            vec![
-                "--skill-id".to_owned(),
-                skill_id.to_owned(),
-                "--format".to_owned(),
-                "json".to_owned(),
-            ],
-        );
-        action["loadWhen"] =
-            json!("Always. Load this Skill before evaluating or executing any other panel action.");
-        action["required"] = json!(true);
-        action["actionRef"] = json!(ACTIVE_PANEL_SKILL_ACTION_REF);
-        action["skillId"] = json!(skill_id);
-        next_actions.push(action);
-        required_action_refs.push(ACTIVE_PANEL_SKILL_ACTION_REF);
+            skill,
+            &bootstrap,
+            detailed_selection.as_ref(),
+            wiki_selection.as_ref(),
+            None,
+        )?);
     }
     if let Some((task_id, skill_id)) = next_wiki_task_authoring_skill(&bootstrap) {
-        let mut action = project_command_action(
+        let skill = required_agent_skill(&skills, skill_id)?;
+        required_capabilities.extend(skill.metadata.requires_capabilities.iter().cloned());
+        required_skills.push(write_required_skill_loader(
             paths,
-            "agent.skill.read",
+            skill,
+            &bootstrap,
+            detailed_selection.as_ref(),
+            wiki_selection.as_ref(),
+            Some(task_id),
+        )?);
+    }
+    let mut next_actions = Vec::new();
+    next_actions.extend(required_capabilities.into_iter().map(|intent| {
+        let mut action = command_action(
+            "agent.capability.read",
             vec![
-                "--skill-id".to_owned(),
-                skill_id.to_owned(),
-                "--task-id".to_owned(),
-                task_id.to_owned(),
+                "--intent".to_owned(),
+                intent,
                 "--format".to_owned(),
                 "json".to_owned(),
             ],
         );
-        action["loadWhen"] = json!(
-            "Always when continuing the next ready Wiki Task. Load this authoring Skill together with the active Wiki Panel Skill."
-        );
-        action["required"] = json!(true);
-        action["actionRef"] = json!(TASK_AUTHORING_SKILL_ACTION_REF);
-        action["skillId"] = json!(skill_id);
-        action["taskId"] = json!(task_id);
-        next_actions.push(action);
-        required_action_refs.push(TASK_AUTHORING_SKILL_ACTION_REF);
-    }
+        action["loadWhen"] = json!("The user request needs this capability from a required Skill.");
+        action
+    }));
     if !bootstrap.tasks.is_empty() {
         let mut action = project_command_action(
             paths,
@@ -257,10 +241,6 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
             "maxBytes": MAX_BOOTSTRAP_ENVELOPE_BYTES,
             "unit": "utf8",
         },
-        "entrySkill": {
-            "id": "myopenpanels",
-            "source": MYOPENPANELS_SKILL_SOURCE,
-        },
         "focus": {
             "focusRevision": focus_revision,
             "projectId": bootstrap.project.id,
@@ -277,20 +257,19 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         "operations": compact_operation_summary(&operations),
         "discovery": {
             "recommendedScopes": recommended_scopes,
-            "capabilityIndexCommand": "myopenpanels agent capability list --format json",
-            "capabilityListCommandTemplate": "myopenpanels agent capability list --scope <scope> --format json",
-            "capabilityReadCommandTemplate": "myopenpanels agent capability read --intent <intent> --format json",
-            "skillListCommand": format!("myopenpanels agent skill list --panel-kind {} --format json", bootstrap.active_panel_kind.as_str()),
-            "activePanelSkill": active_panel_skill,
-            "taskQueueSkillId": TASK_QUEUE_SKILL_ID,
         },
         "nextActions": next_actions,
         "nextRequiredAction": {
-            "intent": "load-required-skills",
+            "intent": "complete-required-steps",
             "required": true,
-            "actionIntent": "agent.skill.read",
-            "actionRefs": required_action_refs,
-            "instruction": "Execute every nextActions entry referenced by actionRefs, sequentially in the listed order, before evaluating or executing any other action. Follow each response's nextRequiredAction and read every returned SKILL.md as instructed, then choose any remaining applicable entries according to loadWhen.",
+            "steps": [{
+                "intent": "agent-host.skill.read-required",
+                "executor": "agent-host",
+                "required": true,
+                "skills": required_skills,
+                "instruction": "For each Skill in order, read contextPath first and localPath second. Complete every read before evaluating or executing nextActions.",
+            }],
+            "instruction": "Complete every step sequentially before evaluating or executing nextActions.",
         },
     }))
 }
@@ -305,8 +284,6 @@ fn entry_skill_update_bootstrap(
         "intent": "agent-host.skill.update-required",
         "executor": "agent-host",
         "required": true,
-        "actionRef": ENTRY_SKILL_UPDATE_ACTION_REF,
-        "loadWhen": "Always. Complete this one-time Entry Skill check before doing panel work.",
         "instruction": "Compare the currently loaded MyOpenPanels Entry Skill metadata with skill.version. If it is missing or older, install skill.source with the Agent host's Skill installer. Do not acknowledge until the installed version is current.",
         "skill": {
             "id": update.id,
@@ -327,10 +304,6 @@ fn entry_skill_update_bootstrap(
         ],
     );
     acknowledge_action["required"] = json!(true);
-    acknowledge_action["actionRef"] = json!(ENTRY_SKILL_ACK_ACTION_REF);
-    acknowledge_action["loadWhen"] = json!(
-        "Only after the Agent host confirms that the installed Entry Skill version satisfies the requirement."
-    );
     json!({
         "protocolVersion": AGENT_GUIDANCE_PROTOCOL_VERSION,
         "commandCatalogVersion": crate::cli::registry::COMMAND_CATALOG_VERSION,
@@ -345,12 +318,13 @@ fn entry_skill_update_bootstrap(
             "panelId": bootstrap.panel.id,
             "panelKind": bootstrap.panel.kind,
         },
-        "nextActions": [host_action, acknowledge_action],
+        "nextActions": [],
         "nextRequiredAction": {
-            "intent": "update-entry-skill",
+            "intent": "complete-required-steps",
             "required": true,
-            "actionRefs": [ENTRY_SKILL_UPDATE_ACTION_REF, ENTRY_SKILL_ACK_ACTION_REF],
-            "instruction": "Follow the two referenced actions in order: update or verify the Agent host's MyOpenPanels Entry Skill, then acknowledge the installed version. Rerun Agent Bootstrap after acknowledgement. Do not read or operate on a panel before the refreshed Bootstrap completes.",
+            "reason": "update-entry-skill",
+            "steps": [host_action, acknowledge_action],
+            "instruction": "Complete every step sequentially, then rerun Agent Bootstrap. Do not read or operate on a panel before the refreshed Bootstrap completes.",
         },
     })
 }
@@ -404,6 +378,70 @@ fn next_wiki_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str,
                 .map(|snapshot| selected_agent_skill_id(&snapshot.state))
         })?;
     (skill_id != WIKI_PANEL_SKILL_ID).then_some((task_id, skill_id))
+}
+
+fn required_agent_skill<'a>(
+    skills: &'a [AgentSkill],
+    skill_id: &str,
+) -> Result<&'a AgentSkill, CliError> {
+    skills
+        .iter()
+        .find(|skill| skill.metadata.id == skill_id)
+        .ok_or_else(|| {
+            CliError::with_code(
+                "required_agent_skill_not_found",
+                format!("Required MyOpenPanels Agent Skill not found: {skill_id}"),
+            )
+        })
+}
+
+fn write_required_skill_loader(
+    paths: &MyOpenPanelsPaths,
+    skill: &AgentSkill,
+    bootstrap: &ProjectBootstrap,
+    selection: Option<&crate::selection::SelectionPayload>,
+    wiki_selection: Option<&Value>,
+    task_id: Option<&str>,
+) -> Result<Value, CliError> {
+    let (local_dir, local_path) = agent_skill_local_paths(paths, &skill.metadata.id);
+    let task = task_id.and_then(|id| find_wiki_task(bootstrap, id));
+    let selected_wiki_skill_id = task
+        .as_ref()
+        .and_then(|task| task.get("agentSkillId"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            selected_agent_skill_id(
+                bootstrap
+                    .panels
+                    .iter()
+                    .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
+                    .map(|snapshot| &snapshot.state)
+                    .unwrap_or(&bootstrap.state),
+            )
+        });
+    let markdown = render_agent_skill(
+        skill,
+        bootstrap,
+        selection,
+        wiki_selection,
+        task_id,
+        &local_dir,
+        &local_path,
+        selected_wiki_skill_id,
+    )?;
+    let loader_dir = paths.context_dir.join("agent-skill-loaders");
+    fs::create_dir_all(&loader_dir).map_err(to_cli_error)?;
+    let context_path = loader_dir.join(format!(
+        "{}.md",
+        crate::paths::sanitize_path_part(&skill.metadata.id)
+    ));
+    fs::write(&context_path, format!("{markdown}\n")).map_err(to_cli_error)?;
+    Ok(json!({
+        "id": skill.metadata.id,
+        "contextPath": context_path.display().to_string(),
+        "localPath": local_path.display().to_string(),
+        "taskId": task_id,
+    }))
 }
 
 fn command_action(intent: &str, args: Vec<String>) -> Value {

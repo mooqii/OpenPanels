@@ -1,90 +1,53 @@
 ---
 name: myopenpanels
-description: "Use MyOpenPanels when a persistent visual and knowledge workspace would help: drawing, image generation or editing, diagrams, moodboards, brainstorming, visual planning, organizing or comparing materials, research and summaries, drafting, writing, revising, and maintaining project knowledge in a local Wiki or infinite Canvas. Also use for explicit requests such as open or launch MyOpenPanels, MyOpenPanels, the MyOpenPanels panel, the panel, or 打开面板. After MyOpenPanels has been opened in the current conversation, also use this skill for follow-up requests that may refer to, inspect, organize, modify, or produce content in the current panel, including implicit requests such as continue, organize this, put this on the canvas, or use the selected content."
+description: "Use MyOpenPanels for persistent visual or knowledge work in its Canvas or Wiki, including drawing, image work, diagrams, moodboards, brainstorming, organizing, research, drafting, and writing. Also use when the user asks to open or launch MyOpenPanels (including 打开面板) or refers to its current panel, selection, or content. After Studio is open, run a fresh `myopenpanels agent bootstrap --format json` before every panel-related request. Skip Bootstrap only for an open-only request or work clearly unrelated to MyOpenPanels."
 metadata:
-  version: "3.4"
+  version: "4.1"
 ---
 
 # MyOpenPanels
 
-Use this skill only as the stable installation and launch entry point. The
-installed `myopenpanels` CLI is the sole authority for current panels,
-capabilities, guides, commands, and workflows.
+The installed CLI is the sole authority for current panels, capabilities,
+Skills, commands, and workflows.
 
-After Studio has been successfully opened in the current conversation, treat
-MyOpenPanels as an available, but not mandatory, workspace for the rest of that
-conversation. Before acting on each later request that could reasonably read,
-use, or modify the current panel, run a fresh Agent Bootstrap so routing uses
-the latest panel, selection, task, and capability state. This includes implicit
-follow-ups such as "continue", "organize this", "put this on the canvas", or
-references to selected content. Do not bootstrap for requests clearly unrelated
-to MyOpenPanels.
+## Resolve The CLI
 
-1. Resolve the CLI executable once. Prefer an executable checkout-local
-   launcher, then `MYOPENPANELS_CLI`, then `myopenpanels` from `PATH`. Keep that
-   exact executable for every returned action; never replace it with a command
-   name embedded in display text.
-2. If the native CLI is missing, install it only with the official installer,
-   then resolve and verify the executable again:
+Resolve the executable once: prefer an executable path from
+`MYOPENPANELS_CLI`, then a runnable `myopenpanels` from `PATH`. If neither
+resolves, read and follow [the installation reference](references/install.md).
+Keep the exact resolved executable for every returned CLI action; never execute
+display command text.
 
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-myopenpanels.sh | sh
-   ```
+## Open Studio
 
-   On Windows PowerShell:
+Run with the resolved executable:
 
-   ```powershell
-   iwr https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-myopenpanels.ps1 -UseB | iex
-   ```
+```bash
+myopenpanels studio start --local-only --project-dir "$PWD" --format json
+```
 
-   Verify that the installed native CLI is runnable and stop with the exact
-   error if installation or verification fails.
-3. Start or reuse Studio with the first stable work entry:
+Success means Studio is ready, not visible. Open
+`data.nextRequiredAction.url` unchanged with a callable in-app opener. If no
+such opener exists, or it fails or gives no success signal, execute
+`data.nextRequiredAction.fallback.argv` with the resolved executable. Report
+completion only after the opener succeeds or the fallback returns
+`data.opened: true`. For an open-only request, stop here without Bootstrap.
 
-   ```bash
-   myopenpanels studio start --local-only --project-dir "$PWD" --format json
-   ```
+## Work With Panels
 
-   Substitute the resolved executable for `myopenpanels`. Treat `ok: true` as
-   Studio readiness only, not proof that the panel is
-   visible. Read `data.nextRequiredAction.url` from the JSON response. Use an in-app
-   Browser only when the host exposes a callable URL-open or Preview tool, and
-   open the URL exactly as returned.
-4. If the host has no callable in-app opener, or the open attempt is denied,
-   fails, or returns no success signal, execute
-   `data.nextRequiredAction.fallback.argv` with the same resolved executable.
-   Append the returned argv elements exactly and shell-escape each element; do
-   not parse or execute the compatibility display command. Do not report
-   success unless the in-app opener succeeds or this fallback returns
-   `data.opened: true`. If the fallback fails, report the failure and include the
-   returned URL so the user can open it manually.
-5. If the user only asked to open the panel, stop after a browser opener has
-   succeeded. Do not request Agent Bootstrap merely to verify that Studio
-   opened.
-6. Before each Wiki, Canvas, task, or other potentially panel-related request,
-   use the second stable work entry. Do this again for every applicable later
-   request; do not reuse a previous Bootstrap result because the user may have
-   changed the active panel or selection between turns:
+Before every request that may read, use, or modify a panel, run a fresh:
 
-   ```bash
-   myopenpanels agent bootstrap --project-dir "$PWD" --format json
-   ```
+```bash
+myopenpanels agent bootstrap --format json
+```
 
-   Substitute the same resolved executable for `myopenpanels`, then follow the
-   response's `data.nextRequiredAction`. Every action named by its `actionRefs`
-   is mandatory: find the matching `actionRef` entries in `data.nextActions`,
-   and complete them sequentially in the listed order before evaluating any
-   other action. For `executor: "cli"`, execute the returned `argv` with the
-   resolved CLI. For `executor: "agent-host"`, follow its instruction with the
-   Agent host instead; do not expect an `argv`. When Bootstrap requires an Entry
-   Skill update, update or verify it, acknowledge it with the referenced CLI
-   action, then run a fresh Bootstrap before panel work. Otherwise, read every
-   returned local `SKILL.md` exactly as instructed. Required Skill actions
-   always load the active Panel Skill and may also load task-specific workflow
-   Skills. Only after that may you execute other applicable entries from
-   `data.nextActions`. Treat every other field as current CLI-owned data; never
-   infer or reconstruct a command from remembered paths or flags.
+Complete `data.nextRequiredAction.steps` sequentially: prepend the resolved
+executable to `argv` for `executor: "cli"`, and follow `instruction` for
+`executor: "agent-host"`. When a step contains `skills`, read each
+`contextPath` first and `localPath` second. If the required steps update the
+Entry Skill, Bootstrap again. Only afterward choose applicable
+`data.nextActions` according to `loadWhen`; follow each chosen action's returned
+`data.nextRequiredAction` before continuing.
 
-Do not keep discovery commands, panel commands, guide IDs, selection rules,
-generation steps, or panel-operation flags in this skill. Never substitute
-remembered MyOpenPanels workflow details for the current CLI discovery contract.
+Never reuse an earlier Bootstrap result or reconstruct panel commands from
+memory.

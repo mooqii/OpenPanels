@@ -417,6 +417,81 @@ fn studio_start_json_reuses_same_project_studio() {
 }
 
 #[test]
+fn agent_bootstrap_without_project_dir_uses_user_visible_studio() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let (port, server) = fake_studio_server(1);
+    let server_url = format!("http://127.0.0.1:{port}");
+    let session = StudioSession {
+        system_browser_url: Some(server_url.clone()),
+        context_dir: paths.context_dir.display().to_string(),
+        context_id: paths.context_id.clone(),
+        context_id_source: paths.context_id_source.clone(),
+        host: Some("127.0.0.1".to_owned()),
+        lan_server_urls: Some(Vec::new()),
+        local_server_url: Some(server_url.clone()),
+        log_path: paths.context_dir.join("studio.log").display().to_string(),
+        pid: std::process::id(),
+        port,
+        project_dir: paths.project_dir.display().to_string(),
+        server_url,
+        started_at: "2026-07-12T00:00:00.000Z".to_owned(),
+        storage_dir: paths.storage_dir.display().to_string(),
+    };
+    record_current_studio(&paths, &session).expect("current studio");
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bootstrap",
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let payload = serde_json::from_str::<Value>(&stdout).expect("bootstrap");
+    assert_eq!(payload["focus"]["projectId"].as_str().is_some(), true);
+    assert_eq!(
+        payload["nextRequiredAction"]["intent"],
+        "complete-required-steps"
+    );
+    server.join().expect("server thread");
+}
+
+#[test]
+fn agent_bootstrap_without_visible_studio_has_direct_recovery() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let storage_dir = temp.path().join(".myopenpanels");
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bootstrap",
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+
+    assert_eq!(code, 1, "{stderr}{stdout}");
+    let payload = serde_json::from_str::<Value>(&stdout).expect("error");
+    assert_eq!(payload["code"], "no_current_studio");
+    assert!(payload["recovery"]
+        .as_str()
+        .unwrap()
+        .contains("agent bootstrap --format json"));
+}
+
+#[test]
 fn panel_commands_follow_borrowed_running_studio_context() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
@@ -761,33 +836,19 @@ fn project_read_commands_bootstrap_project() {
     ]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(bootstrap["protocolVersion"], 4);
+    assert_eq!(bootstrap["protocolVersion"], 5);
     assert_eq!(bootstrap["commandCatalogVersion"], 4);
     assert_eq!(bootstrap["panel"]["context"]["panelKind"], "canvas");
     assert_eq!(bootstrap["panel"]["selection"]["supported"], true);
     assert!(bootstrap.get("capabilities").is_none());
     assert_eq!(
-        bootstrap["discovery"]["activePanelSkill"]["id"],
-        "canvas-panel"
-    );
-    assert_eq!(
-        bootstrap["discovery"]["activePanelSkill"]["readCommand"],
-        "myopenpanels agent skill read --skill-id canvas-panel --format json"
-    );
-    assert_eq!(
         bootstrap["nextRequiredAction"]["intent"],
-        "load-required-skills"
+        "complete-required-steps"
     );
-    assert_eq!(
-        bootstrap["nextRequiredAction"]["actionRefs"],
-        json!(["active-panel-skill"])
-    );
-    assert_eq!(
-        bootstrap["nextActions"][0]["actionRef"],
-        "active-panel-skill"
-    );
-    assert_eq!(bootstrap["nextActions"][0]["skillId"], "canvas-panel");
-    assert_eq!(bootstrap["nextActions"][0]["required"], true);
+    let required_skill = &bootstrap["nextRequiredAction"]["steps"][0]["skills"][0];
+    assert_eq!(required_skill["id"], "canvas-panel");
+    assert!(Path::new(required_skill["contextPath"].as_str().unwrap()).is_file());
+    assert!(Path::new(required_skill["localPath"].as_str().unwrap()).is_file());
 }
 
 #[test]
@@ -935,13 +996,13 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     let envelope = serde_json::from_str::<Value>(&raw_stdout).expect("envelope");
     assert_eq!(envelope["intent"], "agent.bootstrap.read");
     let payload = &envelope["data"];
-    assert_eq!(payload["protocolVersion"], 4);
+    assert_eq!(payload["protocolVersion"], 5);
     assert!(payload.get("supportedProtocolVersions").is_none());
     assert_eq!(payload["cliVersion"], VERSION);
     assert_eq!(payload["commandCatalogVersion"], 4);
     assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
-    assert_eq!(payload["entrySkill"]["id"], "myopenpanels");
-    assert!(payload["entrySkill"].get("requiredVersion").is_none());
+    assert!(payload.get("entrySkill").is_none());
+    assert!(payload.get("entrySkillUpdate").is_none());
     assert_eq!(payload["focus"]["panelKind"], "wiki");
     assert_eq!(payload["panel"]["context"]["panelKind"], "wiki");
     assert_eq!(payload["panel"]["contextTruncated"], false);
@@ -950,14 +1011,9 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert_eq!(payload["operations"]["items"], json!([]));
     assert_eq!(
         payload["nextRequiredAction"]["intent"],
-        "load-required-skills"
+        "complete-required-steps"
     );
     assert_eq!(payload["nextRequiredAction"]["required"], true);
-    assert_eq!(
-        payload["nextRequiredAction"]["actionIntent"],
-        "agent.skill.read"
-    );
-    assert_eq!(payload["discovery"]["activePanelSkill"]["id"], "wiki-panel");
     assert!(payload["discovery"]["recommendedScopes"]
         .as_array()
         .unwrap()
@@ -967,23 +1023,14 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
         assert_action_parses(action);
         assert!(action["loadWhen"].as_str().is_some());
     }
-    let required_skill_action = &payload["nextActions"][0];
-    assert_eq!(required_skill_action["intent"], "agent.skill.read");
-    assert_eq!(required_skill_action["required"], true);
-    assert_eq!(required_skill_action["actionRef"], "active-panel-skill");
-    assert_eq!(required_skill_action["skillId"], "wiki-panel");
-    assert!(required_skill_action["argv"]
-        .as_array()
-        .is_some_and(|argv| argv.windows(2).any(|pair| {
-            pair[0] == "--project-dir" && pair[1] == project_dir.to_string_lossy().as_ref()
-        })));
+    let required_skill = &payload["nextRequiredAction"]["steps"][0]["skills"][0];
+    assert_eq!(required_skill["id"], "wiki-panel");
+    assert!(Path::new(required_skill["contextPath"].as_str().unwrap()).is_file());
+    assert!(Path::new(required_skill["localPath"].as_str().unwrap()).is_file());
     assert!(payload["discovery"].get("capabilityIndexAction").is_none());
     assert!(payload["discovery"].get("capabilityListActions").is_none());
     assert!(payload["discovery"].get("guideListAction").is_none());
     assert!(payload["discovery"].get("skillListAction").is_none());
-    assert!(payload["discovery"]["activePanelSkill"]
-        .get("readAction")
-        .is_none());
     for removed in [
         "capabilities",
         "availableGuides",
@@ -1196,7 +1243,13 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     )
     .expect("paths");
     for skill in crate::agent::list_agent_skills(&paths).expect("skills") {
-        for intent in skill.skill.requires_capabilities {
+        let required = skill.skill.requires_capabilities;
+        if skill.skill.id == "canvas-panel" {
+            assert!(!required
+                .iter()
+                .any(|intent| intent == "canvas.selection.export"));
+        }
+        for intent in required {
             assert!(
                 crate::cli::registry::capability_payload(&intent).is_some(),
                 "skill {} requires missing capability {intent}",
@@ -1315,23 +1368,20 @@ fn agent_bootstrap_delivers_entry_skill_update_until_the_context_acknowledges_it
     );
     assert_eq!(
         pending["nextRequiredAction"]["intent"],
+        "complete-required-steps"
+    );
+    assert_eq!(
+        pending["nextRequiredAction"]["reason"],
         "update-entry-skill"
     );
+    let required_steps = pending["nextRequiredAction"]["steps"].as_array().unwrap();
+    assert_eq!(required_steps[0]["executor"], "agent-host");
     assert_eq!(
-        pending["nextRequiredAction"]["actionRefs"],
-        json!(["entry-skill-update", "entry-skill-update-ack"])
-    );
-    assert_eq!(pending["nextActions"][0]["executor"], "agent-host");
-    assert_eq!(
-        pending["nextActions"][0]["intent"],
+        required_steps[0]["intent"],
         "agent-host.skill.update-required"
     );
-    assert_action_parses(&pending["nextActions"][1]);
-    assert!(pending["nextActions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|action| action.get("skillId").is_none()));
+    assert_action_parses(&required_steps[1]);
+    assert_eq!(pending["nextActions"], json!([]));
 
     let event_id = pending["entrySkillUpdate"]["eventId"]
         .as_str()
@@ -1395,13 +1445,16 @@ fn agent_bootstrap_delivers_entry_skill_update_until_the_context_acknowledges_it
     assert!(normal.get("entrySkillUpdate").is_none());
     assert_eq!(
         normal["nextRequiredAction"]["intent"],
-        "load-required-skills"
+        "complete-required-steps"
     );
-    assert_eq!(normal["nextActions"][0]["skillId"], "wiki-panel");
+    assert_eq!(
+        normal["nextRequiredAction"]["steps"][0]["skills"][0]["id"],
+        "wiki-panel"
+    );
 }
 
 #[test]
-fn agent_bootstrap_requires_panel_and_wiki_task_authoring_skills_by_reference() {
+fn agent_bootstrap_prepares_panel_and_wiki_task_authoring_skills() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -1437,28 +1490,22 @@ fn agent_bootstrap_requires_panel_and_wiki_task_authoring_skills_by_reference() 
     );
     let envelope = serde_json::from_str::<Value>(&stdout).expect("bootstrap");
     let payload = &envelope["data"];
-    assert_eq!(
-        payload["nextRequiredAction"]["actionRefs"],
-        json!(["active-panel-skill", "next-task-authoring-skill"])
-    );
-    let required_actions = payload["nextActions"]
+    let required_skills = payload["nextRequiredAction"]["steps"][0]["skills"]
         .as_array()
-        .unwrap()
-        .iter()
-        .filter(|action| action["required"] == true)
-        .collect::<Vec<_>>();
-    assert_eq!(required_actions.len(), 2);
-    assert_eq!(required_actions[0]["skillId"], "wiki-panel");
-    assert_eq!(required_actions[1]["skillId"], "karpathy-llm-wiki");
-    assert_eq!(required_actions[1]["taskId"], task_id);
-    assert!(required_actions[1]["argv"]
-        .as_array()
-        .is_some_and(|argv| argv
-            .windows(2)
-            .any(|pair| pair[0] == "--task-id" && pair[1] == task_id)));
-    required_actions
-        .iter()
-        .for_each(|action| assert_action_parses(action));
+        .unwrap();
+    assert_eq!(required_skills.len(), 2);
+    assert_eq!(required_skills[0]["id"], "wiki-panel");
+    assert_eq!(required_skills[1]["id"], "karpathy-llm-wiki");
+    assert_eq!(required_skills[1]["taskId"], task_id);
+    for skill in required_skills {
+        let context_path = Path::new(skill["contextPath"].as_str().unwrap());
+        let local_path = Path::new(skill["localPath"].as_str().unwrap());
+        assert!(context_path.is_file());
+        assert!(local_path.is_file());
+    }
+    let authoring_context = fs::read_to_string(required_skills[1]["contextPath"].as_str().unwrap())
+        .expect("authoring loader context");
+    assert!(authoring_context.contains(task_id));
 }
 
 #[test]
@@ -3900,13 +3947,26 @@ fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing()
 #[test]
 fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
-    assert!(skill.contains("version: \"3.4\""));
-    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "3.4");
+    let install = include_str!("../../../../skills/myopenpanels/references/install.md");
+    assert!(skill.contains("version: \"4.1\""));
+    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "4.1");
+    assert!(skill.lines().count() <= 60);
+    assert!(skill.contains("references/install.md"));
+    assert!(!skill.contains("curl -fsSL"));
+    assert!(install.contains("failed `PATH` lookup does not"));
+    assert!(install.contains("${MYOPENPANELS_INSTALL_DIR:-$HOME/.local/bin}/myopenpanels"));
+    assert!(install.contains(".local\\bin\\myopenpanels.exe"));
+    assert!(!skill.contains("myopenpanels-dev"));
+    assert!(!skill.contains("checkout-local"));
+    assert!(!install.contains("myopenpanels-dev"));
+    assert!(!install.contains("checkout-local"));
     assert!(!skill.contains("minCliVersion"));
     assert!(!skill.contains("protocol-version"));
     assert!(skill
         .contains("myopenpanels studio start --local-only --project-dir \"$PWD\" --format json"));
-    assert!(skill.contains("myopenpanels agent bootstrap --project-dir \"$PWD\" --format json"));
+    assert!(skill.contains("myopenpanels agent bootstrap --format json"));
+    assert!(!skill.contains("agent bootstrap --project-dir"));
+    assert!(skill.contains("Before every request that may read, use, or modify"));
     assert!(!skill.contains("myopenpanels studio open-system-browser"));
     assert!(!skill.contains("myopenpanels agent capability"));
     assert!(!skill.contains("myopenpanels panel "));
@@ -3922,17 +3982,15 @@ fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     assert!(!skill.contains("readAction"));
     assert!(!skill.contains("protocolVersion"));
     assert!(!skill.contains("commandCatalogVersion"));
-    assert!(skill.contains("Studio readiness only"));
-    assert!(skill.contains("If the user only asked to open the panel"));
-    assert!(skill.contains("Do not request Agent Bootstrap merely to verify"));
-    assert!(skill.contains("run a fresh Agent Bootstrap"));
-    assert!(skill.contains("Do not bootstrap for requests clearly unrelated"));
-    assert!(skill.contains("do not reuse a previous Bootstrap result"));
-    assert!(skill.contains("Every action named by its `actionRefs`"));
-    assert!(skill.contains("do not expect an `argv`"));
-    assert!(skill.contains("acknowledge it with the referenced CLI"));
-    assert!(skill.contains("task-specific workflow"));
-    assert!(skill.contains("evaluating any"));
+    assert!(skill.contains("Success means Studio is ready, not visible"));
+    assert!(skill.contains("For an open-only request, stop here without Bootstrap"));
+    assert!(skill.contains("run a fresh `myopenpanels agent bootstrap"));
+    assert!(skill.contains("work clearly unrelated to MyOpenPanels"));
+    assert!(skill.contains("Never reuse an earlier Bootstrap result"));
+    assert!(skill.contains("data.nextRequiredAction.steps"));
+    assert!(skill.contains("`contextPath` first and `localPath` second"));
+    assert!(skill.contains("`executor: \"agent-host\"`"));
+    assert!(skill.contains("If the required steps update the"));
     assert!(skill.contains("data.opened: true"));
     assert!(skill.contains("--local-only"));
     assert!(!skill.contains("--no-open"));

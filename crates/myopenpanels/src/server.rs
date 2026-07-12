@@ -17,7 +17,7 @@ use crate::types::PanelKind;
 use crate::update::{check_for_update, download_update, install_update};
 use crate::wiki;
 use axum::body::Body;
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -260,6 +260,14 @@ fn build_router(
             get(api_get_panel_selection).put(api_save_panel_selection),
         )
         .route(
+            "/api/projects/{project_id}/panels/{panel_id}/selection-materializations",
+            get(api_get_selection_materialization),
+        )
+        .route(
+            "/api/projects/{project_id}/panels/{panel_id}/selection-materializations/{request_id}",
+            post(api_complete_selection_materialization),
+        )
+        .route(
             "/api/projects/{project_id}/panels/{panel_id}/assets",
             post(api_write_panel_asset),
         )
@@ -269,6 +277,7 @@ fn build_router(
         )
         .route("/", get(index))
         .route("/{*path}", get(static_asset))
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(cors)
         .layer(middleware::from_fn(trace_api_middleware))
         .with_state(Arc::new(AppState {
@@ -1153,7 +1162,6 @@ async fn api_get_panel_state(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SelectionBody {
-    image_data_url: Option<String>,
     selection: Option<Value>,
 }
 
@@ -1181,27 +1189,6 @@ async fn api_save_panel_selection(
     Json(body): Json<SelectionBody>,
 ) -> Response {
     let result = Storage::open(&state.paths).and_then(|storage| {
-        let mut asset_ref = body
-            .selection
-            .as_ref()
-            .and_then(|selection| selection.get("assetRef"))
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        if let Some(data_url) = body
-            .image_data_url
-            .as_deref()
-            .filter(|value| !value.is_empty())
-        {
-            let image = data_url_to_buffer(data_url)?;
-            let written = storage.write_asset_from_buffer(
-                &project_id,
-                &panel_id,
-                "__selection/current.png",
-                &image.bytes,
-                true,
-            )?;
-            asset_ref = Some(written.asset_ref);
-        }
         let selected_shape_ids = body
             .selection
             .as_ref()
@@ -1216,6 +1203,16 @@ async fn api_save_panel_selection(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let asset_ref = selected_shapes
+            .iter()
+            .find_map(|shape| shape.pointer("/asset/assetRef").and_then(Value::as_str))
+            .or_else(|| {
+                body.selection
+                    .as_ref()
+                    .and_then(|selection| selection.get("assetRef"))
+                    .and_then(Value::as_str)
+            })
+            .map(str::to_owned);
         let selection = json!({
             "projectId": project_id,
             "panelId": panel_id,
@@ -1231,6 +1228,42 @@ async fn api_save_panel_selection(
     match result {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_get_selection_materialization(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, panel_id)): Path<(String, String)>,
+) -> Response {
+    match crate::selection::pending_materialization_request(&state.paths, &project_id, &panel_id) {
+        Ok(request) => json_response(StatusCode::OK, &json!({ "request": request })),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionMaterializationBody {
+    image_data_url: String,
+}
+
+async fn api_complete_selection_materialization(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, panel_id, request_id)): Path<(String, String, String)>,
+    Json(body): Json<SelectionMaterializationBody>,
+) -> Response {
+    let result = data_url_to_buffer(&body.image_data_url).and_then(|image| {
+        crate::selection::complete_materialization_request(
+            &state.paths,
+            &project_id,
+            &panel_id,
+            &request_id,
+            &image.bytes,
+        )
+    });
+    match result {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
     }
 }
 

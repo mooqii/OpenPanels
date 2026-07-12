@@ -37,17 +37,17 @@ MyOpenPanels Studio, and opens the MyOpenPanels panel URL returned by the CLI.
 The entry skill keeps itself small and stable. It uses the Rust-native
 `myopenpanels` CLI from GitHub Releases, then asks the CLI for
 `agent bootstrap`, which is the source of truth for wiki, canvas, and future panel
-workflows. Bootstrap normally performs no Entry Skill version comparison. After
-a CLI release changes the Entry Skill requirement, the next Bootstrap delivers
-a one-time Agent-host update check and keeps it pending until that Agent context
+workflows. A normal Bootstrap contains no Entry Skill update fields. After a CLI
+release changes the Entry Skill requirement, Bootstrap delivers a one-time
+Agent-host update check and keeps it pending until that Agent context
 acknowledges the installed version. The installed CLI remains authoritative for
 current capabilities and returned actions.
-Protocol v4 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes. It
-returns bounded Panel context and discovery references; command descriptors,
-Skills, Guides, Tasks, Operations, and selection details load on demand. Longer
-built-in agent resources live under `agent-resources/`. Wiki generation uses the
-`karpathy-llm-wiki` skill, which the CLI
-syncs into `.myopenpanels/skills/` at runtime.
+Protocol v5 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes. It
+prepares the required Panel and task-specific Skills locally and returns their
+ordered context and Skill paths in `nextRequiredAction.steps`; optional command
+descriptors, Tasks, and Operations remain progressively discoverable. Longer
+built-in Agent resources live under `agent-resources/` and are synced into the
+MyOpenPanels data directory at runtime.
 
 ## Development
 
@@ -115,7 +115,7 @@ an opener succeeds. Bootstrap is needed only for subsequent panel work.
 Agents can then use project-backed CLI commands:
 
 ```bash
-myopenpanels agent bootstrap --project-dir /path/to/project --format json
+myopenpanels agent bootstrap --format json
 ```
 
 These are the only stable Agent work entries. Follow each response's

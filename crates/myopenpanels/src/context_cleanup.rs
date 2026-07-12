@@ -16,6 +16,7 @@ const TRANSIENT_DIRS: &[&str] = &["bridge-runs"];
 pub fn cleanup_context_storage(paths: &MyOpenPanelsPaths) {
     let _ = cleanup_context_storage_at(paths, SystemTime::now());
     crate::operations::cleanup_operation_artifacts(paths);
+    crate::selection::cleanup_materializations(paths);
 }
 
 /// Removes per-context pointers to a Project that has already been deleted.

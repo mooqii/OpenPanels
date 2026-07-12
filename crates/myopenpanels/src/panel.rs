@@ -92,6 +92,14 @@ pub fn read_state(paths: &MyOpenPanelsPaths) -> Result<PanelStatePayload, CliErr
 pub fn read_selection(paths: &MyOpenPanelsPaths) -> Result<PanelSelectionEnvelope, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let focus = focus(paths, &bootstrap)?;
+    if bootstrap.active_panel_kind == PanelKind::Canvas {
+        let payload = crate::selection::read_selection_for_panel_materialized(
+            paths,
+            &bootstrap.project.id,
+            &bootstrap.panel.id,
+        )?;
+        return canvas_selection_envelope(payload.selection, focus);
+    }
     selection_for_bootstrap(paths, &bootstrap, focus)
 }
 
@@ -134,7 +142,13 @@ fn canvas_selection(
     focus: Value,
 ) -> Result<PanelSelectionEnvelope, CliError> {
     let payload = read_selection_for_panel(paths, &bootstrap.project.id, &bootstrap.panel.id)?;
-    let value = payload.selection;
+    canvas_selection_envelope(payload.selection, focus)
+}
+
+fn canvas_selection_envelope(
+    value: Value,
+    focus: Value,
+) -> Result<PanelSelectionEnvelope, CliError> {
     let is_explicit = value
         .get("isExplicitSelection")
         .and_then(Value::as_bool)

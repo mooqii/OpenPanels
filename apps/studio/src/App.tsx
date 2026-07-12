@@ -32,8 +32,10 @@ import {
   apiUrl,
   canvasRevisionFromState,
   canvasSnapshotFromState,
+  completeSelectionMaterialization,
   fetchActiveProjectId,
   fetchProjects,
+  fetchSelectionMaterializationRequest,
   fetchStudioHealth,
   fetchUpdateStatus,
   isNotFoundError,
@@ -113,6 +115,9 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   const canvasRevisionRef = useRef(0)
   const canvasSaveGenerationRef = useRef(0)
   const canvasDirtyRef = useRef(false)
+  const selectionRef = useRef<CanvasSelectionSnapshot | null>(null)
+  const selectionMaterializerRef = useRef<(() => string | null) | null>(null)
+  const materializationInFlightRef = useRef<string | null>(null)
   const runtimeContextIdRef = useRef<string | null>(null)
   const skipNextCanvasSaveRef = useRef(false)
   const operationStatusesRef = useRef<Map<string, string> | null>(null)
@@ -131,6 +136,10 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   useEffect(() => {
     appStateRef.current = appState
   }, [appState])
+
+  useEffect(() => {
+    selectionRef.current = selection
+  }, [selection])
 
   useEffect(() => {
     const version = appState?.buildInfo?.version
@@ -664,6 +673,53 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   }, [appState, canvasPanel, selection, transport])
 
   useEffect(() => {
+    if (!(appState && canvasPanel && appState.activePanelKind === "canvas"))
+      return
+    let cancelled = false
+    const poll = async () => {
+      if (cancelled || materializationInFlightRef.current) return
+      try {
+        const request = await fetchSelectionMaterializationRequest(
+          transport,
+          appState.project.id,
+          canvasPanel.id
+        )
+        if (!request) return
+        const current = selectionRef.current
+        const materialize = selectionMaterializerRef.current
+        if (!(current && materialize)) return
+        if (
+          request.selectedShapeIds.length !== current.selectedShapeIds.length ||
+          request.selectedShapeIds.some(
+            (shapeId) => !current.selectedShapeIds.includes(shapeId)
+          )
+        )
+          return
+        materializationInFlightRef.current = request.requestId
+        const imageDataUrl = materialize()
+        if (!imageDataUrl) return
+        await completeSelectionMaterialization(
+          transport,
+          appState.project.id,
+          canvasPanel.id,
+          request.requestId,
+          imageDataUrl
+        )
+      } catch (error) {
+        console.error("Failed to materialize MyOpenPanels selection", error)
+      } finally {
+        materializationInFlightRef.current = null
+      }
+    }
+    const timer = window.setInterval(poll, 250)
+    poll()
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [appState, canvasPanel, transport])
+
+  useEffect(() => {
     if (!loadedRuntimeVersion) return
     let cancelled = false
     let checking = false
@@ -848,6 +904,9 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             height="100vh"
             key={`${appState.project.id}:${canvasPanel?.id ?? "canvas"}`}
             onSelectionChange={setSelection}
+            onSelectionMaterializerChange={(materialize) => {
+              selectionMaterializerRef.current = materialize
+            }}
             onSnapshotChange={saveSnapshot}
             snapshot={canvasSnapshot}
             snapshotVersion={snapshotLoadVersion}

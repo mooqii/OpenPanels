@@ -24,8 +24,8 @@
 - Do not run broad `rg` searches before starting MyOpenPanels unless the CLI
   command fails.
 - For MyOpenPanels work after the Studio is running, call the second stable
-  entry with `scripts/myopenpanels-dev agent bootstrap --project-dir "$PWD"
-  --format json`, then execute only the returned action
+  entry with `scripts/myopenpanels-dev agent bootstrap --format json`, then
+  execute only the returned action
   `argv` arrays with the same resolved CLI executable.
 - Canvas, panel, wiki, and task commands target the current user-visible
   Project automatically. Do not pass context/session/panel ids unless you are

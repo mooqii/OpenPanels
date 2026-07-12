@@ -52,6 +52,9 @@ export interface CanvasPanelProps {
   height?: number | string
   initialSnapshot?: StoreSnapshot
   onSelectionChange?: (selection: CanvasSelectionSnapshot) => void
+  onSelectionMaterializerChange?: (
+    materialize: (() => string | null) | null
+  ) => void
   onSnapshotChange?: (snapshot: StoreSnapshot) => void
   readOnly?: boolean
   snapshot?: StoreSnapshot
@@ -83,6 +86,7 @@ export function CanvasPanel({
   width = "100%",
   onSnapshotChange,
   onSelectionChange,
+  onSelectionMaterializerChange,
 }: CanvasPanelProps) {
   const { t } = useMyOpenPanelsI18n()
   const displayTitle = titleContent ?? title ?? t`Untitled`
@@ -214,6 +218,7 @@ export function CanvasPanel({
           allowImagePaste
           height={dimensions.height}
           onSelectionChange={onSelectionChange}
+          onSelectionMaterializerChange={onSelectionMaterializerChange}
           onStageReady={handleStageReady}
           width={dimensions.width}
         >

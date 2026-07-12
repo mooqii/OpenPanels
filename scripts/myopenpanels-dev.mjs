@@ -17,6 +17,7 @@ function ensureRustCli() {
     join(repoRoot, "crates", "myopenpanels", "Cargo.toml"),
     join(repoRoot, "crates", "myopenpanels", "src"),
     join(repoRoot, "crates", "myopenpanels", "build.rs"),
+    join(repoRoot, "skills", "myopenpanels"),
     join(repoRoot, "agent-resources"),
     join(repoRoot, "apps", "studio", "dist"),
   ]

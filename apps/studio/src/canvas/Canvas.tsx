@@ -79,6 +79,9 @@ interface CanvasProps {
   height?: number
   onCanvasPointerDown?: () => void
   onSelectionChange?: (selection: CanvasSelectionSnapshot) => void
+  onSelectionMaterializerChange?: (
+    materialize: (() => string | null) | null
+  ) => void
   onStageReady?: () => void
   width?: number
 }
@@ -91,6 +94,7 @@ export function Canvas({
   disableCamera = false,
   onCanvasPointerDown,
   onSelectionChange,
+  onSelectionMaterializerChange,
   onStageReady,
 }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -202,19 +206,10 @@ export function Canvas({
         const summarizedShapes = selectedShapes.map((shape) =>
           summarizeSelectionShape(editor, shape)
         )
-        let imageDataUrl: string | null = null
-        if (selectedShapes.length > 0) {
-          try {
-            imageDataUrl = captureTransformer(transform.transformerRef.current)
-          } catch (error) {
-            console.warn("Failed to capture canvas selection preview", error)
-          }
-        }
         onSelectionChange({
           assetRef:
             summarizedShapes.find((shape) => shape.asset?.assetRef)?.asset
               ?.assetRef ?? null,
-          imageDataUrl,
           selectedShapeIds: selectedShapes.map((shape) => shape.id),
           selectedShapes: summarizedShapes,
         })
@@ -227,7 +222,20 @@ export function Canvas({
         window.cancelAnimationFrame(captureFrame)
       }
     }
-  }, [editor, onSelectionChange, selectedShapes, transform.transformerRef])
+  }, [editor, onSelectionChange, selectedShapes])
+
+  useEffect(() => {
+    if (!onSelectionMaterializerChange) return
+    onSelectionMaterializerChange(() => {
+      if (selectedShapes.length === 0) return null
+      return captureTransformer(transform.transformerRef.current)
+    })
+    return () => onSelectionMaterializerChange(null)
+  }, [
+    onSelectionMaterializerChange,
+    selectedShapes,
+    transform.transformerRef.current,
+  ])
 
   // Transformer nodes (filter out crop shape when in crop mode)
   const effectiveTransformerNodes = useMemo(() => {

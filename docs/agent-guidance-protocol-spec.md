@@ -1,4 +1,4 @@
-# Agent Guidance Protocol v4
+# Agent Guidance Protocol v5
 
 ## Purpose
 
@@ -12,7 +12,7 @@ native CLI, starts or reuses Studio, and follows the launch response's
 `data.nextRequiredAction`. Bootstrap is requested only before panel work, not to
 verify an open-only task.
 
-Protocol v4 supersedes Protocol v3. Protocol and catalog versions are diagnostic
+Protocol v5 supersedes the pre-release Protocol v4. Protocol and catalog versions are diagnostic
 metadata, not inputs to Entry Skill behavior. The standard CLI envelope remains
 at `schemaVersion: 1`.
 
@@ -27,17 +27,16 @@ Studio -> local server -> SQLite/files
 
 The CLI does not push prompts into the Agent. A normal discovery flow is:
 
-1. Run `agent bootstrap --project-dir <project> --format json`.
-2. If Bootstrap returns `update-entry-skill`, complete its one-time Agent-host
-   update check and acknowledgement, then rerun Bootstrap before panel work.
-3. Follow `data.nextRequiredAction.actionRefs` and execute every referenced Skill
-   action sequentially in the listed order before evaluating any other action.
-   This always includes the active Panel Skill and can also include the next Wiki
-   Task's authoring Skill.
-4. Read every returned local `SKILL.md` as instructed.
-5. Choose any remaining applicable entries from `data.nextActions` according to
+1. Run `agent bootstrap --format json`. Bootstrap resolves the running,
+   user-visible Studio and does not depend on the Agent's working directory.
+2. Complete every entry in `data.nextRequiredAction.steps` sequentially. A
+   normal Bootstrap returns an Agent-host step containing the prepared required
+   Skills. Read each `contextPath` first and `localPath` second.
+3. If `nextRequiredAction.reason` is `update-entry-skill`, complete its one-time
+   Agent-host update and CLI acknowledgement steps, then rerun Bootstrap.
+4. Choose any remaining applicable entries from `data.nextActions` according to
    `loadWhen`.
-6. Execute their `argv` with the same resolved CLI executable and repeat against
+5. Execute their `argv` with the same resolved CLI executable and repeat against
    each next response until the user request is complete.
 
 ## Bootstrap Contract
@@ -54,43 +53,39 @@ Bootstrap `data` contains only:
 - bounded Panel Module context and an explicit-selection summary;
 - Task counts and at most one next-Task reference;
 - active Operation count and at most three Operation references;
-- capability discovery commands, the required active Panel Skill reference,
-  and the optional Task Queue Skill reference;
-- a `load-required-skills` action that references every mandatory Skill load.
+- optional capability, Task, Operation, and Skill discovery actions;
+- a `complete-required-steps` action containing ordered local context and Skill
+  paths for every mandatory Skill load.
 
 Normally Bootstrap contains no Entry Skill version check or update reminder. A
 new CLI release latches its compiled Entry Skill requirement into the local
 Agent control inbox. Until the current Agent context acknowledges that one-time
-requirement, Bootstrap returns a compact `update-entry-skill` response instead
-of Panel Skill and discovery actions. It contains one required Agent-host action
-and one required CLI acknowledgement action. After acknowledgement, subsequent
+requirement, Bootstrap returns `reason: update-entry-skill` instead of prepared
+Panel Skills and discovery actions. Its required steps contain one Agent-host
+action and one CLI acknowledgement action. After acknowledgement, subsequent
 Bootstraps return the normal payload without Entry Skill update fields.
 
 Panel context is bounded to depth 4, strings of 256 UTF-8 bytes, arrays of 16
 items, and objects of 32 fields. `contextTruncated` reports whether this happened.
 Project, Panel, Task, and Operation identity fields are never shortened.
 
-Bootstrap does not contain the full capability catalog or Skill content,
-Task or Operation records, selection values, local paths, or Studio binding.
-Because the Entry Skill requests Bootstrap only for panel-related work,
-`activePanelSkill` is mandatory whenever Bootstrap is called. Its read action is
-the first entry in `nextActions`, carries `required: true` and a stable
-`actionRef`, and includes the project directory needed to execute it without
-reconstructing context. When the active Wiki panel has a next ready Task,
-Bootstrap also requires the authoring Skill captured by that Task and passes its
-task id to the Skill loader. `nextRequiredAction.actionRefs` is the authoritative
-ordered set of mandatory sequential loads; executable `argv` arrays remain
-solely in `nextActions`.
+Bootstrap does not contain the full capability catalog, Skill bodies, Task or
+Operation records, selection assets, or Studio binding. It synchronizes built-in
+Skills and writes bounded dynamic loader context under the current Studio
+context directory. `nextRequiredAction.steps[].skills` contains the ordered
+`contextPath` and `localPath` pairs. The active Panel Skill is always first; a
+ready Wiki Task's captured authoring Skill follows when applicable. Capability
+read actions required by those Skills are merged into `nextActions`.
 
 ## Progressive Discovery
 
-Every Agent-facing response exposes follow-up CLI references only through the
-top-level `nextActions` array. CLI actions use `executor: "cli"` semantics: their
+Optional follow-up CLI references use the top-level `nextActions` array. CLI
+actions use `executor: "cli"` semantics: their
 `argv` excludes the executable, and the Agent prepends the exact CLI executable
-it originally resolved. A required host step may be expressed directly by
-`nextRequiredAction` with `executor: "agent-host"` and an instruction instead of
-`argv`. Display `command` and `readCommand` strings are CLI-owned explanatory
-data, not execution inputs.
+it originally resolved. Required work appears only in
+`nextRequiredAction.steps`; Agent-host steps contain instructions instead of
+`argv`. Display command strings are CLI-owned explanatory data, not execution
+inputs.
 
 An `agent skill read` response uses a required `agent-host` action to identify
 the extracted local `SKILL.md`. Reading that file completes Panel Skill loading;
@@ -102,7 +97,9 @@ That response is not relied upon for delivery. The replacement CLI records its
 compiled Entry Skill requirement on the next Bootstrap, which also covers
 Studio-initiated updates performed by an older CLI updater. Bootstrap emits the
 required control actions only while the current context has not acknowledged
-the requirement; it does not perform a network or version check on normal calls.
+the requirement. Normal calls only compare the compiled requirement with local
+requirement and acknowledgement records; they perform no network or Agent-host
+Skill version check.
 
 `agent entry-skill acknowledge` records the installed version for the current
 Agent context. It rejects stale event ids and versions below the current
@@ -129,7 +126,7 @@ Skill local paths are returned by `agent skill read`.
 Canvas image generation and Wiki document generation remain persistent
 Operations. Begin captures the original target; read, complete, fail, and cancel
 continue to work across Project or Panel switches and restarts. Operation storage
-keeps schema version 2 and is deliberately independent from guidance Protocol v4.
+keeps schema version 2 and is deliberately independent from guidance Protocol v5.
 Filesystem artifacts for completed or cancelled Operations are retained for seven
 days, then removed during Studio housekeeping or later Operation activity. The
 small database record remains available for history. Active and retryable failed
@@ -140,20 +137,9 @@ Canvas completion still requires generation metadata. Wiki completion still
 checks `contentVersion` and returns `content_conflict` rather than overwriting a
 concurrent edit.
 
-## Compatibility Policy
+## Development Policy
 
-The permanent Agent work entry points are `studio start` and `agent bootstrap`.
-Their core flags and envelope fields are compatibility contracts. All other
-commands are discovered from returned actions and may evolve behind stable
-capability intents.
-
-The Entry Skill ignores `protocolVersion`, `commandCatalogVersion`, and
-`cliVersion`. Internal protocol and command catalog revisions may advance with
-the installed CLI, while the two entry commands, JSON envelope,
-`nextRequiredAction`, and `CommandActionRef` remain stable.
-
-User data, assets, Tasks, leases, deliveries, and Operations migrate forward
-across released CLI versions. Business commands, flags, Command Catalog
-projections, Guides, Panel Modules, internal Rust APIs, and Studio HTTP APIs only
-support the currently installed package. Older CLIs must reject future data
-schemas rather than downgrade or overwrite them.
+The project is pre-release. Protocol v5 is the only supported Agent guidance
+shape; Protocol v4 `actionRefs` are intentionally not emitted. User data and
+persistent Operations still migrate forward, but Agent protocol compatibility
+is not maintained until the public compatibility policy is established.

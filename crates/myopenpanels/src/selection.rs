@@ -4,10 +4,16 @@ use base64::Engine;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, SystemTime};
 
 const DATABASE_FILE_NAME: &str = "main.sqlite3";
+const MATERIALIZATION_WAIT: Duration = Duration::from_secs(5);
+const MATERIALIZATION_POLL: Duration = Duration::from_millis(50);
+const MATERIALIZATION_RETENTION: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +22,7 @@ pub struct SelectionPayload {
     pub selection_file: String,
     pub base64: Option<String>,
     pub mime_type: Option<String>,
+    pub image: Option<Value>,
     pub context_dir: String,
     pub context_id: String,
     pub context_id_source: String,
@@ -47,14 +54,41 @@ pub fn read_selection(
     let connection = open_connection(&database_path)?;
     let project_id = resolve_project_id(&connection, paths, requested_project_id)?;
     let panel_id = resolve_canvas_panel_id(&connection, &project_id)?;
-    read_selection_from_connection(
+    let mut payload = read_selection_from_connection(
         paths,
         &connection,
         &project_id,
         &panel_id,
         include_image_base64,
         true,
-    )
+    )?;
+    materialize_selection_image(paths, &mut payload)?;
+    embed_image_in_selection(&mut payload);
+    Ok(payload)
+}
+
+pub fn read_selection_for_panel_materialized(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    panel_id: &str,
+) -> Result<SelectionPayload, CliError> {
+    let mut payload = read_selection_for_panel(paths, project_id, panel_id)?;
+    if let Err(error) = materialize_selection_image(paths, &mut payload) {
+        payload.image = Some(json!({
+            "kind": "unavailable",
+            "errorCode": error.code(),
+            "message": error.message(),
+        }));
+    }
+    embed_image_in_selection(&mut payload);
+    Ok(payload)
+}
+
+fn embed_image_in_selection(payload: &mut SelectionPayload) {
+    if let (Some(object), Some(image)) = (payload.selection.as_object_mut(), payload.image.clone())
+    {
+        object.insert("image".to_owned(), image);
+    }
 }
 
 pub fn read_selection_for_panel(
@@ -117,10 +151,178 @@ fn read_selection_from_connection(
             .to_string(),
         base64,
         mime_type,
+        image: None,
         context_dir: paths.context_dir.display().to_string(),
         context_id: paths.context_id.clone(),
         context_id_source: paths.context_id_source.clone(),
         storage_dir: paths.storage_dir.display().to_string(),
+    })
+}
+
+fn materialize_selection_image(
+    paths: &MyOpenPanelsPaths,
+    payload: &mut SelectionPayload,
+) -> Result<(), CliError> {
+    if !payload
+        .selection
+        .get("isExplicitSelection")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let project_id = payload
+        .selection
+        .get("projectId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("Canvas selection has no project id."))?;
+    let panel_id = payload
+        .selection
+        .get("panelId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("Canvas selection has no panel id."))?;
+    let selected_shapes = payload
+        .selection
+        .get("selectedShapes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if selected_shapes.len() == 1 && is_simple_source_image(&selected_shapes[0]) {
+        if let Some(asset_ref) = selected_shapes[0]
+            .pointer("/asset/assetRef")
+            .and_then(Value::as_str)
+            .or_else(|| payload.selection.get("assetRef").and_then(Value::as_str))
+        {
+            let storage = crate::storage::Storage::open(paths)?;
+            let local_path = storage.asset_path(asset_ref)?;
+            if local_path.is_file() {
+                payload.image = Some(json!({
+                    "kind": "source",
+                    "assetRef": asset_ref,
+                    "localPath": local_path,
+                    "mimeType": mime_type_for_file(asset_ref),
+                }));
+                return Ok(());
+            }
+        }
+    }
+
+    cleanup_materializations(paths);
+    if !paths.context_dir.join("studio-session.json").is_file() {
+        return Err(CliError::with_code(
+            "selection_render_unavailable",
+            "Studio is not running, so the Canvas selection cannot be rendered.",
+        ));
+    }
+    let storage = crate::storage::Storage::open(paths)?;
+    let selection_revision = storage.read_panel_selection_revision(project_id, panel_id)?;
+    let panel_revision = storage.read_panel_state_revision(project_id, panel_id)?;
+    let selected_shape_ids = payload
+        .selection
+        .get("selectedShapeIds")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let fingerprint_source = serde_json::to_vec(&json!({
+        "projectId": project_id,
+        "panelId": panel_id,
+        "selectionRevision": selection_revision,
+        "selectedShapeIds": selected_shape_ids,
+        "selectedShapes": selected_shapes,
+    }))
+    .map_err(to_cli_error)?;
+    let request_id = format!("{:x}", Sha256::digest(fingerprint_source));
+    let artifact_path = materialization_artifacts_dir(paths).join(format!("{request_id}.png"));
+    if artifact_path.is_file() {
+        touch_materialization_lease(paths, &request_id);
+        payload.image = Some(materialized_image(
+            &request_id,
+            &artifact_path,
+            selection_revision,
+            panel_revision,
+        ));
+        return Ok(());
+    }
+
+    let requests_dir = materialization_requests_dir(paths);
+    fs::create_dir_all(&requests_dir).map_err(to_cli_error)?;
+    let request_path = requests_dir.join(format!("{request_id}.request.json"));
+    let result_path = requests_dir.join(format!("{request_id}.result.json"));
+    fs::write(
+        &request_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&json!({
+                "requestId": request_id,
+                "projectId": project_id,
+                "panelId": panel_id,
+                "selectionRevision": selection_revision,
+                "panelRevision": panel_revision,
+                "selectedShapeIds": selected_shape_ids,
+                "createdAt": crate::control::now_iso(),
+            }))
+            .map_err(to_cli_error)?
+        ),
+    )
+    .map_err(to_cli_error)?;
+
+    let started = std::time::Instant::now();
+    while started.elapsed() < MATERIALIZATION_WAIT {
+        if artifact_path.is_file() && result_path.is_file() {
+            let _ = fs::remove_file(&request_path);
+            let _ = fs::remove_file(&result_path);
+            touch_materialization_lease(paths, &request_id);
+            payload.image = Some(materialized_image(
+                &request_id,
+                &artifact_path,
+                selection_revision,
+                panel_revision,
+            ));
+            return Ok(());
+        }
+        thread::sleep(MATERIALIZATION_POLL);
+    }
+    let _ = fs::remove_file(&request_path);
+    Err(CliError::with_code(
+        "selection_render_timeout",
+        "Studio did not render the current Canvas selection within 5 seconds.",
+    ))
+}
+
+fn is_simple_source_image(shape: &Value) -> bool {
+    if shape.get("type").and_then(Value::as_str) != Some("image") {
+        return false;
+    }
+    let props = shape.get("props").and_then(Value::as_object);
+    let number = |key: &str, default: f64| {
+        props
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_f64)
+            .unwrap_or(default)
+    };
+    let has_crop = props
+        .and_then(|value| value.get("crop"))
+        .is_some_and(|value| !value.is_null());
+    !has_crop
+        && number("rotation", 0.0) == 0.0
+        && number("scaleX", 1.0) >= 0.0
+        && number("scaleY", 1.0) >= 0.0
+        && number("opacity", 1.0) == 1.0
+        && number("cornerRadius", 0.0) == 0.0
+}
+
+fn materialized_image(
+    request_id: &str,
+    path: &Path,
+    selection_revision: i64,
+    panel_revision: i64,
+) -> Value {
+    json!({
+        "kind": "composite",
+        "materializationId": request_id,
+        "localPath": path,
+        "mimeType": "image/png",
+        "selectionRevision": selection_revision,
+        "panelRevision": panel_revision,
     })
 }
 
@@ -152,6 +354,8 @@ pub fn read_selection_asset_for_panel(
     output_path: &str,
 ) -> Result<SelectionAssetPayload, CliError> {
     let mut selection = read_selection_for_panel(paths, project_id, panel_id)?;
+    materialize_selection_image(paths, &mut selection)?;
+    embed_image_in_selection(&mut selection);
     let is_explicit_selection = selection
         .selection
         .get("isExplicitSelection")
@@ -163,14 +367,6 @@ pub fn read_selection_asset_for_panel(
             "No explicit Canvas selection asset is available.",
         ));
     }
-    let asset_ref = selection
-        .selection
-        .get("assetRef")
-        .and_then(Value::as_str)
-        .ok_or_else(|| CliError::new("The explicit Canvas selection has no exportable asset."))?
-        .to_owned();
-    selection.base64 = Some(read_asset_base64(&paths.storage_dir, &asset_ref)?);
-    selection.mime_type = Some(mime_type_for_file(&asset_ref));
     write_selection_asset(selection, output_path)
 }
 
@@ -180,7 +376,7 @@ pub fn read_selection_asset_to_file(
     output_path: &str,
     allow_fallback: bool,
 ) -> Result<SelectionAssetPayload, CliError> {
-    let selection = read_selection(paths, requested_project_id, true)?;
+    let selection = read_selection(paths, requested_project_id, false)?;
     let is_explicit_selection = selection
         .selection
         .get("isExplicitSelection")
@@ -199,19 +395,36 @@ fn write_selection_asset(
     output_path: &str,
 ) -> Result<SelectionAssetPayload, CliError> {
     let asset_ref = selection
-        .selection
-        .get("assetRef")
+        .image
+        .as_ref()
+        .and_then(|image| image.get("assetRef"))
         .and_then(Value::as_str)
-        .ok_or_else(|| CliError::new("No MyOpenPanels selection asset is available."))?
+        .or_else(|| {
+            selection
+                .image
+                .as_ref()
+                .and_then(|image| image.get("materializationId"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| selection.selection.get("assetRef").and_then(Value::as_str))
+        .unwrap_or("materialized-selection")
         .to_owned();
-    let Some(base64) = selection.base64 else {
+    let bytes = if let Some(local_path) = selection
+        .image
+        .as_ref()
+        .and_then(|image| image.get("localPath"))
+        .and_then(Value::as_str)
+    {
+        fs::read(local_path).map_err(to_cli_error)?
+    } else if let Some(base64) = selection.base64 {
+        base64::engine::general_purpose::STANDARD
+            .decode(base64)
+            .map_err(to_cli_error)?
+    } else {
         return Err(CliError::new(
             "No MyOpenPanels selection asset is available.",
         ));
     };
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(base64)
-        .map_err(to_cli_error)?;
     let output_path = PathBuf::from(output_path);
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).map_err(to_cli_error)?;
@@ -220,11 +433,155 @@ fn write_selection_asset(
     Ok(SelectionAssetPayload {
         asset_ref,
         mime_type: selection
-            .mime_type
+            .image
+            .as_ref()
+            .and_then(|image| image.get("mimeType"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or(selection.mime_type)
             .unwrap_or_else(|| "application/octet-stream".to_owned()),
         output_path: output_path.display().to_string(),
         bytes: bytes.len(),
     })
+}
+
+pub fn pending_materialization_request(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    panel_id: &str,
+) -> Result<Option<Value>, CliError> {
+    let dir = materialization_requests_dir(paths);
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let mut entries = fs::read_dir(dir)
+        .map_err(to_cli_error)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".request.json"))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.metadata().and_then(|meta| meta.modified()).ok());
+    for entry in entries {
+        let raw = fs::read_to_string(entry.path()).map_err(to_cli_error)?;
+        let value = serde_json::from_str::<Value>(&raw).map_err(to_cli_error)?;
+        if value.get("projectId").and_then(Value::as_str) == Some(project_id)
+            && value.get("panelId").and_then(Value::as_str) == Some(panel_id)
+        {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+pub fn complete_materialization_request(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    panel_id: &str,
+    request_id: &str,
+    bytes: &[u8],
+) -> Result<Value, CliError> {
+    let request_id = sanitize_path_part(request_id);
+    let requests_dir = materialization_requests_dir(paths);
+    let request_path = requests_dir.join(format!("{request_id}.request.json"));
+    let raw = fs::read_to_string(&request_path).map_err(to_cli_error)?;
+    let request = serde_json::from_str::<Value>(&raw).map_err(to_cli_error)?;
+    if request.get("projectId").and_then(Value::as_str) != Some(project_id)
+        || request.get("panelId").and_then(Value::as_str) != Some(panel_id)
+    {
+        return Err(CliError::with_code(
+            "selection_materialization_mismatch",
+            "Selection materialization request targets a different panel.",
+        ));
+    }
+    let storage = crate::storage::Storage::open(paths)?;
+    let expected_selection = request
+        .get("selectionRevision")
+        .and_then(Value::as_i64)
+        .unwrap_or(-1);
+    if storage.read_panel_selection_revision(project_id, panel_id)? != expected_selection {
+        return Err(CliError::with_code(
+            "selection_changed",
+            "Canvas selection changed before it could be rendered.",
+        ));
+    }
+    let artifacts_dir = materialization_artifacts_dir(paths);
+    fs::create_dir_all(&artifacts_dir).map_err(to_cli_error)?;
+    let artifact_path = artifacts_dir.join(format!("{request_id}.png"));
+    fs::write(&artifact_path, bytes).map_err(to_cli_error)?;
+    touch_materialization_lease(paths, &request_id);
+    let result_path = requests_dir.join(format!("{request_id}.result.json"));
+    fs::write(
+        result_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&json!({
+                "requestId": request_id,
+                "localPath": artifact_path,
+                "bytes": bytes.len(),
+            }))
+            .map_err(to_cli_error)?
+        ),
+    )
+    .map_err(to_cli_error)?;
+    Ok(json!({ "requestId": request_id, "localPath": artifact_path, "bytes": bytes.len() }))
+}
+
+pub fn cleanup_materializations(paths: &MyOpenPanelsPaths) {
+    let now = SystemTime::now();
+    let artifacts_dir = materialization_artifacts_dir(paths);
+    if let Ok(entries) = fs::read_dir(&artifacts_dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("png") {
+                continue;
+            }
+            let lease_path = path.with_extension("lease");
+            let expired = fs::metadata(&lease_path)
+                .or_else(|_| entry.metadata())
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age > MATERIALIZATION_RETENTION);
+            if expired {
+                let _ = fs::remove_file(path);
+                let _ = fs::remove_file(lease_path);
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir(materialization_requests_dir(paths)) {
+        for entry in entries.filter_map(Result::ok) {
+            let expired = entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age > Duration::from_secs(60));
+            if expired {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+fn materialization_root(paths: &MyOpenPanelsPaths) -> PathBuf {
+    paths.storage_dir.join("selection-materializations")
+}
+
+fn materialization_requests_dir(paths: &MyOpenPanelsPaths) -> PathBuf {
+    materialization_root(paths).join("requests")
+}
+
+fn materialization_artifacts_dir(paths: &MyOpenPanelsPaths) -> PathBuf {
+    materialization_root(paths).join("artifacts")
+}
+
+fn touch_materialization_lease(paths: &MyOpenPanelsPaths, request_id: &str) {
+    let lease_path = materialization_artifacts_dir(paths).join(format!("{request_id}.lease"));
+    let _ = fs::write(lease_path, crate::control::now_iso());
 }
 
 fn resolve_project_id(
@@ -471,4 +828,139 @@ fn current_timestamp() -> String {
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {
     CliError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::{ensure_project_bootstrap, BootstrapRequest};
+    use crate::paths::resolve_myopenpanels_paths;
+    use crate::storage::Storage;
+
+    fn test_paths() -> (tempfile::TempDir, MyOpenPanelsPaths) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join("storage");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("selection-test"),
+        )
+        .expect("paths");
+        (temp, paths)
+    }
+
+    fn canvas_target(paths: &MyOpenPanelsPaths) -> (String, String) {
+        let bootstrap =
+            ensure_project_bootstrap(paths, BootstrapRequest::new()).expect("bootstrap");
+        let panel = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == crate::types::PanelKind::Canvas)
+            .expect("canvas panel");
+        (bootstrap.project.id, panel.panel.id.clone())
+    }
+
+    #[test]
+    fn single_selected_image_returns_existing_local_asset_without_rendering() {
+        let (_temp, paths) = test_paths();
+        let (project_id, panel_id) = canvas_target(&paths);
+        let storage = Storage::open(&paths).expect("storage");
+        let written = storage
+            .write_asset_from_buffer(&project_id, &panel_id, "source.png", b"png", false)
+            .expect("asset");
+        storage
+            .write_panel_selection(
+                &project_id,
+                &panel_id,
+                &json!({
+                    "projectId": project_id,
+                    "panelId": panel_id,
+                    "selectedShapeIds": ["shape:image"],
+                    "selectedShapes": [{
+                        "id": "shape:image",
+                        "type": "image",
+                        "asset": { "assetRef": written.asset_ref }
+                    }],
+                    "assetRef": written.asset_ref,
+                }),
+            )
+            .expect("selection");
+
+        let payload = read_selection_for_panel_materialized(&paths, &project_id, &panel_id)
+            .expect("selection");
+        assert_eq!(payload.selection["image"]["kind"], "source");
+        assert_eq!(
+            payload.selection["image"]["localPath"],
+            written.file_path.display().to_string()
+        );
+        assert!(!materialization_root(&paths).exists());
+    }
+
+    #[test]
+    fn composite_selection_is_rendered_once_to_an_immutable_artifact() {
+        let (_temp, paths) = test_paths();
+        let (project_id, panel_id) = canvas_target(&paths);
+        fs::create_dir_all(&paths.context_dir).expect("context");
+        fs::write(paths.context_dir.join("studio-session.json"), "{}\n").expect("session");
+        Storage::open(&paths)
+            .expect("storage")
+            .write_panel_selection(
+                &project_id,
+                &panel_id,
+                &json!({
+                    "projectId": project_id,
+                    "panelId": panel_id,
+                    "selectedShapeIds": ["shape:1", "shape:2"],
+                    "selectedShapes": [
+                        { "id": "shape:1", "type": "geo" },
+                        { "id": "shape:2", "type": "geo" }
+                    ],
+                    "assetRef": null,
+                }),
+            )
+            .expect("selection");
+
+        let worker_paths = paths.clone();
+        let worker_project = project_id.clone();
+        let worker_panel = panel_id.clone();
+        let worker = std::thread::spawn(move || {
+            read_selection_for_panel_materialized(&worker_paths, &worker_project, &worker_panel)
+                .expect("materialized selection")
+        });
+        let request = (0..100)
+            .find_map(|_| {
+                let request = pending_materialization_request(&paths, &project_id, &panel_id)
+                    .expect("pending request");
+                if request.is_none() {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                request
+            })
+            .expect("request");
+        complete_materialization_request(
+            &paths,
+            &project_id,
+            &panel_id,
+            request["requestId"].as_str().unwrap(),
+            b"composite-png",
+        )
+        .expect("complete");
+        let payload = worker.join().expect("worker");
+        let local_path = payload.selection["image"]["localPath"]
+            .as_str()
+            .expect("local path");
+        assert_eq!(payload.selection["image"]["kind"], "composite");
+        assert_eq!(fs::read(local_path).expect("artifact"), b"composite-png");
+
+        let cached = read_selection_for_panel_materialized(&paths, &project_id, &panel_id)
+            .expect("cached selection");
+        assert_eq!(cached.selection["image"]["localPath"], local_path);
+        assert!(
+            pending_materialization_request(&paths, &project_id, &panel_id)
+                .expect("pending")
+                .is_none()
+        );
+    }
 }

@@ -21,7 +21,6 @@ export interface CanvasSelectionShape {
 
 export interface CanvasSelectionSnapshot {
   assetRef?: string | null
-  imageDataUrl?: string | null
   selectedShapeIds: string[]
   selectedShapes: CanvasSelectionShape[]
 }

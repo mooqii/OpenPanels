@@ -42,6 +42,10 @@ const entrySkill = readFileSync(
   new URL("skills/myopenpanels/SKILL.md", ROOT),
   "utf8"
 )
+const entrySkillInstall = readFileSync(
+  new URL("skills/myopenpanels/references/install.md", ROOT),
+  "utf8"
+)
 const entrySkillVersion = entrySkill.match(
   /^\s+version:\s*["']([^"']+)["']/m
 )?.[1]
@@ -58,11 +62,9 @@ assert(
   "MyOpenPanels entry skill must declare metadata.version."
 )
 for (const required of [
-  "install-myopenpanels.sh",
-  "install-myopenpanels.ps1",
   "agent bootstrap",
   "drawing",
-  "organizing or comparing materials",
+  "organizing",
   "writing",
   "open or launch MyOpenPanels",
   "打开面板",
@@ -70,6 +72,16 @@ for (const required of [
   assert(
     entrySkill.includes(required),
     `MyOpenPanels entry skill must retain ${required}.`
+  )
+}
+for (const required of [
+  "install-myopenpanels.sh",
+  "install-myopenpanels.ps1",
+  "MYOPENPANELS_INSTALL_DIR",
+]) {
+  assert(
+    entrySkillInstall.includes(required),
+    `MyOpenPanels install reference must retain ${required}.`
   )
 }
 for (const forbidden of [

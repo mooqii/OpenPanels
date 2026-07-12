@@ -431,7 +431,6 @@ export async function saveSelectionState(
   selection: CanvasSelectionSnapshot
 ) {
   const payload = {
-    imageDataUrl: selection.imageDataUrl,
     selection: {
       assetRef: selection.assetRef,
       selectedShapeIds: selection.selectedShapeIds,
@@ -447,6 +446,46 @@ export async function saveSelectionState(
       body: JSON.stringify(payload),
     }
   )
+}
+
+export interface SelectionMaterializationRequest {
+  requestId: string
+  selectedShapeIds: string[]
+}
+
+export async function fetchSelectionMaterializationRequest(
+  transport: MyOpenPanelsTransport,
+  projectId: string,
+  panelId: string
+): Promise<SelectionMaterializationRequest | null> {
+  const response = await apiFetch(
+    transport.apiBase,
+    `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/selection-materializations`
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const payload = (await response.json()) as {
+    request?: SelectionMaterializationRequest | null
+  }
+  return payload.request ?? null
+}
+
+export async function completeSelectionMaterialization(
+  transport: MyOpenPanelsTransport,
+  projectId: string,
+  panelId: string,
+  requestId: string,
+  imageDataUrl: string
+) {
+  const response = await apiFetch(
+    transport.apiBase,
+    `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/selection-materializations/${encodeURIComponent(requestId)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ imageDataUrl }),
+    }
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
 }
 
 export async function fetchTraceSnapshot(

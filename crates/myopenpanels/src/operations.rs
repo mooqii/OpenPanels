@@ -16,7 +16,7 @@ use std::fs;
 use std::path::Path;
 
 pub const OPERATION_PROTOCOL_VERSION: i64 = 2;
-const OPERATION_ARTIFACT_RETENTION_DAYS: i64 = 7;
+const TERMINAL_OPERATION_ARTIFACT_RETENTION_MINUTES: i64 = 30;
 
 fn operation_id() -> String {
     let random: u128 = rand::rng().random();
@@ -79,7 +79,7 @@ fn cleanup_artifacts_with_storage(
     storage: &Storage,
     now: chrono::DateTime<chrono::Utc>,
 ) {
-    let cutoff = (now - chrono::Duration::days(OPERATION_ARTIFACT_RETENTION_DAYS))
+    let cutoff = (now - chrono::Duration::minutes(TERMINAL_OPERATION_ARTIFACT_RETENTION_MINUTES))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let Ok(operation_ids) = storage.list_terminal_agent_operation_ids_before(&cutoff) else {
         return;
@@ -574,7 +574,7 @@ mod tests {
             (
                 "operation:recent-completed",
                 "completed",
-                Some("2026-01-09T00:00:00.001Z"),
+                Some("2026-01-15T23:30:00.001Z"),
             ),
             (
                 "operation:retryable-failed",

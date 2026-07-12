@@ -369,6 +369,39 @@ pub fn resolve_current_studio_session(
     }
 }
 
+pub fn resolve_focused_studio_session(
+    paths: &MyOpenPanelsPaths,
+) -> Result<Option<StudioSession>, CliError> {
+    if let Some(record) = read_current_studio_record(paths)? {
+        if process_exists(record.session.pid) && is_studio_healthy(&record.session) {
+            return Ok(Some(record.session));
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for path in studio_session_paths(paths)? {
+        let Some(session) = read_studio_session_file(&path)? else {
+            continue;
+        };
+        if !process_exists(session.pid) {
+            remove_file_if_exists(&path)?;
+            continue;
+        }
+        if is_studio_healthy(&session) {
+            candidates.push(session);
+        }
+    }
+    candidates.sort_by(|left, right| right.started_at.cmp(&left.started_at));
+    match candidates.as_slice() {
+        [] => Ok(None),
+        [session] => Ok(Some(session.clone())),
+        _ => Err(CliError::with_code(
+            "ambiguous_current_studio",
+            "Multiple running MyOpenPanels Studios are available. Focus the Studio window you want to use, then retry Agent Bootstrap.",
+        )),
+    }
+}
+
 pub fn running_project_studios(paths: &MyOpenPanelsPaths) -> Result<Vec<StudioSession>, CliError> {
     let mut candidates = Vec::new();
     for path in studio_session_paths(paths)? {

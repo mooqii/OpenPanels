@@ -9,7 +9,6 @@ taskTypes:
 requiresCapabilities:
   - panel.state.read
   - panel.selection.read
-  - canvas.selection.export
   - canvas.generation.begin
   - operation.complete
   - canvas.image.insert
@@ -36,6 +35,11 @@ Core rules:
 
 - CLI state and selection data are authoritative; do not infer selection from a
   screenshot.
+- Use the image `localPath` returned by selection read directly. Do not export
+  the selection as a routine preparation step.
+- Treat selection export as an exceptional user-facing copy operation. Discover
+  `canvas.selection.export` only when the user explicitly requests a file at a
+  particular path.
 - Never treat fallback content as an explicit user selection.
 - Begin target-bound generation before invoking an external image model.
 - Complete against the captured Canvas target even if the user switches panels.
