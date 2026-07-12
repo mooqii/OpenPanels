@@ -20,7 +20,7 @@ function Fail($Message) {
 
 function CurrentTarget {
   if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
-    Fail "install-myopenpanels.ps1 only supports Windows. Use install-myopenpanels.sh on macOS/Linux."
+    Fail "install-myopenpanels.ps1 only supports Windows. Use install-myopenpanels.sh on macOS. Linux release packages are temporarily disabled."
   }
   switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
     "X64" { return "x86_64-pc-windows-msvc" }

@@ -428,6 +428,25 @@ fn fake_studio_server(request_count: usize) -> (u16, thread::JoinHandle<()>) {
 }
 
 fn create_cli_project(project_dir: &Path, storage_dir: &Path) {
+    create_cli_project_unacknowledged(project_dir, storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let pending = crate::agent_control::pending_entry_skill_update(&paths, VERSION)
+        .expect("entry skill requirement")
+        .expect("pending entry skill update");
+    crate::agent_control::acknowledge_entry_skill_update(
+        &paths,
+        &pending.event_id,
+        crate::agent_control::ENTRY_SKILL_VERSION,
+    )
+    .expect("acknowledge entry skill");
+}
+
+fn create_cli_project_unacknowledged(project_dir: &Path, storage_dir: &Path) {
     let (code, stdout, stderr) = run(&[
         "project",
         "create",
@@ -974,8 +993,8 @@ fn project_read_commands_bootstrap_project() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(bootstrap["protocolVersion"], 3);
-    assert_eq!(bootstrap["commandCatalogVersion"], 3);
+    assert_eq!(bootstrap["protocolVersion"], 4);
+    assert_eq!(bootstrap["commandCatalogVersion"], 4);
     assert_eq!(bootstrap["panel"]["context"]["panelKind"], "canvas");
     assert_eq!(bootstrap["panel"]["selection"]["supported"], true);
     assert!(bootstrap.get("capabilities").is_none());
@@ -989,7 +1008,15 @@ fn project_read_commands_bootstrap_project() {
     );
     assert_eq!(
         bootstrap["nextRequiredAction"]["intent"],
-        "load-active-panel-skill"
+        "load-required-skills"
+    );
+    assert_eq!(
+        bootstrap["nextRequiredAction"]["actionRefs"],
+        json!(["active-panel-skill"])
+    );
+    assert_eq!(
+        bootstrap["nextActions"][0]["actionRef"],
+        "active-panel-skill"
     );
     assert_eq!(bootstrap["nextActions"][0]["skillId"], "canvas-panel");
     assert_eq!(bootstrap["nextActions"][0]["required"], true);
@@ -1140,10 +1167,10 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let envelope = serde_json::from_str::<Value>(&raw_stdout).expect("envelope");
     assert_eq!(envelope["intent"], "agent.bootstrap.read");
     let payload = &envelope["data"];
-    assert_eq!(payload["protocolVersion"], 3);
+    assert_eq!(payload["protocolVersion"], 4);
     assert!(payload.get("supportedProtocolVersions").is_none());
     assert_eq!(payload["cliVersion"], VERSION);
-    assert_eq!(payload["commandCatalogVersion"], 3);
+    assert_eq!(payload["commandCatalogVersion"], 4);
     assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
     assert_eq!(payload["entrySkill"]["id"], "myopenpanels");
     assert!(payload["entrySkill"].get("requiredVersion").is_none());
@@ -1155,7 +1182,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert_eq!(payload["operations"]["items"], json!([]));
     assert_eq!(
         payload["nextRequiredAction"]["intent"],
-        "load-active-panel-skill"
+        "load-required-skills"
     );
     assert_eq!(payload["nextRequiredAction"]["required"], true);
     assert_eq!(
@@ -1175,6 +1202,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let required_skill_action = &payload["nextActions"][0];
     assert_eq!(required_skill_action["intent"], "agent.skill.read");
     assert_eq!(required_skill_action["required"], true);
+    assert_eq!(required_skill_action["actionRef"], "active-panel-skill");
     assert_eq!(required_skill_action["skillId"], "wiki-panel");
     assert!(required_skill_action["argv"]
         .as_array()
@@ -1207,7 +1235,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     let (code, stdout, stderr) = run(&["agent", "capability", "list", "--format", "json"]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let index = serde_json::from_str::<Value>(&stdout).expect("scope index");
-    assert_eq!(index["catalogVersion"], 3);
+    assert_eq!(index["catalogVersion"], 4);
     for action in index["nextActions"].as_array().unwrap() {
         assert_action_parses(action);
     }
@@ -1228,7 +1256,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     ]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let wiki_capabilities = serde_json::from_str::<Value>(&stdout).expect("wiki capabilities");
-    assert_eq!(wiki_capabilities["catalogVersion"], 3);
+    assert_eq!(wiki_capabilities["catalogVersion"], 4);
     assert_eq!(wiki_capabilities["scope"], "wiki");
     let page_search = wiki_capabilities["capabilities"]
         .as_array()
@@ -1266,7 +1294,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     ]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let page_search = serde_json::from_str::<Value>(&stdout).expect("page search descriptor");
-    assert_eq!(page_search["catalogVersion"], 3);
+    assert_eq!(page_search["catalogVersion"], 4);
     assert_eq!(page_search["capability"]["intent"], "wiki.page.search");
     assert!(page_search["capability"]["args"].as_array().is_some());
     assert!(page_search["capability"].get("argv").is_none());
@@ -1535,6 +1563,181 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         serde_json::from_str::<Value>(&stdout).expect("json")["focus"]["panelKind"],
         "wiki"
     );
+}
+
+#[test]
+fn agent_bootstrap_delivers_entry_skill_update_until_the_context_acknowledges_it() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project_unacknowledged(&project_dir, &storage_dir);
+
+    let bootstrap_args = [
+        "agent",
+        "bootstrap",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ];
+    let (code, stdout, stderr) = run(&bootstrap_args);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let pending = serde_json::from_str::<Value>(&stdout).expect("pending bootstrap");
+    assert_eq!(
+        pending["entrySkillUpdate"]["requiredVersion"],
+        crate::agent_control::ENTRY_SKILL_VERSION
+    );
+    assert_eq!(
+        pending["nextRequiredAction"]["intent"],
+        "update-entry-skill"
+    );
+    assert_eq!(
+        pending["nextRequiredAction"]["actionRefs"],
+        json!(["entry-skill-update", "entry-skill-update-ack"])
+    );
+    assert_eq!(pending["nextActions"][0]["executor"], "agent-host");
+    assert_eq!(
+        pending["nextActions"][0]["intent"],
+        "agent-host.skill.update-required"
+    );
+    assert_action_parses(&pending["nextActions"][1]);
+    assert!(pending["nextActions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|action| action.get("skillId").is_none()));
+
+    let event_id = pending["entrySkillUpdate"]["eventId"]
+        .as_str()
+        .expect("event id");
+    let (code, repeated, stderr) = run(&bootstrap_args);
+    assert_eq!(code, 0, "{stderr}{repeated}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&repeated).unwrap()["entrySkillUpdate"]["eventId"],
+        event_id
+    );
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "entry-skill",
+        "acknowledge",
+        "--event-id",
+        event_id,
+        "--installed-version",
+        "0.0",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 1, "{stderr}{stdout}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout).unwrap()["code"],
+        "entry_skill_version_too_old"
+    );
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "entry-skill",
+        "acknowledge",
+        "--event-id",
+        event_id,
+        "--installed-version",
+        crate::agent_control::ENTRY_SKILL_VERSION,
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout).unwrap()["acknowledged"],
+        true
+    );
+
+    let (code, stdout, stderr) = run(&bootstrap_args);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let normal = serde_json::from_str::<Value>(&stdout).expect("normal bootstrap");
+    assert!(normal.get("entrySkillUpdate").is_none());
+    assert_eq!(
+        normal["nextRequiredAction"]["intent"],
+        "load-required-skills"
+    );
+    assert_eq!(normal["nextActions"][0]["skillId"], "wiki-panel");
+}
+
+#[test]
+fn agent_bootstrap_requires_panel_and_wiki_task_authoring_skills_by_reference() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let task = crate::wiki::reindex_wiki_space(&paths, None).expect("reindex task");
+    let task_id = task["task"]["id"].as_str().expect("task id");
+
+    let (code, stdout, stderr) = run_raw(&[
+        "agent",
+        "bootstrap",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    assert!(
+        stdout.len() <= crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES,
+        "Bootstrap was {} bytes",
+        stdout.len()
+    );
+    let envelope = serde_json::from_str::<Value>(&stdout).expect("bootstrap");
+    let payload = &envelope["data"];
+    assert_eq!(
+        payload["nextRequiredAction"]["actionRefs"],
+        json!(["active-panel-skill", "next-task-authoring-skill"])
+    );
+    let required_actions = payload["nextActions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|action| action["required"] == true)
+        .collect::<Vec<_>>();
+    assert_eq!(required_actions.len(), 2);
+    assert_eq!(required_actions[0]["skillId"], "wiki-panel");
+    assert_eq!(required_actions[1]["skillId"], "karpathy-llm-wiki");
+    assert_eq!(required_actions[1]["taskId"], task_id);
+    assert!(required_actions[1]["argv"]
+        .as_array()
+        .is_some_and(|argv| argv
+            .windows(2)
+            .any(|pair| pair[0] == "--task-id" && pair[1] == task_id)));
+    required_actions
+        .iter()
+        .for_each(|action| assert_action_parses(action));
 }
 
 #[test]
@@ -3932,7 +4135,8 @@ fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing()
 #[test]
 fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
-    assert!(skill.contains("version: \"3.2\""));
+    assert!(skill.contains("version: \"3.4\""));
+    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "3.4");
     assert!(!skill.contains("minCliVersion"));
     assert!(!skill.contains("protocol-version"));
     assert!(skill
@@ -3959,8 +4163,11 @@ fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     assert!(skill.contains("run a fresh Agent Bootstrap"));
     assert!(skill.contains("Do not bootstrap for requests clearly unrelated"));
     assert!(skill.contains("do not reuse a previous Bootstrap result"));
-    assert!(skill.contains("The active Panel Skill is mandatory"));
-    assert!(skill.contains("before evaluating any other"));
+    assert!(skill.contains("Every action named by its `actionRefs`"));
+    assert!(skill.contains("do not expect an `argv`"));
+    assert!(skill.contains("acknowledge it with the referenced CLI"));
+    assert!(skill.contains("task-specific workflow"));
+    assert!(skill.contains("evaluating any"));
     assert!(skill.contains("data.opened: true"));
     assert!(skill.contains("--local-only"));
     assert!(!skill.contains("--no-open"));

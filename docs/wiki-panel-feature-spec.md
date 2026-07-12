@@ -1,7 +1,7 @@
 # Wiki Panel Feature Development Spec
 
 > Agent protocol note: references to the former `agent context` entry point are
-> superseded by the compact Protocol v3 `agent bootstrap`. This historical feature spec's
+> superseded by the compact Protocol v4 `agent bootstrap`. This historical feature spec's
 > CLI examples are superseded by the 0.4 vNext command tree.
 
 ## 背景

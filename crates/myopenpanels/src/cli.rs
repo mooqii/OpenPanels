@@ -886,8 +886,22 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
         Some("bootstrap") => {
             let paths = parsed_current_paths(parsed)?;
             let payload = agent_bootstrap(&paths, VERSION)?;
-            write_result(parsed, stdout, &payload, "MyOpenPanels agent protocol v3 bootstrap")
+            write_result(parsed, stdout, &payload, "MyOpenPanels agent protocol v4 bootstrap")
         }
+        Some("entry-skill") => match parsed.positionals.get(2).map(String::as_str) {
+            Some("acknowledge") => {
+                let paths = parsed_current_paths(parsed)?;
+                let payload = crate::agent_control::acknowledge_entry_skill_update(
+                    &paths,
+                    required_flag(parsed, "event-id")?,
+                    required_flag(parsed, "installed-version")?,
+                )?;
+                write_result(parsed, stdout, &payload, "Entry Skill update acknowledged")
+            }
+            _ => Err(CliError::new(
+                "Expected agent entry-skill subcommand: acknowledge.",
+            )),
+        },
         Some("operations") => {
             let paths = parsed_current_paths(parsed)?;
             match parsed.positionals.get(2).map(String::as_str) {

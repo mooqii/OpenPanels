@@ -2,7 +2,7 @@ use clap::{ArgAction, Command};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const COMMAND_CATALOG_VERSION: u32 = 3;
+pub(crate) const COMMAND_CATALOG_VERSION: u32 = 4;
 
 #[derive(Clone, Copy)]
 struct CommandSpec {
@@ -547,6 +547,14 @@ const SPECS: &[CommandSpec] = &[
         "agent",
         "none",
         false
+    ),
+    spec!(
+        "agent.entry-skill.acknowledge",
+        ["agent", "entry-skill", "acknowledge"],
+        "Acknowledge the installed Entry Skill version",
+        "agent",
+        "current-context",
+        true
     ),
     spec!(
         "agent.guide.list",

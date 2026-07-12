@@ -46,13 +46,16 @@ contains no Projects.
    report success. Stop an open-only task only after an opener succeeds.
 3. Run `myopenpanels agent bootstrap --project-dir <project> --format json`
    only before panel-specific
-   work. Read the compact Protocol v3 payload from `data`; the complete envelope
+   work. Read the compact Protocol v4 payload from `data`; the complete envelope
    is capped at 8192 UTF-8 bytes. It identifies the current focus, bounded Panel
    context, work counts, and discovery references rather than embedding full
    commands or documents.
-4. Follow `data.nextRequiredAction`, choose only applicable entries from the
-   response-level `data.nextActions`, and execute their `argv` arrays with the
-   originally resolved CLI executable.
+4. Follow `data.nextRequiredAction`. A rare `update-entry-skill` response must
+   update or verify the Agent-host Entry Skill, execute its acknowledgement, and
+   rerun Bootstrap before panel work. Otherwise, sequentially complete every
+   `data.nextActions` entry referenced by `actionRefs`: execute `cli` actions
+   with their `argv`, follow `agent-host` instructions without expecting an
+   `argv`, and read every returned Skill file before choosing remaining actions.
 5. Repeat the same response-driven loop. Never infer a business command from
    remembered paths, flags, or display command strings.
 
@@ -63,10 +66,13 @@ contains no Projects.
 - `myopenpanels studio open-system-browser`: explicitly open the studio URL in the system browser.
 - `myopenpanels studio wait`: wait for the studio HTTP server to become ready.
 - `myopenpanels studio stop`: stop the conversation-scoped MyOpenPanels Studio process.
-- `myopenpanels agent bootstrap`: print the compact Protocol v3 focus, bounded
-  context, work summaries, the mandatory active Panel Skill action, and
-  progressive-discovery references. Load the required Wiki or Canvas Panel
-  Skill before evaluating any other action.
+- `myopenpanels agent bootstrap`: print the compact Protocol v4 focus, bounded
+  context, work summaries, mandatory Skill action references, and
+  progressive-discovery references. Load every referenced Skill before
+  evaluating any other action; this includes the active Panel Skill and, when a
+  ready Wiki Task exists, its captured authoring Skill.
+- `myopenpanels agent entry-skill acknowledge`: confirm that the current Agent
+  context has installed or verified the one-time required Entry Skill version.
 - `myopenpanels agent capability list`: list scopes, or compact intents with
   `--scope <scope>`.
 - `myopenpanels agent capability read --intent <intent>`: read one complete

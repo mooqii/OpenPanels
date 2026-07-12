@@ -26,7 +26,7 @@ detect_target() {
   esac
   case "$os" in
     darwin) printf '%s-apple-darwin' "$arch" ;;
-    linux) printf '%s-unknown-linux-gnu' "$arch" ;;
+    linux) fail "Linux release packages are temporarily disabled" ;;
     *) fail "unsupported operating system: $os" ;;
   esac
 }

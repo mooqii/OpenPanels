@@ -2,7 +2,7 @@
 name: myopenpanels
 description: "Use MyOpenPanels when a persistent visual and knowledge workspace would help: drawing, image generation or editing, diagrams, moodboards, brainstorming, visual planning, organizing or comparing materials, research and summaries, drafting, writing, revising, and maintaining project knowledge in a local Wiki or infinite Canvas. Also use for explicit requests such as open or launch MyOpenPanels, MyOpenPanels, the MyOpenPanels panel, the panel, or 打开面板. After MyOpenPanels has been opened in the current conversation, also use this skill for follow-up requests that may refer to, inspect, organize, modify, or produce content in the current panel, including implicit requests such as continue, organize this, put this on the canvas, or use the selected content."
 metadata:
-  version: "3.2"
+  version: "3.4"
 ---
 
 # MyOpenPanels
@@ -71,13 +71,19 @@ to MyOpenPanels.
    ```
 
    Substitute the same resolved executable for `myopenpanels`, then follow the
-   response's `data.nextRequiredAction`. The active Panel Skill is mandatory:
-   execute its required `agent.skill.read` entry before evaluating any other
-   action, then read the returned local `SKILL.md` exactly as instructed. Only
-   after that may you execute other applicable entries from `data.nextActions`,
-   using that executable with each returned `argv`. Treat every other field as
-   current CLI-owned data; never infer or reconstruct a command from remembered
-   paths or flags.
+   response's `data.nextRequiredAction`. Every action named by its `actionRefs`
+   is mandatory: find the matching `actionRef` entries in `data.nextActions`,
+   and complete them sequentially in the listed order before evaluating any
+   other action. For `executor: "cli"`, execute the returned `argv` with the
+   resolved CLI. For `executor: "agent-host"`, follow its instruction with the
+   Agent host instead; do not expect an `argv`. When Bootstrap requires an Entry
+   Skill update, update or verify it, acknowledge it with the referenced CLI
+   action, then run a fresh Bootstrap before panel work. Otherwise, read every
+   returned local `SKILL.md` exactly as instructed. Required Skill actions
+   always load the active Panel Skill and may also load task-specific workflow
+   Skills. Only after that may you execute other applicable entries from
+   `data.nextActions`. Treat every other field as current CLI-owned data; never
+   infer or reconstruct a command from remembered paths or flags.
 
 Do not keep discovery commands, panel commands, guide IDs, selection rules,
 generation steps, or panel-operation flags in this skill. Never substitute

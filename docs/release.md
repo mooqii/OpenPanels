@@ -20,9 +20,10 @@ pnpm run check:release
 ```
 
 GitHub tags matching `v*` run `.github/workflows/release-myopenpanels.yml`.
-The workflow builds the Rust CLI for each supported target, packages the
-archives, generates `myopenpanels-manifest.json`, and uploads all release
-assets to the matching GitHub Release.
+The workflow currently builds macOS Apple Silicon, macOS Intel, and Windows
+x64 packages. Linux release packages are temporarily disabled. It packages the
+archives, generates `myopenpanels-manifest.json`, and uploads all release assets
+to the matching GitHub Release.
 
 For local packaging smoke tests:
 
@@ -41,8 +42,6 @@ Every published release must include:
 ```text
 myopenpanels-aarch64-apple-darwin.tar.gz
 myopenpanels-x86_64-apple-darwin.tar.gz
-myopenpanels-x86_64-unknown-linux-gnu.tar.gz
-myopenpanels-aarch64-unknown-linux-gnu.tar.gz
 myopenpanels-x86_64-pc-windows-msvc.zip
 myopenpanels-manifest.json
 checksums.txt
@@ -119,8 +118,12 @@ The manifest `version` must not include the leading `v`.
   response also carries an advisory Agent-host action asking the Agent to compare
   the currently loaded MyOpenPanels Entry Skill with the version pinned in the
   release manifest and consider updating it when older.
-- Skill reminders are returned only by `update install`; Bootstrap, update check,
-  and update download do not perform or repeat this check.
+- The replacement CLI also latches its compiled Entry Skill requirement into
+  local Agent control storage on the next Bootstrap. This closes the Studio
+  manual-update path even though the old installed CLI performs replacement and
+  restart. Only contexts that have not acknowledged that requirement receive
+  the compact required update response; normal Bootstrap payloads carry no
+  Entry Skill update reminder or version comparison.
 - Normal text-mode commands may perform an opportunistic update check at most
   once every 24 hours. The check writes only a short stderr notice when an
   update exists.

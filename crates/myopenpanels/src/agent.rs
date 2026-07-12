@@ -14,10 +14,14 @@ use std::path::{Path, PathBuf};
 static AGENT_GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/guides");
 static AGENT_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/skills");
 pub const CANVAS_PANEL_SKILL_ID: &str = "canvas-panel";
-pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 3;
+pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 4;
 pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
 const MYOPENPANELS_SKILL_SOURCE: &str =
     "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels";
+const ACTIVE_PANEL_SKILL_ACTION_REF: &str = "active-panel-skill";
+const TASK_AUTHORING_SKILL_ACTION_REF: &str = "next-task-authoring-skill";
+const ENTRY_SKILL_UPDATE_ACTION_REF: &str = "entry-skill-update";
+const ENTRY_SKILL_ACK_ACTION_REF: &str = "entry-skill-update-ack";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +94,17 @@ pub struct AgentSkillReadPayload {
 
 pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<Value, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    let storage = crate::storage::Storage::open(paths)?;
+    if let Some(update) =
+        crate::agent_control::pending_entry_skill_update_with_storage(paths, &storage, cli_version)?
+    {
+        return Ok(entry_skill_update_bootstrap(
+            paths,
+            &bootstrap,
+            cli_version,
+            &update,
+        ));
+    }
     let guides = list_agent_guides()?;
     let applicable_guides = guides
         .iter()
@@ -102,8 +117,7 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         })
         .cloned()
         .collect::<Vec<_>>();
-    let operations = crate::storage::Storage::open(paths)?
-        .list_agent_operations(Some(&paths.context_id), Some("active"))?;
+    let operations = storage.list_agent_operations(Some(&paths.context_id), Some("active"))?;
     let focus_revision = crate::control::read_focus_revision(paths)?;
     let focus = json!({
         "focusRevision": focus_revision,
@@ -165,6 +179,7 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
     .into_iter()
     .collect::<Vec<_>>();
     let mut next_actions = Vec::new();
+    let mut required_action_refs = Vec::new();
     if let Some(skill_id) = panel_skill_id(bootstrap.active_panel_kind) {
         let mut action = project_command_action(
             paths,
@@ -179,8 +194,33 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         action["loadWhen"] =
             json!("Always. Load this Skill before evaluating or executing any other panel action.");
         action["required"] = json!(true);
+        action["actionRef"] = json!(ACTIVE_PANEL_SKILL_ACTION_REF);
         action["skillId"] = json!(skill_id);
         next_actions.push(action);
+        required_action_refs.push(ACTIVE_PANEL_SKILL_ACTION_REF);
+    }
+    if let Some((task_id, skill_id)) = next_wiki_task_authoring_skill(&bootstrap) {
+        let mut action = project_command_action(
+            paths,
+            "agent.skill.read",
+            vec![
+                "--skill-id".to_owned(),
+                skill_id.to_owned(),
+                "--task-id".to_owned(),
+                task_id.to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ],
+        );
+        action["loadWhen"] = json!(
+            "Always when continuing the next ready Wiki Task. Load this authoring Skill together with the active Wiki Panel Skill."
+        );
+        action["required"] = json!(true);
+        action["actionRef"] = json!(TASK_AUTHORING_SKILL_ACTION_REF);
+        action["skillId"] = json!(skill_id);
+        action["taskId"] = json!(task_id);
+        next_actions.push(action);
+        required_action_refs.push(TASK_AUTHORING_SKILL_ACTION_REF);
     }
     next_actions.extend(
         recommended_scopes
@@ -287,12 +327,73 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         },
         "nextActions": next_actions,
         "nextRequiredAction": {
-            "intent": "load-active-panel-skill",
+            "intent": "load-required-skills",
             "required": true,
             "actionIntent": "agent.skill.read",
-            "instruction": "Execute the required agent.skill.read entry in nextActions before evaluating or executing any other action. Read the returned SKILL.md as instructed, then choose any remaining applicable entries according to loadWhen.",
+            "actionRefs": required_action_refs,
+            "instruction": "Execute every nextActions entry referenced by actionRefs, sequentially in the listed order, before evaluating or executing any other action. Follow each response's nextRequiredAction and read every returned SKILL.md as instructed, then choose any remaining applicable entries according to loadWhen.",
         },
     }))
+}
+
+fn entry_skill_update_bootstrap(
+    paths: &MyOpenPanelsPaths,
+    bootstrap: &ProjectBootstrap,
+    cli_version: &str,
+    update: &crate::agent_control::EntrySkillUpdate,
+) -> Value {
+    let host_action = json!({
+        "intent": "agent-host.skill.update-required",
+        "executor": "agent-host",
+        "required": true,
+        "actionRef": ENTRY_SKILL_UPDATE_ACTION_REF,
+        "loadWhen": "Always. Complete this one-time Entry Skill check before doing panel work.",
+        "instruction": "Compare the currently loaded MyOpenPanels Entry Skill metadata with skill.version. If it is missing or older, install skill.source with the Agent host's Skill installer. Do not acknowledge until the installed version is current.",
+        "skill": {
+            "id": update.id,
+            "version": update.required_version,
+            "source": update.source,
+        },
+    });
+    let mut acknowledge_action = project_command_action(
+        paths,
+        "agent.entry-skill.acknowledge",
+        vec![
+            "--event-id".to_owned(),
+            update.event_id.clone(),
+            "--installed-version".to_owned(),
+            update.required_version.clone(),
+            "--format".to_owned(),
+            "json".to_owned(),
+        ],
+    );
+    acknowledge_action["required"] = json!(true);
+    acknowledge_action["actionRef"] = json!(ENTRY_SKILL_ACK_ACTION_REF);
+    acknowledge_action["loadWhen"] = json!(
+        "Only after the Agent host confirms that the installed Entry Skill version satisfies the requirement."
+    );
+    json!({
+        "protocolVersion": AGENT_GUIDANCE_PROTOCOL_VERSION,
+        "commandCatalogVersion": crate::cli::registry::COMMAND_CATALOG_VERSION,
+        "cliVersion": cli_version,
+        "bootstrapBudget": {
+            "maxBytes": MAX_BOOTSTRAP_ENVELOPE_BYTES,
+            "unit": "utf8",
+        },
+        "entrySkillUpdate": update,
+        "focus": {
+            "projectId": bootstrap.session.id,
+            "panelId": bootstrap.panel.id,
+            "panelKind": bootstrap.panel.kind,
+        },
+        "nextActions": [host_action, acknowledge_action],
+        "nextRequiredAction": {
+            "intent": "update-entry-skill",
+            "required": true,
+            "actionRefs": [ENTRY_SKILL_UPDATE_ACTION_REF, ENTRY_SKILL_ACK_ACTION_REF],
+            "instruction": "Follow the two referenced actions in order: update or verify the Agent host's MyOpenPanels Entry Skill, then acknowledge the installed version. Rerun Agent Bootstrap after acknowledgement. Do not read or operate on a panel before the refreshed Bootstrap completes.",
+        },
+    })
 }
 
 fn panel_skill_id(kind: PanelKind) -> Option<&'static str> {
@@ -314,6 +415,36 @@ fn next_task_id(bootstrap: &ProjectBootstrap) -> Option<&str> {
         })
         .and_then(|task| task.get("id"))
         .and_then(Value::as_str)
+}
+
+fn next_wiki_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str, &str)> {
+    if bootstrap.active_panel_kind != PanelKind::Wiki {
+        return None;
+    }
+    let task = next_project_task(bootstrap)?;
+    if task.get("queue").and_then(Value::as_str) != Some("wiki") {
+        return None;
+    }
+    let task_id = task.get("id").and_then(Value::as_str)?;
+    let skill_id = task
+        .get("agentSkillId")
+        .or_else(|| {
+            task.get("input")
+                .and_then(|input| input.get("agentSkillId"))
+        })
+        .or_else(|| {
+            task.get("task")
+                .and_then(|stored| stored.get("agentSkillId"))
+        })
+        .and_then(Value::as_str)
+        .or_else(|| {
+            bootstrap
+                .panels
+                .iter()
+                .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
+                .map(|snapshot| selected_agent_skill_id(&snapshot.state))
+        })?;
+    (skill_id != WIKI_PANEL_SKILL_ID).then_some((task_id, skill_id))
 }
 
 fn command_action(intent: &str, args: Vec<String>) -> Value {

@@ -37,11 +37,12 @@ MyOpenPanels Studio, and opens the MyOpenPanels panel URL returned by the CLI.
 The entry skill keeps itself small and stable. It uses the Rust-native
 `myopenpanels` CLI from GitHub Releases, then asks the CLI for
 `agent bootstrap`, which is the source of truth for wiki, canvas, and future panel
-workflows. Bootstrap also publishes the Entry Skill identity and canonical
-source as diagnostic metadata. The Skill does not compare CLI,
-Protocol, Command Catalog, or Skill versions at runtime; the installed CLI is
-always authoritative for current capabilities and returned actions.
-Protocol v3 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes. It
+workflows. Bootstrap normally performs no Entry Skill version comparison. After
+a CLI release changes the Entry Skill requirement, the next Bootstrap delivers
+a one-time Agent-host update check and keeps it pending until that Agent context
+acknowledges the installed version. The installed CLI remains authoritative for
+current capabilities and returned actions.
+Protocol v4 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes. It
 returns bounded Panel context and discovery references; command descriptors,
 Skills, Guides, Tasks, Operations, and selection details load on demand. Longer
 built-in agent resources live under `agent-resources/`. Wiki generation uses the
@@ -85,9 +86,10 @@ myopenpanels update check
 myopenpanels update install
 ```
 
-`update install` also returns an advisory Agent-host reminder to compare the
-loaded MyOpenPanels Entry Skill with the version pinned by the installed release.
-The reminder is not emitted by Bootstrap and never blocks CLI installation.
+`update install` also returns an immediate advisory Agent-host reminder when an
+Agent invoked the update. Studio-initiated updates are covered by a persistent,
+one-time control event delivered on the next Bootstrap; normal Bootstraps do not
+carry the reminder.
 
 GitHub Releases are the update source. Release constraints and manifest
 requirements live in [docs/release.md](docs/release.md).

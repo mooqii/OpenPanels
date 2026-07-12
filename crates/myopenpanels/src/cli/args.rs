@@ -594,10 +594,27 @@ struct AgentArgs {
 enum AgentCommand {
     Bootstrap,
     Capability(AgentCapabilityArgs),
+    EntrySkill(AgentEntrySkillArgs),
     Guide(AgentGuideArgs),
     Skill(AgentSkillArgs),
     Bridge(AgentBridgeArgs),
     Target(AgentTargetArgs),
+}
+
+#[derive(Debug, Args)]
+struct AgentEntrySkillArgs {
+    #[command(subcommand)]
+    command: AgentEntrySkillCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentEntrySkillCommand {
+    Acknowledge {
+        #[arg(long)]
+        event_id: String,
+        #[arg(long)]
+        installed_version: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -1344,6 +1361,19 @@ fn normalize_agent(
                 (
                     vec!["agent".into(), "capability".into(), "read".into()],
                     "agent.capability.read",
+                )
+            }
+        },
+        AgentCommand::EntrySkill(args) => match args.command {
+            AgentEntrySkillCommand::Acknowledge {
+                event_id,
+                installed_version,
+            } => {
+                put(flags, "event-id", Some(event_id));
+                put(flags, "installed-version", Some(installed_version));
+                (
+                    vec!["agent".into(), "entry-skill".into(), "acknowledge".into()],
+                    "agent.entry-skill.acknowledge",
                 )
             }
         },
