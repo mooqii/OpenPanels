@@ -448,6 +448,30 @@ export async function saveSelectionState(
   )
 }
 
+export async function fetchSelectionState(
+  transport: MyOpenPanelsTransport,
+  projectId: string,
+  panelId: string
+): Promise<{ revision: number; selection: CanvasSelectionSnapshot }> {
+  const response = await apiFetch(
+    transport.apiBase,
+    `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/selection`
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const payload = (await response.json()) as {
+    revision?: number
+    selection?: Partial<CanvasSelectionSnapshot> | null
+  }
+  return {
+    revision: payload.revision ?? 0,
+    selection: {
+      assetRef: payload.selection?.assetRef ?? null,
+      selectedShapeIds: payload.selection?.selectedShapeIds ?? [],
+      selectedShapes: payload.selection?.selectedShapes ?? [],
+    },
+  }
+}
+
 export interface SelectionMaterializationRequest {
   requestId: string
   selectedShapeIds: string[]

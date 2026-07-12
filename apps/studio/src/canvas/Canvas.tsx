@@ -64,7 +64,7 @@ import {
   type CanvasSelectionSnapshot,
   summarizeSelectionShape,
 } from "./selection-snapshot"
-import { type AssetId, PageId, type ShapeId } from "./types/ids"
+import { type AssetId, PageId, ShapeId } from "./types/ids"
 import { captureTransformer } from "./utils/capture"
 
 export type {
@@ -83,6 +83,7 @@ interface CanvasProps {
     materialize: (() => string | null) | null
   ) => void
   onStageReady?: () => void
+  selectedShapeIds?: string[]
   width?: number
 }
 
@@ -96,6 +97,7 @@ export function Canvas({
   onSelectionChange,
   onSelectionMaterializerChange,
   onStageReady,
+  selectedShapeIds = [],
 }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const lastReadyStageRef = useRef<Konva.Stage | null>(null)
@@ -111,6 +113,17 @@ export function Canvas({
   const shapes = useCurrentPageShapes(editor)
   const selectedShapes = useSelectedShapes(editor)
   const tool = useTool(editor)
+
+  useEffect(() => {
+    const currentIds = editor.getSelectedShapes().map((shape) => shape.id)
+    const nextIds = selectedShapeIds.filter(ShapeId.isValid)
+    if (
+      currentIds.length === nextIds.length &&
+      currentIds.every((id, index) => id === nextIds[index])
+    )
+      return
+    editor.setSelectedShapes(nextIds)
+  }, [editor, selectedShapeIds])
 
   // Filter to top-level shapes only (direct children of the page, not nested in groups)
   const topLevelShapes = useMemo(

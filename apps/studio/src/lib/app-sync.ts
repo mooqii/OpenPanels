@@ -32,13 +32,23 @@ export function canvasAssetStoreKey(
   return `${apiBase}\n${projectId}\n${canvasPanelId}`
 }
 
+export function sameSelectedShapeIds(
+  left: readonly string[],
+  right: readonly string[]
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((shapeId) => right.includes(shapeId))
+  )
+}
+
 export function mergeLiveProjectBootstrap({
   current,
   currentCanvasRevision,
   currentCanvasSnapshot,
   remote,
 }: LiveProjectMergeInput): LiveProjectMergeResult {
-  let next = preserveActivePanel(normalizeBootstrap(remote), current)
+  let next = normalizeBootstrap(remote)
   const currentCanvasPanel = findCanvasPanel(current)
   const nextCanvasPanel = findCanvasPanel(next)
   const sameCanvasPanel =
@@ -80,20 +90,6 @@ export function mergeLiveProjectBootstrap({
     canvasSnapshot,
     changed,
     shouldReloadCanvas,
-  }
-}
-
-function preserveActivePanel(next: AppState, current: AppState): AppState {
-  const activeSnapshot = next.panels.find(
-    ({ panel }) => panel.id === current.activePanelId
-  )
-  if (!activeSnapshot) return next
-  return {
-    ...next,
-    activePanelId: activeSnapshot.panel.id,
-    activePanelKind: activeSnapshot.panel.kind,
-    panel: activeSnapshot.panel,
-    state: activeSnapshot.state,
   }
 }
 

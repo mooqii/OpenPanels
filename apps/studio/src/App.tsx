@@ -36,6 +36,7 @@ import {
   fetchActiveProjectId,
   fetchProjects,
   fetchSelectionMaterializationRequest,
+  fetchSelectionState,
   fetchStudioHealth,
   fetchUpdateStatus,
   isNotFoundError,
@@ -49,7 +50,7 @@ import {
   saveSelectionState,
   wikiStateFromAppState,
 } from "./lib/api"
-import { mergeLiveProjectBootstrap } from "./lib/app-sync"
+import { mergeLiveProjectBootstrap, sameSelectedShapeIds } from "./lib/app-sync"
 import {
   externalBrowserPath,
   shouldShowOpenInBrowserPrompt,
@@ -95,6 +96,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   )
   const [projects, setProjects] = useState<MyOpenPanelsProject[]>([])
   const [snapshotLoadVersion, setSnapshotLoadVersion] = useState(0)
+  const [wikiSelectionVersion, setWikiSelectionVersion] = useState(0)
   const [updateStatus, setUpdateStatus] =
     useState<MyOpenPanelsUpdateStatus | null>(null)
   const [updateAction, setUpdateAction] = useState<UpdateAction>(null)
@@ -140,6 +142,13 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   useEffect(() => {
     selectionRef.current = selection
   }, [selection])
+
+  const updateLocalSelection = useCallback((next: CanvasSelectionSnapshot) => {
+    const currentIds = selectionRef.current?.selectedShapeIds ?? []
+    if (sameSelectedShapeIds(currentIds, next.selectedShapeIds)) return
+    selectionRef.current = next
+    setSelection(next)
+  }, [])
 
   useEffect(() => {
     const version = appState?.buildInfo?.version
@@ -289,6 +298,58 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       }
     }
 
+    const syncFocus = async () => {
+      try {
+        const activeProjectId = await fetchActiveProjectId(transport)
+        const currentProjectId = appStateRef.current?.project.id
+        if (activeProjectId && activeProjectId !== currentProjectId) {
+          await loadProject(activeProjectId)
+          return
+        }
+        await syncProject()
+      } catch (error) {
+        console.error("Failed to sync MyOpenPanels focus", error)
+      }
+    }
+
+    const syncSelection = async (change: {
+      panelId?: string | null
+      projectId?: string | null
+    }) => {
+      const current = appStateRef.current
+      if (!current) return
+      const canvas = current.panels.find(
+        ({ panel }) => panel.kind === "canvas"
+      )?.panel
+      const changedPanel = current.panels.find(
+        ({ panel }) => panel.id === change.panelId
+      )?.panel
+      if (changedPanel?.kind === "wiki") {
+        setWikiSelectionVersion((version) => version + 1)
+        return
+      }
+      if (
+        !canvas ||
+        (change.projectId && change.projectId !== current.project.id) ||
+        (change.panelId && change.panelId !== canvas.id)
+      )
+        return
+      try {
+        const remote = await fetchSelectionState(
+          transport,
+          current.project.id,
+          canvas.id
+        )
+        const currentIds = selectionRef.current?.selectedShapeIds ?? []
+        const nextIds = remote.selection.selectedShapeIds
+        if (sameSelectedShapeIds(currentIds, nextIds)) return
+        selectionRef.current = remote.selection
+        setSelection(remote.selection)
+      } catch (error) {
+        console.error("Failed to sync MyOpenPanels selection", error)
+      }
+    }
+
     const eventsUrl = apiUrl(transport.apiBase, "/api/events")
     if (activeAppProjectId)
       eventsUrl.searchParams.set("projectId", activeAppProjectId)
@@ -296,8 +357,17 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     source.addEventListener("project", (event) => {
       const change = JSON.parse((event as MessageEvent<string>).data) as {
         kind?: string
+        panelId?: string | null
+        projectId?: string | null
       }
-      if (change.kind === "panel_selection") return
+      if (change.kind === "panel_selection") {
+        syncSelection(change)
+        return
+      }
+      if (change.kind === "focus") {
+        syncFocus()
+        return
+      }
       syncProject()
     })
     source.addEventListener("open", () => {
@@ -309,7 +379,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       window.clearInterval(targetStatusTimer)
       source.close()
     }
-  }, [activeAppProjectId, transport])
+  }, [activeAppProjectId, loadProject, transport])
 
   const refreshUpdateStatus = useCallback(
     async (options?: { refresh?: boolean }) => {
@@ -882,11 +952,12 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             assetStore={assetStore}
             height="100vh"
             key={`${appState.project.id}:${canvasPanel?.id ?? "canvas"}`}
-            onSelectionChange={setSelection}
+            onSelectionChange={updateLocalSelection}
             onSelectionMaterializerChange={(materialize) => {
               selectionMaterializerRef.current = materialize
             }}
             onSnapshotChange={saveSnapshot}
+            selectedShapeIds={selection?.selectedShapeIds ?? []}
             snapshot={canvasSnapshot}
             snapshotVersion={snapshotLoadVersion}
             titleChromeContent={projectChrome}
@@ -895,6 +966,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           <WikiPanel
             chromeContent={projectChrome}
             onReload={reloadCurrentProject}
+            selectionVersion={wikiSelectionVersion}
             state={wikiStateFromAppState(appState)}
             transport={transport}
           />

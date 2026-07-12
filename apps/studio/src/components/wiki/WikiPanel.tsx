@@ -75,11 +75,13 @@ interface WikiAgentSelection {
 export function WikiPanel({
   chromeContent,
   onReload,
+  selectionVersion,
   state,
   transport,
 }: {
   chromeContent: ReactNode
   onReload: () => Promise<void>
+  selectionVersion: number
   state: WikiState
   transport: MyOpenPanelsTransport
 }) {
@@ -288,7 +290,10 @@ export function WikiPanel({
   useEffect(() => {
     let isCancelled = false
     setIsSelectionBusy(true)
-    apiFetch(transport.apiBase, "/api/wiki/selection")
+    apiFetch(
+      transport.apiBase,
+      `/api/wiki/selection?version=${selectionVersion}`
+    )
       .then(async (response) => {
         const data = (await response.json()) as {
           selection?: Partial<WikiAgentSelection>
@@ -314,7 +319,7 @@ export function WikiPanel({
     return () => {
       isCancelled = true
     }
-  }, [transport.apiBase])
+  }, [selectionVersion, transport.apiBase])
 
   const updateAgentSelection = useCallback(
     async (next: WikiAgentSelection) => {

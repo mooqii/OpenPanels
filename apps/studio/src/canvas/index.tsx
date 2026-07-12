@@ -57,6 +57,7 @@ export interface CanvasPanelProps {
   ) => void
   onSnapshotChange?: (snapshot: StoreSnapshot) => void
   readOnly?: boolean
+  selectedShapeIds?: string[]
   snapshot?: StoreSnapshot
   snapshotVersion?: number
   title?: string
@@ -80,6 +81,7 @@ export function CanvasPanel({
   initialSnapshot,
   snapshot,
   snapshotVersion,
+  selectedShapeIds = [],
   title,
   titleChromeContent,
   titleContent,
@@ -220,6 +222,7 @@ export function CanvasPanel({
           onSelectionChange={onSelectionChange}
           onSelectionMaterializerChange={onSelectionMaterializerChange}
           onStageReady={handleStageReady}
+          selectedShapeIds={selectedShapeIds}
           width={dimensions.width}
         >
           <Toolbar />

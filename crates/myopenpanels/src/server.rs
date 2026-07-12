@@ -2,7 +2,8 @@ use crate::agent as agent_resources;
 use crate::bridge;
 use crate::control::{
     create_project, delete_project, ensure_project_bootstrap, now_iso, open_runtime_panel,
-    read_active_panel_value, rename_project, write_active_project_id, BootstrapRequest,
+    read_active_panel_value, read_focus_revision, rename_project, write_active_project_id,
+    BootstrapRequest,
 };
 use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
@@ -737,12 +738,30 @@ async fn api_project_events(
 
     tokio::spawn(async move {
         let mut last_seq = read_storage_change_seq(&paths).unwrap_or(0);
+        let mut last_focus_revision = read_focus_revision(&paths).unwrap_or(0);
         let mut interval =
             tokio::time::interval(Duration::from_millis(PROJECT_EVENT_POLL_INTERVAL_MS));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             interval.tick().await;
+            if let Ok(focus_revision) = read_focus_revision(&paths) {
+                if focus_revision != last_focus_revision {
+                    last_focus_revision = focus_revision;
+                    let payload = json!({
+                        "kind": "focus",
+                        "focusRevision": focus_revision,
+                    });
+                    if sender
+                        .send(Ok(Event::default()
+                            .event("project")
+                            .data(payload.to_string())))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
             let (next_seq, changes) =
                 match read_change_scopes_after(&paths, last_seq, project_id.as_deref()) {
                     Ok(result) => result,

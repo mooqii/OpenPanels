@@ -11,7 +11,11 @@ import type {
   ProjectTask,
   WikiState,
 } from "../types"
-import { canvasAssetStoreKey, mergeLiveProjectBootstrap } from "./app-sync"
+import {
+  canvasAssetStoreKey,
+  mergeLiveProjectBootstrap,
+  sameSelectedShapeIds,
+} from "./app-sync"
 
 describe("mergeLiveProjectBootstrap", () => {
   it("keeps the local canvas snapshot for selection-only storage events", () => {
@@ -110,6 +114,34 @@ describe("mergeLiveProjectBootstrap", () => {
       name: "Remote insert",
     })
   })
+
+  it("follows a panel switch made in another browser", () => {
+    const localCanvas = canvasSnapshot("Local edits", 120)
+    const current = appState({ canvasRevision: 7, canvasSnapshot: localCanvas })
+    const remote = appState({ canvasRevision: 7, canvasSnapshot: localCanvas })
+    const remoteWiki = remote.panels.find(
+      ({ panel: candidate }) => candidate.kind === "wiki"
+    )
+    if (!remoteWiki) throw new Error("Missing Wiki panel")
+    remote.activePanelId = remoteWiki.panel.id
+    remote.activePanelKind = "wiki"
+    remote.panel = remoteWiki.panel
+    remote.revision = remoteWiki.revision
+    remote.state = remoteWiki.state
+
+    const result = mergeLiveProjectBootstrap({
+      current,
+      currentCanvasRevision: 7,
+      currentCanvasSnapshot: localCanvas,
+      remote,
+    })
+
+    expect(result.changed).toBe(true)
+    expect(result.shouldReloadCanvas).toBe(false)
+    expect(result.appState.activePanelKind).toBe("wiki")
+    expect(result.appState.activePanelId).toBe(remoteWiki.panel.id)
+    expect(result.canvasSnapshot).toBe(localCanvas)
+  })
 })
 
 describe("canvasAssetStoreKey", () => {
@@ -122,6 +154,15 @@ describe("canvasAssetStoreKey", () => {
     ).toBe(
       canvasAssetStoreKey("http://127.0.0.1:3000", "project:1", secondPanel.id)
     )
+  })
+})
+
+describe("sameSelectedShapeIds", () => {
+  it("treats an echoed selection as unchanged regardless of order", () => {
+    expect(
+      sameSelectedShapeIds(["shape:a", "shape:b"], ["shape:b", "shape:a"])
+    ).toBe(true)
+    expect(sameSelectedShapeIds(["shape:a"], ["shape:b"])).toBe(false)
   })
 })
 
