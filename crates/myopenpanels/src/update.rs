@@ -34,7 +34,16 @@ pub struct UpdateManifest {
     pub name: String,
     pub version: String,
     pub channel: Option<String>,
+    pub entry_skill: EntrySkillRelease,
     pub assets: BTreeMap<String, ReleaseAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntrySkillRelease {
+    pub id: String,
+    pub version: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -68,6 +77,35 @@ pub struct UpdateInstallPayload {
     pub target: String,
     pub manifest_url: String,
     pub installed_path: Option<String>,
+    pub entry_skill_update_reminder: EntrySkillUpdateReminder,
+    pub next_actions: Vec<UpdateInstallAction>,
+    pub next_required_action: UpdateInstallNextRequiredAction,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntrySkillUpdateReminder {
+    pub comparison_required: bool,
+    pub id: String,
+    pub version: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInstallAction {
+    pub intent: String,
+    pub executor: String,
+    pub load_when: String,
+    pub instruction: String,
+    pub skill: EntrySkillRelease,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInstallNextRequiredAction {
+    pub intent: String,
+    pub instruction: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,15 +169,16 @@ pub fn install_update(current_version: &str) -> Result<UpdateInstallPayload, Cli
     write_cached_update_check(&checked)?;
 
     if !checked.update_available {
-        return Ok(UpdateInstallPayload {
-            current_version: current_version.to_owned(),
-            latest_version: checked.latest_version,
-            updated: false,
-            studio_restart_required: false,
+        return Ok(update_install_payload(
+            current_version,
+            checked.latest_version,
+            false,
+            false,
             target,
             manifest_url,
-            installed_path: None,
-        });
+            None,
+            manifest.entry_skill,
+        ));
     }
 
     let asset = manifest.assets.get(&target).ok_or_else(|| {
@@ -157,15 +196,60 @@ pub fn install_update(current_version: &str) -> Result<UpdateInstallPayload, Cli
     verify_candidate_version(&candidate, checked.latest_version.as_deref())?;
     self_replace::self_replace(&candidate).map_err(to_cli_error)?;
 
-    Ok(UpdateInstallPayload {
-        current_version: current_version.to_owned(),
-        latest_version: checked.latest_version,
-        updated: true,
-        studio_restart_required: true,
+    Ok(update_install_payload(
+        current_version,
+        checked.latest_version,
+        true,
+        true,
         target,
         manifest_url,
-        installed_path: Some(current_exe_display()?),
-    })
+        Some(current_exe_display()?),
+        manifest.entry_skill,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_install_payload(
+    current_version: &str,
+    latest_version: Option<String>,
+    updated: bool,
+    studio_restart_required: bool,
+    target: String,
+    manifest_url: String,
+    installed_path: Option<String>,
+    entry_skill: EntrySkillRelease,
+) -> UpdateInstallPayload {
+    let reminder = EntrySkillUpdateReminder {
+        comparison_required: true,
+        id: entry_skill.id.clone(),
+        version: entry_skill.version.clone(),
+        source: entry_skill.source.clone(),
+    };
+    let action = UpdateInstallAction {
+        intent: "agent-host.skill.update-recommended".to_owned(),
+        executor: "agent-host".to_owned(),
+        load_when: format!(
+            "The currently loaded {} Skill version is missing or lower than {}.",
+            entry_skill.id, entry_skill.version
+        ),
+        instruction: "Compare the loaded Skill metadata version with the release version. If it is lower, consider updating the Skill with the Agent host's Skill installer. This reminder is advisory and does not block CLI update completion.".to_owned(),
+        skill: entry_skill,
+    };
+    UpdateInstallPayload {
+        current_version: current_version.to_owned(),
+        latest_version,
+        updated,
+        studio_restart_required,
+        target,
+        manifest_url,
+        installed_path,
+        entry_skill_update_reminder: reminder,
+        next_actions: vec![action],
+        next_required_action: UpdateInstallNextRequiredAction {
+            intent: "review-update-reminders".to_owned(),
+            instruction: "Review the advisory entries in nextActions. Restart Studio when studioRestartRequired is true.".to_owned(),
+        },
+    }
 }
 
 pub fn download_update(current_version: &str) -> Result<UpdateDownloadPayload, CliError> {
@@ -700,6 +784,7 @@ mod tests {
             name: "myopenpanels".to_owned(),
             version: "v0.1.10".to_owned(),
             channel: Some("stable".to_owned()),
+            entry_skill: test_entry_skill(),
             assets: BTreeMap::new(),
         };
 
@@ -766,18 +851,89 @@ mod tests {
     }
 
     #[test]
-    fn installed_update_requires_studio_restart_in_json() {
-        let payload = UpdateInstallPayload {
-            current_version: "0.3.0".to_owned(),
-            latest_version: Some("0.3.1".to_owned()),
-            updated: true,
-            studio_restart_required: true,
-            target: "test-target".to_owned(),
-            manifest_url: "https://example.invalid/manifest.json".to_owned(),
-            installed_path: Some("/tmp/myopenpanels".to_owned()),
-        };
+    fn installed_update_returns_an_advisory_entry_skill_reminder() {
+        let payload = update_install_payload(
+            "0.4.1",
+            Some("0.4.2".to_owned()),
+            true,
+            true,
+            "test-target".to_owned(),
+            "https://example.invalid/manifest.json".to_owned(),
+            Some("/tmp/myopenpanels".to_owned()),
+            test_entry_skill(),
+        );
 
         let json = serde_json::to_value(payload).expect("serialize install payload");
         assert_eq!(json["studioRestartRequired"], true);
+        assert_eq!(json["entrySkillUpdateReminder"]["comparisonRequired"], true);
+        assert_eq!(json["entrySkillUpdateReminder"]["version"], "3.1");
+        assert_eq!(json["nextActions"][0]["executor"], "agent-host");
+        assert_eq!(
+            json["nextActions"][0]["intent"],
+            "agent-host.skill.update-recommended"
+        );
+        assert!(json["nextActions"][0].get("argv").is_none());
+        assert!(json["nextActions"][0]["instruction"]
+            .as_str()
+            .unwrap()
+            .contains("advisory"));
+    }
+
+    #[test]
+    fn no_op_install_still_returns_the_advisory_reminder() {
+        let payload = update_install_payload(
+            "0.4.2",
+            Some("0.4.2".to_owned()),
+            false,
+            false,
+            "test-target".to_owned(),
+            "https://example.invalid/manifest.json".to_owned(),
+            None,
+            test_entry_skill(),
+        );
+
+        assert!(!payload.updated);
+        assert!(!payload.studio_restart_required);
+        assert!(payload.entry_skill_update_reminder.comparison_required);
+        assert_eq!(payload.next_actions.len(), 1);
+    }
+
+    #[test]
+    fn check_and_download_payloads_do_not_emit_skill_reminders() {
+        let check = serde_json::to_value(UpdateCheckPayload {
+            current_version: "0.4.2".to_owned(),
+            latest_version: Some("0.4.2".to_owned()),
+            update_available: false,
+            channel: Some("stable".to_owned()),
+            target: "test-target".to_owned(),
+            asset_available: true,
+            manifest_url: "https://example.invalid/manifest.json".to_owned(),
+            checked_at_unix: 1,
+            cached: false,
+        })
+        .expect("serialize check payload");
+        let download = serde_json::to_value(UpdateDownloadPayload {
+            current_version: "0.4.2".to_owned(),
+            latest_version: Some("0.4.2".to_owned()),
+            update_available: false,
+            downloaded: false,
+            target: "test-target".to_owned(),
+            manifest_url: "https://example.invalid/manifest.json".to_owned(),
+            archive_path: None,
+        })
+        .expect("serialize download payload");
+
+        for payload in [check, download] {
+            assert!(payload.get("entrySkillUpdateReminder").is_none());
+            assert!(payload.get("nextActions").is_none());
+        }
+    }
+
+    fn test_entry_skill() -> EntrySkillRelease {
+        EntrySkillRelease {
+            id: "myopenpanels".to_owned(),
+            version: "3.1".to_owned(),
+            source: "https://example.invalid/v0.4.2/skills/myopenpanels".to_owned(),
+        }
     }
 }

@@ -62,12 +62,18 @@ every request.
 
 ## Progressive Discovery
 
-Every Agent-facing discovery response exposes executable references only through
-the top-level `nextActions` array. Each `CommandActionRef` has a stable intent,
-an `argv` array that excludes the executable, and a `loadWhen` condition. The
-Agent prepends the exact CLI executable it originally resolved. Display
-`command` and `readCommand` strings are CLI-owned explanatory data, not execution
-inputs.
+Every Agent-facing response exposes follow-up references only through the
+top-level `nextActions` array. CLI actions use `executor: "cli"` semantics: their
+`argv` excludes the executable, and the Agent prepends the exact CLI executable
+it originally resolved. Advisory host actions use `executor: "agent-host"` and
+an instruction instead of `argv`. Both forms carry a stable intent and a
+`loadWhen` condition. Display `command` and `readCommand` strings are CLI-owned
+explanatory data, not execution inputs.
+
+`update install` is the only command that may return the advisory
+`agent-host.skill.update-recommended` action. It asks the Agent to compare the
+loaded Entry Skill metadata with the release-manifest version and consider an
+update when older. Bootstrap never emits this reminder.
 
 `agent capability list --format json` returns a stable, sorted scope index.
 `agent capability list --scope <scope> --format json` returns compact command

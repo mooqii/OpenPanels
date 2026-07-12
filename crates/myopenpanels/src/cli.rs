@@ -160,6 +160,7 @@ fn trace_url_for_cli(argv: &[String]) -> Option<String> {
     if command.is_none()
         || command == Some("__serve-studio")
         || command == Some("help")
+        || command == Some("version")
         || has_flag(&parsed, "help")
         || has_flag(&parsed, "version")
     {
@@ -1862,6 +1863,7 @@ fn studio_launch_payload(
             "preferredTarget": "in_app_browser",
             "fallback": {
                 "intent": "studio.open-system-browser",
+                "executor": fallback_action["executor"],
                 "command": "myopenpanels studio open-system-browser",
                 "argv": fallback_action["argv"],
                 "args": [

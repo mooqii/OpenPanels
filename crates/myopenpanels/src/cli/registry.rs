@@ -649,6 +649,7 @@ pub(crate) fn command_action(intent: &str, args: Vec<String>) -> Option<Value> {
     argv.extend(args);
     Some(json!({
         "intent": intent,
+        "executor": "cli",
         "argv": argv,
     }))
 }

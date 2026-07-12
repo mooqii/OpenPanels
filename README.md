@@ -85,6 +85,10 @@ myopenpanels update check
 myopenpanels update install
 ```
 
+`update install` also returns an advisory Agent-host reminder to compare the
+loaded MyOpenPanels Entry Skill with the version pinned by the installed release.
+The reminder is not emitted by Bootstrap and never blocks CLI installation.
+
 GitHub Releases are the update source. Release constraints and manifest
 requirements live in [docs/release.md](docs/release.md).
 

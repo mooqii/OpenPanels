@@ -99,6 +99,11 @@ const manifest = {
   name: "myopenpanels",
   version: tagVersion,
   channel: tagVersion.includes("-") ? "prerelease" : "stable",
+  entrySkill: {
+    id: "myopenpanels",
+    version: entrySkillVersion,
+    source: `https://github.com/mooqii/OpenPanels/tree/${tag}/skills/myopenpanels`,
+  },
   assets: Object.fromEntries(
     RELEASE_TARGETS.map((target) => {
       const extension = target.includes("windows") ? "zip" : "tar.gz"

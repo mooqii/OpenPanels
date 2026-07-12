@@ -92,6 +92,11 @@ The manifest schema is:
   "name": "myopenpanels",
   "version": "0.1.9",
   "channel": "stable",
+  "entrySkill": {
+    "id": "myopenpanels",
+    "version": "3.1",
+    "source": "https://github.com/mooqii/OpenPanels/tree/v0.1.9/skills/myopenpanels"
+  },
   "assets": {
     "aarch64-apple-darwin": {
       "url": "https://github.com/mooqii/OpenPanels/releases/download/v0.1.9/myopenpanels-aarch64-apple-darwin.tar.gz",
@@ -110,7 +115,12 @@ The manifest `version` must not include the leading `v`.
 - `myopenpanels update download` downloads the matching asset into the local
   update cache after checking SHA-256.
 - `myopenpanels update install` reuses the cached asset when possible, verifies the
-  downloaded binary with `--version`, then replaces the current executable.
+  downloaded binary with `--version`, then replaces the current executable. Its
+  response also carries an advisory Agent-host action asking the Agent to compare
+  the currently loaded MyOpenPanels Entry Skill with the version pinned in the
+  release manifest and consider updating it when older.
+- Skill reminders are returned only by `update install`; Bootstrap, update check,
+  and update download do not perform or repeat this check.
 - Normal text-mode commands may perform an opportunistic update check at most
   once every 24 hours. The check writes only a short stderr notice when an
   update exists.

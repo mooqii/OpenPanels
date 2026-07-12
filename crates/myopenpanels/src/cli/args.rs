@@ -733,9 +733,11 @@ pub(super) fn parse(argv: &[String]) -> ParseOutcome {
     }
     let json = argv.windows(2).any(|parts| parts == ["--format", "json"])
         || argv.iter().any(|arg| arg == "--format=json");
-    if json && argv.iter().any(|arg| arg == "--version") {
+    if argv.iter().any(|arg| arg == "--version") {
         let mut flags = BTreeMap::new();
-        put(&mut flags, "format", Some("json".to_owned()));
+        if json {
+            put(&mut flags, "format", Some("json".to_owned()));
+        }
         return ParseOutcome::Invocation(Invocation {
             flags,
             intent: "cli.version.read".to_owned(),

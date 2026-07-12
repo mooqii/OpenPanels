@@ -24,6 +24,7 @@ fn run_raw(args: &[&str]) -> (i32, String, String) {
 }
 
 fn assert_action_parses(action: &Value) {
+    assert_eq!(action["executor"], "cli");
     let argv = action["argv"]
         .as_array()
         .expect("action argv")
@@ -3635,6 +3636,15 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
 #[test]
 fn version_prints_text() {
     let (code, stdout, stderr) = run(&["version"]);
+
+    assert_eq!(code, 0);
+    assert_eq!(stdout, format!("{VERSION}\n"));
+    assert_eq!(stderr, "");
+}
+
+#[test]
+fn long_version_flag_prints_bare_version() {
+    let (code, stdout, stderr) = run_raw(&["--version"]);
 
     assert_eq!(code, 0);
     assert_eq!(stdout, format!("{VERSION}\n"));

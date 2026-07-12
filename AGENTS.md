@@ -59,6 +59,21 @@
   `scripts/myopenpanels-dev`; commit the release changes; create and push
   the `v<version>` tag so `.github/workflows/release-myopenpanels.yml`
   publishes the GitHub Release assets.
+- Treat CLI self-update as a release-critical compatibility contract. The
+  installed old CLI performs the download, candidate `--version` check,
+  executable replacement, and Studio restart, so later CLI, argument-parser,
+  output-format, manifest, archive, or restart changes must not break that old
+  updater. Keep plain `myopenpanels --version` output as the bare version plus
+  a newline (for example, `0.4.2\n`) unless the updater contract and all
+  supported upgrade paths are deliberately migrated together. The normal
+  Studio "update now" flow must install and restart without depending on an
+  Agent; an Agent command is recovery only, and recovery must install the CLI
+  before starting Studio. Before publishing, run an end-to-end release smoke
+  test from the latest previously published CLI through the real candidate
+  manifest and platform archive, verifying download, checksum, candidate
+  version, executable replacement, Studio restart, and browser reconnection.
+  Unit tests or a successful build alone are not sufficient evidence that
+  self-update still works.
 - When changing Studio live sync, storage events, tasks, or canvas selection
   persistence, do not let non-`panel_state` changes rebuild the canvas editor,
   clear canvas selection, or bump the canvas `snapshotVersion`. Only a real

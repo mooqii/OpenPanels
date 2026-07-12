@@ -32,7 +32,7 @@ export function UpdatePrompt({
   const visible = Boolean(status?.updateAvailable || status?.readyToInstall)
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(null)
   const recoveryCommand =
-    'myopenpanels studio start --project-dir "$PWD" --format json'
+    '请先运行 myopenpanels update install --format json 安装最新的 MyOpenPanels CLI；安装成功后，再运行 myopenpanels studio start --local-only --project-dir "$PWD" --format json 重新启动 Studio。'
 
   if (
     action === "installing" ||
@@ -85,7 +85,7 @@ export function UpdatePrompt({
                 size="sm"
                 variant="ghost"
               >
-                复制命令
+                复制恢复指令
               </Button>
               <Button onPress={onDismissError} size="sm">
                 关闭

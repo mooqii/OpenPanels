@@ -61,11 +61,14 @@ pub(super) fn update_install_text(payload: &UpdateInstallPayload) -> String {
     let latest = payload.latest_version.as_deref().unwrap_or("unknown");
     if payload.updated {
         format!(
-            "Updated myopenpanels {} -> {latest}. Run `myopenpanels studio start --project-dir <project> --format json` to restart Studio, then navigate to the returned embeddedBrowserUrl.",
-            payload.current_version
+            "Updated myopenpanels {} -> {latest}. Compare the loaded MyOpenPanels Entry Skill with version {} and consider updating it when older. Run `myopenpanels studio start --project-dir <project> --format json` to restart Studio, then navigate to the returned embeddedBrowserUrl.",
+            payload.current_version, payload.entry_skill_update_reminder.version
         )
     } else {
-        format!("myopenpanels is already up to date ({latest}).")
+        format!(
+            "myopenpanels is already up to date ({latest}). Compare the loaded MyOpenPanels Entry Skill with version {} and consider updating it when older.",
+            payload.entry_skill_update_reminder.version
+        )
     }
 }
 

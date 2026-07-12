@@ -24,6 +24,7 @@ const tag =
 const repo = args.repo ?? process.env.GITHUB_REPOSITORY ?? "mooqii/OpenPanels"
 const channel =
   args.channel ?? (version.includes("-") ? "prerelease" : "stable")
+const entrySkillVersion = readEntrySkillVersion()
 const archivePattern = /^myopenpanels-(.+)\.(tar\.gz|zip)$/
 
 if (!existsSync(outDir))
@@ -57,6 +58,11 @@ const manifest = {
   name: "myopenpanels",
   version,
   channel,
+  entrySkill: {
+    id: "myopenpanels",
+    version: entrySkillVersion,
+    source: `https://github.com/${repo}/tree/${tag}/skills/myopenpanels`,
+  },
   assets,
 }
 
@@ -91,5 +97,15 @@ function readCargoVersion() {
   )
   const match = content.match(/^version\s*=\s*"([^"]+)"/m)
   if (!match) throw new Error("Missing Rust CLI version in Cargo.toml")
+  return match[1]
+}
+
+function readEntrySkillVersion() {
+  const content = readFileSync(
+    new URL("../skills/myopenpanels/SKILL.md", import.meta.url),
+    "utf8"
+  )
+  const match = content.match(/^\s+version:\s*["']([^"']+)["']/m)
+  if (!match) throw new Error("Missing MyOpenPanels entry Skill version")
   return match[1]
 }
