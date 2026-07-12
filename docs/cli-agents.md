@@ -64,15 +64,18 @@ contains no Projects.
 - `myopenpanels studio wait`: wait for the studio HTTP server to become ready.
 - `myopenpanels studio stop`: stop the conversation-scoped MyOpenPanels Studio process.
 - `myopenpanels agent bootstrap`: print the compact Protocol v3 focus, bounded
-  context, work summaries, and progressive-discovery references.
+  context, work summaries, the mandatory active Panel Skill action, and
+  progressive-discovery references. Load the required Wiki or Canvas Panel
+  Skill before evaluating any other action.
 - `myopenpanels agent capability list`: list scopes, or compact intents with
   `--scope <scope>`.
 - `myopenpanels agent capability read --intent <intent>`: read one complete
   Command Registry descriptor.
 - `myopenpanels agent skill list`: list compact Skill summaries, optionally
   filtered by `--panel-kind` and `--task-type`.
-- `myopenpanels agent skill read --skill-id <id>`: resolve a panel or authoring skill and
-  print its task-specific loader context.
+- `myopenpanels agent skill read --skill-id <id>`: resolve a panel or authoring
+  skill, print its task-specific loader context, and return the required local
+  `SKILL.md` read action.
 - `myopenpanels agent skill read --skill-id wiki-panel`: load Wiki knowledge, generated
   document, and authoring-skill routing rules.
 - `myopenpanels agent skill read --skill-id canvas-panel`: load Canvas selection,

@@ -28,10 +28,13 @@ Studio -> local server -> SQLite/files
 The CLI does not push prompts into the Agent. A normal discovery flow is:
 
 1. Run `agent bootstrap --project-dir <project> --format json`.
-2. Follow `data.nextRequiredAction`.
-3. Choose an applicable entry from `data.nextActions` according to `loadWhen`.
-4. Execute its `argv` with the same resolved CLI executable.
-5. Repeat against the next response until the user request is complete.
+2. Follow `data.nextRequiredAction` and execute the required active Panel Skill
+   action before evaluating any other action.
+3. Read the returned local `SKILL.md` as instructed.
+4. Choose any remaining applicable entries from `data.nextActions` according to
+   `loadWhen`.
+5. Execute their `argv` with the same resolved CLI executable and repeat against
+   each next response until the user request is complete.
 
 ## Bootstrap Contract
 
@@ -47,9 +50,9 @@ Bootstrap `data` contains only:
 - bounded Panel Module context and an explicit-selection summary;
 - Task counts and at most one next-Task reference;
 - active Operation count and at most three Operation references;
-- capability discovery commands, the conditional active Panel Skill reference,
+- capability discovery commands, the required active Panel Skill reference,
   and at most eight applicable Guide references;
-- a `match-user-request` next action.
+- a `load-active-panel-skill` required action.
 
 Panel context is bounded to depth 4, strings of 256 UTF-8 bytes, arrays of 16
 items, and objects of 32 fields. `contextTruncated` reports whether this happened.
@@ -57,18 +60,24 @@ Project, Panel, Task, and Operation identity fields are never shortened.
 
 Bootstrap does not contain the full capability catalog, Skill or Guide content,
 Task or Operation records, selection values, local paths, or Studio binding.
-`activePanelSkill` is a conditional reference, not an instruction to load it for
-every request.
+Because the Entry Skill requests Bootstrap only for panel-related work,
+`activePanelSkill` is mandatory whenever Bootstrap is called. Its read action is
+the first entry in `nextActions`, carries `required: true`, and includes the
+project directory needed to execute it without reconstructing context.
 
 ## Progressive Discovery
 
-Every Agent-facing response exposes follow-up references only through the
+Every Agent-facing response exposes follow-up CLI references only through the
 top-level `nextActions` array. CLI actions use `executor: "cli"` semantics: their
 `argv` excludes the executable, and the Agent prepends the exact CLI executable
-it originally resolved. Advisory host actions use `executor: "agent-host"` and
-an instruction instead of `argv`. Both forms carry a stable intent and a
-`loadWhen` condition. Display `command` and `readCommand` strings are CLI-owned
-explanatory data, not execution inputs.
+it originally resolved. A required host step may be expressed directly by
+`nextRequiredAction` with `executor: "agent-host"` and an instruction instead of
+`argv`. Display `command` and `readCommand` strings are CLI-owned explanatory
+data, not execution inputs.
+
+An `agent skill read` response uses a required `agent-host` action to identify
+the extracted local `SKILL.md`. Reading that file completes Panel Skill loading;
+merely receiving the loader response does not.
 
 `update install` is the only command that may return the advisory
 `agent-host.skill.update-recommended` action. It asks the Agent to compare the

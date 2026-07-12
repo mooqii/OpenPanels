@@ -987,6 +987,12 @@ fn project_read_commands_bootstrap_project() {
         bootstrap["discovery"]["activePanelSkill"]["readCommand"],
         "myopenpanels agent skill read --skill-id canvas-panel --format json"
     );
+    assert_eq!(
+        bootstrap["nextRequiredAction"]["intent"],
+        "load-active-panel-skill"
+    );
+    assert_eq!(bootstrap["nextActions"][0]["skillId"], "canvas-panel");
+    assert_eq!(bootstrap["nextActions"][0]["required"], true);
 }
 
 #[test]
@@ -1149,7 +1155,12 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert_eq!(payload["operations"]["items"], json!([]));
     assert_eq!(
         payload["nextRequiredAction"]["intent"],
-        "match-user-request"
+        "load-active-panel-skill"
+    );
+    assert_eq!(payload["nextRequiredAction"]["required"], true);
+    assert_eq!(
+        payload["nextRequiredAction"]["actionIntent"],
+        "agent.skill.read"
     );
     assert_eq!(payload["discovery"]["activePanelSkill"]["id"], "wiki-panel");
     assert!(payload["discovery"]["recommendedScopes"]
@@ -1161,6 +1172,15 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         assert_action_parses(action);
         assert!(action["loadWhen"].as_str().is_some());
     }
+    let required_skill_action = &payload["nextActions"][0];
+    assert_eq!(required_skill_action["intent"], "agent.skill.read");
+    assert_eq!(required_skill_action["required"], true);
+    assert_eq!(required_skill_action["skillId"], "wiki-panel");
+    assert!(required_skill_action["argv"]
+        .as_array()
+        .is_some_and(|argv| argv.windows(2).any(|pair| {
+            pair[0] == "--project-dir" && pair[1] == project_dir.to_string_lossy().as_ref()
+        })));
     assert!(payload["discovery"].get("capabilityIndexAction").is_none());
     assert!(payload["discovery"].get("capabilityListActions").is_none());
     assert!(payload["discovery"].get("guideListAction").is_none());
@@ -1455,6 +1475,33 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert!(stdout.contains("# Skill: wiki-panel"));
     assert!(stdout.contains("Read `SKILL.md` directly"));
     assert!(stdout.contains("myopenpanels panel selection read"));
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "skill",
+        "read",
+        "--skill-id",
+        "wiki-panel",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let skill_payload = serde_json::from_str::<Value>(&stdout).expect("skill payload");
+    assert_eq!(
+        skill_payload["nextRequiredAction"]["intent"],
+        "read-skill-file"
+    );
+    assert_eq!(skill_payload["nextRequiredAction"]["required"], true);
+    assert_eq!(
+        skill_payload["nextRequiredAction"]["localPath"],
+        skill_payload["localPath"]
+    );
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -3883,9 +3930,9 @@ fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing()
 }
 
 #[test]
-fn entry_skill_requires_verified_open_without_bootstrap_gating() {
+fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
-    assert!(skill.contains("version: \"3.1\""));
+    assert!(skill.contains("version: \"3.2\""));
     assert!(!skill.contains("minCliVersion"));
     assert!(!skill.contains("protocol-version"));
     assert!(skill
@@ -3909,6 +3956,11 @@ fn entry_skill_requires_verified_open_without_bootstrap_gating() {
     assert!(skill.contains("Studio readiness only"));
     assert!(skill.contains("If the user only asked to open the panel"));
     assert!(skill.contains("Do not request Agent Bootstrap merely to verify"));
+    assert!(skill.contains("run a fresh Agent Bootstrap"));
+    assert!(skill.contains("Do not bootstrap for requests clearly unrelated"));
+    assert!(skill.contains("do not reuse a previous Bootstrap result"));
+    assert!(skill.contains("The active Panel Skill is mandatory"));
+    assert!(skill.contains("before evaluating any other"));
     assert!(skill.contains("data.opened: true"));
     assert!(skill.contains("--local-only"));
     assert!(!skill.contains("--no-open"));

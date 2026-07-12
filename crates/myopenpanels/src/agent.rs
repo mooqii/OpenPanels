@@ -149,7 +149,8 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
             json!({
                 "id": skill_id,
                 "readCommand": format!("myopenpanels agent skill read --skill-id {skill_id} --format json"),
-                "loadWhen": "The user request targets the active panel.",
+                "loadWhen": "Always before reading from or operating on the active panel.",
+                "required": true,
             })
         })
         .unwrap_or(Value::Null);
@@ -163,30 +164,10 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
     .collect::<BTreeSet<_>>()
     .into_iter()
     .collect::<Vec<_>>();
-    let mut next_actions = recommended_scopes
-        .iter()
-        .map(|scope| {
-            let mut action = command_action(
-                "agent.capability.list",
-                vec![
-                    "--scope".to_owned(),
-                    (*scope).to_owned(),
-                    "--format".to_owned(),
-                    "json".to_owned(),
-                ],
-            );
-            action["loadWhen"] = json!(format!("The user request matches the {scope} scope."));
-            action
-        })
-        .collect::<Vec<_>>();
-    let mut capability_index_action = command_action(
-        "agent.capability.list",
-        vec!["--format".to_owned(), "json".to_owned()],
-    );
-    capability_index_action["loadWhen"] = json!("No recommended scope matches the user request.");
-    next_actions.push(capability_index_action);
+    let mut next_actions = Vec::new();
     if let Some(skill_id) = panel_skill_id(bootstrap.active_panel_kind) {
-        let mut action = command_action(
+        let mut action = project_command_action(
+            paths,
             "agent.skill.read",
             vec![
                 "--skill-id".to_owned(),
@@ -195,11 +176,39 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
                 "json".to_owned(),
             ],
         );
-        action["loadWhen"] = json!("The user request targets the active panel.");
+        action["loadWhen"] =
+            json!("Always. Load this Skill before evaluating or executing any other panel action.");
+        action["required"] = json!(true);
+        action["skillId"] = json!(skill_id);
         next_actions.push(action);
     }
+    next_actions.extend(
+        recommended_scopes
+            .iter()
+            .map(|scope| {
+                let mut action = command_action(
+                    "agent.capability.list",
+                    vec![
+                        "--scope".to_owned(),
+                        (*scope).to_owned(),
+                        "--format".to_owned(),
+                        "json".to_owned(),
+                    ],
+                );
+                action["loadWhen"] = json!(format!("The user request matches the {scope} scope."));
+                action
+            })
+            .collect::<Vec<_>>(),
+    );
+    let mut capability_index_action = command_action(
+        "agent.capability.list",
+        vec!["--format".to_owned(), "json".to_owned()],
+    );
+    capability_index_action["loadWhen"] = json!("No recommended scope matches the user request.");
+    next_actions.push(capability_index_action);
     next_actions.extend(applicable_guides.iter().map(|guide| {
-        let mut action = command_action(
+        let mut action = project_command_action(
+            paths,
             "agent.guide.read",
             vec![
                 "--guide-id".to_owned(),
@@ -212,7 +221,8 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         action
     }));
     if let Some(task_id) = next_task_id(&bootstrap) {
-        let mut action = command_action(
+        let mut action = project_command_action(
+            paths,
             "task.read",
             vec![
                 "--task-id".to_owned(),
@@ -226,7 +236,8 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
     }
     next_actions.extend(operations.iter().take(3).filter_map(|operation| {
         let operation_id = operation.get("id").and_then(Value::as_str)?;
-        let mut action = command_action(
+        let mut action = project_command_action(
+            paths,
             "operation.read",
             vec![
                 "--operation-id".to_owned(),
@@ -276,8 +287,10 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         },
         "nextActions": next_actions,
         "nextRequiredAction": {
-            "intent": "match-user-request",
-            "instruction": "Choose only the applicable entries from nextActions according to loadWhen. Execute their argv with the same resolved CLI executable, then follow the next response in the same way.",
+            "intent": "load-active-panel-skill",
+            "required": true,
+            "actionIntent": "agent.skill.read",
+            "instruction": "Execute the required agent.skill.read entry in nextActions before evaluating or executing any other action. Read the returned SKILL.md as instructed, then choose any remaining applicable entries according to loadWhen.",
         },
     }))
 }
@@ -306,6 +319,15 @@ fn next_task_id(bootstrap: &ProjectBootstrap) -> Option<&str> {
 fn command_action(intent: &str, args: Vec<String>) -> Value {
     crate::cli::registry::command_action(intent, args)
         .unwrap_or_else(|| panic!("missing Command Registry action for {intent}"))
+}
+
+fn project_command_action(paths: &MyOpenPanelsPaths, intent: &str, args: Vec<String>) -> Value {
+    let mut contextual_args = vec![
+        "--project-dir".to_owned(),
+        paths.project_dir.display().to_string(),
+    ];
+    contextual_args.extend(args);
+    command_action(intent, contextual_args)
 }
 
 fn compact_task_summary(bootstrap: &ProjectBootstrap) -> Value {
@@ -597,8 +619,11 @@ pub fn read_agent_skill(
     Ok(AgentSkillReadPayload {
         next_actions: capability_read_actions(&skill.metadata.requires_capabilities),
         next_required_action: json!({
-            "intent": "apply-skill",
-            "instruction": "Apply the Skill to the user request. Load an entry from nextActions only when the Skill requires that capability.",
+            "intent": "read-skill-file",
+            "executor": "agent-host",
+            "required": true,
+            "localPath": local_path.display().to_string(),
+            "instruction": "Read SKILL.md directly from localPath before performing panel work. After reading it, load an entry from nextActions only when the Skill requires that capability.",
         }),
         skill: skill.metadata,
         local_dir: local_dir.display().to_string(),

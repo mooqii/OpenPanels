@@ -1,8 +1,8 @@
 ---
 name: myopenpanels
-description: "Use MyOpenPanels when a persistent visual and knowledge workspace would help: drawing, image generation or editing, diagrams, moodboards, brainstorming, visual planning, organizing or comparing materials, research and summaries, drafting, writing, revising, and maintaining project knowledge in a local Wiki or infinite Canvas. Also use for explicit requests such as open or launch MyOpenPanels, MyOpenPanels, the MyOpenPanels panel, the panel, or 打开面板."
+description: "Use MyOpenPanels when a persistent visual and knowledge workspace would help: drawing, image generation or editing, diagrams, moodboards, brainstorming, visual planning, organizing or comparing materials, research and summaries, drafting, writing, revising, and maintaining project knowledge in a local Wiki or infinite Canvas. Also use for explicit requests such as open or launch MyOpenPanels, MyOpenPanels, the MyOpenPanels panel, the panel, or 打开面板. After MyOpenPanels has been opened in the current conversation, also use this skill for follow-up requests that may refer to, inspect, organize, modify, or produce content in the current panel, including implicit requests such as continue, organize this, put this on the canvas, or use the selected content."
 metadata:
-  version: "3.1"
+  version: "3.2"
 ---
 
 # MyOpenPanels
@@ -10,6 +10,15 @@ metadata:
 Use this skill only as the stable installation and launch entry point. The
 installed `myopenpanels` CLI is the sole authority for current panels,
 capabilities, guides, commands, and workflows.
+
+After Studio has been successfully opened in the current conversation, treat
+MyOpenPanels as an available, but not mandatory, workspace for the rest of that
+conversation. Before acting on each later request that could reasonably read,
+use, or modify the current panel, run a fresh Agent Bootstrap so routing uses
+the latest panel, selection, task, and capability state. This includes implicit
+follow-ups such as "continue", "organize this", "put this on the canvas", or
+references to selected content. Do not bootstrap for requests clearly unrelated
+to MyOpenPanels.
 
 1. Resolve the CLI executable once. Prefer an executable checkout-local
    launcher, then `MYOPENPANELS_CLI`, then `myopenpanels` from `PATH`. Keep that
@@ -52,17 +61,23 @@ capabilities, guides, commands, and workflows.
 5. If the user only asked to open the panel, stop after a browser opener has
    succeeded. Do not request Agent Bootstrap merely to verify that Studio
    opened.
-6. Before Wiki, Canvas, or task work, use the second stable work entry:
+6. Before each Wiki, Canvas, task, or other potentially panel-related request,
+   use the second stable work entry. Do this again for every applicable later
+   request; do not reuse a previous Bootstrap result because the user may have
+   changed the active panel or selection between turns:
 
    ```bash
    myopenpanels agent bootstrap --project-dir "$PWD" --format json
    ```
 
    Substitute the same resolved executable for `myopenpanels`, then follow the
-   response's `data.nextRequiredAction`. Execute only applicable entries from
-   `data.nextActions`, using that executable with each returned `argv`. Treat
-   every other field as current CLI-owned data; never infer or reconstruct a
-   command from remembered paths or flags.
+   response's `data.nextRequiredAction`. The active Panel Skill is mandatory:
+   execute its required `agent.skill.read` entry before evaluating any other
+   action, then read the returned local `SKILL.md` exactly as instructed. Only
+   after that may you execute other applicable entries from `data.nextActions`,
+   using that executable with each returned `argv`. Treat every other field as
+   current CLI-owned data; never infer or reconstruct a command from remembered
+   paths or flags.
 
 Do not keep discovery commands, panel commands, guide IDs, selection rules,
 generation steps, or panel-operation flags in this skill. Never substitute
