@@ -2407,28 +2407,28 @@ mod tests {
             .execute_batch(
                 r#"
                 INSERT INTO sessions (id, title, created_at, updated_at, panel_ids_json, session_json)
-                VALUES ('project:test', 'Test', '2026-01-01T00:00:00.000Z',
-                        '2026-01-01T00:00:00.000Z', '["panel:image"]',
-                        '{"id":"project:test","title":"Test","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","panelIds":["panel:image"]}');
+                VALUES ('project-test', 'Test', '2026-01-01T00:00:00.000Z',
+                        '2026-01-01T00:00:00.000Z', '["panel-image"]',
+                        '{"id":"project-test","title":"Test","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","panelIds":["panel-image"]}');
                 INSERT INTO panels (id, session_id, kind, title, created_at, updated_at, state_ref, panel_json)
-                VALUES ('panel:image', 'project:test', 'image', 'Images',
+                VALUES ('panel-image', 'project-test', 'image', 'Images',
                         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL,
-                        '{"id":"panel:image","sessionId":"project:test","kind":"image","title":"Images","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}');
+                        '{"id":"panel-image","sessionId":"project-test","kind":"image","title":"Images","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}');
                 INSERT INTO panel_states (session_id, panel_id, schema_version, state_json, updated_at)
-                VALUES ('project:test', 'panel:image', 1, '{"items":["kept"]}',
+                VALUES ('project-test', 'panel-image', 1, '{"items":["kept"]}',
                         '2026-01-01T00:00:00.000Z');
                 "#,
             )
             .expect("legacy unsupported panel");
         drop(connection);
-        let legacy_files = storage_dir.join("sessions/project:test/panels/panel:image/assets");
+        let legacy_files = storage_dir.join("sessions/project-test/panels/panel-image/assets");
         fs::create_dir_all(&legacy_files).expect("legacy files");
         fs::write(legacy_files.join("source.png"), b"image").expect("legacy asset");
 
         let paths = paths_for(storage_dir.clone());
         let storage = Storage::open(&paths).expect("upgrade");
         assert!(storage
-            .read_panel("project:test", "panel:image")
+            .read_panel("project-test", "panel-image")
             .expect("read")
             .is_none());
         let marker: Value = serde_json::from_slice(
@@ -2436,7 +2436,7 @@ mod tests {
         )
         .expect("marker json");
         let backup = PathBuf::from(marker["backupDir"].as_str().expect("backup dir"))
-            .join("project:test/panel:image");
+            .join("project-test/panel-image");
         let metadata: Value =
             serde_json::from_slice(&fs::read(backup.join("panel.json")).expect("panel backup"))
                 .expect("panel backup json");
@@ -2473,9 +2473,9 @@ mod tests {
         tx.execute(
             r#"
             INSERT INTO sessions (id, title, created_at, updated_at, panel_ids_json, session_json)
-            VALUES ('session:test', 'Test', '2026-01-01T00:00:00.000Z',
-                    '2026-01-01T00:00:00.000Z', '["panel:wiki"]',
-                    '{"id":"session:test","title":"Test","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","panelIds":["panel:wiki"]}')
+            VALUES ('session-test', 'Test', '2026-01-01T00:00:00.000Z',
+                    '2026-01-01T00:00:00.000Z', '["panel-wiki"]',
+                    '{"id":"session-test","title":"Test","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","panelIds":["panel-wiki"]}')
             "#,
             [],
         )
@@ -2483,9 +2483,9 @@ mod tests {
         tx.execute(
             r#"
             INSERT INTO panels (id, session_id, kind, title, created_at, updated_at, state_ref, panel_json)
-            VALUES ('panel:wiki', 'session:test', 'wiki', 'Wiki',
+            VALUES ('panel-wiki', 'session-test', 'wiki', 'Wiki',
                     '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL,
-                    '{"id":"panel:wiki","sessionId":"session:test","kind":"wiki","title":"Wiki","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","stateRef":null}')
+                    '{"id":"panel-wiki","sessionId":"session-test","kind":"wiki","title":"Wiki","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","stateRef":null}')
             "#,
             [],
         )
@@ -2496,10 +2496,10 @@ mod tests {
               id, queue, session_id, panel_id, panel_kind, type, status,
               target_id, created_at, updated_at, task_json
             ) VALUES (
-              'task:test', 'wiki', 'session:test', 'panel:wiki', 'wiki',
-              'convert_document_to_markdown', 'queued', 'raw:test',
+              'task-test', 'wiki', 'session-test', 'panel-wiki', 'wiki',
+              'convert_document_to_markdown', 'queued', 'raw-test',
               '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
-              '{"id":"task:test","type":"convert_document_to_markdown","status":"queued","targetId":"raw:test","documentId":"raw:test","wikiSpaceId":"wiki:default"}'
+              '{"id":"task-test","type":"convert_document_to_markdown","status":"queued","targetId":"raw-test","documentId":"raw-test","wikiSpaceId":"wiki-default"}'
             )
             "#,
             [],
@@ -2508,8 +2508,8 @@ mod tests {
         tx.execute(
             r#"
             INSERT INTO panel_states (session_id, panel_id, schema_version, state_json, updated_at)
-            VALUES ('session:test', 'panel:wiki', 3,
-                    '{"schemaVersion":3,"rawDocuments":[],"generatedDocuments":[],"ruleSets":[],"wikiSpaces":[],"tasks":[{"id":"task:test","type":"convert_document_to_markdown","status":"failed"}],"assetRef":"sessions/session:test/panels/panel:wiki/assets/source.md","previewUrl":"/api/panels/session:test/panel:wiki/assets/source.md"}',
+            VALUES ('session-test', 'panel-wiki', 3,
+                    '{"schemaVersion":3,"rawDocuments":[],"generatedDocuments":[],"ruleSets":[],"wikiSpaces":[],"tasks":[{"id":"task-test","type":"convert_document_to_markdown","status":"failed"}],"assetRef":"sessions/session-test/panels/panel-wiki/assets/source.md","previewUrl":"/api/panels/session-test/panel-wiki/assets/source.md"}',
                     '2026-01-01T00:00:00.000Z')
             "#,
             [],
@@ -2520,9 +2520,9 @@ mod tests {
 
         let legacy_asset = storage_dir
             .join("sessions")
-            .join("session:test")
+            .join("session-test")
             .join("panels")
-            .join("panel:wiki")
+            .join("panel-wiki")
             .join("assets")
             .join("source.md");
         fs::create_dir_all(legacy_asset.parent().expect("asset parent")).expect("asset directory");
@@ -2531,7 +2531,7 @@ mod tests {
         fs::create_dir_all(&context_dir).expect("context directory");
         fs::write(
             context_dir.join("active-session.json"),
-            r#"{"sessionId":"session:test"}"#,
+            r#"{"sessionId":"session-test"}"#,
         )
         .expect("legacy context");
 
@@ -2540,35 +2540,35 @@ mod tests {
         let capability: String = storage
             .connection
             .query_row(
-                "SELECT capability FROM tasks WHERE id = 'task:test'",
+                "SELECT capability FROM tasks WHERE id = 'task-test'",
                 [],
                 |row| row.get(0),
             )
             .expect("backfilled capability");
         assert_eq!(capability, "wiki.convertDocument");
         let migrated_task = storage
-            .list_tasks("session:test")
+            .list_tasks("session-test")
             .expect("migrated task")
             .pop()
             .expect("task");
         assert_eq!(migrated_task["status"], "queued");
-        assert_eq!(migrated_task["source"]["wikiSpaceId"], "wiki:default");
+        assert_eq!(migrated_task["source"]["wikiSpaceId"], "wiki-default");
         let wiki_state = storage
-            .read_panel_state("session:test", "panel:wiki")
+            .read_panel_state("session-test", "panel-wiki")
             .expect("wiki state")
             .expect("state");
         assert_eq!(wiki_state["schemaVersion"], 4);
         assert!(wiki_state.get("tasks").is_none());
         assert_eq!(
             wiki_state["assetRef"],
-            "projects/session:test/panels/panel:wiki/assets/source.md"
+            "projects/session-test/panels/panel-wiki/assets/source.md"
         );
         assert_eq!(
             wiki_state["previewUrl"],
-            "/api/projects/session:test/panels/panel:wiki/assets/source.md"
+            "/api/projects/session-test/panels/panel-wiki/assets/source.md"
         );
         assert!(storage_dir
-            .join("projects/session:test/panels/panel:wiki/assets/source.md")
+            .join("projects/session-test/panels/panel-wiki/assets/source.md")
             .is_file());
         assert!(!storage_dir.join("sessions").exists());
         let active_project = fs::read_to_string(context_dir.join("active-project.json"))

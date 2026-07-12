@@ -389,14 +389,21 @@ pub fn claim_next_filtered(
         .project
         .id;
     loop {
-        if let Some(payload) = claim_once(paths, &project_id, target_id, None, capability, queue)? {
-            return Ok(payload);
+        match claim_once(paths, &project_id, target_id, None, capability, queue) {
+            Ok(Some(payload)) => return Ok(payload),
+            Ok(None) => {}
+            Err(error) if is_database_locked(&error) => {}
+            Err(error) => return Err(error),
         }
         if started.elapsed() >= Duration::from_millis(wait_ms) {
             return Ok(json!({ "task": Value::Null, "leaseToken": Value::Null }));
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn is_database_locked(error: &CliError) -> bool {
+    error.message().to_ascii_lowercase().contains("database is locked")
 }
 
 pub fn claim_task(
