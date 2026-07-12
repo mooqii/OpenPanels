@@ -588,15 +588,14 @@ fn compare_studio_version(server_version: Option<&str>) -> Result<StudioVersionR
         )
     })?;
     let cli = Version::parse(env!("CARGO_PKG_VERSION")).map_err(to_cli_error)?;
-    Ok(if server < cli {
-        StudioVersionRelation::Older
-    } else if server > cli {
-        StudioVersionRelation::Newer
-    } else {
-        StudioVersionRelation::Current
+    Ok(match server.cmp(&cli) {
+        std::cmp::Ordering::Less => StudioVersionRelation::Older,
+        std::cmp::Ordering::Greater => StudioVersionRelation::Newer,
+        std::cmp::Ordering::Equal => StudioVersionRelation::Current,
     })
 }
 
+#[allow(clippy::result_large_err)]
 fn studio_get(server_url: &str, path: &str) -> Result<ureq::Response, ureq::Error> {
     let url = format!("{}{}", server_url.trim_end_matches('/'), path);
     ureq::AgentBuilder::new()

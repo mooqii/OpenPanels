@@ -3,6 +3,7 @@
 > Historical migration document. References to `agent context` describe the
 > removed Protocol v1 surface. The current contract uses `agent bootstrap` and
 > is defined in `agent-guidance-protocol-spec.md`.
+> Its command examples are also superseded by the 0.4 vNext command tree.
 
 ## 背景
 

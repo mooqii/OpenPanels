@@ -1398,6 +1398,11 @@ CREATE INDEX agent_operations_target_idx
   ON agent_operations(session_id, panel_id, updated_at DESC);
 "#;
 
+const MIGRATION_0004_SQL: &str = r#"
+CREATE UNIQUE INDEX panels_session_kind_unique_idx
+  ON panels(session_id, kind);
+"#;
+
 struct Migration {
     id: &'static str,
     description: &'static str,
@@ -1429,6 +1434,12 @@ fn migrations() -> &'static [Migration] {
             description: "Add persistent agent operations",
             checksum_material: MIGRATION_0003_SQL,
             up: migration_0003,
+        },
+        Migration {
+            id: "0004_unique_panel_kind",
+            description: "Require one panel of each kind per Project",
+            checksum_material: MIGRATION_0004_SQL,
+            up: migration_0004,
         },
     ]
 }
@@ -1547,10 +1558,7 @@ fn apply_migration(connection: &mut Connection, migration: &Migration) -> Result
     })();
     match result {
         Ok(()) => tx.commit().map_err(to_cli_error),
-        Err(error) => Err(CliError::new(format!(
-            "migration failed and rolled back for {}: {}",
-            migration.id, error
-        ))),
+        Err(error) => Err(error),
     }
 }
 
@@ -1571,6 +1579,41 @@ fn migration_0002(tx: &Transaction<'_>) -> Result<(), CliError> {
 
 fn migration_0003(tx: &Transaction<'_>) -> Result<(), CliError> {
     tx.execute_batch(MIGRATION_0003_SQL).map_err(to_cli_error)
+}
+
+fn migration_0004(tx: &Transaction<'_>) -> Result<(), CliError> {
+    let duplicate = tx
+        .query_row(
+            r#"
+            SELECT session_id, kind, COUNT(*)
+            FROM panels
+            GROUP BY session_id, kind
+            HAVING COUNT(*) > 1
+            ORDER BY session_id, kind
+            LIMIT 1
+            "#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(to_cli_error)?;
+    if let Some((session_id, kind, count)) = duplicate {
+        return Err(CliError::with_recovery(
+            "duplicate_panel_kind",
+            format!(
+                "Project {session_id} contains {count} panels of kind {kind}; MyOpenPanels 0.4 requires one panel per kind."
+            ),
+            false,
+            "Back up the MyOpenPanels storage and remove or merge the duplicate panel records before retrying the upgrade.",
+        ));
+    }
+    tx.execute_batch(MIGRATION_0004_SQL).map_err(to_cli_error)
 }
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {
@@ -1798,6 +1841,52 @@ mod tests {
     }
 
     #[test]
+    fn unique_panel_kind_migration_rejects_duplicates_without_deleting_data() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        storage
+            .connection()
+            .execute_batch(
+                r#"
+                DROP INDEX panels_session_kind_unique_idx;
+                DELETE FROM schema_migrations WHERE id = '0004_unique_panel_kind';
+                INSERT INTO sessions (
+                  id, title, created_at, updated_at, panel_ids_json, session_json
+                ) VALUES (
+                  'session:duplicate', 'Duplicate', '2026-01-01T00:00:00.000Z',
+                  '2026-01-01T00:00:00.000Z', '["panel:one","panel:two"]',
+                  '{"id":"session:duplicate","title":"Duplicate","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","panelIds":["panel:one","panel:two"]}'
+                );
+                INSERT INTO panels (
+                  id, session_id, kind, title, created_at, updated_at, state_ref, panel_json
+                ) VALUES
+                  ('panel:one', 'session:duplicate', 'wiki', 'Wiki one',
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL,
+                   '{"id":"panel:one","sessionId":"session:duplicate","kind":"wiki","title":"Wiki one","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","stateRef":null}'),
+                  ('panel:two', 'session:duplicate', 'wiki', 'Wiki two',
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL,
+                   '{"id":"panel:two","sessionId":"session:duplicate","kind":"wiki","title":"Wiki two","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","stateRef":null}');
+                "#,
+            )
+            .expect("duplicate fixture");
+        drop(storage);
+
+        let error = Storage::open(&paths).expect_err("duplicate kinds must block migration");
+        assert_eq!(error.code(), Some("duplicate_panel_kind"));
+        let connection =
+            Connection::open(paths.storage_dir.join(DATABASE_FILE_NAME)).expect("database");
+        let duplicate_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM panels WHERE session_id = 'session:duplicate' AND kind = 'wiki'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("duplicate count");
+        assert_eq!(duplicate_count, 2);
+    }
+
+    #[test]
     fn migration_upgrades_existing_task_queue_to_dispatch_protocol() {
         let temp = tempdir().expect("tempdir");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -1950,7 +2039,7 @@ mod tests {
         };
 
         let error = run_migrations(&mut connection, &[bad]).expect_err("migration failure");
-        assert!(error.message().contains("migration failed and rolled back"));
+        assert!(error.message().contains("no such table"));
         let table_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'rollback_probe'",

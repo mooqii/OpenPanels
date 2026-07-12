@@ -29,7 +29,10 @@ pub struct BridgeOptions<'a> {
     pub timeout_ms: u64,
 }
 
-pub fn run_bridge(paths: &MyOpenPanelsPaths, options: BridgeOptions<'_>) -> Result<Value, CliError> {
+pub fn run_bridge(
+    paths: &MyOpenPanelsPaths,
+    options: BridgeOptions<'_>,
+) -> Result<Value, CliError> {
     let command = options.command.ok_or_else(|| {
         CliError::new("Task bridge requires --command <command>. Register webhook and polling targets with agent targets register.")
     })?;

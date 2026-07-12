@@ -1,5 +1,11 @@
 # MyOpenPanels Repository Agent Notes
 
+- During solution discussions, do not agree with or follow the user's proposed
+  approach merely to be accommodating. Treat it as input that may be mistaken,
+  use independent professional judgment, explain better alternatives in plain
+  language, and recommend the approach that best serves the user's actual
+  goals. Follow a proposed approach as a requirement only when the user
+  explicitly makes it one.
 - When working inside this repository, prefer the checkout-local CLI wrapper:
   `scripts/myopenpanels-dev`.
 - Set `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev"` when the script
@@ -8,7 +14,7 @@
   Start the MyOpenPanels Studio directly with:
   `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev" scripts/myopenpanels-dev studio start --local-only --project-dir "$PWD" --format json`
   Treat the successful response as Studio readiness, then follow
-  `nextRequiredAction`: open its URL unchanged with a callable in-app browser
+  `data.nextRequiredAction`: open its URL unchanged with a callable in-app browser
   tool. If no such tool exists, or the attempt fails or has no success signal,
   run `scripts/myopenpanels-dev studio open-system-browser --local-only --project-dir "$PWD" --format json`.
   Do not report completion until an opener succeeds.
@@ -16,9 +22,10 @@
   `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev" scripts/myopenpanels-dev studio serve --project-dir "$PWD" --local-only --format json`
 - Do not run broad `rg` searches before starting MyOpenPanels unless the CLI
   command fails.
-- For MyOpenPanels work after the Studio is running, use only the current
-  agent-facing commands advertised by
-  `scripts/myopenpanels-dev agent capabilities --format json`.
+- For MyOpenPanels work after the Studio is running, use Bootstrap's recommended
+  scopes, then discover only the needed commands with
+  `scripts/myopenpanels-dev agent capability list --scope <scope> --format json`
+  and `agent capability read --intent <intent> --format json`.
 - Canvas, panel, wiki, and task commands target the current user-visible
   Project automatically. Do not pass context/session/panel ids unless you are
   explicitly debugging the CLI internals.
@@ -33,11 +40,11 @@
   rebuild the latest checkout-local CLI with `scripts/myopenpanels-dev`,
   then stop and restart any running development Studio service before checking
   the browser. Do not assume an already-running service picked up the new CLI.
-- If `studio start --format json` returns `"reusedExisting": true` after local
+- If `studio start --format json` returns `"data.reusedExisting": true` after local
   Studio/CLI changes, the browser is still pointed at an older detached server
   process. Stop that exact session before opening it: use
   `scripts/myopenpanels-dev studio stop --project-dir "$PWD" --context-id <contextId>`
-  from the JSON payload (or terminate the returned `pid` if it is a borrowed
+  from `data.contextId` in the JSON payload (or terminate the returned `data.pid` if it is a borrowed
   session), then run `corepack pnpm --dir apps/studio build`
   when UI assets changed, rerun `scripts/myopenpanels-dev` to rebuild the
   embedded CLI, and start Studio again. A healthy reused server is not evidence

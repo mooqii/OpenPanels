@@ -426,6 +426,7 @@ fn ensure_page(store: &mut Map<String, Value>, current_page_id: Option<&str>) ->
     page_id
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_canvas_state(
     storage: &Storage,
     session_id: &str,

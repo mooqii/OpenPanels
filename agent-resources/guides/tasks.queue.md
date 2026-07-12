@@ -6,14 +6,14 @@ appliesTo:
   - any
 taskTypes:
 requiresCapabilities:
-  - tasks.list
-  - tasks.next
-  - tasks.inspect
-  - tasks.claimNext
-  - tasks.heartbeat
-  - tasks.complete
-  - tasks.fail
-  - agent.targets.register
+  - task.list
+  - task.next
+  - task.read
+  - task.claim-next
+  - task.heartbeat
+  - task.complete
+  - task.fail
+  - agent.target.register
   - agent.bridge.run
   - agent.bridge.status
 loadWhen:
@@ -37,7 +37,7 @@ Task shape:
 Workflow:
 
 1. Register a target with the capabilities it can execute.
-2. Claim work atomically with `tasks claim-next`.
+2. Claim work atomically with `task claim-next`.
 3. Route by `queue` and `capability` and perform the requested panel writes.
 4. Heartbeat long-running work before the lease expires.
 5. Complete, fail, or release the task with the lease token returned by claim.
@@ -53,7 +53,7 @@ Studio mode:
 
 Bridge mode:
 
-- `myopenpanels agent bridge --command <command> --capability <name>`
+- `myopenpanels agent bridge run --command <command> --capability <name>`
   registers a local command target and processes matching tasks.
 - `myopenpanels agent bridge status` reads the worker status.
 - The task JSON is sent to stdin.
@@ -68,8 +68,8 @@ Bridge mode:
 Target modes:
 
 - Webhook targets receive a signed wake notification and then claim the task.
-- Poll targets use `tasks claim-next --wait-ms 25000`.
-- Command targets are managed by `agent bridge`.
+- Poll targets use `task claim-next --wait-ms 25000`.
+- Command targets are managed by `agent bridge run`.
 - A target only receives capabilities declared during registration.
 
 Scheduling:

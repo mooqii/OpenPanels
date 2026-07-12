@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
 
-pub const AGENT_PROTOCOL_VERSION: i64 = 2;
+pub const OPERATION_PROTOCOL_VERSION: i64 = 2;
 
 fn operation_id() -> String {
     let random: u128 = rand::rng().random();
@@ -156,7 +156,7 @@ pub fn begin_canvas(
         "panelKind": "canvas",
         "skillId": CANVAS_PANEL_SKILL_ID,
         "guideId": null,
-        "protocolVersion": AGENT_PROTOCOL_VERSION,
+        "protocolVersion": OPERATION_PROTOCOL_VERSION,
         "target": {
             "placeholderShapeId": placeholder.shape_id,
             "bounds": placeholder.bounds,
@@ -171,7 +171,7 @@ pub fn begin_canvas(
     });
     save(paths, &operation)?;
     Ok(
-        json!({ "operation": operation, "panelSkill": panel_skill, "nextAction": "Read the Canvas panel Skill and its relevant references, generate the bitmap, then run canvas generation complete." }),
+        json!({ "operation": operation, "panelSkill": panel_skill, "nextAction": "Read the Canvas panel Skill and its relevant references, generate the bitmap, then run operation complete with the captured operation id." }),
     )
 }
 
@@ -331,14 +331,14 @@ pub fn begin_wiki(
         "intent": "wiki.document.generate", "status": "active",
         "sessionId": bootstrap.session.id, "projectTitle": bootstrap.session.title,
         "panelId": bootstrap.panel.id, "panelTitle": bootstrap.panel.title, "panelKind": "wiki",
-        "skillId": wiki::WIKI_PANEL_SKILL_ID, "guideId": null, "protocolVersion": AGENT_PROTOCOL_VERSION,
+        "skillId": wiki::WIKI_PANEL_SKILL_ID, "guideId": null, "protocolVersion": OPERATION_PROTOCOL_VERSION,
         "target": { "documentId": document_id, "baseContentVersion": started["baseContentVersion"] },
         "input": { "title": title, "format": format, "mode": if is_update { "update" } else { "create" } },
         "result": null, "error": null, "createdAt": now, "updatedAt": now, "completedAt": null,
     });
     save(paths, &operation)?;
     Ok(
-        json!({ "operation": operation, "panelSkill": panel_skill, "document": started["document"], "nextAction": "Read the Wiki panel Skill and generated-documents reference, write the result file, then run wiki generation complete." }),
+        json!({ "operation": operation, "panelSkill": panel_skill, "document": started["document"], "nextAction": "Read the Wiki panel Skill and generated-document reference, write the result file, then run operation complete with the captured operation id." }),
     )
 }
 
@@ -413,6 +413,64 @@ pub fn finish_wiki(
     Ok(operation)
 }
 
+pub fn complete(
+    paths: &MyOpenPanelsPaths,
+    id: &str,
+    artifact_file: &str,
+    metadata: Option<Value>,
+) -> Result<Value, CliError> {
+    let operation = inspect(paths, id)?;
+    match operation.get("intent").and_then(Value::as_str) {
+        Some("canvas.image.generate") => {
+            let metadata = metadata.ok_or_else(|| {
+                CliError::with_code(
+                    "generation_metadata_required",
+                    "Canvas generation completion requires --metadata-file.",
+                )
+            })?;
+            complete_canvas(paths, id, artifact_file, metadata)
+        }
+        Some("wiki.document.generate") => {
+            if metadata.is_some() {
+                return Err(CliError::with_code(
+                    "invalid_argument",
+                    "Wiki generation completion does not accept --metadata-file.",
+                ));
+            }
+            complete_wiki(paths, id, artifact_file)
+        }
+        Some(intent) => Err(CliError::with_code(
+            "operation_intent_mismatch",
+            format!("Operation {id} has unsupported intent {intent}"),
+        )),
+        None => Err(CliError::with_code(
+            "operation_invalid",
+            format!("Operation {id} has no intent."),
+        )),
+    }
+}
+
+pub fn finish_any(
+    paths: &MyOpenPanelsPaths,
+    id: &str,
+    status: &str,
+    message: Option<&str>,
+) -> Result<Value, CliError> {
+    let operation = inspect(paths, id)?;
+    match operation.get("intent").and_then(Value::as_str) {
+        Some("canvas.image.generate") => finish_canvas(paths, id, status, message),
+        Some("wiki.document.generate") => finish_wiki(paths, id, status, message),
+        Some(intent) => Err(CliError::with_code(
+            "operation_intent_mismatch",
+            format!("Operation {id} has unsupported intent {intent}"),
+        )),
+        None => Err(CliError::with_code(
+            "operation_invalid",
+            format!("Operation {id} has no intent."),
+        )),
+    }
+}
+
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {
     CliError::new(error.to_string())
 }
@@ -448,6 +506,7 @@ mod tests {
         let started = begin_canvas(&paths, Some(128.0), Some(128.0), false, None).expect("begin");
         assert_eq!(started["panelSkill"]["skill"]["id"], CANVAS_PANEL_SKILL_ID);
         assert_eq!(started["operation"]["skillId"], CANVAS_PANEL_SKILL_ID);
+        assert_eq!(started["operation"]["protocolVersion"], 2);
         assert!(started["operation"]["guideId"].is_null());
         assert!(started["operation"]["input"]["workflowSkillId"].is_null());
         let operation_id = started["operation"]["id"].as_str().unwrap();
@@ -500,6 +559,7 @@ mod tests {
             wiki::WIKI_PANEL_SKILL_ID
         );
         assert_eq!(started["operation"]["skillId"], wiki::WIKI_PANEL_SKILL_ID);
+        assert_eq!(started["operation"]["protocolVersion"], 2);
         assert!(started["operation"]["guideId"].is_null());
         let operation_id = started["operation"]["id"].as_str().unwrap().to_owned();
         create_project(&paths, Some("Another")).expect("switch project");

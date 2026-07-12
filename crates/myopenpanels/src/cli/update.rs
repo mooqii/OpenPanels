@@ -2,7 +2,7 @@ use super::support::has_flag;
 use super::*;
 
 pub(super) fn run_update_command(
-    parsed: &ParsedArgs,
+    parsed: &Invocation,
     stdout: &mut impl Write,
 ) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
@@ -43,7 +43,7 @@ pub(super) fn update_check_text(payload: &UpdateCheckPayload) -> String {
     if payload.update_available {
         if payload.asset_available {
             format!(
-                "Update available: myopenpanels {} -> {latest}. Run `myopenpanels update` to install.",
+                "Update available: myopenpanels {} -> {latest}. Run `myopenpanels update install` to install.",
                 payload.current_version
             )
         } else {
@@ -85,7 +85,7 @@ pub(super) fn update_download_text(payload: &UpdateDownloadPayload) -> String {
 
 pub(super) fn update_help_text() -> String {
     format!(concat!(
-        "myopenpanels update [check|install] [options]\n\n",
+        "myopenpanels update <check|download|install> [options]\n\n",
         "Commands:\n",
         "  update                    Download, verify, and install the latest GitHub Releases binary\n",
         "  update install            Same as `update`\n",

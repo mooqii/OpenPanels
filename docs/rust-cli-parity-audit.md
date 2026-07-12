@@ -19,7 +19,7 @@ Node CLI and its compatibility aliases are not a parity target.
 | Updates | `update`, `update check`, `update download` | partial | Rust updater and GitHub Releases workflow exist; needs first real release smoke before marking complete. |
 | Studio process | `studio start/status/open/wait/stop`, `__serve-studio` | partial | Rust can start/stop a server and track `studio-session.json`; LAN URLs, full restart behavior, and full API parity remain pending. |
 | Project read | `project current/list`, `panel list/current/switch`, `canvas state`, `wiki context` | complete | Backed by Rust storage/bootstrap and covered by Rust tests. |
-| Agent protocol | `agent bootstrap/capabilities/guides/guide/skills/skill` | complete | Rust emits Protocol v2 focus, operations, guide and skill metadata, and capability intents with tests. |
+| Agent protocol | `agent bootstrap`, scoped capability/Guide/Skill discovery | complete | Rust emits budgeted Protocol v3 Bootstrap references and progressively loads full command and workflow descriptors. |
 | Canvas read | `canvas selection read/export` | complete | Rust reads explicit selection state and exports selection assets. |
 | Canvas write | `canvas placeholder create`, `canvas image insert` | complete | Rust supports asset refs, placement near anchors, replacement, and tests. |
 | Wiki | `wiki context/selection/documents/markdown/tasks/spaces/pages` | complete | Rust supports Wiki context, knowledge selection, raw documents, page search/read/write, task lifecycle, and agent workflows. |

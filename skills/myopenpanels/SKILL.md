@@ -2,7 +2,7 @@
 name: myopenpanels
 description: "Use MyOpenPanels when a persistent visual and knowledge workspace would help: drawing, image generation or editing, diagrams, moodboards, brainstorming, visual planning, organizing or comparing materials, research and summaries, drafting, writing, revising, and maintaining project knowledge in a local Wiki or infinite Canvas. Also use for explicit requests such as open or launch MyOpenPanels, MyOpenPanels, the MyOpenPanels panel, the panel, or 打开面板."
 metadata:
-  version: "1.4"
+  version: "3.0"
 ---
 
 # MyOpenPanels
@@ -31,7 +31,7 @@ capabilities, guides, commands, and workflows.
    Verify the installed native CLI version and stop with the exact error if
    installation or verification fails.
 3. Treat `ok: true` as Studio readiness only, not proof that the panel is
-   visible. Read `nextRequiredAction.url` from the JSON response. Use an in-app
+   visible. Read `data.nextRequiredAction.url` from the JSON response. Use an in-app
    Browser only when the host exposes a callable URL-open or Preview tool, and
    open the URL exactly as returned. The presence of a WorkBuddy Results Panel
    alone is not such a capability and does not require a separate Agent Browser
@@ -40,15 +40,18 @@ capabilities, guides, commands, and workflows.
    fails, or returns no success signal, immediately run
    `studio open-system-browser --local-only --project-dir "$PWD" --format json`.
    Do not report success unless the in-app opener succeeds or this fallback
-   returns `opened: true`. If the fallback fails, report the failure and include
+   returns `data.opened: true`. If the fallback fails, report the failure and include
    the returned URL so the user can open it manually.
 5. If the user only asked to open the panel, stop after a browser opener has
    succeeded. Do not request Agent Bootstrap merely to verify that Studio
    opened.
-6. Before Wiki, Canvas, or task work, request `agent bootstrap --format json`,
-   then follow only the capabilities, guides, preconditions, and commands
-   returned by the installed CLI version.
+6. Before Wiki, Canvas, or task work, request `agent bootstrap --format json`.
+   Match the request to one of `data.discovery.recommendedScopes`, then run
+   `agent capability list --scope <scope> --format json` and load the selected
+   command descriptor with `agent capability read --intent <intent> --format
+   json`. Read a Skill or Guide only when its Bootstrap reference or capability
+   workflow requires it.
 
 Do not keep panel commands, guide IDs, selection rules, generation steps, or
 panel-operation flags in this skill. Never substitute remembered MyOpenPanels
-workflow details for the current CLI bootstrap contract.
+workflow details for the current CLI discovery contract.

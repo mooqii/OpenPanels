@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::OptionalExtension;
 
 #[derive(Clone)]
 pub(super) struct WikiBootstrapValue {
@@ -13,10 +14,21 @@ pub(super) struct WikiSpaceValue {
     pub(super) value: Value,
 }
 
-pub(super) fn get_wiki_bootstrap(paths: &MyOpenPanelsPaths) -> Result<WikiBootstrapValue, CliError> {
-    let mut request = BootstrapRequest::new();
-    request.requested_panel_kind = Some(PanelKind::Wiki);
-    let bootstrap = read_project_bootstrap(paths, request)?;
+pub(super) fn get_wiki_bootstrap(
+    paths: &MyOpenPanelsPaths,
+) -> Result<WikiBootstrapValue, CliError> {
+    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    if bootstrap.active_panel_kind != PanelKind::Wiki {
+        return Err(CliError::with_recovery(
+            "panel_kind_mismatch",
+            format!(
+                "The active panel is {}, but this command requires wiki.",
+                bootstrap.active_panel_kind.as_str()
+            ),
+            true,
+            "Run `myopenpanels panel activate --panel-kind wiki --format json`, read the new focus revision, and retry.",
+        ));
+    }
     ensure_default_wiki_files(
         paths,
         &bootstrap.session.id,
@@ -68,6 +80,29 @@ pub(super) fn get_wiki_target(
         panel,
         state,
     })
+}
+
+pub(super) fn get_wiki_task_target(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+) -> Result<WikiBootstrapValue, CliError> {
+    let storage = Storage::open(paths)?;
+    let target = storage
+        .connection()
+        .query_row(
+            "SELECT session_id, panel_id FROM project_tasks WHERE id = ? LIMIT 1",
+            [task_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(to_cli_error)?
+        .ok_or_else(|| {
+            CliError::with_code(
+                "task_not_found",
+                format!("Project task not found: {task_id}"),
+            )
+        })?;
+    get_wiki_target(paths, &target.0, &target.1)
 }
 
 pub(super) fn save_wiki_state(

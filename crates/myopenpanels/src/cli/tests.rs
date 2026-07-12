@@ -11,7 +11,7 @@ use std::thread;
 
 static TRACE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-fn run(args: &[&str]) -> (i32, String, String) {
+fn run_raw(args: &[&str]) -> (i32, String, String) {
     let argv = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -21,6 +21,311 @@ fn run(args: &[&str]) -> (i32, String, String) {
         String::from_utf8(stdout).expect("stdout should be utf8"),
         String::from_utf8(stderr).expect("stderr should be utf8"),
     )
+}
+
+fn run(args: &[&str]) -> (i32, String, String) {
+    let canonical = canonical_test_args(args);
+    let refs = canonical.iter().map(String::as_str).collect::<Vec<_>>();
+    let (code, stdout, stderr) = run_raw(&refs);
+    let Ok(envelope) = serde_json::from_str::<Value>(&stdout) else {
+        return (code, stdout, stderr);
+    };
+    if envelope.get("schemaVersion").is_none() {
+        return (code, stdout, stderr);
+    }
+    if envelope["ok"].as_bool() == Some(true) {
+        return (
+            code,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&envelope["data"]).expect("data")
+            ),
+            stderr,
+        );
+    }
+    let legacy_error = json!({
+        "code": envelope["error"]["code"],
+        "error": envelope["error"]["message"],
+        "retryable": envelope["error"]["retryable"],
+        "recovery": envelope["error"]["recovery"]["instruction"],
+    });
+    (
+        code,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&legacy_error).expect("error")
+        ),
+        stderr,
+    )
+}
+
+fn canonical_test_args(args: &[&str]) -> Vec<String> {
+    let mut values = args
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    if values.as_slice() == ["help"] {
+        return vec!["--help".to_owned()];
+    }
+    if values.len() >= 2 && values[0] == "update" && values[1] == "help" {
+        values[1] = "--help".to_owned();
+        return values;
+    }
+    match values.first().map(String::as_str) {
+        Some("tasks") => {
+            values[0] = "task".to_owned();
+            if values.get(1).map(String::as_str) == Some("inspect") {
+                values[1] = "read".to_owned();
+            } else if values.get(1).map(String::as_str) == Some("deliveries") {
+                values[1] = "delivery".to_owned();
+                values.insert(2, "list".to_owned());
+            }
+        }
+        Some("project") if values.get(1).map(String::as_str) == Some("select") => {
+            values[1] = "activate".to_owned();
+            rename_flag(&mut values, "--id", "--project-id");
+        }
+        Some("panel") if values.get(1).map(String::as_str) == Some("switch") => {
+            values[1] = "activate".to_owned();
+            rename_flag(&mut values, "--kind", "--panel-kind");
+        }
+        Some("canvas") => match (
+            values.get(1).map(String::as_str),
+            values.get(2).map(String::as_str),
+        ) {
+            (Some("state"), _) => values
+                .splice(
+                    0..2,
+                    ["panel".to_owned(), "state".to_owned(), "read".to_owned()],
+                )
+                .for_each(drop),
+            (Some("selection"), Some("read")) => {
+                values
+                    .splice(
+                        0..3,
+                        [
+                            "panel".to_owned(),
+                            "selection".to_owned(),
+                            "read".to_owned(),
+                        ],
+                    )
+                    .for_each(drop);
+                remove_flag(&mut values, "--include-image-base64", false);
+            }
+            (Some("selection"), Some("export")) => {
+                rename_flag(&mut values, "--output", "--output-file");
+                remove_flag(&mut values, "--allow-fallback", false);
+            }
+            (Some("image"), Some("insert")) => rename_flag(&mut values, "--image", "--image-file"),
+            (Some("generation"), Some("complete")) => {
+                values
+                    .splice(0..3, ["operation".to_owned(), "complete".to_owned()])
+                    .for_each(drop);
+                rename_flag(&mut values, "--image", "--artifact-file");
+            }
+            (Some("generation"), Some("fail" | "cancel" | "inspect")) => {
+                let action = if values[2] == "inspect" {
+                    "read"
+                } else {
+                    values[2].as_str()
+                }
+                .to_owned();
+                values
+                    .splice(0..3, ["operation".to_owned(), action])
+                    .for_each(drop);
+            }
+            _ => {}
+        },
+        Some("wiki") => canonicalize_wiki(&mut values),
+        Some("agent") => canonicalize_agent(&mut values),
+        _ => {}
+    }
+    maybe_add_focus_revision(&mut values);
+    values
+}
+
+fn canonicalize_wiki(values: &mut Vec<String>) {
+    match (
+        values.get(1).map(String::as_str),
+        values.get(2).map(String::as_str),
+    ) {
+        (Some("context"), _) => values
+            .splice(
+                0..2,
+                ["panel".to_owned(), "context".to_owned(), "read".to_owned()],
+            )
+            .for_each(drop),
+        (Some("selection"), Some("read")) => values
+            .splice(
+                0..3,
+                [
+                    "panel".to_owned(),
+                    "selection".to_owned(),
+                    "read".to_owned(),
+                ],
+            )
+            .for_each(drop),
+        (Some("documents"), _) => values[1] = "raw-document".to_owned(),
+        (Some("markdown"), Some(action)) => {
+            let action = action.to_owned();
+            values
+                .splice(
+                    1..3,
+                    ["raw-document".to_owned(), "markdown".to_owned(), action],
+                )
+                .for_each(drop);
+            rename_flag(values, "--document-id", "--raw-document-id");
+            rename_flag(values, "--file", "--content-file");
+        }
+        (Some("generated-documents"), _) => {
+            values[1] = "generated-document".to_owned();
+            rename_flag(values, "--document-id", "--generated-document-id");
+            rename_flag(values, "--file", "--content-file");
+        }
+        (Some("spaces"), _) => {
+            values[1] = "space".to_owned();
+            if values.get(2).map(String::as_str) == Some("switch") {
+                values[2] = "activate".to_owned();
+            }
+        }
+        (Some("pages"), _) => {
+            values[1] = "page".to_owned();
+            rename_flag(values, "--file", "--content-file");
+        }
+        (Some("tasks"), _) => values.splice(0..2, ["task".to_owned()]).for_each(drop),
+        (Some("generation"), Some("complete")) => {
+            values
+                .splice(0..3, ["operation".to_owned(), "complete".to_owned()])
+                .for_each(drop);
+            rename_flag(values, "--file", "--artifact-file");
+        }
+        (Some("generation"), Some("fail" | "cancel" | "inspect")) => {
+            let action = if values[2] == "inspect" {
+                "read"
+            } else {
+                values[2].as_str()
+            }
+            .to_owned();
+            values
+                .splice(0..3, ["operation".to_owned(), action])
+                .for_each(drop);
+        }
+        _ => {}
+    }
+    if values.get(1).map(String::as_str) == Some("raw-document") {
+        let file_flag = if values.get(2).map(String::as_str) == Some("add") {
+            "--input-file"
+        } else {
+            "--content-file"
+        };
+        rename_flag(values, "--file", file_flag);
+    }
+    if let Some(index) = values.iter().position(|value| value == "--wiki-space-id") {
+        if values.get(index + 1).is_none() {
+            values.push("wiki:default".to_owned());
+        }
+    } else if matches!(values.get(0..3), Some([wiki, resource, action]) if wiki == "wiki" && resource == "raw-document" && matches!(action.as_str(), "add" | "create-markdown"))
+    {
+        values.push("--wiki-space-id".to_owned());
+        values.push("wiki:default".to_owned());
+    }
+}
+
+fn canonicalize_agent(values: &mut Vec<String>) {
+    match values.get(1).map(String::as_str) {
+        Some("capabilities") => values
+            .splice(1..2, ["capability".to_owned(), "list".to_owned()])
+            .for_each(drop),
+        Some("guides") => values
+            .splice(1..2, ["guide".to_owned(), "list".to_owned()])
+            .for_each(drop),
+        Some("guide")
+            if values.get(2).is_some_and(|value| {
+                !value.starts_with("--") && value != "list" && value != "read"
+            }) =>
+        {
+            let id = values.remove(2);
+            values.insert(2, "read".to_owned());
+            values.insert(3, "--guide-id".to_owned());
+            values.insert(4, id);
+        }
+        Some("skills") => values
+            .splice(1..2, ["skill".to_owned(), "list".to_owned()])
+            .for_each(drop),
+        Some("skill")
+            if values.get(2).is_some_and(|value| {
+                !value.starts_with("--") && value != "list" && value != "read"
+            }) =>
+        {
+            let id = values.remove(2);
+            values.insert(2, "read".to_owned());
+            values.insert(3, "--skill-id".to_owned());
+            values.insert(4, id);
+        }
+        Some("bridge") if values.get(2).map(String::as_str) != Some("status") => {
+            values.insert(2, "run".to_owned())
+        }
+        Some("targets") => values[1] = "target".to_owned(),
+        Some("operations") => {
+            values.remove(0);
+            values[0] = "operation".to_owned();
+            if values.get(1).map(String::as_str) == Some("inspect") {
+                values[1] = "read".to_owned();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rename_flag(values: &mut [String], from: &str, to: &str) {
+    if let Some(value) = values.iter_mut().find(|value| value.as_str() == from) {
+        *value = to.to_owned();
+    }
+}
+
+fn remove_flag(values: &mut Vec<String>, flag: &str, has_value: bool) {
+    if let Some(index) = values.iter().position(|value| value == flag) {
+        values.remove(index);
+        if has_value && index < values.len() {
+            values.remove(index);
+        }
+    }
+}
+
+fn maybe_add_focus_revision(values: &mut Vec<String>) {
+    let mutating = matches!(
+        values.get(0..3),
+        Some([scope, resource, action]) if
+            (scope == "canvas" && matches!((resource.as_str(), action.as_str()), ("image", "insert") | ("generation", "begin")))
+            || (scope == "wiki" && matches!(action.as_str(), "add" | "create-markdown" | "write" | "create" | "rename" | "delete" | "publish" | "activate" | "begin"))
+    );
+    if !mutating
+        || values
+            .iter()
+            .any(|value| value == "--expect-focus-revision")
+        || values.iter().any(|value| value == "--task-id")
+    {
+        return;
+    }
+    let project_dir = flag_value(values, "--project-dir");
+    let storage_dir = flag_value(values, "--storage-dir");
+    let context_id = flag_value(values, "--context-id");
+    let Ok(paths) = resolve_myopenpanels_paths(project_dir, storage_dir, context_id) else {
+        return;
+    };
+    let Ok(revision) = read_focus_revision(&paths) else {
+        return;
+    };
+    values.push("--expect-focus-revision".to_owned());
+    values.push(revision.to_string());
+}
+
+fn flag_value<'a>(values: &'a [String], flag: &str) -> Option<&'a str> {
+    values
+        .iter()
+        .position(|value| value == flag)
+        .and_then(|index| values.get(index + 1))
+        .map(String::as_str)
 }
 
 fn print_myopenpanels_task_id_command() -> &'static str {
@@ -159,7 +464,7 @@ fn cli_trace_url_falls_back_to_running_studio_session() {
     .expect("studio session");
 
     let argv = vec![
-        "canvas".to_owned(),
+        "panel".to_owned(),
         "selection".to_owned(),
         "read".to_owned(),
         "--project-dir".to_owned(),
@@ -289,7 +594,7 @@ fn studio_start_json_reuses_same_project_studio() {
     ]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     assert_eq!(
-        serde_json::from_str::<Value>(&stdout).expect("bootstrap")["project"]["id"],
+        serde_json::from_str::<Value>(&stdout).expect("bootstrap")["focus"]["projectId"],
         payload["project"]["id"]
     );
     server.join().expect("server thread");
@@ -592,7 +897,7 @@ fn project_read_commands_bootstrap_project() {
         "json",
     ]);
 
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(payload["activePanelKind"], "wiki");
     assert_eq!(
@@ -622,7 +927,7 @@ fn project_read_commands_bootstrap_project() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(
-        serde_json::from_str::<Value>(&stdout).expect("json")["activePanelKind"],
+        serde_json::from_str::<Value>(&stdout).expect("json")["focus"]["panelKind"],
         "canvas"
     );
 
@@ -640,10 +945,18 @@ fn project_read_commands_bootstrap_project() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(bootstrap["activePanelSkill"]["id"], "canvas-panel");
+    assert_eq!(bootstrap["protocolVersion"], 3);
+    assert_eq!(bootstrap["commandCatalogVersion"], 3);
+    assert_eq!(bootstrap["panel"]["context"]["panelKind"], "canvas");
+    assert_eq!(bootstrap["panel"]["selection"]["supported"], true);
+    assert!(bootstrap.get("capabilities").is_none());
     assert_eq!(
-        bootstrap["nextRequiredAction"]["command"],
-        "myopenpanels agent skill canvas-panel --format json"
+        bootstrap["discovery"]["activePanelSkill"]["id"],
+        "canvas-panel"
+    );
+    assert_eq!(
+        bootstrap["discovery"]["activePanelSkill"]["readCommand"],
+        "myopenpanels agent skill read --skill-id canvas-panel --format json"
     );
 }
 
@@ -768,7 +1081,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     fs::create_dir_all(&project_dir).expect("project dir");
     create_cli_project(&project_dir, &storage_dir);
 
-    let (code, stdout, stderr) = run(&[
+    let bootstrap_args = [
         "agent",
         "bootstrap",
         "--project-dir",
@@ -779,149 +1092,120 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         "ctx",
         "--format",
         "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}{stdout}");
-    let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(payload["protocolVersion"], 2);
-    assert_eq!(payload["cliVersion"], VERSION);
-    assert_eq!(payload["entrySkill"]["id"], "myopenpanels");
-    assert_eq!(payload["entrySkill"]["requiredVersion"], "1.4");
-    assert!(payload["entrySkill"]["instruction"]
-        .as_str()
-        .expect("entry skill instruction")
-        .contains("missing or lower"));
-    assert_eq!(payload["activePanel"]["kind"], "wiki");
-    assert_eq!(
-        payload["state"]["wiki"]["agentSkillId"],
-        "karpathy-llm-wiki"
+    ];
+    let (code, raw_stdout, stderr) = run_raw(&bootstrap_args);
+    assert_eq!(code, 0, "{stderr}{raw_stdout}");
+    assert!(raw_stdout.ends_with('\n'));
+    assert_eq!(raw_stdout.lines().count(), 1);
+    assert!(
+        raw_stdout.len() <= crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES,
+        "Bootstrap was {} bytes",
+        raw_stdout.len()
     );
-    assert!(payload["capabilities"]
-        .as_array()
-        .expect("capabilities")
-        .iter()
-        .any(
-            |capability| capability["intent"] == "canvas.generation.begin"
-                && capability["relatedSkills"][0] == "canvas-panel"
-        ));
-    assert!(payload["capabilities"]
-        .as_array()
-        .expect("capabilities")
-        .iter()
-        .any(|capability| capability["intent"] == "agent.skill.read"));
-    assert!(payload["capabilities"]
-        .as_array()
-        .expect("capabilities")
-        .iter()
-        .any(|capability| capability["intent"] == "wiki.generation.begin"));
-    assert!(payload["availableGuides"]
-        .as_array()
-        .expect("available guides")
-        .iter()
-        .all(|guide| guide["id"] != "canvas.image-generation"
-            && guide["id"] != "wiki.knowledge-context"
-            && guide["id"] != "wiki.generated-documents"));
-    assert_eq!(payload["knowledgeContext"]["panelSkillId"], "wiki-panel");
-    assert!(payload["knowledgeContext"].get("policy").is_none());
-    assert!(payload["suggestedCommands"]
-        .as_array()
-        .expect("suggested commands")
-        .iter()
-        .any(|command| {
-            command["intent"] == "agent.panelSkill.read"
-                && command["command"]
-                    .as_str()
-                    .unwrap_or("")
-                    .contains("agent skill wiki-panel")
-        }));
-    assert_eq!(payload["activePanelSkill"]["id"], "wiki-panel");
-    assert_eq!(payload["activePanelSkill"]["required"], true);
+    let envelope = serde_json::from_str::<Value>(&raw_stdout).expect("envelope");
+    assert_eq!(envelope["intent"], "agent.bootstrap.read");
+    let payload = &envelope["data"];
+    assert_eq!(payload["protocolVersion"], 3);
+    assert_eq!(payload["cliVersion"], VERSION);
+    assert_eq!(payload["commandCatalogVersion"], 3);
+    assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
+    assert_eq!(payload["entrySkill"]["id"], "myopenpanels");
+    assert_eq!(payload["entrySkill"]["requiredVersion"], "3.0");
+    assert_eq!(payload["focus"]["panelKind"], "wiki");
+    assert_eq!(payload["panel"]["context"]["panelKind"], "wiki");
+    assert_eq!(payload["panel"]["contextTruncated"], false);
+    assert_eq!(payload["panel"]["selection"]["supported"], true);
+    assert_eq!(payload["operations"]["activeCount"], 0);
+    assert_eq!(payload["operations"]["items"], json!([]));
     assert_eq!(
         payload["nextRequiredAction"]["intent"],
-        "load-active-panel-skill"
+        "match-user-request"
     );
-    assert!(payload["availableSkills"]
-        .as_array()
-        .expect("available skills")
-        .iter()
-        .any(|skill| skill["skill"]["id"] == "karpathy-llm-wiki"
-            && skill["source"] == "builtin"
-            && Path::new(skill["localPath"].as_str().unwrap_or("")).ends_with(
-                Path::new(".myopenpanels")
-                    .join("skills")
-                    .join("karpathy-llm-wiki")
-                    .join("SKILL.md")
-            )));
-    assert!(payload["availableSkills"]
-        .as_array()
-        .expect("available skills")
-        .iter()
-        .any(
-            |skill| skill["skill"]["id"] == "karpathy-llm-wiki-zh" && skill["source"] == "builtin"
-        ));
-    assert!(storage_dir
-        .join("skills")
-        .join("karpathy-llm-wiki")
-        .join("SKILL.md")
-        .exists());
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "bootstrap",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}{stdout}");
-    let bootstrap = serde_json::from_str::<Value>(&stdout).expect("bootstrap json");
-    assert_eq!(bootstrap["protocolVersion"], 2);
-    assert_eq!(bootstrap["focus"]["panelKind"], "wiki");
-    assert!(bootstrap["focus"]["focusRevision"].as_u64().is_some());
-    assert!(bootstrap["applicableGuides"]
+    assert_eq!(payload["discovery"]["activePanelSkill"]["id"], "wiki-panel");
+    assert!(payload["discovery"]["recommendedScopes"]
         .as_array()
         .unwrap()
         .iter()
-        .all(|guide| guide["id"] != "wiki.generated-documents"));
-    assert_eq!(bootstrap["activeOperations"], json!([]));
-    assert!(storage_dir
-        .join("skills")
-        .join("karpathy-llm-wiki")
-        .join("references")
-        .join("ingest-markdown-into-wiki.md")
-        .exists());
-    assert!(storage_dir
-        .join("skills")
-        .join("wiki-panel")
-        .join("references")
-        .join("authoring-skill-routing.md")
-        .exists());
-    assert!(storage_dir
-        .join("skills")
-        .join("canvas-panel")
-        .join("references")
-        .join("image-generation.md")
-        .exists());
+        .any(|scope| scope == "wiki"));
+    for removed in [
+        "capabilities",
+        "availableGuides",
+        "availableSkills",
+        "knowledgeContext",
+        "suggestedCommands",
+        "activeOperations",
+        "studioBinding",
+        "state",
+    ] {
+        assert!(
+            payload.get(removed).is_none(),
+            "v2 field remained: {removed}"
+        );
+    }
+
+    let (code, stdout, stderr) = run(&["agent", "capability", "list", "--format", "json"]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let index = serde_json::from_str::<Value>(&stdout).expect("scope index");
+    assert_eq!(index["catalogVersion"], 3);
+    assert!(index["scopes"]
+        .as_array()
+        .expect("scopes")
+        .iter()
+        .any(|scope| scope["scope"] == "wiki"));
 
     let (code, stdout, stderr) = run(&[
         "agent",
-        "bootstrap",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
+        "capability",
+        "list",
+        "--scope",
+        "wiki",
         "--format",
         "json",
     ]);
-    assert_eq!(code, 0, "{stderr}");
-    let bootstrap = serde_json::from_str::<Value>(&stdout).expect("bootstrap json");
-    assert_eq!(bootstrap["protocolVersion"], 2);
-    assert!(bootstrap["capabilities"].as_array().is_some());
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let wiki_capabilities = serde_json::from_str::<Value>(&stdout).expect("wiki capabilities");
+    assert_eq!(wiki_capabilities["catalogVersion"], 3);
+    assert_eq!(wiki_capabilities["scope"], "wiki");
+    let page_search = wiki_capabilities["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|capability| capability["intent"] == "wiki.page.search")
+        .expect("page search summary");
+    assert!(page_search.get("args").is_none());
+    assert_eq!(page_search["requiredPanelKind"], "wiki");
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "capability",
+        "read",
+        "--intent",
+        "wiki.page.search",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let page_search = serde_json::from_str::<Value>(&stdout).expect("page search descriptor");
+    assert_eq!(page_search["catalogVersion"], 3);
+    assert_eq!(page_search["capability"]["intent"], "wiki.page.search");
+    assert!(page_search["capability"]["args"].as_array().is_some());
+
+    let (code, stdout, stderr) = run_raw(&[
+        "agent",
+        "capability",
+        "list",
+        "--scope",
+        "missing",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 1, "{stderr}{stdout}");
+    let error = serde_json::from_str::<Value>(&stdout).unwrap();
+    assert_eq!(error["error"]["code"], "capability_scope_not_found");
+    assert_eq!(
+        error["error"]["recovery"]["command"],
+        "myopenpanels agent capability list --format json"
+    );
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -932,12 +1216,21 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         storage_dir.to_str().unwrap(),
         "--context-id",
         "ctx",
+        "--format",
+        "json",
     ]);
-    assert_eq!(code, 0, "{stderr}");
-    assert!(stdout.contains("tasks.queue"));
-    assert!(!stdout.contains("canvas.image-generation"));
-    assert!(!stdout.contains("wiki.knowledge-context"));
-    assert!(!stdout.contains("wiki.generated-documents"));
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let guides = serde_json::from_str::<Value>(&stdout).expect("guide summaries");
+    assert!(guides["guides"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|guide| guide["id"] == "tasks.queue"));
+    assert!(guides["guides"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|guide| guide.get("markdown").is_none()));
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -950,9 +1243,9 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         "ctx",
     ]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(stdout.contains("karpathy-llm-wiki"));
-    assert!(stdout.contains(".myopenpanels"));
-    assert!(stdout.contains("SKILL.md"));
+    assert_eq!(stdout.trim(), "4 skills");
+    assert!(!stdout.contains(".myopenpanels"));
+    assert!(!stdout.contains("SKILL.md"));
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -969,25 +1262,93 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert_eq!(code, 0, "{stderr}");
     let skills_payload = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(skills_payload["skills"].as_array().unwrap().len(), 4);
-    assert_eq!(skills_payload["skills"][0]["skill"]["id"], "canvas-panel");
-    assert_eq!(skills_payload["skills"][0]["source"], "builtin");
-    assert_eq!(
-        skills_payload["skills"][1]["skill"]["id"],
-        "karpathy-llm-wiki"
-    );
-    assert_eq!(
-        skills_payload["skills"][2]["skill"]["id"],
-        "karpathy-llm-wiki-zh"
-    );
-    assert_eq!(skills_payload["skills"][3]["skill"]["id"], "wiki-panel");
-    assert!(skills_payload["skills"][0]["skill"]["taskTypes"]
+    assert_eq!(skills_payload["skills"][0]["id"], "canvas-panel");
+    assert!(skills_payload["skills"][0].get("localPath").is_none());
+    assert!(skills_payload["skills"][0]
+        .get("requiresCapabilities")
+        .is_none());
+    assert_eq!(skills_payload["skills"][1]["id"], "karpathy-llm-wiki");
+    assert_eq!(skills_payload["skills"][2]["id"], "karpathy-llm-wiki-zh");
+    assert_eq!(skills_payload["skills"][3]["id"], "wiki-panel");
+    assert!(skills_payload["skills"][0]["taskTypes"]
         .as_array()
         .unwrap()
         .is_empty());
-    assert!(skills_payload["skills"][3]["skill"]["taskTypes"]
+    assert!(skills_payload["skills"][3]["taskTypes"]
         .as_array()
         .unwrap()
         .is_empty());
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "skill",
+        "list",
+        "--panel-kind",
+        "canvas",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let filtered = serde_json::from_str::<Value>(&stdout).expect("filtered skills");
+    assert_eq!(filtered["skills"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered["skills"][0]["id"], "canvas-panel");
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "skill",
+        "list",
+        "--panel-kind",
+        "canvas",
+        "--task-type",
+        "ingest_markdown_into_wiki",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    assert!(serde_json::from_str::<Value>(&stdout).unwrap()["skills"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "guide",
+        "list",
+        "--task-type",
+        "not-a-task-type",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    assert!(serde_json::from_str::<Value>(&stdout).unwrap()["guides"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    for skill in crate::agent::list_agent_skills(&paths).expect("skills") {
+        for intent in skill.skill.requires_capabilities {
+            assert!(
+                crate::cli::registry::capability_payload(&intent).is_some(),
+                "skill {} requires missing capability {intent}",
+                skill.skill.id
+            );
+        }
+    }
+    for guide in crate::agent::list_agent_guides().expect("guides") {
+        for intent in guide.requires_capabilities {
+            assert!(
+                crate::cli::registry::capability_payload(&intent).is_some(),
+                "guide {} requires missing capability {intent}",
+                guide.id
+            );
+        }
+    }
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -1003,7 +1364,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.contains("# Skill: wiki-panel"));
     assert!(stdout.contains("Read `SKILL.md` directly"));
-    assert!(stdout.contains("myopenpanels wiki selection read"));
+    assert!(stdout.contains("myopenpanels panel selection read"));
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -1034,7 +1395,7 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(
-        serde_json::from_str::<Value>(&stdout).expect("json")["panel"]["kind"],
+        serde_json::from_str::<Value>(&stdout).expect("json")["focus"]["panelKind"],
         "wiki"
     );
 }
@@ -1048,6 +1409,21 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     let metadata_path = project_dir.join("image-metadata.json");
     fs::create_dir_all(&project_dir).expect("project dir");
     create_cli_project(&project_dir, &storage_dir);
+    let (code, _, stderr) = run(&[
+        "panel",
+        "activate",
+        "--panel-kind",
+        "canvas",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
     fs::write(&image_path, tiny_png()).expect("image");
     fs::write(
         &metadata_path,
@@ -1099,16 +1475,14 @@ fn canvas_write_commands_insert_and_replace_shapes() {
 
     let (code, stdout, stderr) = run(&[
         "canvas",
-        "placeholder",
-        "create",
+        "generation",
+        "begin",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
         "--context-id",
         "ctx",
-        "--anchor-shape-id",
-        inserted["shapeId"].as_str().unwrap(),
         "--display-width",
         "512",
         "--display-height",
@@ -1117,10 +1491,14 @@ fn canvas_write_commands_insert_and_replace_shapes() {
         "json",
     ]);
     assert_eq!(code, 0, "{stderr}");
-    let placeholder = serde_json::from_str::<Value>(&stdout).expect("json");
+    let generation = serde_json::from_str::<Value>(&stdout).expect("json");
+    let placeholder = json!({
+        "shapeId": generation["operation"]["target"]["placeholderShapeId"],
+        "bounds": generation["operation"]["target"]["bounds"],
+    });
     assert_eq!(
         placeholder["bounds"],
-        json!({ "x": 752.0, "y": 160.0, "width": 512.0, "height": 512.0 })
+        json!({ "x": 160.0, "y": 752.0, "width": 512.0, "height": 512.0 })
     );
 
     let (code, stdout, stderr) = run(&[
@@ -1200,7 +1578,7 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     assert!(fallback_insert["replacedShapeId"].is_null());
     assert_eq!(
         fallback_insert["bounds"],
-        json!({ "x": 160.0, "y": 752.0, "width": 256.0, "height": 128.0 })
+        json!({ "x": 160.0, "y": 1344.0, "width": 256.0, "height": 128.0 })
     );
 
     let (code, stdout, stderr) = run(&[
@@ -1275,7 +1653,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(code, 0, "{stderr}");
     let next = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(next["task"]["type"], "ingest_markdown_into_wiki");
-    assert_eq!(next["task"]["agentSkillId"], "karpathy-llm-wiki");
+    assert_eq!(next["task"]["task"]["agentSkillId"], "karpathy-llm-wiki");
     let task_id = next["task"]["id"].as_str().unwrap();
 
     let (code, stdout, stderr) = run(&[
@@ -1292,14 +1670,11 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let context = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert!(context["suggestedCommands"]
-        .as_array()
-        .expect("suggested commands")
-        .iter()
-        .any(|command| command["intent"] == "agent.skill.read"
-            && command["command"].as_str().unwrap_or("").contains(&format!(
-                "myopenpanels agent skill karpathy-llm-wiki --task-id {task_id}"
-            ))));
+    assert_eq!(context["tasks"]["next"]["taskId"], task_id);
+    assert!(context["tasks"]["next"]["readCommand"]
+        .as_str()
+        .unwrap_or("")
+        .contains(&format!("task read --task-id {task_id}")));
 
     update_wiki_state_field(
         &storage_dir,
@@ -1320,22 +1695,21 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let context = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(
-        context["state"]["wiki"]["agentSkillId"],
-        "karpathy-llm-wiki-zh"
-    );
-    assert!(context["suggestedCommands"]
-        .as_array()
-        .expect("suggested commands")
-        .iter()
-        .any(|command| command["intent"] == "agent.skill.read"
-            && command["command"].as_str().unwrap_or("").contains(&format!(
-                "myopenpanels agent skill karpathy-llm-wiki --task-id {task_id}"
-            ))));
-    assert_eq!(
-        context["state"]["wiki"]["nextTaskAgentSkillId"],
-        "karpathy-llm-wiki"
-    );
+    assert_eq!(context["tasks"]["next"]["taskId"], task_id);
+    assert!(context.get("state").is_none());
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "skill",
+        "list",
+        "--task-type",
+        "ingest_markdown_into_wiki",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let authoring_skills = serde_json::from_str::<Value>(&stdout).expect("authoring skills");
+    assert_eq!(authoring_skills["skills"].as_array().unwrap().len(), 2);
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -1358,7 +1732,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         .as_str()
         .unwrap_or("")
         .contains(&format!(
-            "agent skill karpathy-llm-wiki --task-id {task_id}"
+            "agent skill read --skill-id karpathy-llm-wiki --task-id {task_id}"
         )));
 
     let (code, stdout, stderr) = run(&[
@@ -1710,39 +2084,6 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         .exists());
 
     let truncated_lease_token = truncated_bridge["leaseToken"].as_str().unwrap();
-    let (code, _, stderr) = run(&[
-        "tasks",
-        "release",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        task_id,
-        "--lease-token",
-        truncated_lease_token,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-
-    let (code, _, stderr) = run(&[
-        "tasks",
-        "retry",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        task_id,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -1759,7 +2100,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.contains(&format!("- task id: {task_id}")));
-    assert!(stdout.contains("myopenpanels tasks claim"));
+    assert!(stdout.contains("myopenpanels task claim"));
     assert!(stdout.contains("Read `SKILL.md` directly from the local path above"));
     assert!(stdout.contains("# Skill: karpathy-llm-wiki"));
 
@@ -1821,40 +2162,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(page["task"]["wikiSpaceId"], "wiki:default");
 
     let (code, stdout, stderr) = run(&[
-        "wiki",
-        "tasks",
-        "claim",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        task_id,
-        "--agent-host",
-        "test-host",
-        "--thread-id",
-        "thread-1",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let claim = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(claim["task"]["status"], "claimed");
-    assert_eq!(claim["task"]["attempt"], 1);
-    assert_eq!(claim["task"]["leaseOwner"], claim["process"]["id"]);
-    assert!(claim["task"]["leaseExpiresAt"].is_string());
-    assert!(claim["task"]["lastHeartbeatAt"].is_string());
-    assert_eq!(
-        claim["state"]["rawDocuments"][0]["ingestionByWikiSpace"]["wiki:default"]["status"],
-        "ingesting"
-    );
-    assert_eq!(claim["state"]["agentProcesses"][0]["status"], "running");
-
-    let (code, stdout, stderr) = run(&[
-        "wiki",
-        "tasks",
+        "task",
         "complete",
         "--project-dir",
         project_dir.to_str().unwrap(),
@@ -1864,16 +2172,14 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "ctx",
         "--task-id",
         task_id,
+        "--lease-token",
+        truncated_lease_token,
         "--format",
         "json",
     ]);
     assert_eq!(code, 0, "{stderr}");
     let complete = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(complete["task"]["status"], "succeeded");
-    assert_eq!(
-        complete["state"]["rawDocuments"][0]["ingestionByWikiSpace"]["wiki:default"]["status"],
-        "ingested"
-    );
     let (code, stdout, stderr) = run(&[
         "tasks",
         "list",
@@ -1935,8 +2241,31 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         .as_str()
         .expect("task id");
     let (code, stdout, stderr) = run(&[
-        "wiki",
-        "tasks",
+        "agent",
+        "target",
+        "register",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--name",
+        "wiki-converter",
+        "--transport",
+        "poll",
+        "--capability",
+        "wiki.*",
+        "--priority",
+        "100",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let target = serde_json::from_str::<Value>(&stdout).expect("json");
+    let target_id = target["target"]["id"].as_str().expect("target id");
+    let (code, stdout, stderr) = run(&[
+        "task",
         "claim",
         "--project-dir",
         project_dir.to_str().unwrap(),
@@ -1946,16 +2275,17 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "ctx",
         "--task-id",
         convert_task_id,
+        "--target-id",
+        target_id,
         "--format",
         "json",
     ]);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let conversion_claim = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(conversion_claim["task"]["status"], "running");
-    assert_eq!(
-        conversion_claim["state"]["rawDocuments"][0]["conversion"]["status"],
-        "converting"
-    );
+    let conversion_lease = conversion_claim["leaseToken"]
+        .as_str()
+        .expect("lease token");
 
     let converted_file = project_dir.join("converted.md");
     fs::write(&converted_file, "# Archive\n\nConverted.").expect("converted");
@@ -1983,8 +2313,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert!(markdown["task"].is_null());
 
     let (code, stdout, stderr) = run(&[
-        "wiki",
-        "tasks",
+        "task",
         "complete",
         "--project-dir",
         project_dir.to_str().unwrap(),
@@ -1994,17 +2323,36 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "ctx",
         "--task-id",
         convert_task_id,
+        "--lease-token",
+        conversion_lease,
         "--format",
         "json",
     ]);
     assert_eq!(code, 0, "{stderr}");
     let conversion_complete = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(conversion_complete["task"]["status"], "succeeded");
+
+    let (code, stdout, stderr) = run(&[
+        "panel",
+        "state",
+        "read",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let conversion_state = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(
-        conversion_complete["state"]["rawDocuments"][0]["conversion"]["status"],
+        conversion_state["state"]["rawDocuments"][0]["conversion"]["status"],
         "ready"
     );
     assert_eq!(
-        conversion_complete["state"]["rawDocuments"][0]["ingestionByWikiSpace"]["wiki:default"]
+        conversion_state["state"]["rawDocuments"][0]["ingestionByWikiSpace"]["wiki:default"]
             ["status"],
         "queued"
     );
@@ -2109,11 +2457,16 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     ]);
     assert_eq!(code, 0, "{stderr}");
     let selection = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(selection["selection"]["isWikiSelected"], true);
-    assert_eq!(selection["selectedRawDocuments"][0]["id"], document["id"]);
-    assert!(selection["selectedRawDocuments"][0]["originalFilePath"]
-        .as_str()
-        .is_some_and(|path| Path::new(path).is_file()));
+    assert_eq!(selection["value"]["selection"]["isWikiSelected"], true);
+    assert_eq!(
+        selection["value"]["selectedRawDocuments"][0]["id"],
+        document["id"]
+    );
+    assert!(
+        selection["value"]["selectedRawDocuments"][0]["originalFilePath"]
+            .as_str()
+            .is_some_and(|path| Path::new(path).is_file())
+    );
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -2129,17 +2482,12 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     ]);
     assert_eq!(code, 0, "{stderr}");
     let context = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(context["knowledgeContext"]["wiki"]["selected"], true);
-    assert_eq!(context["knowledgeContext"]["panelSkillId"], "wiki-panel");
-    assert!(context["knowledgeContext"].get("policy").is_none());
+    assert_eq!(context["panel"]["selection"]["isExplicit"], true);
     assert_eq!(
-        context["knowledgeContext"]["wiki"]["querySkillId"],
-        "wiki-panel"
+        context["panel"]["selection"]["summary"]["rawDocumentCount"],
+        1
     );
-    assert_eq!(
-        context["knowledgeContext"]["rawDocuments"]["selected"][0]["documentId"],
-        document["id"]
-    );
+    assert!(context.get("knowledgeContext").is_none());
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -2159,7 +2507,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     assert!(skill["markdown"]
         .as_str()
         .unwrap_or("")
-        .contains("wiki pages search --wiki-space-id wiki:default"));
+        .contains("wiki page search --wiki-space-id wiki:default"));
 
     let (code, stdout, stderr) = run(&[
         "wiki",
@@ -2202,7 +2550,7 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
         "report.md",
         Some("Report"),
         Some("text/markdown"),
-        Some("task:1"),
+        None,
         Some("thread:1"),
         b"# Report\n\nVersion one.",
     )
@@ -2501,9 +2849,25 @@ fn generic_targets_claim_and_complete_project_tasks() {
     let target_id = registered["target"]["id"].as_str().unwrap();
     assert!(registered["token"].is_string());
 
+    let (code, _, stderr) = run(&[
+        "project",
+        "create",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--title",
+        "Different active project",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+
     let (code, stdout, stderr) = run(&[
-        "tasks",
-        "claim-next",
+        "task",
+        "claim",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -2512,8 +2876,8 @@ fn generic_targets_claim_and_complete_project_tasks() {
         "ctx",
         "--target-id",
         target_id,
-        "--wait-ms",
-        "0",
+        "--task-id",
+        task_id,
         "--format",
         "json",
     ]);
@@ -3001,11 +3365,11 @@ fn selection_reads_sqlite_panel_selection() {
     assert_eq!(code, 0, "{stderr}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(
-        payload["selection"]["selectedShapeIds"],
+        payload["value"]["selectedShapeIds"],
         serde_json::json!(["shape:1"])
     );
-    assert_eq!(payload["selection"]["isExplicitSelection"], true);
-    assert_eq!(payload["contextId"], "ctx");
+    assert_eq!(payload["value"]["isExplicitSelection"], true);
+    assert_eq!(payload["focus"]["panelKind"], "canvas");
     assert_eq!(stderr, "");
 }
 
@@ -3097,12 +3461,9 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(payload["selection"]["isExplicitSelection"], false);
-    assert_eq!(payload["selection"]["fallback"], "last-image");
-    assert_eq!(
-        payload["selection"]["assetRef"],
-        "sessions/session:1/panels/panel:canvas/assets/fallback.png"
-    );
+    assert_eq!(payload["value"]["isExplicitSelection"], false);
+    assert!(payload["value"].get("fallback").is_none());
+    assert!(payload["value"]["assetRef"].is_null());
 
     let output_path = temp.path().join("out.png");
     let (code, _stdout, stderr) = run(&[
@@ -3119,9 +3480,9 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
         output_path.to_str().unwrap(),
     ]);
     assert_eq!(code, 1);
-    assert!(stderr.contains("No explicit MyOpenPanels selection asset is available"));
+    assert!(stderr.contains("No explicit Canvas selection asset is available"));
 
-    let (code, stdout, stderr) = run(&[
+    let (code, stdout, _stderr) = run(&[
         "canvas",
         "selection",
         "export",
@@ -3137,10 +3498,10 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
         "--format",
         "json",
     ]);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 1);
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(payload["outputPath"], output_path.to_str().unwrap());
-    assert!(output_path.exists());
+    assert_eq!(payload["code"], "explicit_selection_required");
+    assert!(!output_path.exists());
 }
 
 #[test]
@@ -3154,10 +3515,15 @@ fn version_prints_text() {
 
 #[test]
 fn version_prints_json() {
-    let (code, stdout, stderr) = run(&["--version", "--format", "json"]);
+    let (code, stdout, stderr) = run_raw(&["--version", "--format", "json"]);
 
     assert_eq!(code, 0);
-    assert_eq!(stdout, format!("{{\n  \"version\": \"{VERSION}\"\n}}\n"));
+    assert_eq!(
+        stdout,
+        format!(
+            "{{\"ok\":true,\"schemaVersion\":1,\"intent\":\"cli.version.read\",\"data\":{{\"version\":\"{VERSION}\"}},\"meta\":{{\"cliVersion\":\"{VERSION}\"}}}}\n"
+        )
+    );
     assert_eq!(stderr, "");
 }
 
@@ -3185,11 +3551,11 @@ fn help_prints_current_command_map() {
     let (code, stdout, stderr) = run(&[]);
 
     assert_eq!(code, 0);
-    assert!(stdout.contains("myopenpanels <command> [options]"));
-    assert!(stdout.contains("studio start"));
-    assert!(stdout.contains("canvas image insert"));
-    assert!(stdout.contains("agent bootstrap"));
-    assert!(stdout.contains("update check"));
+    assert!(stdout.contains("Usage: myopenpanels"));
+    assert!(stdout.contains("studio"));
+    assert!(stdout.contains("canvas"));
+    assert!(stdout.contains("agent"));
+    assert!(stdout.contains("update"));
     assert!(!stdout.contains("agent-context"));
     assert!(!stdout.contains("agent context"));
     assert!(!stdout.contains("active-panel"));
@@ -3228,11 +3594,11 @@ fn legacy_and_implicit_aliases_are_rejected() {
     for command in commands {
         let mut args = command.to_vec();
         args.push("--format=json");
-        let (code, stdout, stderr) = run(&args);
+        let (code, stdout, stderr) = run_raw(&args);
         assert_eq!(code, 1, "command unexpectedly succeeded: {command:?}");
         assert_eq!(stderr, "", "unexpected stderr for {command:?}");
         assert!(
-            stdout.contains("\"ok\": false"),
+            serde_json::from_str::<Value>(&stdout).expect("json")["ok"] == false,
             "missing JSON error for {command:?}: {stdout}"
         );
     }
@@ -3250,37 +3616,146 @@ fn update_help_prints_manifest_controls() {
 
 #[test]
 fn unknown_command_prints_text_error() {
-    let (code, stdout, stderr) = run(&["nope"]);
+    let (code, stdout, stderr) = run_raw(&["nope"]);
 
     assert_eq!(code, 1);
     assert_eq!(stdout, "");
-    assert_eq!(stderr, "Error: Unknown command: nope\n");
+    assert!(stderr.contains("unrecognized subcommand 'nope'"));
 }
 
 #[test]
 fn unknown_command_prints_json_error() {
-    let (code, stdout, stderr) = run(&["nope", "--format=json"]);
+    let (code, stdout, stderr) = run_raw(&["nope", "--format=json"]);
 
     assert_eq!(code, 1);
     let payload = serde_json::from_str::<Value>(&stdout).expect("json error");
     assert_eq!(payload["ok"], false);
-    assert_eq!(payload["code"], "command_failed");
-    assert_eq!(payload["error"], "Unknown command: nope");
-    assert_eq!(payload["retryable"], false);
-    assert!(payload["recovery"].as_str().is_some());
+    assert_eq!(payload["intent"], "cli.parse");
+    assert_eq!(payload["error"]["code"], "invalid_argument");
+    assert!(payload["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("unrecognized subcommand"));
+    assert_eq!(payload["error"]["retryable"], false);
+    assert!(payload["error"]["recovery"]["instruction"]
+        .as_str()
+        .is_some());
     assert_eq!(stderr, "");
+}
+
+#[test]
+fn bootstrap_writer_rejects_an_oversized_success_envelope() {
+    let mut flags = BTreeMap::new();
+    flags.insert("format".to_owned(), FlagValue::String("json".to_owned()));
+    let invocation = Invocation {
+        flags,
+        intent: "agent.bootstrap.read".to_owned(),
+        positionals: vec!["agent".to_owned(), "bootstrap".to_owned()],
+    };
+    let mut stdout = Vec::new();
+    let error = write_result(
+        &invocation,
+        &mut stdout,
+        &json!({ "oversized": "x".repeat(crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES) }),
+        "bootstrap",
+    )
+    .expect_err("oversized Bootstrap must fail");
+    assert_eq!(error.code(), Some("bootstrap_budget_exceeded"));
+    assert!(stdout.is_empty());
+}
+
+#[test]
+fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let initial_revision = read_focus_revision(&paths)
+        .expect("focus revision")
+        .to_string();
+
+    let (code, stdout, stderr) = run_raw(&[
+        "canvas",
+        "generation",
+        "begin",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--expect-focus-revision",
+        &initial_revision,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 1, "{stderr}\n{stdout}");
+    let mismatch = serde_json::from_str::<Value>(&stdout).expect("mismatch error");
+    assert_eq!(mismatch["error"]["code"], "panel_kind_mismatch");
+
+    let (code, stdout, stderr) = run_raw(&[
+        "panel",
+        "activate",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--panel-kind",
+        "canvas",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+
+    let (code, stdout, stderr) = run_raw(&[
+        "canvas",
+        "generation",
+        "begin",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--expect-focus-revision",
+        &initial_revision,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 1, "{stderr}\n{stdout}");
+    let stale = serde_json::from_str::<Value>(&stdout).expect("stale error");
+    assert_eq!(stale["error"]["code"], "focus_changed");
+
+    let connection = Connection::open(storage_dir.join("main.sqlite3")).expect("database");
+    let operation_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM agent_operations", [], |row| {
+            row.get(0)
+        })
+        .expect("operation count");
+    assert_eq!(operation_count, 0);
 }
 
 #[test]
 fn entry_skill_requires_verified_open_without_bootstrap_gating() {
     let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
-    assert!(skill.contains("version: \"1.4\""));
-    assert!(skill.contains("nextRequiredAction.url"));
+    assert!(skill.contains("version: \"3.0\""));
+    assert!(skill.contains("agent capability list --scope"));
+    assert!(skill.contains("agent capability read --intent"));
+    assert!(skill.contains("data.nextRequiredAction.url"));
     assert!(skill.contains("Studio readiness only"));
     assert!(skill.contains("If the user only asked to open the panel"));
     assert!(skill.contains("Do not request Agent Bootstrap merely to verify"));
     assert!(skill.contains("studio open-system-browser"));
-    assert!(skill.contains("opened: true"));
+    assert!(skill.contains("data.opened: true"));
     assert!(skill.contains("WorkBuddy Results Panel"));
     assert!(skill.contains("--local-only"));
     assert!(!skill.contains("--no-open"));
@@ -3294,49 +3769,16 @@ fn seed_selection_database(
     state: Option<Value>,
 ) {
     fs::create_dir_all(storage_dir).expect("storage dir");
-    let connection = Connection::open(storage_dir.join("main.sqlite3")).expect("db");
-    connection
-        .execute_batch(
-            r#"
-                CREATE TABLE sessions (
-                  id TEXT PRIMARY KEY NOT NULL,
-                  title TEXT NOT NULL,
-                  created_at TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  panel_ids_json TEXT NOT NULL DEFAULT '[]',
-                  session_json TEXT NOT NULL
-                );
-                CREATE TABLE panels (
-                  id TEXT NOT NULL,
-                  session_id TEXT NOT NULL,
-                  kind TEXT NOT NULL,
-                  title TEXT NOT NULL,
-                  created_at TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  state_ref TEXT,
-                  panel_json TEXT NOT NULL,
-                  PRIMARY KEY (session_id, id)
-                );
-                CREATE TABLE panel_states (
-                  session_id TEXT NOT NULL,
-                  panel_id TEXT NOT NULL,
-                  schema_version INTEGER,
-                  state_json TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  PRIMARY KEY (session_id, panel_id)
-                );
-                CREATE TABLE panel_selections (
-                  session_id TEXT NOT NULL,
-                  panel_id TEXT NOT NULL,
-                  asset_ref TEXT,
-                  selected_shape_ids_json TEXT NOT NULL DEFAULT '[]',
-                  selection_json TEXT NOT NULL,
-                  updated_at TEXT NOT NULL,
-                  PRIMARY KEY (session_id, panel_id)
-                );
-                "#,
-        )
-        .expect("schema");
+    let project_dir = storage_dir.join("project");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let storage = Storage::open(&paths).expect("storage");
+    let connection = storage.connection();
     connection
             .execute(
                 "INSERT INTO sessions (id, title, created_at, updated_at, panel_ids_json, session_json) VALUES (?, 'Project 1', '2026-07-08T00:00:00.000Z', '2026-07-08T00:00:00.000Z', ?, ?)",

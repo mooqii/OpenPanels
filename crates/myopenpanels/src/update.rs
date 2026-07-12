@@ -235,7 +235,7 @@ pub fn maybe_notify_update(current_version: &str, stderr: &mut impl Write) {
         let latest = checked.latest_version.as_deref().unwrap_or("unknown");
         let _ = writeln!(
             stderr,
-            "Update available: myopenpanels {current_version} -> {latest}. Run `myopenpanels update` to install."
+            "Update available: myopenpanels {current_version} -> {latest}. Run `myopenpanels update install` to install."
         );
     }
 }
@@ -509,10 +509,14 @@ fn candidate_version_command(candidate: &Path) -> Command {
 
 fn verify_sha256(bytes: &[u8], expected_hex: &str) -> Result<(), CliError> {
     let digest = Sha256::digest(bytes);
-    let actual_hex = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let actual_hex = digest.iter().fold(
+        String::with_capacity(digest.len() * 2),
+        |mut output, byte| {
+            use std::fmt::Write as _;
+            write!(&mut output, "{byte:02x}").expect("writing to a String cannot fail");
+            output
+        },
+    );
     if actual_hex.eq_ignore_ascii_case(expected_hex) {
         return Ok(());
     }

@@ -141,7 +141,7 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
             "title": wiki_space.value.get("title").cloned().unwrap_or_else(|| json!("Wiki")),
             "pageCount": page_count,
             "querySkillId": WIKI_PANEL_SKILL_ID,
-            "loadCommand": format!("myopenpanels agent skill {WIKI_PANEL_SKILL_ID} --format json"),
+            "loadCommand": format!("myopenpanels agent skill read --skill-id {WIKI_PANEL_SKILL_ID} --format json"),
         },
         "selectedRawDocuments": selected_documents,
         "selectedGeneratedDocuments": selected_generated_documents,
@@ -248,7 +248,10 @@ pub fn create_generated_document(
         )
     })?;
     let (format, normalized_mime_type) = generated_document_format(file_name, mime_type)?;
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let mut wiki = match task_id {
+        Some(task_id) => get_wiki_task_target(paths, task_id)?,
+        None => get_wiki_bootstrap(paths)?,
+    };
     let storage = Storage::open(paths)?;
     let document_id = create_id("generated");
     let safe_file_name = sanitize_path_part(file_name);
@@ -1057,7 +1060,7 @@ pub fn claim_task(
     agent_host: Option<&str>,
     thread_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let mut wiki = get_wiki_task_target(paths, task_id)?;
     let task = task_mut(&mut wiki.state, task_id)?;
     let status = task.get("status").and_then(Value::as_str).unwrap_or("");
     if status != "queued" && status != "failed" && !task_lease_expired(task) {
@@ -1180,7 +1183,7 @@ pub fn complete_task(
     task_id: &str,
     result: Option<Value>,
 ) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let mut wiki = get_wiki_task_target(paths, task_id)?;
     let now = now_iso();
     let task_snapshot = {
         let task = task_mut(&mut wiki.state, task_id)?;
@@ -1314,7 +1317,11 @@ pub fn complete_task(
     Ok(json!({ "task": task_snapshot, "state": wiki.state }))
 }
 
-pub fn fail_task(paths: &MyOpenPanelsPaths, task_id: &str, message: &str) -> Result<Value, CliError> {
+pub fn fail_task(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+    message: &str,
+) -> Result<Value, CliError> {
     fail_task_with_retry(paths, task_id, message, None)
 }
 
@@ -1324,7 +1331,7 @@ pub fn fail_task_with_retry(
     message: &str,
     retry_after: Option<&str>,
 ) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let mut wiki = get_wiki_task_target(paths, task_id)?;
     let now = now_iso();
     let task_snapshot = {
         let task = task_mut(&mut wiki.state, task_id)?;
@@ -1399,7 +1406,7 @@ pub fn heartbeat_task(
     task_id: &str,
     lease_expires_at: &str,
 ) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let mut wiki = get_wiki_task_target(paths, task_id)?;
     let now = now_iso();
     let task_snapshot = {
         let task = task_mut(&mut wiki.state, task_id)?;
@@ -1421,7 +1428,7 @@ pub fn heartbeat_task(
 }
 
 pub fn release_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let mut wiki = get_wiki_task_target(paths, task_id)?;
     let now = now_iso();
     let task_snapshot = {
         let task = task_mut(&mut wiki.state, task_id)?;
@@ -1440,7 +1447,7 @@ pub fn release_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, C
 }
 
 pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let mut wiki = get_wiki_task_target(paths, task_id)?;
     let now = now_iso();
     let task_snapshot = {
         let task = task_mut(&mut wiki.state, task_id)?;
@@ -1470,7 +1477,7 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
 }
 
 pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let mut wiki = get_wiki_task_target(paths, task_id)?;
     let now = now_iso();
     let task_snapshot = {
         let task = task_mut(&mut wiki.state, task_id)?;
@@ -1566,7 +1573,10 @@ pub fn write_markdown(
     content: &str,
     task_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let mut wiki = match task_id {
+        Some(task_id) => get_wiki_task_target(paths, task_id)?,
+        None => get_wiki_bootstrap(paths)?,
+    };
     let storage = Storage::open(paths)?;
     let now = now_iso();
     let parent_task = task_id
@@ -1819,7 +1829,10 @@ pub fn write_page(
     title: Option<&str>,
     task_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let mut wiki = match task_id {
+        Some(task_id) => get_wiki_task_target(paths, task_id)?,
+        None => get_wiki_bootstrap(paths)?,
+    };
     let storage = Storage::open(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
     let path = wiki_page_path(

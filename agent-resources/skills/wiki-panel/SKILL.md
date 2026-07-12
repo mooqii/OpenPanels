@@ -7,11 +7,11 @@ appliesTo:
   - wiki
 taskTypes:
 requiresCapabilities:
-  - wiki.selection.read
-  - wiki.markdown.read
-  - wiki.generatedDocument.read
+  - panel.selection.read
+  - wiki.raw-document.markdown.read
+  - wiki.generated-document.read
   - wiki.generation.begin
-  - wiki.generation.complete
+  - operation.complete
   - wiki.page.search
   - wiki.page.read
   - agent.skill.read

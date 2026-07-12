@@ -1,7 +1,8 @@
 # MyOpenPanels Multi-Panel Wiki Upgrade Spec
 
 > Historical upgrade document. Its `agent context` examples are superseded by
-> Protocol v2 `agent bootstrap`; see `agent-guidance-protocol-spec.md`.
+> Protocol v3 `agent bootstrap`; see `agent-guidance-protocol-spec.md`.
+> Its command examples are superseded by the 0.4 vNext command tree.
 
 ## 背景
 

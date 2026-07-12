@@ -1,18 +1,17 @@
 use crate::agent::{
-    agent_bootstrap, capabilities, list_agent_guides, list_agent_skills, read_agent_guide,
-    read_agent_skill, render_agent_guides_markdown, render_agent_skills_markdown,
-    sync_builtin_agent_skills,
+    agent_bootstrap, list_agent_guide_summaries, list_agent_skill_summaries, read_agent_guide,
+    read_agent_skill, sync_builtin_agent_skills,
 };
 use crate::bridge::{read_bridge_status, run_bridge, BridgeOptions};
-use crate::canvas::{insert_image, insert_placeholder, InsertImageInput, InsertPlaceholderInput};
+use crate::canvas::{insert_image, InsertImageInput};
 use crate::control::{
     create_project, ensure_project_bootstrap, read_active_session_id, read_focus_revision,
-    read_project_bootstrap, BootstrapRequest,
+    read_project_bootstrap, require_active_panel, BootstrapRequest,
 };
 use crate::error::CliError;
 use crate::operations;
 use crate::paths::resolve_myopenpanels_paths;
-use crate::selection::{read_selection, read_selection_asset_to_file};
+use crate::selection::read_selection_asset_for_panel;
 use crate::server::run_server;
 use crate::storage::Storage;
 use crate::studio::{
@@ -31,6 +30,8 @@ use crate::update::{
 use crate::wiki;
 use serde::Serialize;
 use serde_json::Value;
+mod args;
+pub(crate) mod registry;
 mod support;
 #[cfg(test)]
 mod tests;
@@ -46,66 +47,10 @@ use std::path::PathBuf;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const HELP_TEXT: &str = concat!(
-    "myopenpanels <command> [options]\n\n",
-    "Commands:\n",
-    "  agent bootstrap           Read protocol v2 context, guides, and operations\n",
-    "  agent operations list|inspect\n",
-    "  agent capabilities        List the current agent-facing command set\n",
-    "  agent bridge              Run a registered command task bridge\n",
-    "  agent targets list|register|heartbeat|remove\n",
-    "  agent guides              List loadable agent guides\n",
-    "  agent guide <id>          Print one full agent guide\n",
-    "  agent skills              List loadable agent skills\n",
-    "  agent skill <id>          Print one full agent skill\n",
-    "  project current           Read the current user-visible project\n",
-    "  project list              List available projects\n",
-    "  project create            Create a project explicitly\n",
-    "  project select            Select the current project by id\n",
-    "  panel list                List panels in the current project\n",
-    "  panel current             Read the current panel\n",
-    "  panel switch              Switch the active panel by kind\n",
-    "  canvas state              Read current canvas state\n",
-    "  canvas selection read     Read current canvas selection\n",
-    "  canvas selection export   Export selected canvas pixels to a file\n",
-    "  canvas generation begin|complete|fail|cancel|inspect\n",
-    "  canvas image insert       Insert a non-generated local image\n",
-    "  tasks list|next|inspect   Read project tasks across panels\n",
-    "  tasks claim-next|claim|heartbeat|complete|fail|release|retry|cancel\n",
-    "  wiki context              Read current wiki context\n",
-    "  wiki selection read       Read the user-selected Wiki and raw documents\n",
-    "  wiki documents list       List raw wiki documents\n",
-    "  wiki documents add        Add a raw wiki document\n",
-    "  wiki documents create-markdown Create markdown raw document\n",
-    "  wiki markdown read        Read source markdown for a document\n",
-    "  wiki markdown write       Write source markdown for a document\n",
-    "  wiki generated-documents list|read|rename|delete|publish\n",
-    "  wiki generation begin|complete|fail|cancel|inspect\n",
-    "  wiki tasks list|next|claim|complete|fail\n",
-    "  wiki spaces list|switch\n",
-    "  wiki pages list|search|read|write\n",
-    "  studio start              Start or reuse the MyOpenPanels Studio\n",
-    "  studio status             Show MyOpenPanels Studio status\n",
-    "  studio open-system-browser Open the MyOpenPanels Studio in the system browser\n",
-    "  studio serve              Run the MyOpenPanels Studio in the foreground\n",
-    "  studio wait               Wait for the MyOpenPanels Studio to become ready\n",
-    "  studio stop               Stop the MyOpenPanels Studio\n",
-    "  update                    Install the latest GitHub Releases binary\n",
-    "  update check              Check GitHub Releases for a newer binary\n\n",
-    "Options:\n",
-    "  --project-dir <dir>       Project directory (default: cwd or MYOPENPANELS_PROJECT_DIR; data is global)\n",
-    "  --host <host>             Studio bind host (default: 0.0.0.0; set 127.0.0.1 for local-only)\n",
-    "  --local-only              Bind the studio to 127.0.0.1\n",
-    "  --port <port>             Studio port for foreground serving\n",
-    "  --metadata-file <json>    Attach image asset metadata when inserting an image\n",
-    "  --allow-fallback          Allow fallback assets for canvas selection export\n",
-    "  --format json             Emit stable JSON output\n",
-    "  --version                 Print the CLI version\n",
-);
-
 #[derive(Debug, Clone, Eq, PartialEq)]
-struct ParsedArgs {
+struct Invocation {
     flags: BTreeMap<String, FlagValue>,
+    intent: String,
     positionals: Vec<String>,
 }
 
@@ -127,12 +72,43 @@ struct VersionPayload<'a> {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResponseMeta<'a> {
+    cli_version: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SuccessPayload<'a, T: Serialize> {
+    ok: bool,
+    schema_version: u32,
+    intent: &'a str,
+    data: &'a T,
+    meta: ResponseMeta<'a>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ErrorPayload<'a> {
     ok: bool,
+    schema_version: u32,
+    intent: &'a str,
+    error: ErrorDetail<'a>,
+    meta: ResponseMeta<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorDetail<'a> {
     code: &'a str,
-    error: &'a str,
+    message: &'a str,
     retryable: bool,
-    recovery: &'a str,
+    recovery: RecoveryDetail<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct RecoveryDetail<'a> {
+    instruction: &'a str,
+    command: Option<&'a str>,
 }
 
 pub fn run_cli(argv: &[String]) -> i32 {
@@ -177,7 +153,9 @@ pub fn run_cli(argv: &[String]) -> i32 {
 }
 
 fn trace_url_for_cli(argv: &[String]) -> Option<String> {
-    let parsed = parse_args(argv);
+    let args::ParseOutcome::Invocation(parsed) = args::parse(argv) else {
+        return None;
+    };
     let command = parsed.positionals.first().map(String::as_str);
     if command.is_none()
         || command == Some("__serve-studio")
@@ -252,7 +230,24 @@ impl<W: Write> Write for TracedWriter<W> {
 }
 
 fn run_cli_with_io(argv: &[String], mut stdout: impl Write, mut stderr: impl Write) -> i32 {
-    let parsed = parse_args(argv);
+    let parsed = match args::parse(argv) {
+        args::ParseOutcome::Invocation(parsed) => parsed,
+        args::ParseOutcome::Display(text) => {
+            let _ = write_text(&mut stdout, &text);
+            return 0;
+        }
+        args::ParseOutcome::Error(message) => {
+            let parsed = parse_error_args(argv);
+            let error = CliError::with_recovery(
+                "invalid_argument",
+                message.trim().to_owned(),
+                false,
+                "Review the generated command help and retry with valid arguments.",
+            );
+            write_error(&parsed, &mut stdout, &mut stderr, &error);
+            return error.exit_code();
+        }
+    };
     match run_parsed_cli(&parsed, &mut stdout, &mut stderr) {
         Ok(()) => 0,
         Err(error) => {
@@ -263,11 +258,10 @@ fn run_cli_with_io(argv: &[String], mut stdout: impl Write, mut stderr: impl Wri
 }
 
 fn run_parsed_cli(
-    parsed: &ParsedArgs,
+    parsed: &Invocation,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<(), CliError> {
-    validate_args(parsed)?;
     let command = parsed.positionals.first().map(String::as_str);
 
     if has_flag(parsed, "version") || command == Some("version") {
@@ -277,16 +271,6 @@ fn run_parsed_cli(
             &VersionPayload { version: VERSION },
             VERSION,
         )?;
-        return Ok(());
-    }
-
-    if has_flag(parsed, "help") {
-        write_text(stdout, &command_help_text(parsed))?;
-        return Ok(());
-    }
-
-    if command.is_none() || command == Some("help") {
-        write_text(stdout, HELP_TEXT)?;
         return Ok(());
     }
 
@@ -336,6 +320,10 @@ fn run_parsed_cli(
         return run_wiki_command(parsed, stdout);
     }
 
+    if command == Some("operation") {
+        return run_operation_command(parsed, stdout);
+    }
+
     if command == Some("tasks") {
         return run_tasks_command(parsed, stdout);
     }
@@ -350,300 +338,7 @@ fn run_parsed_cli(
     )))
 }
 
-fn command_help_text(parsed: &ParsedArgs) -> String {
-    let parts = parsed
-        .positionals
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    match parts.as_slice() {
-        [command, rest @ ..] if *command == "project" => match rest {
-            ["current", ..] => help_block(
-                "myopenpanels project current",
-                "Read the current user-visible Project. Does not create a Project.",
-                &[],
-            ),
-            ["list", ..] => help_block(
-                "myopenpanels project list",
-                "List available Projects. Does not create a Project.",
-                &[],
-            ),
-            ["create", ..] => help_block(
-                "myopenpanels project create",
-                "Create a Project explicitly.",
-                &["--title <title>"],
-            ),
-            ["select", ..] => help_block(
-                "myopenpanels project select --id <session-id>",
-                "Select the current user-visible Project by id.",
-                &["--id <session-id>"],
-            ),
-            _ => help_block(
-                "myopenpanels project <current|list|create|select>",
-                "Project commands.",
-                &[],
-            ),
-        },
-        [command, rest @ ..] if *command == "panel" => match rest {
-            ["list", ..] => help_block(
-                "myopenpanels panel list",
-                "List panels in the current Project. Does not create a Project.",
-                &[],
-            ),
-            ["current", ..] => help_block(
-                "myopenpanels panel current",
-                "Read the current panel. Does not create a Project.",
-                &[],
-            ),
-            ["switch", ..] => help_block(
-                "myopenpanels panel switch",
-                "Switch the current panel by kind. Does not create a Project.",
-                &["--kind <wiki|canvas|image|diff|preview|files>"],
-            ),
-            _ => help_block(
-                "myopenpanels panel <list|current|switch>",
-                "Panel commands for the current Project.",
-                &[],
-            ),
-        },
-        [command, rest @ ..] if *command == "canvas" => match rest {
-            ["state", ..] => help_block(
-                "myopenpanels canvas state",
-                "Read current canvas state. Does not create a Project.",
-                &[],
-            ),
-            ["selection", "read", ..] => help_block(
-                "myopenpanels canvas selection read",
-                "Read current canvas selection. Does not create a Project.",
-                &["--include-image-base64"],
-            ),
-            ["selection", "export", ..] => help_block(
-                "myopenpanels canvas selection export",
-                "Export selected canvas pixels to a file. Does not create a Project.",
-                &["--output <path>", "--allow-fallback"],
-            ),
-            ["placeholder", "create", ..] => help_block(
-                "myopenpanels canvas placeholder create",
-                "Insert a generation placeholder. Does not create a Project.",
-                &[
-                    "--display-width <number>",
-                    "--display-height <number>",
-                    "--text <text>",
-                    "--anchor-shape-id <id>",
-                ],
-            ),
-            ["image", "insert", ..] => help_block(
-                "myopenpanels canvas image insert",
-                "Insert a local image into the current canvas. Does not create a Project.",
-                &[
-                    "--image <path>",
-                    "--placement <auto|right|below|left>",
-                    "--metadata-file <json>",
-                    "--replace-shape-id <id>",
-                ],
-            ),
-            _ => help_block(
-                "myopenpanels canvas <state|selection|placeholder|image>",
-                "Canvas commands for the current Project.",
-                &[],
-            ),
-        },
-        [command, rest @ ..] if *command == "wiki" => match rest {
-            ["context", ..] => help_block(
-                "myopenpanels wiki context",
-                "Read current wiki context. Does not create a Project.",
-                &[],
-            ),
-            ["documents", "list", ..] => help_block(
-                "myopenpanels wiki documents list",
-                "List raw wiki documents. Does not create a Project.",
-                &[],
-            ),
-            ["documents", "add", ..] => help_block(
-                "myopenpanels wiki documents add",
-                "Add a raw wiki document. Does not create a Project.",
-                &["--file <path>", "--title <title>", "--mime-type <mime>"],
-            ),
-            ["documents", "create-markdown", ..] => help_block(
-                "myopenpanels wiki documents create-markdown",
-                "Create a markdown raw document. Does not create a Project.",
-                &["--title <title>", "--file <path>", "--content <text>"],
-            ),
-            ["markdown", "read", ..] => help_block(
-                "myopenpanels wiki markdown read",
-                "Read markdown for a raw document. Does not create a Project.",
-                &["--document-id <id>"],
-            ),
-            ["markdown", "write", ..] => help_block(
-                "myopenpanels wiki markdown write",
-                "Write markdown for a raw document. Does not create a Project.",
-                &["--document-id <id>", "--file <path>", "--task-id <id>"],
-            ),
-            ["generated-documents", action, ..] => help_block(
-                &format!("myopenpanels wiki generated-documents {action}"),
-                "Manage agent-generated Markdown and text documents. Does not create a Project.",
-                &[
-                    "--document-id <id>",
-                    "--file <path>",
-                    "--title <title>",
-                    "--task-id <id>",
-                    "--thread-id <id>",
-                    "--wiki-space-id <id>",
-                ],
-            ),
-            ["tasks", action, ..] => help_block(
-                &format!("myopenpanels wiki tasks {action}"),
-                "Operate on wiki tasks. Does not create a Project.",
-                &["--task-id <id>", "--message <message>"],
-            ),
-            ["spaces", "switch", ..] => help_block(
-                "myopenpanels wiki spaces switch",
-                "Switch active wiki space. Does not create a Project.",
-                &["--wiki-space-id <id>"],
-            ),
-            ["spaces", "list", ..] => help_block(
-                "myopenpanels wiki spaces list",
-                "List wiki spaces. Does not create a Project.",
-                &[],
-            ),
-            ["pages", action, ..] => help_block(
-                &format!("myopenpanels wiki pages {action}"),
-                "Read, list, or write wiki pages. Does not create a Project.",
-                &["--wiki-space-id <id>", "--path <path>", "--file <path>"],
-            ),
-            _ => help_block(
-                "myopenpanels wiki <context|documents|generated-documents|markdown|tasks|spaces|pages>",
-                "Wiki commands for the current Project.",
-                &[],
-            ),
-        },
-        [command, rest @ ..] if *command == "agent" => match rest {
-            ["bootstrap", ..] => help_block(
-                "myopenpanels agent bootstrap",
-                "Read the current Agent protocol, focus, guides, and operations.",
-                &[],
-            ),
-            ["capabilities", ..] => help_block(
-                "myopenpanels agent capabilities",
-                "List the current agent-facing command set.",
-                &[],
-            ),
-            ["bridge", ..] => help_block(
-                "myopenpanels agent bridge [status] [--command <command>]",
-                "Run the task bridge or read bridge status. Does not create a Project.",
-                &[
-                    "--command <command>",
-                    "--capability <name>",
-                    "--name <name>",
-                    "--once",
-                    "--queue <queue>",
-                    "--interval-ms <ms>",
-                    "--timeout-ms <ms>",
-                    "--manual-lifecycle",
-                ],
-            ),
-            ["targets", action, ..] => help_block(
-                &format!("myopenpanels agent targets {action}"),
-                "Register, inspect, heartbeat, or remove project agent targets.",
-                &[
-                    "--target-id <id>",
-                    "--name <name>",
-                    "--host <host>",
-                    "--transport <webhook|poll|command>",
-                    "--endpoint <url>",
-                    "--capability <name>",
-                    "--priority <number>",
-                ],
-            ),
-            ["guides", ..] => help_block(
-                "myopenpanels agent guides",
-                "List loadable agent guides.",
-                &[],
-            ),
-            ["guide", ..] => help_block(
-                "myopenpanels agent guide <guide-id>",
-                "Read one full agent guide. Does not create a Project.",
-                &["--task-id <id>"],
-            ),
-            ["skills", ..] => help_block(
-                "myopenpanels agent skills",
-                "List loadable agent skills.",
-                &[],
-            ),
-            ["skill", ..] => help_block(
-                "myopenpanels agent skill <skill-id>",
-                "Read one full agent skill. Does not create a Project.",
-                &["--task-id <id>"],
-            ),
-            _ => help_block(
-                "myopenpanels agent <context|capabilities|bridge|guides|guide|skills|skill>",
-                "Agent discovery and context commands.",
-                &[],
-            ),
-        },
-        [command, rest @ ..] if *command == "tasks" => match rest {
-            ["list", ..] => help_block(
-                "myopenpanels tasks list",
-                "List project tasks across panels. Does not create a Project.",
-                &["--queue <queue>", "--status <status>", "--pending"],
-            ),
-            ["next", ..] => help_block(
-                "myopenpanels tasks next",
-                "Read the next pending project task. Does not create a Project.",
-                &["--queue <queue>", "--status <status>"],
-            ),
-            ["inspect", ..] => help_block(
-                "myopenpanels tasks inspect --task-id <id>",
-                "Read one project task by id. Does not create a Project.",
-                &["--task-id <id>"],
-            ),
-            ["claim-next", ..] => help_block(
-                "myopenpanels tasks claim-next --target-id <id>",
-                "Atomically claim the next matching project task.",
-                &["--target-id <id>", "--capability <name>", "--wait-ms <ms>"],
-            ),
-            ["claim", ..] => help_block(
-                "myopenpanels tasks claim --task-id <id> --target-id <id>",
-                "Atomically claim one project task.",
-                &["--task-id <id>", "--target-id <id>"],
-            ),
-            ["heartbeat", ..] | ["complete", ..] | ["fail", ..] | ["release", ..] => help_block(
-                &format!("myopenpanels tasks {}", rest[0]),
-                "Update a claimed project task using its lease token.",
-                &[
-                    "--task-id <id>",
-                    "--lease-token <token>",
-                    "--result-file <json>",
-                    "--message <text>",
-                    "--retry-after <time>",
-                ],
-            ),
-            ["retry", ..] | ["cancel", ..] => help_block(
-                &format!("myopenpanels tasks {}", rest[0]),
-                "Manually retry or cancel a project task.",
-                &["--task-id <id>"],
-            ),
-            ["deliveries", ..] => help_block(
-                "myopenpanels tasks deliveries",
-                "Read task delivery history.",
-                &["--task-id <id>"],
-            ),
-            _ => HELP_TEXT.to_owned(),
-        },
-        _ => HELP_TEXT.to_owned(),
-    }
-}
-
-fn help_block(usage: &str, description: &str, flags: &[&str]) -> String {
-    let flags = if flags.is_empty() {
-        "Flags:\n  --format json\n".to_owned()
-    } else {
-        format!("Flags:\n  {}\n  --format json\n", flags.join("\n  "))
-    };
-    format!("{usage}\n\n{description}\n\n{flags}")
-}
-
-fn run_tasks_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
+fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
         Some("list") => {
@@ -759,7 +454,7 @@ fn run_tasks_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
     }
 }
 
-fn task_list_filter<'a>(parsed: &'a ParsedArgs) -> tasks::TaskListFilter<'a> {
+fn task_list_filter(parsed: &Invocation) -> tasks::TaskListFilter<'_> {
     tasks::TaskListFilter {
         pending: has_flag(parsed, "pending"),
         queue: string_flag(parsed, "queue"),
@@ -767,7 +462,7 @@ fn task_list_filter<'a>(parsed: &'a ParsedArgs) -> tasks::TaskListFilter<'a> {
     }
 }
 
-fn run_project_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
+fn run_project_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
         Some("current") => {
@@ -860,14 +555,29 @@ fn run_project_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(
     }
 }
 
-fn run_panel_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
+fn run_panel_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
-        Some("current") => run_project_read_command(parsed, stdout, ProjectReadView::PanelCurrent),
-        Some("list") => run_project_read_command(parsed, stdout, ProjectReadView::PanelList),
+        Some("current") => run_project_read_command(parsed, stdout, ProjectReadView::Current),
+        Some("list") => run_project_read_command(parsed, stdout, ProjectReadView::List),
         Some("switch") => {
             let _ = required_flag(parsed, "kind")?;
-            run_project_read_command(parsed, stdout, ProjectReadView::PanelSwitch)
+            run_project_read_command(parsed, stdout, ProjectReadView::Activate)
+        }
+        Some("context") => {
+            let paths = parsed_current_paths(parsed)?;
+            let payload = crate::panel::read_context(&paths)?;
+            write_result(parsed, stdout, &payload, "Current panel context")
+        }
+        Some("state") => {
+            let paths = parsed_current_paths(parsed)?;
+            let payload = crate::panel::read_state(&paths)?;
+            write_result(parsed, stdout, &payload, "Current panel state")
+        }
+        Some("selection") => {
+            let paths = parsed_current_paths(parsed)?;
+            let payload = crate::panel::read_selection(&paths)?;
+            write_result(parsed, stdout, &payload, "Current panel selection")
         }
         _ => Err(CliError::new(
             "Expected panel subcommand: current, list, or switch.",
@@ -875,12 +585,13 @@ fn run_panel_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
     }
 }
 
-fn run_canvas_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
+fn run_canvas_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     let action = parsed.positionals.get(2).map(String::as_str);
     match (subcommand, action) {
         (Some("generation"), Some("begin")) => {
             let paths = parsed_current_paths(parsed)?;
+            require_focus(parsed, &paths, PanelKind::Canvas)?;
             let result = operations::begin_canvas(
                 &paths,
                 number_flag(parsed, "display-width")?,
@@ -888,67 +599,31 @@ fn run_canvas_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
                 has_flag(parsed, "use-selection"),
                 string_flag(parsed, "text"),
             )?;
-            write_result(parsed, stdout, &result, result["operation"]["id"].as_str().unwrap_or("Started canvas generation"))
-        }
-        (Some("generation"), Some("complete")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = operations::complete_canvas(
-                &paths,
-                required_flag(parsed, "operation-id")?,
-                required_flag(parsed, "image")?,
-                image_metadata_flag(parsed)?.ok_or_else(|| CliError::with_code("generation_metadata_required", "Missing --metadata-file"))?,
-            )?;
-            write_result(parsed, stdout, &result, "Completed canvas generation")
-        }
-        (Some("generation"), Some("fail")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = operations::finish_canvas(&paths, required_flag(parsed, "operation-id")?, "failed", Some(required_flag(parsed, "message")?))?;
-            write_result(parsed, stdout, &result, "Failed canvas generation")
-        }
-        (Some("generation"), Some("cancel")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = operations::finish_canvas(&paths, required_flag(parsed, "operation-id")?, "cancelled", None)?;
-            write_result(parsed, stdout, &result, "Cancelled canvas generation")
-        }
-        (Some("generation"), Some("inspect")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = operations::inspect(&paths, required_flag(parsed, "operation-id")?)?;
-            write_result(parsed, stdout, &result, result["status"].as_str().unwrap_or("unknown"))
-        }
-        (Some("state"), _) => run_project_read_command(parsed, stdout, ProjectReadView::CanvasState),
-        (Some("selection"), Some("read")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = read_selection(&paths, None, has_flag(parsed, "include-image-base64"))?;
-            let text = format!(
-                "Selection contains {} shape(s)",
-                selected_shape_count(&result.selection)
-            );
-            write_result(parsed, stdout, &result, &text)
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                result["operation"]["id"]
+                    .as_str()
+                    .unwrap_or("Started canvas generation"),
+            )
         }
         (Some("selection"), Some("export")) => {
             let paths = parsed_current_paths(parsed)?;
+            let bootstrap = require_active_panel(&paths, PanelKind::Canvas, None)?;
             let output = required_flag(parsed, "output")?;
-            let result =
-                read_selection_asset_to_file(&paths, None, output, has_flag(parsed, "allow-fallback"))?;
-            let text = format!("Wrote {}", result.output_path);
-            write_result(parsed, stdout, &result, &text)
-        }
-        (Some("placeholder"), Some("create")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = insert_placeholder(
+            let result = read_selection_asset_for_panel(
                 &paths,
-                InsertPlaceholderInput {
-                    anchor_shape_id: string_flag(parsed, "anchor-shape-id"),
-                    display_height: number_flag(parsed, "display-height")?,
-                    display_width: number_flag(parsed, "display-width")?,
-                    text: string_flag(parsed, "text"),
-                },
+                &bootstrap.session.id,
+                &bootstrap.panel.id,
+                output,
             )?;
-            let text = format!("Inserted placeholder shape {}", result.shape_id);
+            let text = format!("Wrote {}", result.output_path);
             write_result(parsed, stdout, &result, &text)
         }
         (Some("image"), Some("insert")) => {
             let paths = parsed_current_paths(parsed)?;
+            require_focus(parsed, &paths, PanelKind::Canvas)?;
             let image_path = required_flag(parsed, "image")?;
             let result = insert_image(
                 &paths,
@@ -967,12 +642,27 @@ fn run_canvas_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
             write_result(parsed, stdout, &result, &text)
         }
         _ => Err(CliError::new(
-            "Expected canvas subcommand: state, selection read, selection export, placeholder create, or image insert.",
+            "Expected canvas subcommand: selection export, image insert, or generation begin.",
         )),
     }
 }
 
-fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
+fn require_focus(
+    parsed: &Invocation,
+    paths: &crate::paths::MyOpenPanelsPaths,
+    kind: PanelKind,
+) -> Result<ProjectBootstrap, CliError> {
+    let expected = string_flag(parsed, "expect-focus-revision")
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| CliError::new("Expected --expect-focus-revision to be an integer."))
+        })
+        .transpose()?;
+    require_active_panel(paths, kind, expected)
+}
+
+fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
         Some("start") => {
@@ -1130,13 +820,63 @@ fn run_studio_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<()
     }
 }
 
-fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
+fn run_operation_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
+    let paths = parsed_current_paths(parsed)?;
+    match parsed.positionals.get(1).map(String::as_str) {
+        Some("list") => {
+            let payload = operations::list(&paths, string_flag(parsed, "status"))?;
+            write_result(parsed, stdout, &payload, "Operations")
+        }
+        Some("read") => {
+            let id = required_flag(parsed, "operation-id")?;
+            let payload = operations::inspect(&paths, id)?;
+            write_result(
+                parsed,
+                stdout,
+                &payload,
+                payload["status"].as_str().unwrap_or("unknown"),
+            )
+        }
+        Some("complete") => {
+            let payload = operations::complete(
+                &paths,
+                required_flag(parsed, "operation-id")?,
+                required_flag(parsed, "artifact-file")?,
+                image_metadata_flag(parsed)?,
+            )?;
+            write_result(parsed, stdout, &payload, "Operation completed")
+        }
+        Some("fail") => {
+            let payload = operations::finish_any(
+                &paths,
+                required_flag(parsed, "operation-id")?,
+                "failed",
+                Some(required_flag(parsed, "message")?),
+            )?;
+            write_result(parsed, stdout, &payload, "Operation failed")
+        }
+        Some("cancel") => {
+            let payload = operations::finish_any(
+                &paths,
+                required_flag(parsed, "operation-id")?,
+                "cancelled",
+                None,
+            )?;
+            write_result(parsed, stdout, &payload, "Operation cancelled")
+        }
+        _ => Err(CliError::new(
+            "Expected operation subcommand: list, read, complete, fail, or cancel.",
+        )),
+    }
+}
+
+fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
         Some("bootstrap") => {
             let paths = parsed_current_paths(parsed)?;
             let payload = agent_bootstrap(&paths, VERSION)?;
-            write_result(parsed, stdout, &payload, "MyOpenPanels agent protocol v2 bootstrap")
+            write_result(parsed, stdout, &payload, "MyOpenPanels agent protocol v3 bootstrap")
         }
         Some("operations") => {
             let paths = parsed_current_paths(parsed)?;
@@ -1153,14 +893,30 @@ fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
             }
         }
         Some("capabilities") => {
-            let capabilities = capabilities();
-            let payload = serde_json::json!({ "capabilities": capabilities });
-            write_result(
-                parsed,
-                stdout,
-                &payload,
-                &render_capabilities_summary(&capabilities),
-            )
+            let payload = match string_flag(parsed, "scope") {
+                Some(scope) => registry::scope_capabilities(scope).ok_or_else(|| {
+                    CliError::with_recovery_command(
+                        "capability_scope_not_found",
+                        format!("MyOpenPanels capability scope not found: {scope}"),
+                        false,
+                        "Run `myopenpanels agent capability list --format json` to list valid scopes.",
+                        "myopenpanels agent capability list --format json",
+                    )
+                })?,
+                None => registry::scope_index(),
+            };
+            let text = render_agent_discovery_summary(&payload);
+            write_result(parsed, stdout, &payload, &text)
+        }
+        Some("capability") => {
+            let intent = required_flag(parsed, "intent")?;
+            let capability = registry::capability_payload(intent).ok_or_else(|| {
+                CliError::with_code(
+                    "capability_not_found",
+                    format!("MyOpenPanels capability not found: {intent}"),
+                )
+            })?;
+            write_result(parsed, stdout, &capability, intent)
         }
         Some("bridge") => {
             let paths = parsed_current_paths(parsed)?;
@@ -1259,14 +1015,13 @@ fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
             }
         }
         Some("guides") => {
-            let guides = list_agent_guides()?;
+            let guides = list_agent_guide_summaries(
+                string_flag(parsed, "panel-kind"),
+                string_flag(parsed, "task-type"),
+            )?;
             let payload = serde_json::json!({ "guides": guides });
-            write_result(
-                parsed,
-                stdout,
-                &payload,
-                &render_agent_guides_markdown(&guides),
-            )
+            let text = render_agent_discovery_summary(&payload);
+            write_result(parsed, stdout, &payload, &text)
         }
         Some("guide") => {
             let guide_id = parsed
@@ -1279,15 +1034,13 @@ fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
             write_result(parsed, stdout, &payload, &markdown)
         }
         Some("skills") => {
-            let paths = parsed_current_paths(parsed)?;
-            let skills = list_agent_skills(&paths)?;
+            let skills = list_agent_skill_summaries(
+                string_flag(parsed, "panel-kind"),
+                string_flag(parsed, "task-type"),
+            )?;
             let payload = serde_json::json!({ "skills": skills });
-            write_result(
-                parsed,
-                stdout,
-                &payload,
-                &render_agent_skills_markdown(&skills),
-            )
+            let text = render_agent_discovery_summary(&payload);
+            write_result(parsed, stdout, &payload, &text)
         }
         Some("skill") => {
             let skill_id = parsed
@@ -1305,9 +1058,28 @@ fn run_agent_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(),
     }
 }
 
-fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), CliError> {
+fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     let action = parsed.positionals.get(2).map(String::as_str);
+    if string_flag(parsed, "task-id").is_none()
+        && matches!(
+            parsed.intent.as_str(),
+            "wiki.raw-document.add"
+                | "wiki.raw-document.create-markdown"
+                | "wiki.raw-document.markdown.write"
+                | "wiki.generated-document.create"
+                | "wiki.generated-document.write"
+                | "wiki.generated-document.rename"
+                | "wiki.generated-document.delete"
+                | "wiki.generated-document.publish"
+                | "wiki.space.activate"
+                | "wiki.page.write"
+                | "wiki.generation.begin"
+        )
+    {
+        let paths = parsed_current_paths(parsed)?;
+        require_focus(parsed, &paths, PanelKind::Wiki)?;
+    }
     match (subcommand, action) {
         (Some("generation"), Some("begin")) => {
             let paths = parsed_current_paths(parsed)?;
@@ -1325,69 +1097,6 @@ fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), 
                     .as_str()
                     .unwrap_or("Started wiki generation"),
             )
-        }
-        (Some("generation"), Some("complete")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = operations::complete_wiki(
-                &paths,
-                required_flag(parsed, "operation-id")?,
-                required_flag(parsed, "file")?,
-            )?;
-            write_result(parsed, stdout, &result, "Completed wiki generation")
-        }
-        (Some("generation"), Some("fail")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = operations::finish_wiki(
-                &paths,
-                required_flag(parsed, "operation-id")?,
-                "failed",
-                Some(required_flag(parsed, "message")?),
-            )?;
-            write_result(parsed, stdout, &result, "Failed wiki generation")
-        }
-        (Some("generation"), Some("cancel")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = operations::finish_wiki(
-                &paths,
-                required_flag(parsed, "operation-id")?,
-                "cancelled",
-                None,
-            )?;
-            write_result(parsed, stdout, &result, "Cancelled wiki generation")
-        }
-        (Some("generation"), Some("inspect")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = operations::inspect(&paths, required_flag(parsed, "operation-id")?)?;
-            write_result(
-                parsed,
-                stdout,
-                &result,
-                result["status"].as_str().unwrap_or("unknown"),
-            )
-        }
-        (Some("context"), _) => {
-            let paths = parsed_current_paths(parsed)?;
-            let payload = wiki::wiki_context(&paths)?;
-            write_result(parsed, stdout, &payload, "Wiki context")
-        }
-        (Some("selection"), Some("read")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = wiki::read_agent_selection(&paths)?;
-            let text = format!(
-                "Wiki selected: {}; raw documents selected: {}; generated documents selected: {}",
-                result["selection"]["isWikiSelected"]
-                    .as_bool()
-                    .unwrap_or(false),
-                result["selectedRawDocuments"]
-                    .as_array()
-                    .map(Vec::len)
-                    .unwrap_or(0),
-                result["selectedGeneratedDocuments"]
-                    .as_array()
-                    .map(Vec::len)
-                    .unwrap_or(0)
-            );
-            write_result(parsed, stdout, &result, &text)
         }
         (Some("documents"), Some("create-markdown")) => {
             let paths = parsed_current_paths(parsed)?;
@@ -1583,45 +1292,6 @@ fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), 
                 &format!("Wrote markdown {document_id}"),
             )
         }
-        (Some("tasks"), Some("list")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = wiki::list_tasks(&paths, string_flag(parsed, "status"))?;
-            let count = result["tasks"].as_array().map(Vec::len).unwrap_or(0);
-            write_result(parsed, stdout, &result, &format!("{count} task(s)"))
-        }
-        (Some("tasks"), Some("next")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = wiki::next_task(&paths)?;
-            let text = result["task"]["id"].as_str().unwrap_or("No queued task");
-            write_result(parsed, stdout, &result, text)
-        }
-        (Some("tasks"), Some("claim")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let task_id = required_flag(parsed, "task-id")?;
-            let result = wiki::claim_task(
-                &paths,
-                task_id,
-                string_flag(parsed, "agent-host"),
-                string_flag(parsed, "thread-id"),
-            )?;
-            write_result(parsed, stdout, &result, &format!("Claimed {task_id}"))
-        }
-        (Some("tasks"), Some("complete")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let task_id = required_flag(parsed, "task-id")?;
-            let result = wiki::complete_task(&paths, task_id, None)?;
-            write_result(parsed, stdout, &result, &format!("Completed {task_id}"))
-        }
-        (Some("tasks"), Some("fail")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let task_id = required_flag(parsed, "task-id")?;
-            let result = wiki::fail_task(
-                &paths,
-                task_id,
-                string_flag(parsed, "message").unwrap_or("Wiki task failed"),
-            )?;
-            write_result(parsed, stdout, &result, &format!("Failed {task_id}"))
-        }
         (Some("spaces"), Some("switch")) => {
             let paths = parsed_current_paths(parsed)?;
             let wiki_space_id = required_flag(parsed, "wiki-space-id")?;
@@ -1695,40 +1365,42 @@ fn run_wiki_command(parsed: &ParsedArgs, stdout: &mut impl Write) -> Result<(), 
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ProjectReadView {
-    CanvasState,
-    PanelCurrent,
-    PanelList,
-    PanelSwitch,
+    Current,
+    List,
+    Activate,
 }
 
 fn run_project_read_command(
-    parsed: &ParsedArgs,
+    parsed: &Invocation,
     stdout: &mut impl Write,
     view: ProjectReadView,
 ) -> Result<(), CliError> {
     let paths = parsed_current_paths(parsed)?;
     let mut request = BootstrapRequest::new();
     request.requested_panel_kind = match view {
-        ProjectReadView::CanvasState => Some(PanelKind::Canvas),
-        ProjectReadView::PanelSwitch => string_flag(parsed, "kind")
+        ProjectReadView::Activate => string_flag(parsed, "kind")
             .map(parse_panel_kind)
             .transpose()?,
-        ProjectReadView::PanelCurrent | ProjectReadView::PanelList => None,
+        ProjectReadView::Current | ProjectReadView::List => None,
     };
     let bootstrap = read_project_bootstrap(&paths, request)?;
 
-    if view == ProjectReadView::PanelSwitch {
-        let payload = agent_bootstrap(&paths, VERSION)?;
-        return write_result(
-            parsed,
-            stdout,
-            &payload,
-            "Panel switched; use the returned protocol v2 focus and guides.",
-        );
+    if view == ProjectReadView::Activate {
+        let payload = serde_json::json!({
+            "project": bootstrap.session,
+            "panel": bootstrap.panel,
+            "focus": {
+                "focusRevision": read_focus_revision(&paths)?,
+                "projectId": bootstrap.session.id,
+                "panelId": bootstrap.panel.id,
+                "panelKind": bootstrap.panel.kind,
+            }
+        });
+        return write_result(parsed, stdout, &payload, "Panel activated.");
     }
 
     match view {
-        ProjectReadView::PanelList => {
+        ProjectReadView::List => {
             let payload = serde_json::json!({
                 "activePanelId": bootstrap.active_panel_id,
                 "activePanelKind": bootstrap.active_panel_kind,
@@ -1757,7 +1429,7 @@ fn run_project_read_command(
                 .join("\n");
             write_result(parsed, stdout, &payload, &text)
         }
-        ProjectReadView::PanelCurrent => {
+        ProjectReadView::Current => {
             let payload = serde_json::json!({
                 "activePanelId": bootstrap.active_panel_id,
                 "activePanelKind": bootstrap.active_panel_kind,
@@ -1771,52 +1443,11 @@ fn run_project_read_command(
             );
             write_result(parsed, stdout, &payload, &text)
         }
-        ProjectReadView::PanelSwitch => unreachable!(),
-        ProjectReadView::CanvasState => {
-            let text = format!("Canvas ready at {}", bootstrap.storage_dir);
-            write_result(
-                parsed,
-                stdout,
-                &CanvasBootstrapPayload::from(bootstrap),
-                &text,
-            )
-        }
+        ProjectReadView::Activate => unreachable!(),
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CanvasBootstrapPayload {
-    context_dir: String,
-    context_id: String,
-    context_id_source: String,
-    panel: crate::types::Panel,
-    panel_dir: String,
-    revision: i64,
-    session: crate::types::Session,
-    sessions: Vec<crate::types::Session>,
-    state: Value,
-    storage_dir: String,
-}
-
-impl From<ProjectBootstrap> for CanvasBootstrapPayload {
-    fn from(bootstrap: ProjectBootstrap) -> Self {
-        Self {
-            context_dir: bootstrap.context_dir,
-            context_id: bootstrap.context_id,
-            context_id_source: bootstrap.context_id_source,
-            panel: bootstrap.panel,
-            panel_dir: bootstrap.panel_dir,
-            revision: bootstrap.revision,
-            session: bootstrap.session,
-            sessions: bootstrap.sessions,
-            state: bootstrap.state,
-            storage_dir: bootstrap.storage_dir,
-        }
-    }
-}
-
-fn parsed_paths(parsed: &ParsedArgs) -> Result<crate::paths::MyOpenPanelsPaths, CliError> {
+fn parsed_paths(parsed: &Invocation) -> Result<crate::paths::MyOpenPanelsPaths, CliError> {
     resolve_myopenpanels_paths(
         string_flag(parsed, "project-dir"),
         string_flag(parsed, "storage-dir"),
@@ -1824,7 +1455,7 @@ fn parsed_paths(parsed: &ParsedArgs) -> Result<crate::paths::MyOpenPanelsPaths, 
     )
 }
 
-fn parsed_current_paths(parsed: &ParsedArgs) -> Result<crate::paths::MyOpenPanelsPaths, CliError> {
+fn parsed_current_paths(parsed: &Invocation) -> Result<crate::paths::MyOpenPanelsPaths, CliError> {
     let paths = parsed_paths(parsed)?;
     if string_flag(parsed, "context-id").is_some() {
         return Ok(paths);
@@ -1874,7 +1505,7 @@ fn resolve_panel_paths_for_active_studio(
     )
 }
 
-fn image_metadata_flag(parsed: &ParsedArgs) -> Result<Option<Value>, CliError> {
+fn image_metadata_flag(parsed: &Invocation) -> Result<Option<Value>, CliError> {
     let metadata_json = string_flag(parsed, "metadata-json");
     let metadata_file = string_flag(parsed, "metadata-file");
     let metadata = match (metadata_json, metadata_file) {
@@ -1899,7 +1530,7 @@ fn image_metadata_flag(parsed: &ParsedArgs) -> Result<Option<Value>, CliError> {
     Ok(Some(value))
 }
 
-fn studio_host(parsed: &ParsedArgs) -> String {
+fn studio_host(parsed: &Invocation) -> String {
     if has_flag(parsed, "local-only") {
         return "127.0.0.1".to_owned();
     }
@@ -1909,7 +1540,7 @@ fn studio_host(parsed: &ParsedArgs) -> String {
         .unwrap_or_else(|| "0.0.0.0".to_owned())
 }
 
-fn studio_port(parsed: &ParsedArgs) -> Result<Option<u16>, CliError> {
+fn studio_port(parsed: &Invocation) -> Result<Option<u16>, CliError> {
     string_flag(parsed, "port")
         .map(|port| {
             port.parse::<u16>()
@@ -2036,15 +1667,38 @@ fn studio_system_browser_payload(
 }
 
 fn write_result(
-    parsed: &ParsedArgs,
+    parsed: &Invocation,
     stdout: &mut impl Write,
     payload: &impl Serialize,
     text: &str,
 ) -> Result<(), CliError> {
     match output_format(parsed) {
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(payload)
+            let envelope = SuccessPayload {
+                ok: true,
+                schema_version: 1,
+                intent: &parsed.intent,
+                data: payload,
+                meta: ResponseMeta {
+                    cli_version: VERSION,
+                },
+            };
+            let json = serde_json::to_string(&envelope)
                 .map_err(|error| CliError::new(error.to_string()))?;
+            let envelope_bytes = json.len() + 1;
+            if parsed.intent == "agent.bootstrap.read"
+                && envelope_bytes > crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES
+            {
+                return Err(CliError::with_recovery(
+                    "bootstrap_budget_exceeded",
+                    format!(
+                        "Agent Bootstrap is {envelope_bytes} bytes; the maximum is {} bytes.",
+                        crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES
+                    ),
+                    false,
+                    "Report this Bootstrap size regression; use scoped Agent discovery commands instead of requesting a full payload.",
+                ));
+            }
             write_text(stdout, &format!("{json}\n"))
         }
         OutputFormat::Text => write_text(stdout, &format!("{text}\n")),
@@ -2052,7 +1706,7 @@ fn write_result(
 }
 
 fn write_error(
-    parsed: &ParsedArgs,
+    parsed: &Invocation,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
     error: &CliError,
@@ -2061,19 +1715,43 @@ fn write_error(
         OutputFormat::Json => {
             let payload = ErrorPayload {
                 ok: false,
-                code: error.code().unwrap_or("command_failed"),
-                error: error.message(),
-                retryable: error.retryable(),
-                recovery: error
-                    .recovery()
-                    .unwrap_or("Review the command help and retry with valid arguments."),
+                schema_version: 1,
+                intent: &parsed.intent,
+                error: ErrorDetail {
+                    code: error.code().unwrap_or("command_failed"),
+                    message: error.message(),
+                    retryable: error.retryable(),
+                    recovery: RecoveryDetail {
+                        instruction: error
+                            .recovery()
+                            .unwrap_or("Review the command help and retry with valid arguments."),
+                        command: error.recovery_command(),
+                    },
+                },
+                meta: ResponseMeta {
+                    cli_version: VERSION,
+                },
             };
-            let _ = serde_json::to_writer_pretty(&mut *stdout, &payload);
+            let _ = serde_json::to_writer(&mut *stdout, &payload);
             let _ = stdout.write_all(b"\n");
         }
         OutputFormat::Text => {
             let _ = write_text(stderr, &format!("Error: {}\n", error.message()));
         }
+    }
+}
+
+fn parse_error_args(argv: &[String]) -> Invocation {
+    let json = argv.windows(2).any(|parts| parts == ["--format", "json"])
+        || argv.iter().any(|arg| arg == "--format=json");
+    let mut flags = BTreeMap::new();
+    if json {
+        flags.insert("format".to_owned(), FlagValue::String("json".to_owned()));
+    }
+    Invocation {
+        flags,
+        intent: "cli.parse".to_owned(),
+        positionals: Vec::new(),
     }
 }
 

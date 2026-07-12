@@ -29,6 +29,12 @@ impl BootstrapRequest {
     }
 }
 
+impl Default for BootstrapRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn ensure_project_bootstrap(
     paths: &MyOpenPanelsPaths,
     request: BootstrapRequest,
@@ -218,6 +224,41 @@ pub fn read_project_bootstrap(
         storage_dir: paths.storage_dir.display().to_string(),
         tasks,
     })
+}
+
+pub fn require_active_panel(
+    paths: &MyOpenPanelsPaths,
+    expected_kind: PanelKind,
+    expected_focus_revision: Option<u64>,
+) -> Result<ProjectBootstrap, CliError> {
+    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    if bootstrap.active_panel_kind != expected_kind {
+        return Err(CliError::with_recovery(
+            "panel_kind_mismatch",
+            format!(
+                "The active panel is {}, but this command requires {}.",
+                bootstrap.active_panel_kind.as_str(),
+                expected_kind.as_str()
+            ),
+            true,
+            format!(
+                "Run `myopenpanels panel activate --panel-kind {} --format json`, read the new focus revision, and retry.",
+                expected_kind.as_str()
+            ),
+        ));
+    }
+    if let Some(expected) = expected_focus_revision {
+        let current = read_focus_revision(paths)?;
+        if current != expected {
+            return Err(CliError::with_recovery(
+                "focus_changed",
+                format!("Expected focus revision {expected}, but the current revision is {current}."),
+                true,
+                "Read `myopenpanels panel context read --format json` and retry against the new focus.",
+            ));
+        }
+    }
+    Ok(bootstrap)
 }
 
 pub fn create_project(

@@ -128,7 +128,11 @@ pub(super) fn wake_queued_wiki_tasks(
     Ok(())
 }
 
-fn wiki_wakeup_message(paths: &MyOpenPanelsPaths, wiki: &WikiBootstrapValue, task: &Value) -> Value {
+fn wiki_wakeup_message(
+    paths: &MyOpenPanelsPaths,
+    wiki: &WikiBootstrapValue,
+    task: &Value,
+) -> Value {
     json!({
         "projectDir": paths.project_dir,
         "storageDir": paths.storage_dir,
@@ -181,9 +185,9 @@ fn wake_local_agent_worker(
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
         Err(error) => return Err(to_cli_error(error)),
     };
-    write!(
+    writeln!(
         run_file,
-        "{}\n",
+        "{}",
         serde_json::to_string_pretty(&created).map_err(to_cli_error)?
     )
     .map_err(to_cli_error)?;
@@ -408,7 +412,11 @@ fn resolve_local_agent_worker(
     }
 }
 
-fn codex_worker(paths: &MyOpenPanelsPaths, message: &Value, executable: String) -> LocalAgentWorker {
+fn codex_worker(
+    paths: &MyOpenPanelsPaths,
+    message: &Value,
+    executable: String,
+) -> LocalAgentWorker {
     let mut args = vec![
         "exec".to_owned(),
         "--cd".to_owned(),
@@ -432,7 +440,11 @@ fn codex_worker(paths: &MyOpenPanelsPaths, message: &Value, executable: String) 
     }
 }
 
-fn hermes_worker(paths: &MyOpenPanelsPaths, message: &Value, executable: String) -> LocalAgentWorker {
+fn hermes_worker(
+    paths: &MyOpenPanelsPaths,
+    message: &Value,
+    executable: String,
+) -> LocalAgentWorker {
     LocalAgentWorker {
         args: vec![
             "--yolo".to_owned(),
@@ -514,7 +526,11 @@ fn file_looks_available(path: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn local_agent_worker_prompt(paths: &MyOpenPanelsPaths, message: &Value, agent_host: &str) -> String {
+fn local_agent_worker_prompt(
+    paths: &MyOpenPanelsPaths,
+    message: &Value,
+    agent_host: &str,
+) -> String {
     let cli = preferred_local_cli_command();
     let task_type = message
         .get("taskType")

@@ -7,11 +7,11 @@ appliesTo:
   - canvas
 taskTypes:
 requiresCapabilities:
-  - canvas.state.read
-  - canvas.selection.read
-  - canvas.selection.asset.read
+  - panel.state.read
+  - panel.selection.read
+  - canvas.selection.export
   - canvas.generation.begin
-  - canvas.generation.complete
+  - operation.complete
   - canvas.image.insert
   - agent.skill.read
 loadWhen:

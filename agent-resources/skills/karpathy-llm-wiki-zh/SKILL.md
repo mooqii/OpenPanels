@@ -10,13 +10,13 @@ taskTypes:
   - ingest_markdown_into_wiki
   - rebuild_wiki_index
 requiresCapabilities:
-  - tasks.claim
-  - tasks.heartbeat
-  - tasks.complete
-  - tasks.fail
-  - wiki.document.list
-  - wiki.markdown.read
-  - wiki.markdown.write
+  - task.claim
+  - task.heartbeat
+  - task.complete
+  - task.fail
+  - wiki.raw-document.list
+  - wiki.raw-document.markdown.read
+  - wiki.raw-document.markdown.write
   - wiki.page.list
   - wiki.page.read
   - wiki.page.write

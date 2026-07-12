@@ -1,5 +1,8 @@
 # MyOpenPanels SQLite Storage Upgrade Spec
 
+> Historical storage design. CLI examples in this document are superseded by
+> the 0.4 vNext command tree.
+
 ## 背景
 
 当前 MyOpenPanels 的项目数据主要保存在 `.myopenpanels/` 下的 JSON 文件：

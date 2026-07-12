@@ -555,7 +555,7 @@ function taskCommand(
   if (!task.ready) return null
   return {
     label: "Claim with a registered target",
-    value: `myopenpanels tasks claim --task-id ${shellQuote(task.id)} --target-id <target-id> --format json`,
+    value: `myopenpanels task claim --task-id ${shellQuote(task.id)} --target-id <target-id> --format json`,
   }
 }
 

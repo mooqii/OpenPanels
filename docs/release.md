@@ -109,7 +109,7 @@ The manifest `version` must not include the leading `v`.
 - `myopenpanels update check` checks GitHub Releases and caches the result.
 - `myopenpanels update download` downloads the matching asset into the local
   update cache after checking SHA-256.
-- `myopenpanels update` reuses the cached asset when possible, verifies the
+- `myopenpanels update install` reuses the cached asset when possible, verifies the
   downloaded binary with `--version`, then replaces the current executable.
 - Normal text-mode commands may perform an opportunistic update check at most
   once every 24 hours. The check writes only a short stderr notice when an

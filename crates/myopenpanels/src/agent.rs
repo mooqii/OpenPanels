@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 static AGENT_GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/guides");
 static AGENT_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/skills");
 pub const CANVAS_PANEL_SKILL_ID: &str = "canvas-panel";
-pub const MYOPENPANELS_SKILL_VERSION: &str = "1.4";
+pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 3;
+pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
+pub const MYOPENPANELS_SKILL_VERSION: &str = "3.0";
 const MYOPENPANELS_SKILL_SOURCE: &str =
     "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels";
 
@@ -84,17 +86,6 @@ pub struct AgentSkillReadPayload {
 pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<Value, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let guides = list_agent_guides()?;
-    let skills = list_agent_skills(paths)?;
-    let selection = read_selection(paths, None, false).ok();
-    let wiki_selection = read_agent_selection(paths).ok();
-    let mut payload = agent_bootstrap_payload(
-        &bootstrap,
-        cli_version,
-        &guides,
-        &skills,
-        selection.as_ref(),
-        wiki_selection.as_ref(),
-    );
     let applicable_guides = guides
         .iter()
         .filter(|guide| {
@@ -108,58 +99,242 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         .collect::<Vec<_>>();
     let operations = crate::storage::Storage::open(paths)?
         .list_agent_operations(Some(&paths.context_id), Some("active"))?;
-    payload["protocolVersion"] = json!(crate::operations::AGENT_PROTOCOL_VERSION);
-    payload["activePanelId"] = json!(bootstrap.active_panel_id);
-    payload["activePanelKind"] = json!(bootstrap.active_panel_kind);
     let focus_revision = crate::control::read_focus_revision(paths)?;
-    payload["focus"] = json!({
+    let focus = json!({
         "focusRevision": focus_revision,
         "projectId": bootstrap.session.id,
         "panelId": bootstrap.panel.id,
         "panelKind": bootstrap.panel.kind,
     });
-    payload["studioBinding"] = json!({
-        "contextId": paths.context_id,
-        "contextIdSource": paths.context_id_source,
-        "projectDir": paths.project_dir,
-    });
-    payload["applicableGuides"] = json!(applicable_guides);
-    payload["activeOperations"] = json!(operations);
-    payload["entrySkill"] = json!({
-        "id": "myopenpanels",
-        "requiredVersion": MYOPENPANELS_SKILL_VERSION,
-        "source": MYOPENPANELS_SKILL_SOURCE,
-        "updateWhen": "The Agent may consider an update during this startup Bootstrap when the loaded Skill version is missing or lower than requiredVersion.",
-        "instruction": "The loaded MyOpenPanels Skill metadata.version is missing or lower than requiredVersion. The Agent may update or reinstall the Skill from source using its own Skill-management capabilities; this is advisory and not a CLI-enforced precondition."
-    });
-    if let Some(skill_id) = panel_skill_id(bootstrap.active_panel_kind) {
-        let load_command = format!("myopenpanels agent skill {skill_id} --format json");
-        payload["activePanelSkill"] = json!({
-            "id": skill_id,
-            "required": true,
-            "loadCommand": load_command,
-            "appliesToFocusRevision": focus_revision,
+    let selection = crate::panel::selection_for_bootstrap(paths, &bootstrap, focus.clone()).ok();
+    let mut context_truncated = false;
+    let context = bounded_json(
+        crate::panel::context_for_bootstrap(&bootstrap),
+        0,
+        &mut context_truncated,
+    );
+    let available_panel_kinds = bootstrap
+        .panels
+        .iter()
+        .map(|snapshot| snapshot.panel.kind.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let selection_summary = selection
+        .as_ref()
+        .map(|selection| {
+            let mut truncated = false;
+            json!({
+                "supported": selection.supported,
+                "selectionKind": selection.selection_kind,
+                "isExplicit": selection.is_explicit,
+                "summary": bounded_json(selection.summary.clone(), 0, &mut truncated),
+            })
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "supported": false,
+                "selectionKind": null,
+                "isExplicit": false,
+                "summary": { "itemCount": 0 },
+            })
         });
-        payload["nextRequiredAction"] = json!({
-            "intent": "load-active-panel-skill",
-            "command": load_command,
-            "instruction": "Load this panel Skill before beginning a new operation against the active panel. Reuse it while the panel kind and CLI version remain unchanged."
-        });
-    } else {
-        payload["activePanelSkill"] = Value::Null;
-        payload["nextRequiredAction"] = json!({
+    let active_panel_skill = panel_skill_id(bootstrap.active_panel_kind)
+        .map(|skill_id| {
+            json!({
+                "id": skill_id,
+                "readCommand": format!("myopenpanels agent skill read --skill-id {skill_id} --format json"),
+                "loadWhen": "The user request targets the active panel.",
+            })
+        })
+        .unwrap_or(Value::Null);
+    let recommended_scopes = [
+        "panel",
+        bootstrap.active_panel_kind.as_str(),
+        "task",
+        "operation",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>()
+    .into_iter()
+    .collect::<Vec<_>>();
+    Ok(json!({
+        "protocolVersion": AGENT_GUIDANCE_PROTOCOL_VERSION,
+        "commandCatalogVersion": crate::cli::registry::COMMAND_CATALOG_VERSION,
+        "cliVersion": cli_version,
+        "bootstrapBudget": {
+            "maxBytes": MAX_BOOTSTRAP_ENVELOPE_BYTES,
+            "unit": "utf8",
+        },
+        "entrySkill": {
+            "id": "myopenpanels",
+            "requiredVersion": MYOPENPANELS_SKILL_VERSION,
+            "source": MYOPENPANELS_SKILL_SOURCE,
+        },
+        "focus": {
+            "focusRevision": focus_revision,
+            "projectId": bootstrap.session.id,
+            "panelId": bootstrap.panel.id,
+            "panelKind": bootstrap.panel.kind,
+            "availablePanelKinds": available_panel_kinds,
+        },
+        "panel": {
+            "context": context,
+            "contextTruncated": context_truncated,
+            "selection": selection_summary,
+        },
+        "tasks": compact_task_summary(&bootstrap),
+        "operations": compact_operation_summary(&operations),
+        "discovery": {
+            "recommendedScopes": recommended_scopes,
+            "capabilityIndexCommand": "myopenpanels agent capability list --format json",
+            "capabilityListCommandTemplate": "myopenpanels agent capability list --scope <scope> --format json",
+            "capabilityReadCommandTemplate": "myopenpanels agent capability read --intent <intent> --format json",
+            "guideListCommand": format!("myopenpanels agent guide list --panel-kind {} --format json", bootstrap.active_panel_kind.as_str()),
+            "skillListCommand": format!("myopenpanels agent skill list --panel-kind {} --format json", bootstrap.active_panel_kind.as_str()),
+            "activePanelSkill": active_panel_skill,
+            "applicableGuides": compact_guide_references(&applicable_guides),
+        },
+        "nextRequiredAction": {
             "intent": "match-user-request",
-            "instruction": "Match the user request against the current capabilities and applicable guides."
-        });
-    }
-    Ok(payload)
+            "instruction": "Match the user request to a recommended capability scope, read the selected capability, and load a Skill or Guide only when that workflow requires it.",
+        },
+    }))
 }
 
 fn panel_skill_id(kind: PanelKind) -> Option<&'static str> {
-    match kind {
-        PanelKind::Wiki => Some(WIKI_PANEL_SKILL_ID),
-        PanelKind::Canvas => Some(CANVAS_PANEL_SKILL_ID),
-        _ => None,
+    crate::panel::skill_id(kind)
+}
+
+fn compact_task_summary(bootstrap: &ProjectBootstrap) -> Value {
+    let ready_count = bootstrap
+        .tasks
+        .iter()
+        .filter(|task| task.get("ready").and_then(Value::as_bool).unwrap_or(false))
+        .count();
+    let running_count = bootstrap
+        .tasks
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.get("status").and_then(Value::as_str),
+                Some("reserved" | "running" | "claimed" | "converting" | "indexing")
+            )
+        })
+        .count();
+    let next = next_project_task(bootstrap)
+        .and_then(|task| {
+            let task_id = task.get("id").and_then(Value::as_str)?;
+            Some(json!({
+                "taskId": task_id,
+                "queue": task.get("queue").cloned().unwrap_or(Value::Null),
+                "type": task.get("type").cloned().unwrap_or(Value::Null),
+                "capability": task.get("capability").cloned().unwrap_or(Value::Null),
+                "readCommand": format!("myopenpanels task read --task-id {} --format json", shell_quote(task_id)),
+            }))
+        })
+        .unwrap_or(Value::Null);
+    json!({
+        "pendingCount": bootstrap.pending_task_count,
+        "readyCount": ready_count,
+        "runningCount": running_count,
+        "next": next,
+    })
+}
+
+fn compact_operation_summary(operations: &[Value]) -> Value {
+    const MAX_ITEMS: usize = 3;
+    let items = operations
+        .iter()
+        .take(MAX_ITEMS)
+        .filter_map(|operation| {
+            let operation_id = operation.get("id").and_then(Value::as_str)?;
+            Some(json!({
+                "operationId": operation_id,
+                "intent": operation.get("intent").cloned().unwrap_or(Value::Null),
+                "panelKind": operation.get("panelKind").cloned().unwrap_or(Value::Null),
+                "status": operation.get("status").cloned().unwrap_or(Value::Null),
+                "readCommand": format!("myopenpanels operation read --operation-id {} --format json", shell_quote(operation_id)),
+            }))
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "activeCount": operations.len(),
+        "items": items,
+        "truncated": operations.len() > MAX_ITEMS,
+    })
+}
+
+fn compact_guide_references(guides: &[AgentGuideMetadata]) -> Value {
+    const MAX_ITEMS: usize = 8;
+    let items = guides
+        .iter()
+        .take(MAX_ITEMS)
+        .map(|guide| {
+            json!({
+                "id": guide.id,
+                "readCommand": format!("myopenpanels agent guide read --guide-id {} --format json", shell_quote(&guide.id)),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "count": guides.len(),
+        "items": items,
+        "truncated": guides.len() > MAX_ITEMS,
+    })
+}
+
+fn bounded_json(value: Value, depth: usize, truncated: &mut bool) -> Value {
+    const MAX_DEPTH: usize = 4;
+    const MAX_STRING_BYTES: usize = 256;
+    const MAX_ARRAY_ITEMS: usize = 16;
+    const MAX_OBJECT_FIELDS: usize = 32;
+
+    match value {
+        Value::String(value) => {
+            if value.len() <= MAX_STRING_BYTES {
+                return Value::String(value);
+            }
+            *truncated = true;
+            let mut end = MAX_STRING_BYTES.saturating_sub(3).min(value.len());
+            while !value.is_char_boundary(end) {
+                end -= 1;
+            }
+            Value::String(format!("{}...", &value[..end]))
+        }
+        Value::Array(values) => {
+            if depth >= MAX_DEPTH {
+                *truncated = true;
+                return Value::Null;
+            }
+            if values.len() > MAX_ARRAY_ITEMS {
+                *truncated = true;
+            }
+            Value::Array(
+                values
+                    .into_iter()
+                    .take(MAX_ARRAY_ITEMS)
+                    .map(|value| bounded_json(value, depth + 1, truncated))
+                    .collect(),
+            )
+        }
+        Value::Object(values) => {
+            if depth >= MAX_DEPTH {
+                *truncated = true;
+                return Value::Null;
+            }
+            if values.len() > MAX_OBJECT_FIELDS {
+                *truncated = true;
+            }
+            Value::Object(
+                values
+                    .into_iter()
+                    .take(MAX_OBJECT_FIELDS)
+                    .map(|(key, value)| (key, bounded_json(value, depth + 1, truncated)))
+                    .collect(),
+            )
+        }
+        value => value,
     }
 }
 
@@ -167,6 +342,27 @@ pub fn list_agent_guides() -> Result<Vec<AgentGuideMetadata>, CliError> {
     Ok(load_agent_guides()?
         .into_iter()
         .map(|guide| guide.metadata)
+        .collect())
+}
+
+pub fn list_agent_guide_summaries(
+    panel_kind: Option<&str>,
+    task_type: Option<&str>,
+) -> Result<Vec<Value>, CliError> {
+    Ok(load_agent_guides()?
+        .into_iter()
+        .filter(|guide| metadata_matches(&guide.metadata.applies_to, &guide.metadata.task_types, panel_kind, task_type))
+        .map(|guide| {
+            let metadata = guide.metadata;
+            json!({
+                "id": metadata.id,
+                "title": metadata.title,
+                "appliesTo": metadata.applies_to,
+                "taskTypes": metadata.task_types,
+                "loadWhen": metadata.load_when,
+                "readCommand": format!("myopenpanels agent guide read --guide-id {} --format json", shell_quote(&metadata.id)),
+            })
+        })
         .collect())
 }
 
@@ -217,6 +413,41 @@ pub fn list_agent_skills(paths: &MyOpenPanelsPaths) -> Result<Vec<AgentSkillList
         .collect())
 }
 
+pub fn list_agent_skill_summaries(
+    panel_kind: Option<&str>,
+    task_type: Option<&str>,
+) -> Result<Vec<Value>, CliError> {
+    Ok(load_agent_skills()?
+        .into_iter()
+        .filter(|skill| metadata_matches(&skill.metadata.applies_to, &skill.metadata.task_types, panel_kind, task_type))
+        .map(|skill| {
+            let metadata = skill.metadata;
+            json!({
+                "id": metadata.id,
+                "title": metadata.title,
+                "description": metadata.description,
+                "appliesTo": metadata.applies_to,
+                "taskTypes": metadata.task_types,
+                "loadWhen": metadata.load_when,
+                "readCommand": format!("myopenpanels agent skill read --skill-id {} --format json", shell_quote(&metadata.id)),
+            })
+        })
+        .collect())
+}
+
+fn metadata_matches(
+    applies_to: &[String],
+    task_types: &[String],
+    panel_kind: Option<&str>,
+    task_type: Option<&str>,
+) -> bool {
+    panel_kind.is_none_or(|kind| {
+        applies_to
+            .iter()
+            .any(|candidate| candidate == kind || candidate == "any")
+    }) && task_type.is_none_or(|kind| task_types.iter().any(|candidate| candidate == kind))
+}
+
 pub fn read_agent_skill(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,
@@ -265,684 +496,7 @@ pub fn read_agent_skill(
 }
 
 pub fn capabilities() -> Vec<Value> {
-    vec![
-        capability(
-            "agent.bootstrap.read",
-            "Read protocol v2 context, guides, and active operations",
-            "myopenpanels agent bootstrap",
-            "current_studio_or_storage",
-            false,
-            vec![],
-        ),
-        capability(
-            "agent.guides.list",
-            "List loadable agent guides",
-            "myopenpanels agent guides",
-            "none",
-            false,
-            vec![],
-        ),
-        capability(
-            "agent.skills.list",
-            "List loadable agent skills",
-            "myopenpanels agent skills",
-            "current_user_project",
-            false,
-            vec![],
-        ),
-        capability(
-            "agent.bridge.run",
-            "Run the task bridge",
-            "myopenpanels agent bridge",
-            "current_user_project",
-            false,
-            vec![
-                arg("command", "--command", "string", true),
-                arg("capability", "--capability", "string", false),
-                arg("name", "--name", "string", false),
-                arg("once", "--once", "bool", false),
-                arg("queue", "--queue", "string", false),
-                arg("timeoutMs", "--timeout-ms", "number", false),
-                arg("manualLifecycle", "--manual-lifecycle", "bool", false),
-            ],
-        ),
-        capability(
-            "agent.bridge.status",
-            "Read task bridge status",
-            "myopenpanels agent bridge status",
-            "current_user_project",
-            false,
-            vec![],
-        ),
-        capability(
-            "agent.targets.list",
-            "List registered agent targets",
-            "myopenpanels agent targets list",
-            "current_user_project",
-            false,
-            vec![],
-        ),
-        capability(
-            "agent.targets.register",
-            "Register an agent target",
-            "myopenpanels agent targets register",
-            "current_user_project",
-            false,
-            vec![
-                arg("name", "--name", "string", true),
-                enum_arg(
-                    "transport",
-                    "--transport",
-                    true,
-                    &["webhook", "poll", "command"],
-                    None,
-                ),
-                arg("capability", "--capability", "string", true),
-                arg("endpoint", "--endpoint", "string", false),
-                arg("priority", "--priority", "number", false),
-            ],
-        ),
-        capability(
-            "agent.targets.heartbeat",
-            "Heartbeat an agent target",
-            "myopenpanels agent targets heartbeat",
-            "current_user_project",
-            false,
-            vec![arg("targetId", "--target-id", "string", true)],
-        ),
-        capability(
-            "agent.targets.remove",
-            "Remove an agent target",
-            "myopenpanels agent targets remove",
-            "current_user_project",
-            false,
-            vec![arg("targetId", "--target-id", "string", true)],
-        ),
-        capability(
-            "agent.guide.read",
-            "Read one full agent guide",
-            "myopenpanels agent guide <guide-id>",
-            "current_user_project",
-            false,
-            vec![arg("taskId", "--task-id", "string", false)],
-        ),
-        capability(
-            "agent.skill.read",
-            "Read one full agent skill",
-            "myopenpanels agent skill <skill-id>",
-            "current_user_project",
-            false,
-            vec![arg("taskId", "--task-id", "string", false)],
-        ),
-        capability(
-            "project.current.read",
-            "Read the current user-visible project",
-            "myopenpanels project current",
-            "current_user_project",
-            false,
-            vec![],
-        ),
-        capability(
-            "project.list",
-            "List available projects",
-            "myopenpanels project list",
-            "current_studio_or_storage",
-            false,
-            vec![],
-        ),
-        capability(
-            "project.create",
-            "Create a project explicitly",
-            "myopenpanels project create",
-            "storage",
-            true,
-            vec![arg("title", "--title", "string", false)],
-        ),
-        capability(
-            "panel.list",
-            "List panels in the current project",
-            "myopenpanels panel list",
-            "current_user_project",
-            false,
-            vec![],
-        ),
-        capability(
-            "panel.current.read",
-            "Read the current panel",
-            "myopenpanels panel current",
-            "current_user_project.current_panel",
-            false,
-            vec![],
-        ),
-        capability(
-            "panel.switch",
-            "Switch the current panel by kind",
-            "myopenpanels panel switch",
-            "current_user_project",
-            false,
-            vec![enum_arg(
-                "kind",
-                "--kind",
-                true,
-                &["wiki", "canvas", "image", "diff", "preview", "files"],
-                None,
-            )],
-        ),
-        capability(
-            "canvas.state.read",
-            "Read current canvas state",
-            "myopenpanels canvas state",
-            "current_user_project.current_canvas",
-            false,
-            vec![],
-        ),
-        capability(
-            "canvas.selection.read",
-            "Read current canvas selection",
-            "myopenpanels canvas selection read",
-            "current_user_project.current_canvas",
-            false,
-            vec![],
-        ),
-        capability(
-            "canvas.selection.asset.read",
-            "Export selected canvas pixels to a file",
-            "myopenpanels canvas selection export",
-            "current_user_project.current_canvas",
-            false,
-            vec![
-                arg("output", "--output", "path", true),
-                arg("allowFallback", "--allow-fallback", "bool", false),
-            ],
-        ),
-        capability(
-            "canvas.generation.begin",
-            "Start a target-bound Canvas image generation and create its placeholder",
-            "myopenpanels canvas generation begin",
-            "current_user_project.current_canvas",
-            false,
-            vec![
-                arg("displayWidth", "--display-width", "number", false),
-                arg("displayHeight", "--display-height", "number", false),
-                arg("useSelection", "--use-selection", "bool", false),
-                arg("text", "--text", "string", false),
-            ],
-        ),
-        capability(
-            "canvas.generation.complete",
-            "Complete a Canvas generation against its captured target",
-            "myopenpanels canvas generation complete",
-            "agent_operation.target_canvas",
-            false,
-            vec![
-                arg("operationId", "--operation-id", "string", true),
-                arg("image", "--image", "path", true),
-                arg("metadataFile", "--metadata-file", "path", true),
-            ],
-        ),
-        capability(
-            "wiki.generation.begin",
-            "Start a target-bound Wiki document generation",
-            "myopenpanels wiki generation begin",
-            "current_user_project.current_wiki",
-            false,
-            vec![
-                arg("title", "--title", "string", true),
-                arg("documentFormat", "--document-format", "enum", false),
-                arg("documentId", "--document-id", "string", false),
-            ],
-        ),
-        capability(
-            "wiki.generation.complete",
-            "Complete a Wiki generation against its captured target",
-            "myopenpanels wiki generation complete",
-            "agent_operation.target_wiki",
-            false,
-            vec![
-                arg("operationId", "--operation-id", "string", true),
-                arg("file", "--file", "path", true),
-            ],
-        ),
-        capability(
-            "canvas.image.insert",
-            "Insert a local image into the current canvas",
-            "myopenpanels canvas image insert",
-            "current_user_project.current_canvas",
-            false,
-            vec![
-                arg("image", "--image", "path", true),
-                enum_arg(
-                    "placement",
-                    "--placement",
-                    false,
-                    &["auto", "right", "below", "left"],
-                    Some("auto"),
-                ),
-                arg("metadataFile", "--metadata-file", "path", false),
-                arg("replaceShapeId", "--replace-shape-id", "string", false),
-            ],
-        ),
-        capability(
-            "tasks.list",
-            "List project tasks across panels",
-            "myopenpanels tasks list",
-            "current_user_project",
-            false,
-            vec![
-                arg("pending", "--pending", "bool", false),
-                arg("queue", "--queue", "string", false),
-                arg("status", "--status", "string", false),
-            ],
-        ),
-        capability(
-            "tasks.next",
-            "Read the next pending project task",
-            "myopenpanels tasks next",
-            "current_user_project",
-            false,
-            vec![
-                arg("queue", "--queue", "string", false),
-                arg("status", "--status", "string", false),
-            ],
-        ),
-        capability(
-            "tasks.inspect",
-            "Read one project task by id",
-            "myopenpanels tasks inspect",
-            "current_user_project",
-            false,
-            vec![arg("taskId", "--task-id", "string", true)],
-        ),
-        capability(
-            "tasks.claimNext",
-            "Atomically claim the next matching task",
-            "myopenpanels tasks claim-next",
-            "current_user_project",
-            false,
-            vec![
-                arg("targetId", "--target-id", "string", true),
-                arg("capability", "--capability", "string", false),
-                arg("waitMs", "--wait-ms", "number", false),
-            ],
-        ),
-        capability(
-            "tasks.claim",
-            "Atomically claim one task",
-            "myopenpanels tasks claim",
-            "current_user_project",
-            false,
-            vec![
-                arg("taskId", "--task-id", "string", true),
-                arg("targetId", "--target-id", "string", true),
-            ],
-        ),
-        capability(
-            "tasks.heartbeat",
-            "Extend a task lease",
-            "myopenpanels tasks heartbeat",
-            "current_user_project",
-            false,
-            vec![
-                arg("taskId", "--task-id", "string", true),
-                arg("leaseToken", "--lease-token", "string", true),
-            ],
-        ),
-        capability(
-            "tasks.complete",
-            "Complete a claimed task",
-            "myopenpanels tasks complete",
-            "current_user_project",
-            false,
-            vec![
-                arg("taskId", "--task-id", "string", true),
-                arg("leaseToken", "--lease-token", "string", true),
-                arg("resultFile", "--result-file", "path", false),
-            ],
-        ),
-        capability(
-            "tasks.fail",
-            "Fail a claimed task",
-            "myopenpanels tasks fail",
-            "current_user_project",
-            false,
-            vec![
-                arg("taskId", "--task-id", "string", true),
-                arg("leaseToken", "--lease-token", "string", true),
-                arg("message", "--message", "string", true),
-                arg("retryAfter", "--retry-after", "string", false),
-            ],
-        ),
-        capability(
-            "tasks.release",
-            "Release a claimed task",
-            "myopenpanels tasks release",
-            "current_user_project",
-            false,
-            vec![
-                arg("taskId", "--task-id", "string", true),
-                arg("leaseToken", "--lease-token", "string", true),
-            ],
-        ),
-        capability(
-            "tasks.retry",
-            "Manually retry a failed task",
-            "myopenpanels tasks retry",
-            "current_user_project",
-            false,
-            vec![arg("taskId", "--task-id", "string", true)],
-        ),
-        capability(
-            "tasks.cancel",
-            "Cancel a task",
-            "myopenpanels tasks cancel",
-            "current_user_project",
-            false,
-            vec![arg("taskId", "--task-id", "string", true)],
-        ),
-        capability(
-            "wiki.context.read",
-            "Read current wiki context",
-            "myopenpanels wiki context",
-            "current_user_project.current_wiki",
-            false,
-            vec![],
-        ),
-        capability(
-            "wiki.selection.read",
-            "Read the user-selected Wiki and raw documents",
-            "myopenpanels wiki selection read",
-            "current_user_project.current_wiki",
-            false,
-            vec![],
-        ),
-        capability(
-            "wiki.document.list",
-            "List raw wiki documents",
-            "myopenpanels wiki documents list",
-            "current_user_project.current_wiki",
-            false,
-            vec![],
-        ),
-        capability(
-            "wiki.document.add",
-            "Add a raw wiki document",
-            "myopenpanels wiki documents add",
-            "current_user_project.current_wiki",
-            false,
-            vec![
-                arg("file", "--file", "path", true),
-                arg("title", "--title", "string", false),
-            ],
-        ),
-        capability(
-            "wiki.document.createMarkdown",
-            "Create a markdown raw document",
-            "myopenpanels wiki documents create-markdown",
-            "current_user_project.current_wiki",
-            false,
-            vec![
-                arg("title", "--title", "string", true),
-                arg("file", "--file", "path", false),
-                arg("content", "--content", "string", false),
-            ],
-        ),
-        capability(
-            "wiki.markdown.read",
-            "Read markdown for a raw document",
-            "myopenpanels wiki markdown read",
-            "current_user_project.current_wiki",
-            false,
-            vec![arg("documentId", "--document-id", "string", true)],
-        ),
-        capability(
-            "wiki.markdown.write",
-            "Write markdown for a raw document",
-            "myopenpanels wiki markdown write",
-            "current_user_project.current_wiki",
-            false,
-            vec![
-                arg("documentId", "--document-id", "string", true),
-                arg("file", "--file", "path", true),
-                arg("taskId", "--task-id", "string", false),
-            ],
-        ),
-        capability(
-            "wiki.generatedDocument.list",
-            "List agent-generated documents",
-            "myopenpanels wiki generated-documents list",
-            "current_user_project.current_wiki",
-            false,
-            vec![],
-        ),
-        capability(
-            "wiki.generatedDocument.read",
-            "Read an agent-generated document",
-            "myopenpanels wiki generated-documents read",
-            "current_user_project.current_wiki",
-            false,
-            vec![arg("documentId", "--document-id", "string", true)],
-        ),
-        capability(
-            "wiki.generatedDocument.rename",
-            "Rename an agent-generated document",
-            "myopenpanels wiki generated-documents rename",
-            "current_user_project.current_wiki",
-            false,
-            vec![
-                arg("documentId", "--document-id", "string", true),
-                arg("title", "--title", "string", true),
-            ],
-        ),
-        capability(
-            "wiki.generatedDocument.delete",
-            "Delete an agent-generated document",
-            "myopenpanels wiki generated-documents delete",
-            "current_user_project.current_wiki",
-            false,
-            vec![arg("documentId", "--document-id", "string", true)],
-        ),
-        capability(
-            "wiki.generatedDocument.publish",
-            "Publish an agent-generated document as a raw Wiki document",
-            "myopenpanels wiki generated-documents publish",
-            "current_user_project.current_wiki",
-            false,
-            vec![
-                arg("documentId", "--document-id", "string", true),
-                arg("wikiSpaceId", "--wiki-space-id", "string", false),
-            ],
-        ),
-        capability(
-            "wiki.task.list",
-            "List wiki tasks",
-            "myopenpanels wiki tasks list",
-            "current_user_project.current_wiki",
-            false,
-            vec![],
-        ),
-        capability(
-            "wiki.task.next",
-            "Read the next wiki task",
-            "myopenpanels wiki tasks next",
-            "current_user_project.current_wiki",
-            false,
-            vec![],
-        ),
-        capability(
-            "wiki.task.claim",
-            "Claim a wiki task",
-            "myopenpanels wiki tasks claim",
-            "current_user_project.current_wiki",
-            false,
-            vec![arg("taskId", "--task-id", "string", true)],
-        ),
-        capability(
-            "wiki.task.complete",
-            "Complete a wiki task",
-            "myopenpanels wiki tasks complete",
-            "current_user_project.current_wiki",
-            false,
-            vec![arg("taskId", "--task-id", "string", true)],
-        ),
-        capability(
-            "wiki.task.fail",
-            "Fail a wiki task",
-            "myopenpanels wiki tasks fail",
-            "current_user_project.current_wiki",
-            false,
-            vec![
-                arg("taskId", "--task-id", "string", true),
-                arg("message", "--message", "string", true),
-            ],
-        ),
-        capability(
-            "wiki.space.list",
-            "List wiki spaces",
-            "myopenpanels wiki spaces list",
-            "current_user_project.current_wiki",
-            false,
-            vec![],
-        ),
-        capability(
-            "wiki.space.switch",
-            "Switch active wiki space",
-            "myopenpanels wiki spaces switch",
-            "current_user_project.current_wiki",
-            false,
-            vec![arg("wikiSpaceId", "--wiki-space-id", "string", true)],
-        ),
-        capability(
-            "wiki.page.list",
-            "List pages in a wiki space",
-            "myopenpanels wiki pages list",
-            "current_user_project.current_wiki",
-            false,
-            vec![arg("wikiSpaceId", "--wiki-space-id", "string", true)],
-        ),
-        capability(
-            "wiki.page.read",
-            "Read one wiki page",
-            "myopenpanels wiki pages read",
-            "current_user_project.current_wiki",
-            false,
-            vec![
-                arg("wikiSpaceId", "--wiki-space-id", "string", true),
-                arg("path", "--path", "path", true),
-            ],
-        ),
-        capability(
-            "wiki.page.search",
-            "Search generated Wiki pages",
-            "myopenpanels wiki pages search",
-            "current_user_project.current_wiki",
-            false,
-            vec![
-                arg("wikiSpaceId", "--wiki-space-id", "string", true),
-                arg("query", "--query", "string", true),
-                arg("limit", "--limit", "number", false),
-            ],
-        ),
-        capability(
-            "wiki.page.write",
-            "Write one wiki page",
-            "myopenpanels wiki pages write",
-            "current_user_project.current_wiki",
-            false,
-            vec![
-                arg("wikiSpaceId", "--wiki-space-id", "string", true),
-                arg("path", "--path", "path", true),
-                arg("file", "--file", "path", true),
-                arg("taskId", "--task-id", "string", false),
-            ],
-        ),
-        capability(
-            "studio.start",
-            "Start or reuse the local Studio",
-            "myopenpanels studio start",
-            "project_directory",
-            false,
-            vec![],
-        ),
-        capability(
-            "studio.status",
-            "Read local Studio process status",
-            "myopenpanels studio status",
-            "project_directory",
-            false,
-            vec![],
-        ),
-        capability(
-            "studio.stop",
-            "Stop the local Studio binding",
-            "myopenpanels studio stop",
-            "project_directory",
-            false,
-            vec![],
-        ),
-    ]
-}
-
-fn capability(
-    intent: &str,
-    title: &str,
-    command: &str,
-    target: &str,
-    creates_project: bool,
-    args: Vec<Value>,
-) -> Value {
-    let related_skills = if intent.starts_with("canvas.") {
-        json!([CANVAS_PANEL_SKILL_ID])
-    } else if intent.starts_with("wiki.") {
-        json!([WIKI_PANEL_SKILL_ID])
-    } else {
-        json!([])
-    };
-    let preconditions = if intent.ends_with("generation.complete") {
-        json!(["active_operation"])
-    } else if intent.ends_with("generation.begin") {
-        json!(["fresh_agent_bootstrap", "matching_active_panel"])
-    } else {
-        json!([])
-    };
-    json!({
-        "intent": intent,
-        "title": title,
-        "command": command,
-        "target": target,
-        "createsProject": creates_project,
-        "args": args,
-        "output": "json",
-        "relatedGuides": [],
-        "relatedSkills": related_skills,
-        "preconditions": preconditions,
-        "workflowIntent": if intent.contains("generation") { Some(intent) } else { None },
-    })
-}
-
-fn arg(name: &str, flag: &str, value_type: &str, required: bool) -> Value {
-    json!({
-        "name": name,
-        "flag": flag,
-        "type": value_type,
-        "required": required,
-    })
-}
-
-fn enum_arg(
-    name: &str,
-    flag: &str,
-    required: bool,
-    values: &[&str],
-    default: Option<&str>,
-) -> Value {
-    let mut value = arg(name, flag, "enum", required);
-    if let Some(object) = value.as_object_mut() {
-        object.insert("values".to_owned(), json!(values));
-        if let Some(default) = default {
-            object.insert("default".to_owned(), json!(default));
-        }
-    }
-    value
+    crate::cli::registry::capabilities()
 }
 
 pub fn render_agent_guides_markdown(guides: &[AgentGuideMetadata]) -> String {
@@ -957,48 +511,6 @@ pub fn render_agent_skills_markdown(skills: &[AgentSkillListing]) -> String {
         "# MyOpenPanels Agent Skills\n\n{}\n",
         render_skill_table(skills)
     )
-}
-
-fn agent_bootstrap_payload(
-    bootstrap: &ProjectBootstrap,
-    cli_version: &str,
-    guides: &[AgentGuideMetadata],
-    skills: &[AgentSkillListing],
-    selection: Option<&crate::selection::SelectionPayload>,
-    wiki_selection: Option<&Value>,
-) -> Value {
-    let wiki = wiki_summary(bootstrap, wiki_selection);
-    let knowledge = knowledge_context(&wiki);
-    let tasks = project_tasks_summary(bootstrap);
-    let canvas = canvas_summary(selection);
-    json!({
-        "protocolVersion": crate::operations::AGENT_PROTOCOL_VERSION,
-        "cliVersion": cli_version,
-        "project": {
-            "id": bootstrap.session.id,
-            "title": bootstrap.session.title,
-        },
-        "activePanel": {
-            "id": bootstrap.active_panel_id,
-            "kind": bootstrap.active_panel_kind,
-            "title": bootstrap.panel.title,
-        },
-        "panels": bootstrap.panels.iter().map(|snapshot| json!({
-            "id": snapshot.panel.id,
-            "kind": snapshot.panel.kind,
-            "title": snapshot.panel.title,
-        })).collect::<Vec<_>>(),
-        "state": {
-            "tasks": tasks,
-            "wiki": wiki,
-            "canvas": canvas,
-        },
-        "knowledgeContext": knowledge,
-        "capabilities": capabilities(),
-        "suggestedCommands": suggested_commands(bootstrap, skills, wiki_selection),
-        "availableGuides": guides,
-        "availableSkills": skills,
-    })
 }
 
 fn render_agent_guide(
@@ -1027,6 +539,7 @@ fn render_agent_guide(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_agent_skill(
     skill: &AgentSkill,
     bootstrap: &ProjectBootstrap,
@@ -1399,46 +912,13 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
         "wikiTitle": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("title")).cloned().or_else(|| active_space.and_then(|space| space.get("title")).cloned()).unwrap_or_else(|| json!("Wiki")),
         "pageCount": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("pageCount")).cloned().unwrap_or_else(|| json!(active_space.and_then(|space| space.get("pageIndex")).and_then(Value::as_array).map(Vec::len).unwrap_or(0))),
         "querySkillId": WIKI_PANEL_SKILL_ID,
-        "querySkillLoadCommand": format!("myopenpanels agent skill {WIKI_PANEL_SKILL_ID} --format json"),
+        "querySkillLoadCommand": format!("myopenpanels agent skill read --skill-id {WIKI_PANEL_SKILL_ID} --format json"),
         "selectedRawDocumentCount": selected_documents.len(),
         "selectedRawDocuments": selected_documents,
         "selectedGeneratedDocumentCount": selected_generated_documents.len(),
         "selectedGeneratedDocuments": selected_generated_documents,
         "nextTask": next_task,
         "pendingTaskCount": tasks.len(),
-    })
-}
-
-fn knowledge_context(wiki: &Value) -> Value {
-    json!({
-        "panelSkillId": WIKI_PANEL_SKILL_ID,
-        "panelSkillLoadCommand": format!("myopenpanels agent skill {WIKI_PANEL_SKILL_ID} --format json"),
-        "wiki": {
-            "available": wiki.get("available").cloned().unwrap_or_else(|| json!(false)),
-            "selected": wiki.get("selected").cloned().unwrap_or_else(|| json!(false)),
-            "wikiSpaceId": wiki.get("wikiSpaceId").cloned().unwrap_or(Value::Null),
-            "title": wiki.get("wikiTitle").cloned().unwrap_or(Value::Null),
-            "pageCount": wiki.get("pageCount").cloned().unwrap_or_else(|| json!(0)),
-            "querySkillId": wiki.get("querySkillId").cloned().unwrap_or_else(|| json!(WIKI_PANEL_SKILL_ID)),
-            "loadCommand": wiki.get("querySkillLoadCommand").cloned().unwrap_or(Value::Null),
-        },
-        "rawDocuments": {
-            "selected": wiki.get("selectedRawDocuments").cloned().unwrap_or_else(|| json!([])),
-        },
-        "generatedDocuments": {
-            "panelSkillId": WIKI_PANEL_SKILL_ID,
-            "panelSkillLoadCommand": format!("myopenpanels agent skill {WIKI_PANEL_SKILL_ID} --format json"),
-            "selected": wiki.get("selectedGeneratedDocuments").cloned().unwrap_or_else(|| json!([])),
-        },
-    })
-}
-
-fn project_tasks_summary(bootstrap: &ProjectBootstrap) -> Value {
-    let next_task = next_project_task(bootstrap).cloned();
-    json!({
-        "nextTask": next_task,
-        "pendingTaskCount": bootstrap.pending_task_count,
-        "totalTaskCount": bootstrap.tasks.len(),
     })
 }
 
@@ -1464,78 +944,6 @@ fn canvas_summary(selection: Option<&crate::selection::SelectionPayload>) -> Val
         "isExplicitSelection": is_explicit_selection,
         "selectedShapeCount": if is_explicit_selection { if selected_shapes > 0 { selected_shapes } else { selected_ids } } else { 0 },
     })
-}
-
-fn suggested_commands(
-    bootstrap: &ProjectBootstrap,
-    skills: &[AgentSkillListing],
-    wiki_selection: Option<&Value>,
-) -> Vec<Value> {
-    let mut commands = Vec::new();
-    if let Some(skill_id) = panel_skill_id(bootstrap.active_panel_kind) {
-        commands.push(json!({
-            "intent": "agent.panelSkill.read",
-            "command": format!("myopenpanels agent skill {skill_id} --format json"),
-        }));
-    }
-    if let Some(task) = next_project_task(bootstrap) {
-        commands.push(json!({
-            "intent": "tasks.next",
-            "command": "myopenpanels tasks next --format json",
-        }));
-        if let Some(task_id) = task.get("id").and_then(Value::as_str) {
-            commands.push(json!({
-                "intent": "tasks.inspect",
-                "command": format!("myopenpanels tasks inspect --task-id {} --format json", shell_quote(task_id)),
-            }));
-        }
-    }
-    let wiki = wiki_summary(bootstrap, wiki_selection);
-    if let Some(task) = wiki.get("nextTask").filter(|value| !value.is_null()) {
-        commands.push(json!({
-            "intent": "wiki.task.next",
-            "command": "myopenpanels wiki tasks next --format json",
-        }));
-        if let Some(task_type) = task.get("type").and_then(Value::as_str) {
-            let selected_skill_id = wiki
-                .get("nextTaskAgentSkillId")
-                .and_then(Value::as_str)
-                .unwrap_or("karpathy-llm-wiki");
-            let selected_skill = skills
-                .iter()
-                .find(|skill| {
-                    skill.skill.id == selected_skill_id
-                        && skill
-                            .skill
-                            .task_types
-                            .iter()
-                            .any(|candidate| candidate == task_type)
-                })
-                .or_else(|| {
-                    skills.iter().find(|skill| {
-                        skill
-                            .skill
-                            .task_types
-                            .iter()
-                            .any(|candidate| candidate == task_type)
-                    })
-                });
-            if let Some(skill) = selected_skill {
-                if let Some(task_id) = task.get("id").and_then(Value::as_str) {
-                    commands.push(json!({
-                        "intent": "agent.skill.read",
-                        "command": format!("myopenpanels agent skill {} --task-id {} --format json", skill.skill.id, task_id),
-                    }));
-                }
-            }
-        }
-    } else if bootstrap.active_panel_kind == PanelKind::Canvas {
-        commands.push(json!({
-            "intent": "canvas.selection.read",
-            "command": "myopenpanels canvas selection read --format json",
-        }));
-    }
-    commands
 }
 
 fn next_project_task(bootstrap: &ProjectBootstrap) -> Option<&Value> {
@@ -1628,7 +1036,7 @@ fn render_guide_commands(guide: &AgentGuide, task: Option<&Value>) -> String {
         let document_id = task["documentId"].as_str().unwrap_or("<document-id>");
         let wiki_space_id = task["wikiSpaceId"].as_str().unwrap_or("<wiki-space-id>");
         return format!(
-            "```bash\nmyopenpanels tasks claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels wiki markdown read --document-id {document_id} --format json\nmyopenpanels wiki pages write --wiki-space-id {wiki_space_id} --path <page-path> --file <md-file> --task-id {task_id} --format json\nmyopenpanels tasks complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+            "```bash\nmyopenpanels task claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels wiki raw-document markdown read --raw-document-id {document_id} --format json\nmyopenpanels wiki page write --wiki-space-id {wiki_space_id} --path <page-path> --content-file <md-file> --task-id {task_id} --format json\nmyopenpanels task complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
         );
     }
     if guide
@@ -1637,7 +1045,7 @@ fn render_guide_commands(guide: &AgentGuide, task: Option<&Value>) -> String {
         .iter()
         .any(|value| value == "canvas")
     {
-        return "```bash\nmyopenpanels canvas generation begin --display-width <w> --display-height <h> [--use-selection] --format json\nmyopenpanels canvas generation complete --operation-id <operation-id> --image <generated-path> --metadata-file <metadata.json> --format json\n```".to_owned();
+        return "```bash\nmyopenpanels canvas generation begin --display-width <w> --display-height <h> [--use-selection] --expect-focus-revision <focus-revision> --format json\nmyopenpanels operation complete --operation-id <operation-id> --artifact-file <generated-path> --metadata-file <metadata.json> --format json\n```".to_owned();
     }
     "- No task-specific commands.".to_owned()
 }
@@ -1655,17 +1063,17 @@ fn render_skill_commands(
             .and_then(Value::as_str)
             .unwrap_or("<wiki-space-id>");
         return format!(
-            "```bash\nmyopenpanels wiki selection read --format json\nmyopenpanels wiki pages read --wiki-space-id {wiki_space_id} --path SCHEMA.md --format json\nmyopenpanels wiki pages read --wiki-space-id {wiki_space_id} --path index.md --format json\nmyopenpanels wiki pages search --wiki-space-id {wiki_space_id} --query <query> --format json\nmyopenpanels wiki pages read --wiki-space-id {wiki_space_id} --path <relevant-page> --format json\n```"
+            "```bash\nmyopenpanels panel selection read --format json\nmyopenpanels wiki page read --wiki-space-id {wiki_space_id} --path SCHEMA.md --format json\nmyopenpanels wiki page read --wiki-space-id {wiki_space_id} --path index.md --format json\nmyopenpanels wiki page search --wiki-space-id {wiki_space_id} --query <query> --format json\nmyopenpanels wiki page read --wiki-space-id {wiki_space_id} --path <relevant-page> --format json\n```"
         );
     }
     if skill.metadata.id == CANVAS_PANEL_SKILL_ID {
-        return "```bash\nmyopenpanels canvas selection read --format json\nmyopenpanels canvas generation begin --display-width <w> --display-height <h> [--use-selection] --format json\nmyopenpanels canvas generation complete --operation-id <operation-id> --image <generated-path> --metadata-file <metadata.json> --format json\n```".to_owned();
+        return "```bash\nmyopenpanels panel selection read --format json\nmyopenpanels canvas generation begin --display-width <w> --display-height <h> [--use-selection] --expect-focus-revision <focus-revision> --format json\nmyopenpanels operation complete --operation-id <operation-id> --artifact-file <generated-path> --metadata-file <metadata.json> --format json\n```".to_owned();
     }
     if skill.metadata.id == WIKI_PANEL_SKILL_ID {
         if let Some(task) = task {
             let task_id = task["id"].as_str().unwrap_or("<task-id>");
             return format!(
-                "```bash\nmyopenpanels wiki tasks next --format json\nmyopenpanels agent skill {selected_wiki_skill_id} --task-id {task_id} --format json\nmyopenpanels tasks claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels tasks complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+                "```bash\nmyopenpanels task next --format json\nmyopenpanels agent skill read --skill-id {selected_wiki_skill_id} --task-id {task_id} --format json\nmyopenpanels task claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels task complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
             );
         }
     }
@@ -1676,17 +1084,17 @@ fn render_skill_commands(
         let task_type = task["type"].as_str().unwrap_or("");
         if task_type == "convert_document_to_markdown" {
             return format!(
-                "```bash\nmyopenpanels tasks claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels wiki documents list --format json\nmyopenpanels wiki markdown write --document-id {document_id} --file <md-file> --task-id {task_id} --format json\nmyopenpanels tasks complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+                "```bash\nmyopenpanels task claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels wiki raw-document list --format json\nmyopenpanels wiki raw-document markdown write --raw-document-id {document_id} --content-file <md-file> --task-id {task_id} --format json\nmyopenpanels task complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
             );
         }
         if task_type == "ingest_markdown_into_wiki" {
             return format!(
-                "```bash\nmyopenpanels tasks claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels wiki markdown read --document-id {document_id} --format json\nmyopenpanels wiki pages list --wiki-space-id {wiki_space_id} --format json\nmyopenpanels wiki pages read --wiki-space-id {wiki_space_id} --path <page-path> --format json\nmyopenpanels wiki pages write --wiki-space-id {wiki_space_id} --path <page-path> --file <md-file> --task-id {task_id} --format json\nmyopenpanels tasks complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+                "```bash\nmyopenpanels task claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels wiki raw-document markdown read --raw-document-id {document_id} --format json\nmyopenpanels wiki page list --wiki-space-id {wiki_space_id} --format json\nmyopenpanels wiki page read --wiki-space-id {wiki_space_id} --path <page-path> --format json\nmyopenpanels wiki page write --wiki-space-id {wiki_space_id} --path <page-path> --content-file <md-file> --task-id {task_id} --format json\nmyopenpanels task complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
             );
         }
         if task_type == "rebuild_wiki_index" {
             return format!(
-                "```bash\nmyopenpanels tasks claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels wiki pages list --wiki-space-id {wiki_space_id} --format json\nmyopenpanels wiki pages read --wiki-space-id {wiki_space_id} --path <page-path> --format json\nmyopenpanels wiki pages write --wiki-space-id {wiki_space_id} --path <page-path> --file <md-file> --task-id {task_id} --format json\nmyopenpanels tasks complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+                "```bash\nmyopenpanels task claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels wiki page list --wiki-space-id {wiki_space_id} --format json\nmyopenpanels wiki page read --wiki-space-id {wiki_space_id} --path <page-path> --format json\nmyopenpanels wiki page write --wiki-space-id {wiki_space_id} --path <page-path> --content-file <md-file> --task-id {task_id} --format json\nmyopenpanels task complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
             );
         }
     }
@@ -1726,5 +1134,36 @@ mod tests {
         assert_eq!(guide.metadata.id, "test.guide");
         assert_eq!(guide.metadata.title, "Test Guide");
         assert_eq!(guide.body, "Body.\n");
+    }
+
+    #[test]
+    fn bounded_json_limits_utf8_depth_arrays_and_objects() {
+        let mut object = serde_json::Map::new();
+        for index in 0..40 {
+            object.insert(format!("field{index:02}"), json!(index));
+        }
+        object.insert("long".to_owned(), json!("界".repeat(200)));
+        object.insert(
+            "array".to_owned(),
+            Value::Array((0..20).map(|value| json!(value)).collect()),
+        );
+        object.insert(
+            "deep".to_owned(),
+            json!({ "one": { "two": { "three": { "four": true } } } }),
+        );
+        let mut truncated = false;
+        let bounded = bounded_json(Value::Object(object), 0, &mut truncated);
+
+        assert!(truncated);
+        assert!(serde_json::to_vec(&bounded).expect("json").len() < 1024);
+        assert!(bounded.as_object().unwrap().len() <= 32);
+        let mut string_truncated = false;
+        let string = bounded_json(json!("界".repeat(200)), 0, &mut string_truncated);
+        assert!(string_truncated);
+        assert!(string.as_str().unwrap().len() <= 256);
+        assert!(string
+            .as_str()
+            .unwrap()
+            .is_char_boundary(string.as_str().unwrap().len()));
     }
 }

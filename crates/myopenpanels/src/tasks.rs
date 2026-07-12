@@ -43,7 +43,10 @@ pub struct TaskListFilter<'a> {
     pub status: Option<&'a str>,
 }
 
-pub fn list_tasks(paths: &MyOpenPanelsPaths, filter: TaskListFilter<'_>) -> Result<Value, CliError> {
+pub fn list_tasks(
+    paths: &MyOpenPanelsPaths,
+    filter: TaskListFilter<'_>,
+) -> Result<Value, CliError> {
     recover_expired_tasks(paths)?;
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     import_legacy_targets(paths, &bootstrap.session.id)?;
@@ -95,18 +98,41 @@ pub fn next_task(paths: &MyOpenPanelsPaths, filter: TaskListFilter<'_>) -> Resul
 }
 
 pub fn inspect_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    recover_expired_tasks(paths)?;
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    import_legacy_targets(paths, &bootstrap.session.id)?;
-    let task = annotate_dispatch_state(
-        paths,
-        &bootstrap.session.id,
-        annotate_tasks(bootstrap.tasks),
-    )?
-    .into_iter()
-    .find(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
-    .ok_or_else(|| CliError::new(format!("Project task not found: {task_id}")))?;
+    let session_id = task_session_id(paths, task_id)?;
+    recover_expired_tasks_in_session(paths, &session_id)?;
+    inspect_task_in_session(paths, &session_id, task_id)
+}
+
+fn inspect_task_in_session(
+    paths: &MyOpenPanelsPaths,
+    session_id: &str,
+    task_id: &str,
+) -> Result<Value, CliError> {
+    import_legacy_targets(paths, session_id)?;
+    let tasks = Storage::open(paths)?.list_project_tasks(session_id)?;
+    let task = annotate_dispatch_state(paths, session_id, annotate_tasks(tasks))?
+        .into_iter()
+        .find(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
+        .ok_or_else(|| CliError::new(format!("Project task not found: {task_id}")))?;
     Ok(json!({ "task": task }))
+}
+
+fn task_session_id(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<String, CliError> {
+    Storage::open(paths)?
+        .connection()
+        .query_row(
+            "SELECT session_id FROM project_tasks WHERE id = ? LIMIT 1",
+            [task_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(to_cli_error)?
+        .ok_or_else(|| {
+            CliError::with_code(
+                "task_not_found",
+                format!("Project task not found: {task_id}"),
+            )
+        })
 }
 
 fn is_active_task(task: &Value) -> bool {
@@ -235,13 +261,21 @@ pub fn register_target(
 
 pub fn heartbeat_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    heartbeat_target_in_session(paths, &bootstrap.session.id, target_id)
+}
+
+fn heartbeat_target_in_session(
+    paths: &MyOpenPanelsPaths,
+    session_id: &str,
+    target_id: &str,
+) -> Result<Value, CliError> {
     let storage = Storage::open(paths)?;
     let now = crate::control::now_iso();
     let changed = storage
         .connection()
         .execute(
             "UPDATE agent_targets SET status = 'online', last_error = NULL, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND session_id = ?",
-            params![now, now, target_id, bootstrap.session.id],
+            params![now, now, target_id, session_id],
         )
         .map_err(to_cli_error)?;
     if changed == 0 {
@@ -250,13 +284,8 @@ pub fn heartbeat_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Va
             format!("Agent target not found: {target_id}"),
         ));
     }
-    record_change(
-        storage.connection(),
-        "agent_target",
-        &bootstrap.session.id,
-        None,
-    )?;
-    let target = read_target_value(storage.connection(), &bootstrap.session.id, target_id)?
+    record_change(storage.connection(), "agent_target", session_id, None)?;
+    let target = read_target_value(storage.connection(), session_id, target_id)?
         .ok_or_else(|| CliError::new("Agent target could not be read."))?;
     Ok(json!({ "target": target }))
 }
@@ -338,8 +367,11 @@ pub fn claim_next_filtered(
         .unwrap_or(DEFAULT_LONG_POLL_MS)
         .min(DEFAULT_LONG_POLL_MS);
     let started = Instant::now();
+    let session_id = read_project_bootstrap(paths, BootstrapRequest::new())?
+        .session
+        .id;
     loop {
-        if let Some(payload) = claim_once(paths, target_id, None, capability, queue)? {
+        if let Some(payload) = claim_once(paths, &session_id, target_id, None, capability, queue)? {
             return Ok(payload);
         }
         if started.elapsed() >= Duration::from_millis(wait_ms) {
@@ -354,7 +386,8 @@ pub fn claim_task(
     task_id: &str,
     target_id: &str,
 ) -> Result<Value, CliError> {
-    claim_once(paths, target_id, Some(task_id), None, None)?.ok_or_else(|| {
+    let session_id = task_session_id(paths, task_id)?;
+    claim_once(paths, &session_id, target_id, Some(task_id), None, None)?.ok_or_else(|| {
         CliError::with_code(
             "task_not_claimable",
             format!("Project task is not claimable: {task_id}"),
@@ -364,18 +397,18 @@ pub fn claim_task(
 
 fn claim_once(
     paths: &MyOpenPanelsPaths,
+    session_id: &str,
     target_id: &str,
     task_id: Option<&str>,
     requested_capability: Option<&str>,
     requested_queue: Option<&str>,
 ) -> Result<Option<Value>, CliError> {
-    recover_expired_tasks(paths)?;
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    import_legacy_targets(paths, &bootstrap.session.id)?;
-    heartbeat_target(paths, target_id)?;
+    recover_expired_tasks_in_session(paths, session_id)?;
+    import_legacy_targets(paths, session_id)?;
+    heartbeat_target_in_session(paths, session_id, target_id)?;
     let mut storage = Storage::open(paths)?;
-    let target = read_target_value(storage.connection(), &bootstrap.session.id, target_id)?
-        .ok_or_else(|| {
+    let target =
+        read_target_value(storage.connection(), session_id, target_id)?.ok_or_else(|| {
             CliError::with_code(
                 "target_not_found",
                 format!("Agent target not found: {target_id}"),
@@ -383,7 +416,7 @@ fn claim_once(
         })?;
     let reserved = reserve_task(
         &mut storage,
-        &bootstrap.session.id,
+        session_id,
         &target,
         task_id,
         requested_capability,
@@ -408,7 +441,7 @@ fn claim_once(
     let claimed = match claim_result {
         Ok(claimed) => claimed,
         Err(error) => {
-            release_reservation(paths, &bootstrap.session.id, &reserved)?;
+            release_reservation(paths, session_id, &reserved)?;
             return Err(error);
         }
     };
@@ -438,7 +471,7 @@ fn claim_once(
                 crate::control::now_iso(),
                 crate::control::now_iso(),
                 reserved.id,
-                bootstrap.session.id,
+                session_id,
             ],
         )
         .map_err(to_cli_error)?;
@@ -449,7 +482,7 @@ fn claim_once(
             params![crate::control::now_iso(), crate::control::now_iso(), reserved.id, target_id],
         )
         .map_err(to_cli_error)?;
-    record_change(storage.connection(), "task", &bootstrap.session.id, None)?;
+    record_change(storage.connection(), "task", session_id, None)?;
     let mut payload = inspect_task(paths, &reserved.id)?;
     payload["leaseToken"] = json!(lease_token);
     payload["target"] = target;
@@ -472,7 +505,6 @@ pub fn heartbeat_task(
             ))
         }
     };
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let storage = Storage::open(paths)?;
     let now = crate::control::now_iso();
     storage
@@ -482,8 +514,9 @@ pub fn heartbeat_task(
             params![expires_at, now, now, task_id, hash_secret(lease_token)],
         )
         .map_err(to_cli_error)?;
-    record_change(storage.connection(), "task", &bootstrap.session.id, None)?;
-    inspect_task(paths, task_id)
+    let session_id = lease["sessionId"].as_str().unwrap_or_default();
+    record_change(storage.connection(), "task", session_id, None)?;
+    inspect_task_in_session(paths, session_id, task_id)
 }
 
 pub fn complete_task(
@@ -502,8 +535,9 @@ pub fn complete_task(
             ))
         }
     };
-    finalize_task_runtime(paths, task_id, "succeeded", result, None, None)?;
-    inspect_task(paths, task_id)
+    let session_id = lease["sessionId"].as_str().unwrap_or_default();
+    finalize_task_runtime(paths, session_id, task_id, "succeeded", result, None, None)?;
+    inspect_task_in_session(paths, session_id, task_id)
 }
 
 pub fn fail_task(
@@ -534,6 +568,7 @@ pub fn fail_task(
     };
     finalize_task_runtime(
         paths,
+        lease["sessionId"].as_str().unwrap_or_default(),
         task_id,
         "failed",
         None,
@@ -547,7 +582,11 @@ pub fn fail_task(
         Some(&retry_after),
         Some(message),
     )?;
-    inspect_task(paths, task_id)
+    inspect_task_in_session(
+        paths,
+        lease["sessionId"].as_str().unwrap_or_default(),
+        task_id,
+    )
 }
 
 pub fn release_task(
@@ -565,7 +604,15 @@ pub fn release_task(
             ))
         }
     };
-    finalize_task_runtime(paths, task_id, "queued", None, None, None)?;
+    finalize_task_runtime(
+        paths,
+        lease["sessionId"].as_str().unwrap_or_default(),
+        task_id,
+        "queued",
+        None,
+        None,
+        None,
+    )?;
     reset_task_delivery(
         paths,
         task_id,
@@ -573,11 +620,19 @@ pub fn release_task(
         None,
         Some("Task released."),
     )?;
-    inspect_task(paths, task_id)
+    inspect_task_in_session(
+        paths,
+        lease["sessionId"].as_str().unwrap_or_default(),
+        task_id,
+    )
 }
 
 pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     let task = inspect_task(paths, task_id)?;
+    let session_id = task["task"]["sessionId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     match task["task"]["queue"].as_str().unwrap_or("") {
         "wiki" => crate::wiki::retry_task(paths, task_id)?,
         queue => {
@@ -587,13 +642,17 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
             ))
         }
     };
-    finalize_task_runtime(paths, task_id, "queued", None, None, None)?;
+    finalize_task_runtime(paths, &session_id, task_id, "queued", None, None, None)?;
     reset_task_delivery(paths, task_id, None, None, None)?;
-    inspect_task(paths, task_id)
+    inspect_task_in_session(paths, &session_id, task_id)
 }
 
 pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     let task = inspect_task(paths, task_id)?;
+    let session_id = task["task"]["sessionId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     match task["task"]["queue"].as_str().unwrap_or("") {
         "wiki" => crate::wiki::cancel_task(paths, task_id)?,
         queue => {
@@ -603,12 +662,22 @@ pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cl
             ))
         }
     };
-    finalize_task_runtime(paths, task_id, "cancelled", None, None, None)?;
-    inspect_task(paths, task_id)
+    finalize_task_runtime(paths, &session_id, task_id, "cancelled", None, None, None)?;
+    inspect_task_in_session(paths, &session_id, task_id)
 }
 
-pub fn list_deliveries(paths: &MyOpenPanelsPaths, task_id: Option<&str>) -> Result<Value, CliError> {
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+pub fn list_deliveries(
+    paths: &MyOpenPanelsPaths,
+    task_id: Option<&str>,
+) -> Result<Value, CliError> {
+    let session_id = match task_id {
+        Some(task_id) => task_session_id(paths, task_id)?,
+        None => {
+            read_project_bootstrap(paths, BootstrapRequest::new())?
+                .session
+                .id
+        }
+    };
     let storage = Storage::open(paths)?;
     let mut statement = storage
         .connection()
@@ -625,10 +694,7 @@ pub fn list_deliveries(paths: &MyOpenPanelsPaths, task_id: Option<&str>) -> Resu
         )
         .map_err(to_cli_error)?;
     let rows = statement
-        .query_map(
-            params![bootstrap.session.id, task_id, task_id],
-            delivery_from_row,
-        )
+        .query_map(params![session_id, task_id, task_id], delivery_from_row)
         .map_err(to_cli_error)?;
     let deliveries = rows
         .map(|row| row.map_err(to_cli_error))
@@ -762,17 +828,17 @@ fn verify_lease(
     lease_token: &str,
 ) -> Result<Value, CliError> {
     recover_expired_tasks(paths)?;
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let storage = Storage::open(paths)?;
     let lease = storage
         .connection()
         .query_row(
             r#"
-            SELECT queue, attempts, assigned_target_id, lease_token_hash, lease_expires_at
+            SELECT queue, attempts, assigned_target_id, lease_token_hash, lease_expires_at,
+                   session_id, panel_id
             FROM project_tasks
-            WHERE id = ? AND session_id = ?
+            WHERE id = ?
             "#,
-            params![task_id, bootstrap.session.id],
+            params![task_id],
             |row| {
                 Ok(json!({
                     "queue": row.get::<_, String>(0)?,
@@ -780,6 +846,8 @@ fn verify_lease(
                     "targetId": row.get::<_, Option<String>>(2)?,
                     "tokenHash": row.get::<_, Option<String>>(3)?,
                     "expiresAt": row.get::<_, Option<String>>(4)?,
+                    "sessionId": row.get::<_, String>(5)?,
+                    "panelId": row.get::<_, String>(6)?,
                 }))
             },
         )
@@ -812,13 +880,13 @@ fn verify_lease(
 
 fn finalize_task_runtime(
     paths: &MyOpenPanelsPaths,
+    session_id: &str,
     task_id: &str,
     status: &str,
     result: Option<Value>,
     error: Option<Value>,
     retry_after: Option<&str>,
 ) -> Result<(), CliError> {
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let storage = Storage::open(paths)?;
     let now = crate::control::now_iso();
     let result_json = result
@@ -854,11 +922,11 @@ fn finalize_task_runtime(
                 },
                 now,
                 task_id,
-                bootstrap.session.id,
+                session_id,
             ],
         )
         .map_err(to_cli_error)?;
-    record_change(storage.connection(), "task", &bootstrap.session.id, None)?;
+    record_change(storage.connection(), "task", session_id, None)?;
     Ok(())
 }
 
@@ -898,6 +966,13 @@ fn recover_expired_tasks(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
         Err(error) if error.code() == Some("no_current_project") => return Ok(()),
         Err(error) => return Err(error),
     };
+    recover_expired_tasks_in_session(paths, &bootstrap.session.id)
+}
+
+fn recover_expired_tasks_in_session(
+    paths: &MyOpenPanelsPaths,
+    session_id: &str,
+) -> Result<(), CliError> {
     let storage = Storage::open(paths)?;
     let now = crate::control::now_iso();
     storage
@@ -906,7 +981,7 @@ fn recover_expired_tasks(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
             "UPDATE project_tasks SET status = 'queued', assigned_target_id = NULL, updated_at = ? WHERE session_id = ? AND status = 'reserved' AND updated_at < ?",
             params![
                 now,
-                bootstrap.session.id,
+                session_id,
                 (chrono::Utc::now() - chrono::Duration::seconds(30))
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
             ],
@@ -927,7 +1002,7 @@ fn recover_expired_tasks(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
             )
             .map_err(to_cli_error)?;
         let rows = statement
-            .query_map(params![bootstrap.session.id, now], |row| {
+            .query_map(params![session_id, now], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -951,6 +1026,7 @@ fn recover_expired_tasks(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
         }
         finalize_task_runtime(
             paths,
+            session_id,
             &task_id,
             "failed",
             None,

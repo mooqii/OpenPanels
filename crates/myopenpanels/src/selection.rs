@@ -47,10 +47,45 @@ pub fn read_selection(
     let connection = Connection::open(&database_path).map_err(to_cli_error)?;
     let session_id = resolve_session_id(&connection, paths, requested_session_id)?;
     let panel_id = resolve_canvas_panel_id(&connection, &session_id)?;
-    let raw_state = read_panel_state(&connection, &session_id, &panel_id)?;
-    let raw_selection = read_panel_selection(&connection, &session_id, &panel_id)?
-        .unwrap_or_else(|| empty_selection(&session_id, &panel_id));
-    let selection = with_last_image_fallback(raw_selection, raw_state);
+    read_selection_from_connection(
+        paths,
+        &connection,
+        &session_id,
+        &panel_id,
+        include_image_base64,
+        true,
+    )
+}
+
+pub fn read_selection_for_panel(
+    paths: &MyOpenPanelsPaths,
+    session_id: &str,
+    panel_id: &str,
+) -> Result<SelectionPayload, CliError> {
+    let database_path = paths.storage_dir.join(DATABASE_FILE_NAME);
+    let connection = Connection::open(&database_path).map_err(to_cli_error)?;
+    read_selection_from_connection(paths, &connection, session_id, panel_id, false, false)
+}
+
+fn read_selection_from_connection(
+    paths: &MyOpenPanelsPaths,
+    connection: &Connection,
+    session_id: &str,
+    panel_id: &str,
+    include_image_base64: bool,
+    include_fallback: bool,
+) -> Result<SelectionPayload, CliError> {
+    let raw_selection = read_panel_selection(connection, session_id, panel_id)?
+        .unwrap_or_else(|| empty_selection(session_id, panel_id));
+    let raw_selection = with_explicit_marker(raw_selection);
+    let selection = if include_fallback {
+        with_last_image_fallback(
+            raw_selection,
+            read_panel_state(connection, session_id, panel_id)?,
+        )
+    } else {
+        raw_selection
+    };
     let asset_ref = selection
         .get("assetRef")
         .and_then(Value::as_str)
@@ -67,7 +102,7 @@ pub fn read_selection(
 
     Ok(SelectionPayload {
         selection,
-        selection_file: panel_file(paths, &session_id, &panel_id, "selection.json")
+        selection_file: panel_file(paths, session_id, panel_id, "selection.json")
             .display()
             .to_string(),
         base64,
@@ -77,6 +112,56 @@ pub fn read_selection(
         context_id_source: paths.context_id_source.clone(),
         storage_dir: paths.storage_dir.display().to_string(),
     })
+}
+
+fn with_explicit_marker(selection: Value) -> Value {
+    if selection
+        .get("isExplicitSelection")
+        .and_then(Value::as_bool)
+        .is_some()
+    {
+        return selection;
+    }
+    let explicit = selection
+        .get("selectedShapeIds")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| !ids.is_empty())
+        || selection
+            .get("selectedShapes")
+            .and_then(Value::as_array)
+            .is_some_and(|shapes| !shapes.is_empty());
+    let mut value = selection.as_object().cloned().unwrap_or_default();
+    value.insert("isExplicitSelection".to_owned(), json!(explicit));
+    Value::Object(value)
+}
+
+pub fn read_selection_asset_for_panel(
+    paths: &MyOpenPanelsPaths,
+    session_id: &str,
+    panel_id: &str,
+    output_path: &str,
+) -> Result<SelectionAssetPayload, CliError> {
+    let mut selection = read_selection_for_panel(paths, session_id, panel_id)?;
+    let is_explicit_selection = selection
+        .selection
+        .get("isExplicitSelection")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !is_explicit_selection {
+        return Err(CliError::with_code(
+            "explicit_selection_required",
+            "No explicit Canvas selection asset is available.",
+        ));
+    }
+    let asset_ref = selection
+        .selection
+        .get("assetRef")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("The explicit Canvas selection has no exportable asset."))?
+        .to_owned();
+    selection.base64 = Some(read_asset_base64(&paths.storage_dir, &asset_ref)?);
+    selection.mime_type = Some(mime_type_for_file(&asset_ref));
+    write_selection_asset(selection, output_path)
 }
 
 pub fn read_selection_asset_to_file(
@@ -96,6 +181,13 @@ pub fn read_selection_asset_to_file(
             "No explicit MyOpenPanels selection asset is available. Re-select the image or pass --allow-fallback to use the fallback image.",
         ));
     }
+    write_selection_asset(selection, output_path)
+}
+
+fn write_selection_asset(
+    selection: SelectionPayload,
+    output_path: &str,
+) -> Result<SelectionAssetPayload, CliError> {
     let asset_ref = selection
         .selection
         .get("assetRef")
