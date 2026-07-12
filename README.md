@@ -37,9 +37,10 @@ MyOpenPanels Studio, and opens the MyOpenPanels panel URL returned by the CLI.
 The entry skill keeps itself small and stable. It uses the Rust-native
 `myopenpanels` CLI from GitHub Releases, then asks the CLI for
 `agent bootstrap`, which is the source of truth for wiki, canvas, and future panel
-workflows. Bootstrap also publishes the required entry Skill version and its
-canonical update source. On Studio startup, the Agent updates a missing or older
-Skill through its own Skill installer; equal or newer Skills are left alone.
+workflows. Bootstrap also publishes the Entry Skill identity and canonical
+source as diagnostic metadata. The Skill does not compare CLI,
+Protocol, Command Catalog, or Skill versions at runtime; the installed CLI is
+always authoritative for current capabilities and returned actions.
 Protocol v3 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes. It
 returns bounded Panel context and discovery references; command descriptors,
 Skills, Guides, Tasks, Operations, and selection details load on demand. Longer
@@ -100,30 +101,21 @@ myopenpanels studio start --local-only --project-dir /path/to/project --format j
 ```
 
 If the host has no callable opener, or the attempt fails or cannot report
-success, run `myopenpanels studio open-system-browser --local-only`. The CLI
-reports `data.opened: true` only after the operating-system launcher succeeds; on
-failure it returns `browser_open_failed` and the URL for manual recovery. An
-open-only request is complete only after an opener succeeds. Bootstrap is needed
-only for subsequent panel work.
+success, execute `data.nextRequiredAction.fallback.argv` with the same resolved
+CLI executable. The CLI reports `data.opened: true` only after the
+operating-system launcher succeeds. An open-only request is complete only after
+an opener succeeds. Bootstrap is needed only for subsequent panel work.
 
 Agents can then use project-backed CLI commands:
 
 ```bash
 myopenpanels agent bootstrap --project-dir /path/to/project --format json
-myopenpanels agent capability list --format json
-myopenpanels agent capability list --scope wiki --format json
-myopenpanels agent capability read --intent wiki.page.search --format json
-myopenpanels agent guide list --project-dir /path/to/project
-myopenpanels agent skill list --project-dir /path/to/project
-myopenpanels agent skill read --skill-id canvas-panel --project-dir /path/to/project
-myopenpanels panel list --project-dir /path/to/project --format json
-myopenpanels panel activate --project-dir /path/to/project --panel-kind wiki --format json
-myopenpanels panel context read --project-dir /path/to/project --format json
-myopenpanels panel state read --project-dir /path/to/project --format json
-myopenpanels panel selection read --project-dir /path/to/project --format json
-myopenpanels canvas selection export --project-dir /path/to/project --output-file /tmp/selection.png --format json
-myopenpanels canvas image insert --project-dir /path/to/project --image-file /tmp/result.png --placement right --expect-focus-revision <revision> --format json
 ```
+
+These are the only stable Agent work entries. Follow each response's
+`data.nextRequiredAction` and execute applicable `data.nextActions` entries with
+the same resolved executable. Business command paths remain CLI-owned data and
+are not hardcoded into the Entry Skill.
 
 ## v0.1 Scope
 

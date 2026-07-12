@@ -341,6 +341,15 @@ pub fn resolve_current_studio_session(
         }
     }
 
+    if let Some(session) = read_studio_session(paths)? {
+        if same_project(paths, &session)
+            && process_exists(session.pid)
+            && is_studio_healthy(&session)
+        {
+            return Ok(Some(session));
+        }
+    }
+
     let candidates = running_project_studios(paths)?;
     match candidates.as_slice() {
         [] => Ok(None),
@@ -1123,6 +1132,29 @@ mod tests {
 
         assert!(result.is_none());
         assert!(!studio_session_path(&owner_paths).exists());
+    }
+
+    #[test]
+    fn current_studio_resolution_prefers_the_calling_context_binding() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let caller_paths = paths_for(&project_dir, &storage_dir, "caller");
+        let sibling_paths = paths_for(&project_dir, &storage_dir, "sibling");
+        let (port, server) = fake_studio_server(1);
+        let caller_session = studio_session(&caller_paths, port);
+        let mut sibling_session = studio_session(&sibling_paths, port);
+        sibling_session.context_id = "sibling".to_owned();
+        write_studio_session(&caller_paths, &caller_session).expect("caller session");
+        write_studio_session(&sibling_paths, &sibling_session).expect("sibling session");
+
+        let resolved = resolve_current_studio_session(&caller_paths)
+            .expect("resolution")
+            .expect("session");
+
+        assert_eq!(resolved.context_id, "caller");
+        server.join().expect("server thread");
     }
 
     #[test]

@@ -639,15 +639,42 @@ pub(crate) fn capabilities() -> Vec<Value> {
         .collect()
 }
 
+pub(crate) fn command_action(intent: &str, args: Vec<String>) -> Option<Value> {
+    let spec = SPECS.iter().find(|spec| spec.intent == intent)?;
+    let mut argv = spec
+        .path
+        .iter()
+        .map(|part| (*part).to_owned())
+        .collect::<Vec<_>>();
+    argv.extend(args);
+    Some(json!({
+        "intent": intent,
+        "argv": argv,
+    }))
+}
+
 pub(crate) fn scope_index() -> Value {
     debug_assert!(validate().is_ok());
     let mut counts = BTreeMap::<&str, usize>::new();
     for spec in SPECS.iter().filter(|spec| spec.agent_exposed) {
         *counts.entry(spec.scope).or_default() += 1;
     }
+    let mut next_actions = Vec::new();
     let scopes = counts
         .into_iter()
         .map(|(scope, count)| {
+            let mut action = command_action(
+                "agent.capability.list",
+                vec![
+                    "--scope".to_owned(),
+                    scope.to_owned(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            )
+            .expect("registered capability list action");
+            action["loadWhen"] = json!(format!("The user request matches the {scope} scope."));
+            next_actions.push(action);
             json!({
                 "scope": scope,
                 "count": count,
@@ -658,22 +685,49 @@ pub(crate) fn scope_index() -> Value {
     json!({
         "catalogVersion": COMMAND_CATALOG_VERSION,
         "scopes": scopes,
+        "nextActions": next_actions,
+        "nextRequiredAction": {
+            "intent": "select-capability-scope",
+            "instruction": "Choose the nextActions entry whose loadWhen matches the user request.",
+        },
     })
 }
 
 pub(crate) fn scope_capabilities(scope: &str) -> Option<Value> {
-    let capabilities = SPECS
+    let specs = SPECS
         .iter()
         .filter(|spec| spec.agent_exposed && spec.scope == scope)
-        .map(summary)
         .collect::<Vec<_>>();
-    if capabilities.is_empty() {
+    if specs.is_empty() {
         return None;
     }
+    let capabilities = specs.iter().map(|spec| summary(spec)).collect::<Vec<_>>();
+    let next_actions = specs
+        .iter()
+        .map(|spec| {
+            let mut action = command_action(
+                "agent.capability.read",
+                vec![
+                    "--intent".to_owned(),
+                    spec.intent.to_owned(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            )
+            .expect("registered capability read action");
+            action["loadWhen"] = json!(format!("The user request requires {}.", spec.title));
+            action
+        })
+        .collect::<Vec<_>>();
     Some(json!({
         "catalogVersion": COMMAND_CATALOG_VERSION,
         "scope": scope,
         "capabilities": capabilities,
+        "nextActions": next_actions,
+        "nextRequiredAction": {
+            "intent": "select-capability",
+            "instruction": "Choose the nextActions entry whose loadWhen matches the user request.",
+        },
     }))
 }
 
@@ -682,6 +736,11 @@ pub(crate) fn capability_payload(intent: &str) -> Option<Value> {
         json!({
             "catalogVersion": COMMAND_CATALOG_VERSION,
             "capability": capability,
+            "nextActions": [],
+            "nextRequiredAction": {
+                "intent": "execute-capability",
+                "instruction": "Use the capability command path and argument schema in this response. Supply values from the user request and current context, then execute it with the same resolved CLI executable.",
+            },
         })
     })
 }

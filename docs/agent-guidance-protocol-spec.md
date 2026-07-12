@@ -12,8 +12,8 @@ native CLI, starts or reuses Studio, and follows the launch response's
 `data.nextRequiredAction`. Bootstrap is requested only before panel work, not to
 verify an open-only task.
 
-Protocol v3 supersedes Protocol v2 directly in unreleased CLI 0.4.0. There is no
-v2 compatibility flag or full-Bootstrap mode. The standard CLI envelope remains
+Protocol v3 supersedes Protocol v2. Protocol and catalog versions are diagnostic
+metadata, not inputs to Entry Skill behavior. The standard CLI envelope remains
 at `schemaVersion: 1`.
 
 ## Communication Model
@@ -27,11 +27,11 @@ Studio -> local server -> SQLite/files
 
 The CLI does not push prompts into the Agent. A normal discovery flow is:
 
-1. Run `agent bootstrap --format json`.
-2. Match the user request to a scope in `data.discovery.recommendedScopes`.
-3. Run `agent capability list --scope <scope> --format json`.
-4. Read one full descriptor with `agent capability read --intent <intent> --format json`.
-5. Read a referenced Skill or Guide only when its `loadWhen` rule applies.
+1. Run `agent bootstrap --project-dir <project> --format json`.
+2. Follow `data.nextRequiredAction`.
+3. Choose an applicable entry from `data.nextActions` according to `loadWhen`.
+4. Execute its `argv` with the same resolved CLI executable.
+5. Repeat against the next response until the user request is complete.
 
 ## Bootstrap Contract
 
@@ -42,7 +42,7 @@ truncated into an invalid target.
 
 Bootstrap `data` contains only:
 
-- protocol, catalog, CLI, budget, and Entry Skill versions;
+- diagnostic protocol, catalog, and CLI versions plus the Bootstrap budget;
 - focus identities, `focusRevision`, and available Panel kinds;
 - bounded Panel Module context and an explicit-selection summary;
 - Task counts and at most one next-Task reference;
@@ -62,6 +62,13 @@ every request.
 
 ## Progressive Discovery
 
+Every Agent-facing discovery response exposes executable references only through
+the top-level `nextActions` array. Each `CommandActionRef` has a stable intent,
+an `argv` array that excludes the executable, and a `loadWhen` condition. The
+Agent prepends the exact CLI executable it originally resolved. Display
+`command` and `readCommand` strings are CLI-owned explanatory data, not execution
+inputs.
+
 `agent capability list --format json` returns a stable, sorted scope index.
 `agent capability list --scope <scope> --format json` returns compact command
 summaries. `agent capability read --intent <intent> --format json` returns the
@@ -72,7 +79,8 @@ An unknown scope returns `capability_scope_not_found` with a recovery command
 pointing back to the unfiltered scope index.
 
 `agent guide list` and `agent skill list` accept optional `--panel-kind` and
-`--task-type` filters. Lists contain metadata, `loadWhen`, and `readCommand` only.
+`--task-type` filters. Lists contain compact metadata, while their corresponding
+read actions appear only in the response-level `nextActions` array.
 Markdown, full capability requirements, and Skill local paths are returned by
 the corresponding `read` command.
 
@@ -90,10 +98,18 @@ concurrent edit.
 
 ## Compatibility Policy
 
-The project has no public Protocol v1, Protocol v2, or pre-0.4 command
-compatibility surface. The stable entry points are CLI installation, Studio
-start/reuse, and compact `agent bootstrap`. All other Agent commands are
-discovered progressively from the current CLI.
+The permanent Agent work entry points are `studio start` and `agent bootstrap`.
+Their core flags and envelope fields are compatibility contracts. All other
+commands are discovered from returned actions and may evolve behind stable
+capability intents.
 
-The CLI reports Entry Skill freshness metadata in Bootstrap but does not inspect
-or update every Agent host's Skill installation itself.
+The Entry Skill ignores `protocolVersion`, `commandCatalogVersion`, and
+`cliVersion`. Internal protocol and command catalog revisions may advance with
+the installed CLI, while the two entry commands, JSON envelope,
+`nextRequiredAction`, and `CommandActionRef` remain stable.
+
+User data, assets, Tasks, leases, deliveries, and Operations migrate forward
+across released CLI versions. Business commands, flags, Command Catalog
+projections, Guides, Panel Modules, internal Rust APIs, and Studio HTTP APIs only
+support the currently installed package. Older CLIs must reject future data
+schemas rather than downgrade or overwrite them.

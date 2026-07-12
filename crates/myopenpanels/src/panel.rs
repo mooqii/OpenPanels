@@ -56,6 +56,8 @@ pub struct PanelSelectionEnvelope {
     pub updated_at: Option<Value>,
     pub summary: Value,
     pub value: Value,
+    pub next_actions: Vec<Value>,
+    pub next_required_action: Value,
 }
 
 pub fn read_context(paths: &MyOpenPanelsPaths) -> Result<PanelContextPayload, CliError> {
@@ -110,6 +112,11 @@ pub fn selection_for_bootstrap(
         updated_at: None,
         summary: json!({ "itemCount": 0 }),
         value: Value::Null,
+        next_actions: Vec::new(),
+        next_required_action: json!({
+            "intent": "apply-selection",
+            "instruction": "Continue the user request without panel selection guidance.",
+        }),
     })
 }
 
@@ -151,6 +158,14 @@ fn canvas_selection(
         updated_at: value.get("updatedAt").cloned(),
         summary: json!({ "itemCount": if is_explicit { item_count } else { 0 } }),
         value,
+        next_actions: panel_skill_actions(
+            crate::agent::CANVAS_PANEL_SKILL_ID,
+            "The user request requires Canvas selection or generation guidance.",
+        ),
+        next_required_action: json!({
+            "intent": "apply-selection",
+            "instruction": "Use the explicit selection only when the user request targets it. Load an applicable nextActions entry when panel guidance is required.",
+        }),
     })
 }
 
@@ -159,7 +174,12 @@ fn wiki_selection(
     _bootstrap: &ProjectBootstrap,
     focus: Value,
 ) -> Result<PanelSelectionEnvelope, CliError> {
-    let value = crate::wiki::read_agent_selection(paths)?;
+    let mut value = crate::wiki::read_agent_selection(paths)?;
+    let next_actions = value
+        .as_object_mut()
+        .and_then(|object| object.remove("nextActions"))
+        .and_then(|actions| actions.as_array().cloned())
+        .unwrap_or_default();
     let selection = value.get("selection").cloned().unwrap_or_else(|| json!({}));
     let is_explicit = selection
         .get("isExplicitSelection")
@@ -187,7 +207,27 @@ fn wiki_selection(
             "wikiSelected": selection.get("isWikiSelected").and_then(Value::as_bool).unwrap_or(false),
         }),
         value,
+        next_actions,
+        next_required_action: json!({
+            "intent": "apply-selection",
+            "instruction": "Use the explicit selection only when the user request targets it. Load an applicable nextActions entry when panel guidance is required.",
+        }),
     })
+}
+
+fn panel_skill_actions(skill_id: &str, load_when: &str) -> Vec<Value> {
+    let mut action = crate::cli::registry::command_action(
+        "agent.skill.read",
+        vec![
+            "--skill-id".to_owned(),
+            skill_id.to_owned(),
+            "--format".to_owned(),
+            "json".to_owned(),
+        ],
+    )
+    .expect("registered Panel Skill action");
+    action["loadWhen"] = json!(load_when);
+    vec![action]
 }
 
 fn focus(paths: &MyOpenPanelsPaths, bootstrap: &ProjectBootstrap) -> Result<Value, CliError> {

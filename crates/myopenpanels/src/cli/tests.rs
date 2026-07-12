@@ -23,6 +23,21 @@ fn run_raw(args: &[&str]) -> (i32, String, String) {
     )
 }
 
+fn assert_action_parses(action: &Value) {
+    let argv = action["argv"]
+        .as_array()
+        .expect("action argv")
+        .iter()
+        .map(|value| value.as_str().expect("argv string").to_owned())
+        .collect::<Vec<_>>();
+    match args::parse(&argv) {
+        args::ParseOutcome::Invocation(parsed) => {
+            assert_eq!(parsed.intent, action["intent"].as_str().unwrap());
+        }
+        outcome => panic!("action did not parse: {argv:?}: {outcome:?}"),
+    }
+}
+
 fn run(args: &[&str]) -> (i32, String, String) {
     let canonical = canonical_test_args(args);
     let refs = canonical.iter().map(String::as_str).collect::<Vec<_>>();
@@ -572,6 +587,19 @@ fn studio_start_json_reuses_same_project_studio() {
             "json"
         ])
     );
+    assert_eq!(
+        payload["nextRequiredAction"]["fallback"]["argv"],
+        json!([
+            "studio",
+            "open-system-browser",
+            "--local-only",
+            "--project-dir",
+            project_dir,
+            "--format",
+            "json"
+        ])
+    );
+    assert_action_parses(&payload["nextRequiredAction"]["fallback"]);
     assert!(payload["nextRequiredAction"]["completionCriterion"]
         .as_str()
         .unwrap()
@@ -1106,11 +1134,12 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert_eq!(envelope["intent"], "agent.bootstrap.read");
     let payload = &envelope["data"];
     assert_eq!(payload["protocolVersion"], 3);
+    assert!(payload.get("supportedProtocolVersions").is_none());
     assert_eq!(payload["cliVersion"], VERSION);
     assert_eq!(payload["commandCatalogVersion"], 3);
     assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
     assert_eq!(payload["entrySkill"]["id"], "myopenpanels");
-    assert_eq!(payload["entrySkill"]["requiredVersion"], "3.0");
+    assert!(payload["entrySkill"].get("requiredVersion").is_none());
     assert_eq!(payload["focus"]["panelKind"], "wiki");
     assert_eq!(payload["panel"]["context"]["panelKind"], "wiki");
     assert_eq!(payload["panel"]["contextTruncated"], false);
@@ -1127,6 +1156,17 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         .unwrap()
         .iter()
         .any(|scope| scope == "wiki"));
+    for action in payload["nextActions"].as_array().unwrap() {
+        assert_action_parses(action);
+        assert!(action["loadWhen"].as_str().is_some());
+    }
+    assert!(payload["discovery"].get("capabilityIndexAction").is_none());
+    assert!(payload["discovery"].get("capabilityListActions").is_none());
+    assert!(payload["discovery"].get("guideListAction").is_none());
+    assert!(payload["discovery"].get("skillListAction").is_none());
+    assert!(payload["discovery"]["activePanelSkill"]
+        .get("readAction")
+        .is_none());
     for removed in [
         "capabilities",
         "availableGuides",
@@ -1147,6 +1187,9 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert_eq!(code, 0, "{stderr}{stdout}");
     let index = serde_json::from_str::<Value>(&stdout).expect("scope index");
     assert_eq!(index["catalogVersion"], 3);
+    for action in index["nextActions"].as_array().unwrap() {
+        assert_action_parses(action);
+    }
     assert!(index["scopes"]
         .as_array()
         .expect("scopes")
@@ -1174,6 +1217,22 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         .expect("page search summary");
     assert!(page_search.get("args").is_none());
     assert_eq!(page_search["requiredPanelKind"], "wiki");
+    assert_eq!(page_search["command"], "myopenpanels wiki page search");
+    assert_eq!(
+        page_search["readCommand"],
+        "myopenpanels agent capability read --intent wiki.page.search --format json"
+    );
+    assert!(page_search.get("readAction").is_none());
+    for action in wiki_capabilities["nextActions"].as_array().unwrap() {
+        assert_action_parses(action);
+    }
+    assert!(wiki_capabilities["nextActions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|action| action["argv"]
+            .as_array()
+            .is_some_and(|argv| { argv.iter().any(|value| value == "wiki.page.search") })));
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -1189,6 +1248,12 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
     assert_eq!(page_search["catalogVersion"], 3);
     assert_eq!(page_search["capability"]["intent"], "wiki.page.search");
     assert!(page_search["capability"]["args"].as_array().is_some());
+    assert!(page_search["capability"].get("argv").is_none());
+    assert_eq!(page_search["nextActions"], json!([]));
+    assert_eq!(
+        page_search["nextRequiredAction"]["intent"],
+        "execute-capability"
+    );
 
     let (code, stdout, stderr) = run_raw(&[
         "agent",
@@ -1231,6 +1296,12 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         .unwrap()
         .iter()
         .all(|guide| guide.get("markdown").is_none()));
+    for guide in guides["guides"].as_array().unwrap() {
+        assert!(guide.get("readAction").is_none());
+    }
+    for action in guides["nextActions"].as_array().unwrap() {
+        assert_action_parses(action);
+    }
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -1278,6 +1349,24 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         .as_array()
         .unwrap()
         .is_empty());
+    for skill in skills_payload["skills"].as_array().unwrap() {
+        assert!(skill.get("readAction").is_none());
+    }
+    for action in skills_payload["nextActions"].as_array().unwrap() {
+        assert_action_parses(action);
+    }
+    assert_action_parses(
+        &registry::command_action(
+            "operation.read",
+            vec![
+                "--operation-id".to_owned(),
+                "operation:test".to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ],
+        )
+        .unwrap(),
+    );
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -1398,6 +1487,34 @@ fn agent_bootstrap_emits_focus_guides_and_capabilities() {
         serde_json::from_str::<Value>(&stdout).expect("json")["focus"]["panelKind"],
         "wiki"
     );
+}
+
+#[test]
+fn agent_bootstrap_rejects_protocol_selection_without_target_side_effects() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let untouched_project = temp.path().join("project");
+    let untouched_storage = temp.path().join("storage");
+    let (code, stdout, stderr) = run_raw(&[
+        "agent",
+        "bootstrap",
+        "--protocol-version",
+        "99",
+        "--project-dir",
+        untouched_project.to_str().unwrap(),
+        "--storage-dir",
+        untouched_storage.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 1, "{stderr}{stdout}");
+    let error = serde_json::from_str::<Value>(&stdout).unwrap();
+    assert_eq!(error["error"]["code"], "invalid_argument");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("unexpected argument '--protocol-version'"));
+    assert!(!untouched_project.exists());
+    assert!(!untouched_storage.exists());
 }
 
 #[test]
@@ -1675,6 +1792,14 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         .as_str()
         .unwrap_or("")
         .contains(&format!("task read --task-id {task_id}")));
+    assert!(context["tasks"]["next"].get("readAction").is_none());
+    let task_action = context["nextActions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["intent"] == "task.read")
+        .expect("Task read action");
+    assert_action_parses(task_action);
 
     update_wiki_state_field(
         &storage_dir,
@@ -2467,6 +2592,9 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
             .as_str()
             .is_some_and(|path| Path::new(path).is_file())
     );
+    assert!(selection["value"]["wiki"].get("loadAction").is_none());
+    assert_action_parses(&selection["nextActions"][0]);
+    assert!(selection["value"].get("nextActions").is_none());
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -3747,18 +3875,85 @@ fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing()
 #[test]
 fn entry_skill_requires_verified_open_without_bootstrap_gating() {
     let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
-    assert!(skill.contains("version: \"3.0\""));
-    assert!(skill.contains("agent capability list --scope"));
-    assert!(skill.contains("agent capability read --intent"));
+    assert!(skill.contains("version: \"3.1\""));
+    assert!(!skill.contains("minCliVersion"));
+    assert!(!skill.contains("protocol-version"));
+    assert!(skill
+        .contains("myopenpanels studio start --local-only --project-dir \"$PWD\" --format json"));
+    assert!(skill.contains("myopenpanels agent bootstrap --project-dir \"$PWD\" --format json"));
+    assert!(!skill.contains("myopenpanels studio open-system-browser"));
+    assert!(!skill.contains("myopenpanels agent capability"));
+    assert!(!skill.contains("myopenpanels panel "));
+    assert!(!skill.contains("myopenpanels wiki "));
+    assert!(!skill.contains("myopenpanels canvas "));
+    assert!(!skill.contains("myopenpanels task "));
+    assert!(!skill.contains("myopenpanels operation "));
     assert!(skill.contains("data.nextRequiredAction.url"));
+    assert!(skill.contains("data.nextRequiredAction.fallback.argv"));
+    assert!(skill.contains("data.nextActions"));
+    assert!(!skill.contains("recommendedScopes"));
+    assert!(!skill.contains("capabilityListActions"));
+    assert!(!skill.contains("readAction"));
+    assert!(!skill.contains("protocolVersion"));
+    assert!(!skill.contains("commandCatalogVersion"));
     assert!(skill.contains("Studio readiness only"));
     assert!(skill.contains("If the user only asked to open the panel"));
     assert!(skill.contains("Do not request Agent Bootstrap merely to verify"));
-    assert!(skill.contains("studio open-system-browser"));
     assert!(skill.contains("data.opened: true"));
-    assert!(skill.contains("WorkBuddy Results Panel"));
     assert!(skill.contains("--local-only"));
     assert!(!skill.contains("--no-open"));
+}
+
+#[test]
+fn task_and_operation_discovery_use_response_level_next_actions() {
+    let task_list = with_task_next_actions(json!({ "tasks": [{ "id": "task:1" }] }), true);
+    assert_eq!(task_list["nextActions"][0]["intent"], "task.read");
+    assert_action_parses(&task_list["nextActions"][0]);
+
+    let task = with_task_next_actions(
+        json!({
+            "task": {
+                "id": "task:1",
+                "status": "running",
+                "capability": "wiki.page.search",
+            }
+        }),
+        false,
+    );
+    for action in task["nextActions"].as_array().unwrap() {
+        assert_action_parses(action);
+        assert_eq!(action["intent"], "agent.capability.read");
+    }
+
+    let operation_list =
+        with_operation_next_actions(json!({ "operations": [{ "id": "operation:1" }] }), true);
+    assert_eq!(operation_list["nextActions"][0]["intent"], "operation.read");
+    assert_action_parses(&operation_list["nextActions"][0]);
+
+    let operation = with_operation_next_actions(
+        json!({
+            "id": "operation:1",
+            "status": "active",
+            "skillId": "canvas-panel",
+            "guideId": "tasks.queue",
+        }),
+        false,
+    );
+    for action in operation["nextActions"].as_array().unwrap() {
+        assert_action_parses(action);
+    }
+    assert!(operation["nextActions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|action| action["intent"] == "agent.skill.read"));
+    assert!(operation["nextActions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|action| action["argv"]
+            .as_array()
+            .is_some_and(|argv| { argv.iter().any(|value| value == "operation.complete") })));
 }
 
 fn seed_selection_database(

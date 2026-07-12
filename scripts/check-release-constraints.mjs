@@ -51,10 +51,6 @@ const cliSource = readFileSync(
   new URL("crates/myopenpanels/src/cli.rs", ROOT),
   "utf8"
 )
-const agentSource = readFileSync(
-  new URL("crates/myopenpanels/src/agent.rs", ROOT),
-  "utf8"
-)
 assert(
   !cliSource.includes('"  agent context'),
   "Protocol v1 agent context must not return to the public CLI surface."
@@ -62,12 +58,6 @@ assert(
 assert(
   entrySkillVersion,
   "MyOpenPanels entry skill must declare metadata.version."
-)
-assert(
-  agentSource.includes(
-    `MYOPENPANELS_SKILL_VERSION: &str = "${entrySkillVersion}"`
-  ),
-  `CLI required MyOpenPanels Skill version must match ${entrySkillVersion}.`
 )
 for (const required of [
   "install-myopenpanels.sh",
@@ -89,6 +79,8 @@ for (const forbidden of [
   "canvas generation",
   "wiki generation",
   "--context-id",
+  "--protocol-version",
+  "minCliVersion",
   "Do not use package-manager",
   "Node-based fallback",
 ]) {

@@ -132,6 +132,17 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
         "selectedGeneratedDocumentIds": selected_generated_document_ids,
         "updatedAt": stored.get("updatedAt").cloned().unwrap_or(Value::Null),
     });
+    let mut skill_action = crate::cli::registry::command_action(
+        "agent.skill.read",
+        vec![
+            "--skill-id".to_owned(),
+            WIKI_PANEL_SKILL_ID.to_owned(),
+            "--format".to_owned(),
+            "json".to_owned(),
+        ],
+    )
+    .expect("registered Wiki Panel Skill action");
+    skill_action["loadWhen"] = json!("The user request requires Wiki query guidance.");
     Ok(json!({
         "selection": selection,
         "wiki": {
@@ -143,6 +154,7 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
             "querySkillId": WIKI_PANEL_SKILL_ID,
             "loadCommand": format!("myopenpanels agent skill read --skill-id {WIKI_PANEL_SKILL_ID} --format json"),
         },
+        "nextActions": [skill_action],
         "selectedRawDocuments": selected_documents,
         "selectedGeneratedDocuments": selected_generated_documents,
     }))

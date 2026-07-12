@@ -16,7 +16,6 @@ static AGENT_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-res
 pub const CANVAS_PANEL_SKILL_ID: &str = "canvas-panel";
 pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 3;
 pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
-pub const MYOPENPANELS_SKILL_VERSION: &str = "3.0";
 const MYOPENPANELS_SKILL_SOURCE: &str =
     "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels";
 
@@ -43,6 +42,10 @@ pub struct AgentGuide {
 pub struct AgentGuideReadPayload {
     pub guide: AgentGuideMetadata,
     pub markdown: String,
+    #[serde(rename = "nextActions")]
+    pub next_actions: Vec<Value>,
+    #[serde(rename = "nextRequiredAction")]
+    pub next_required_action: Value,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -81,6 +84,8 @@ pub struct AgentSkillReadPayload {
     pub local_dir: String,
     pub local_path: String,
     pub markdown: String,
+    pub next_actions: Vec<Value>,
+    pub next_required_action: Value,
 }
 
 pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<Value, CliError> {
@@ -158,6 +163,81 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
     .collect::<BTreeSet<_>>()
     .into_iter()
     .collect::<Vec<_>>();
+    let mut next_actions = recommended_scopes
+        .iter()
+        .map(|scope| {
+            let mut action = command_action(
+                "agent.capability.list",
+                vec![
+                    "--scope".to_owned(),
+                    (*scope).to_owned(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            );
+            action["loadWhen"] = json!(format!("The user request matches the {scope} scope."));
+            action
+        })
+        .collect::<Vec<_>>();
+    let mut capability_index_action = command_action(
+        "agent.capability.list",
+        vec!["--format".to_owned(), "json".to_owned()],
+    );
+    capability_index_action["loadWhen"] = json!("No recommended scope matches the user request.");
+    next_actions.push(capability_index_action);
+    if let Some(skill_id) = panel_skill_id(bootstrap.active_panel_kind) {
+        let mut action = command_action(
+            "agent.skill.read",
+            vec![
+                "--skill-id".to_owned(),
+                skill_id.to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ],
+        );
+        action["loadWhen"] = json!("The user request targets the active panel.");
+        next_actions.push(action);
+    }
+    next_actions.extend(applicable_guides.iter().map(|guide| {
+        let mut action = command_action(
+            "agent.guide.read",
+            vec![
+                "--guide-id".to_owned(),
+                guide.id.clone(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ],
+        );
+        action["loadWhen"] = json!(guide.load_when.join(" "));
+        action
+    }));
+    if let Some(task_id) = next_task_id(&bootstrap) {
+        let mut action = command_action(
+            "task.read",
+            vec![
+                "--task-id".to_owned(),
+                task_id.to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ],
+        );
+        action["loadWhen"] = json!("The user request should continue the next ready Task.");
+        next_actions.push(action);
+    }
+    next_actions.extend(operations.iter().take(3).filter_map(|operation| {
+        let operation_id = operation.get("id").and_then(Value::as_str)?;
+        let mut action = command_action(
+            "operation.read",
+            vec![
+                "--operation-id".to_owned(),
+                operation_id.to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ],
+        );
+        action["loadWhen"] = json!("The user request continues this active Operation.");
+        Some(action)
+    }));
     Ok(json!({
         "protocolVersion": AGENT_GUIDANCE_PROTOCOL_VERSION,
         "commandCatalogVersion": crate::cli::registry::COMMAND_CATALOG_VERSION,
@@ -168,7 +248,6 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         },
         "entrySkill": {
             "id": "myopenpanels",
-            "requiredVersion": MYOPENPANELS_SKILL_VERSION,
             "source": MYOPENPANELS_SKILL_SOURCE,
         },
         "focus": {
@@ -195,15 +274,38 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
             "activePanelSkill": active_panel_skill,
             "applicableGuides": compact_guide_references(&applicable_guides),
         },
+        "nextActions": next_actions,
         "nextRequiredAction": {
             "intent": "match-user-request",
-            "instruction": "Match the user request to a recommended capability scope, read the selected capability, and load a Skill or Guide only when that workflow requires it.",
+            "instruction": "Choose only the applicable entries from nextActions according to loadWhen. Execute their argv with the same resolved CLI executable, then follow the next response in the same way.",
         },
     }))
 }
 
 fn panel_skill_id(kind: PanelKind) -> Option<&'static str> {
     crate::panel::skill_id(kind)
+}
+
+fn next_task_id(bootstrap: &ProjectBootstrap) -> Option<&str> {
+    bootstrap
+        .tasks
+        .iter()
+        .filter(|task| task.get("ready").and_then(Value::as_bool).unwrap_or(false))
+        .find(|task| task.get("status").and_then(Value::as_str) == Some("queued"))
+        .or_else(|| {
+            bootstrap
+                .tasks
+                .iter()
+                .filter(|task| task.get("ready").and_then(Value::as_bool).unwrap_or(false))
+                .find(|task| task.get("status").and_then(Value::as_str) == Some("failed"))
+        })
+        .and_then(|task| task.get("id"))
+        .and_then(Value::as_str)
+}
+
+fn command_action(intent: &str, args: Vec<String>) -> Value {
+    crate::cli::registry::command_action(intent, args)
+        .unwrap_or_else(|| panic!("missing Command Registry action for {intent}"))
 }
 
 fn compact_task_summary(bootstrap: &ProjectBootstrap) -> Value {
@@ -386,6 +488,11 @@ pub fn read_agent_guide(
         task_id,
     )?;
     Ok(AgentGuideReadPayload {
+        next_actions: capability_read_actions(&guide.metadata.requires_capabilities),
+        next_required_action: json!({
+            "intent": "apply-guide",
+            "instruction": "Apply the Guide to the user request. Load an entry from nextActions only when the Guide requires that capability.",
+        }),
         guide: guide.metadata,
         markdown,
     })
@@ -488,11 +595,35 @@ pub fn read_agent_skill(
         selected_wiki_skill_id,
     )?;
     Ok(AgentSkillReadPayload {
+        next_actions: capability_read_actions(&skill.metadata.requires_capabilities),
+        next_required_action: json!({
+            "intent": "apply-skill",
+            "instruction": "Apply the Skill to the user request. Load an entry from nextActions only when the Skill requires that capability.",
+        }),
         skill: skill.metadata,
         local_dir: local_dir.display().to_string(),
         local_path: local_path.display().to_string(),
         markdown,
     })
+}
+
+fn capability_read_actions(intents: &[String]) -> Vec<Value> {
+    intents
+        .iter()
+        .map(|intent| {
+            let mut action = command_action(
+                "agent.capability.read",
+                vec![
+                    "--intent".to_owned(),
+                    intent.clone(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            );
+            action["loadWhen"] = json!("This Skill or Guide requires the referenced capability.");
+            action
+        })
+        .collect()
 }
 
 pub fn capabilities() -> Vec<Value> {
@@ -1165,5 +1296,21 @@ mod tests {
             .as_str()
             .unwrap()
             .is_char_boundary(string.as_str().unwrap().len()));
+    }
+
+    #[test]
+    fn compact_operation_references_leave_actions_at_the_response_root() {
+        let summary = compact_operation_summary(&[json!({
+            "id": "operation:1",
+            "intent": "canvas.generation.begin",
+            "panelKind": "canvas",
+            "status": "active",
+        })]);
+
+        assert!(summary["items"][0].get("readAction").is_none());
+        assert!(summary["items"][0]["readCommand"]
+            .as_str()
+            .unwrap()
+            .starts_with("myopenpanels operation read"));
     }
 }

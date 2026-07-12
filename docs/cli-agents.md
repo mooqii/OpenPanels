@@ -41,31 +41,20 @@ contains no Projects.
    json`.
 2. Treat CLI success as Studio readiness, not proof that the panel is visible.
    Follow `data.nextRequiredAction`: open its URL unchanged with a callable in-app
-   URL opener, or immediately run `myopenpanels studio open-system-browser
-   --local-only --project-dir <project> --format json` when that capability is
-   absent, fails, or cannot report success. Stop an open-only task only after an
-   opener succeeds.
-3. Run `myopenpanels agent bootstrap --format json` only before panel-specific
+   URL opener, or execute `data.nextRequiredAction.fallback.argv` with the same
+   resolved CLI executable when that capability is absent, fails, or cannot
+   report success. Stop an open-only task only after an opener succeeds.
+3. Run `myopenpanels agent bootstrap --project-dir <project> --format json`
+   only before panel-specific
    work. Read the compact Protocol v3 payload from `data`; the complete envelope
    is capped at 8192 UTF-8 bytes. It identifies the current focus, bounded Panel
    context, work counts, and discovery references rather than embedding full
    commands or documents.
-4. Run `myopenpanels panel list --project-dir <project> --format json` or
-   `myopenpanels panel activate --project-dir <project> --panel-kind wiki --format json`
-   to inspect or switch panels.
-5. Match the request to `discovery.recommendedScopes`, list that scope with
-   `agent capability list --scope <scope> --format json`, then read the selected
-   command with `agent capability read --intent <intent> --format json`.
-6. Load `discovery.activePanelSkill` only when the request targets the active
-   Panel. Load a referenced Guide only when its `loadWhen` rule applies.
-7. For Canvas work, load `canvas-panel`, then run `myopenpanels panel selection read --project-dir
-   <project> --format json` to inspect the current canvas selection.
-8. Run `myopenpanels canvas selection export --project-dir <project>
-   --output-file <path> --format json` when explicitly selected pixels are needed.
-   Selection reads never contain base64 data or fall back to a recent image.
-9. Run `myopenpanels canvas image insert --project-dir <project> --image-file <path>
-   --placement right --expect-focus-revision <revision> --format json` to place a generated local image into the
-   canvas.
+4. Follow `data.nextRequiredAction`, choose only applicable entries from the
+   response-level `data.nextActions`, and execute their `argv` arrays with the
+   originally resolved CLI executable.
+5. Repeat the same response-driven loop. Never infer a business command from
+   remembered paths, flags, or display command strings.
 
 ## Command Map
 

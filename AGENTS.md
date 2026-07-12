@@ -16,16 +16,17 @@
   Treat the successful response as Studio readiness, then follow
   `data.nextRequiredAction`: open its URL unchanged with a callable in-app browser
   tool. If no such tool exists, or the attempt fails or has no success signal,
-  run `scripts/myopenpanels-dev studio open-system-browser --local-only --project-dir "$PWD" --format json`.
+  execute `data.nextRequiredAction.fallback.argv` with the same resolved CLI
+  executable. Do not execute the compatibility display command.
   Do not report completion until an opener succeeds.
   If the start command fails or reports a stale server, run the foreground fallback:
   `MYOPENPANELS_CLI="$PWD/scripts/myopenpanels-dev" scripts/myopenpanels-dev studio serve --project-dir "$PWD" --local-only --format json`
 - Do not run broad `rg` searches before starting MyOpenPanels unless the CLI
   command fails.
-- For MyOpenPanels work after the Studio is running, use Bootstrap's recommended
-  scopes, then discover only the needed commands with
-  `scripts/myopenpanels-dev agent capability list --scope <scope> --format json`
-  and `agent capability read --intent <intent> --format json`.
+- For MyOpenPanels work after the Studio is running, call the second stable
+  entry with `scripts/myopenpanels-dev agent bootstrap --project-dir "$PWD"
+  --format json`, then execute only the returned action
+  `argv` arrays with the same resolved CLI executable.
 - Canvas, panel, wiki, and task commands target the current user-visible
   Project automatically. Do not pass context/session/panel ids unless you are
   explicitly debugging the CLI internals.
@@ -33,7 +34,7 @@
   done with `scripts/myopenpanels-dev project create`.
 - For an open-only request, do not run Agent Bootstrap. Use Bootstrap only when
   subsequent Wiki, Canvas, or task work requires the Agent protocol.
-- Use `studio open-system-browser` only when the in-app browser open attempt
+- Use the returned fallback action only when the in-app browser open attempt
   itself fails or no in-app browser is available.
 - After changing anything that affects the local CLI or bundled Studio server
   (Rust CLI/server code, studio UI assets, or embedded guides/assets),

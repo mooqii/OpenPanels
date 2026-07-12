@@ -343,20 +343,26 @@ fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
     match subcommand {
         Some("list") => {
             let paths = parsed_current_paths(parsed)?;
-            let result = tasks::list_tasks(&paths, task_list_filter(parsed))?;
+            let result = with_task_next_actions(
+                tasks::list_tasks(&paths, task_list_filter(parsed))?,
+                true,
+            );
             let count = result["tasks"].as_array().map(Vec::len).unwrap_or(0);
             write_result(parsed, stdout, &result, &format!("{count} task(s)"))
         }
         Some("next") => {
             let paths = parsed_current_paths(parsed)?;
-            let result = tasks::next_task(&paths, task_list_filter(parsed))?;
+            let result = with_task_next_actions(
+                tasks::next_task(&paths, task_list_filter(parsed))?,
+                true,
+            );
             let text = result["task"]["id"].as_str().unwrap_or("No pending task");
             write_result(parsed, stdout, &result, text)
         }
         Some("inspect") => {
             let paths = parsed_current_paths(parsed)?;
             let task_id = required_flag(parsed, "task-id")?;
-            let result = tasks::inspect_task(&paths, task_id)?;
+            let result = with_task_next_actions(tasks::inspect_task(&paths, task_id)?, false);
             write_result(parsed, stdout, &result, task_id)
         }
         Some("claim-next") => {
@@ -824,12 +830,15 @@ fn run_operation_command(parsed: &Invocation, stdout: &mut impl Write) -> Result
     let paths = parsed_current_paths(parsed)?;
     match parsed.positionals.get(1).map(String::as_str) {
         Some("list") => {
-            let payload = operations::list(&paths, string_flag(parsed, "status"))?;
+            let payload = with_operation_next_actions(
+                operations::list(&paths, string_flag(parsed, "status"))?,
+                true,
+            );
             write_result(parsed, stdout, &payload, "Operations")
         }
         Some("read") => {
             let id = required_flag(parsed, "operation-id")?;
-            let payload = operations::inspect(&paths, id)?;
+            let payload = with_operation_next_actions(operations::inspect(&paths, id)?, false);
             write_result(
                 parsed,
                 stdout,
@@ -1019,7 +1028,20 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
                 string_flag(parsed, "panel-kind"),
                 string_flag(parsed, "task-type"),
             )?;
-            let payload = serde_json::json!({ "guides": guides });
+            let next_actions = discovery_read_actions(
+                &guides,
+                "agent.guide.read",
+                "--guide-id",
+                "Read this Guide when its loadWhen condition applies.",
+            );
+            let payload = serde_json::json!({
+                "guides": guides,
+                "nextActions": next_actions,
+                "nextRequiredAction": {
+                    "intent": "select-guide",
+                    "instruction": "Choose the nextActions entry whose loadWhen matches the user request.",
+                },
+            });
             let text = render_agent_discovery_summary(&payload);
             write_result(parsed, stdout, &payload, &text)
         }
@@ -1038,7 +1060,20 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
                 string_flag(parsed, "panel-kind"),
                 string_flag(parsed, "task-type"),
             )?;
-            let payload = serde_json::json!({ "skills": skills });
+            let next_actions = discovery_read_actions(
+                &skills,
+                "agent.skill.read",
+                "--skill-id",
+                "Read this Skill when its loadWhen condition applies.",
+            );
+            let payload = serde_json::json!({
+                "skills": skills,
+                "nextActions": next_actions,
+                "nextRequiredAction": {
+                    "intent": "select-skill",
+                    "instruction": "Choose the nextActions entry whose loadWhen matches the user request.",
+                },
+            });
             let text = render_agent_discovery_summary(&payload);
             write_result(parsed, stdout, &payload, &text)
         }
@@ -1056,6 +1091,188 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             "Expected agent subcommand: bootstrap, capabilities, operations, bridge, guides, guide, skills, or skill.",
         )),
     }
+}
+
+fn discovery_read_actions(
+    items: &[Value],
+    intent: &str,
+    id_flag: &str,
+    load_when: &str,
+) -> Vec<Value> {
+    items
+        .iter()
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .map(|id| {
+            let mut action = registry::command_action(
+                intent,
+                vec![
+                    id_flag.to_owned(),
+                    id.to_owned(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            )
+            .unwrap_or_else(|| panic!("missing Command Registry action for {intent}"));
+            action["loadWhen"] = serde_json::json!(load_when);
+            action
+        })
+        .collect()
+}
+
+fn with_task_next_actions(mut payload: Value, list_mode: bool) -> Value {
+    let mut actions = Vec::new();
+    if list_mode {
+        let tasks = payload
+            .get("tasks")
+            .and_then(Value::as_array)
+            .cloned()
+            .or_else(|| {
+                payload
+                    .get("task")
+                    .filter(|task| !task.is_null())
+                    .map(|task| vec![task.clone()])
+            })
+            .unwrap_or_default();
+        for task in tasks {
+            let Some(task_id) = task.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let mut action = registry::command_action(
+                "task.read",
+                vec![
+                    "--task-id".to_owned(),
+                    task_id.to_owned(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            )
+            .expect("registered Task read action");
+            action["loadWhen"] =
+                serde_json::json!("The user request should inspect or continue this Task.");
+            actions.push(action);
+        }
+    } else if let Some(task) = payload.get("task") {
+        if let Some(capability) = task
+            .get("capability")
+            .and_then(Value::as_str)
+            .filter(|intent| registry::capability(intent).is_some())
+        {
+            actions.push(capability_read_action(
+                capability,
+                "The Task requires this capability.",
+            ));
+        }
+        let status = task.get("status").and_then(Value::as_str);
+        let lifecycle = match status {
+            Some("queued") => &["task.claim", "task.cancel"][..],
+            Some("failed") => &["task.claim", "task.retry", "task.cancel"][..],
+            Some("reserved" | "running" | "claimed" | "converting" | "indexing") => &[
+                "task.heartbeat",
+                "task.complete",
+                "task.fail",
+                "task.release",
+            ][..],
+            _ => &[][..],
+        };
+        actions.extend(lifecycle.iter().map(|intent| {
+            capability_read_action(intent, "The Task lifecycle requires this action.")
+        }));
+    }
+    payload["nextActions"] = serde_json::json!(actions);
+    payload["nextRequiredAction"] = serde_json::json!({
+        "intent": "continue-task",
+        "instruction": "Choose an applicable nextActions entry, execute its argv with the same resolved CLI executable, and follow the returned response.",
+    });
+    payload
+}
+
+fn with_operation_next_actions(mut payload: Value, list_mode: bool) -> Value {
+    let mut actions = Vec::new();
+    if list_mode {
+        for operation in payload
+            .get("operations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(operation_id) = operation.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let mut action = registry::command_action(
+                "operation.read",
+                vec![
+                    "--operation-id".to_owned(),
+                    operation_id.to_owned(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            )
+            .expect("registered Operation read action");
+            action["loadWhen"] =
+                serde_json::json!("The user request should inspect or continue this Operation.");
+            actions.push(action);
+        }
+    } else {
+        if let Some(skill_id) = payload.get("skillId").and_then(Value::as_str) {
+            let mut action = registry::command_action(
+                "agent.skill.read",
+                vec![
+                    "--skill-id".to_owned(),
+                    skill_id.to_owned(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            )
+            .expect("registered Skill read action");
+            action["loadWhen"] = serde_json::json!("The Operation requires this Skill.");
+            actions.push(action);
+        }
+        if let Some(guide_id) = payload.get("guideId").and_then(Value::as_str) {
+            let mut action = registry::command_action(
+                "agent.guide.read",
+                vec![
+                    "--guide-id".to_owned(),
+                    guide_id.to_owned(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            )
+            .expect("registered Guide read action");
+            action["loadWhen"] = serde_json::json!("The Operation requires this Guide.");
+            actions.push(action);
+        }
+        if matches!(
+            payload.get("status").and_then(Value::as_str),
+            Some("active" | "failed")
+        ) {
+            actions.extend(
+                ["operation.complete", "operation.fail", "operation.cancel"].map(|intent| {
+                    capability_read_action(intent, "The Operation requires this lifecycle action.")
+                }),
+            );
+        }
+    }
+    payload["nextActions"] = serde_json::json!(actions);
+    payload["nextRequiredAction"] = serde_json::json!({
+        "intent": "continue-operation",
+        "instruction": "Choose an applicable nextActions entry, execute its argv with the same resolved CLI executable, and follow the returned response.",
+    });
+    payload
+}
+
+fn capability_read_action(intent: &str, load_when: &str) -> Value {
+    let mut action = registry::command_action(
+        "agent.capability.read",
+        vec![
+            "--intent".to_owned(),
+            intent.to_owned(),
+            "--format".to_owned(),
+            "json".to_owned(),
+        ],
+    )
+    .expect("registered capability read action");
+    action["loadWhen"] = serde_json::json!(load_when);
+    action
 }
 
 fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
@@ -1627,6 +1844,17 @@ fn studio_launch_payload(
         payload[key] = serde_json::json!(value);
     }
     if open_required {
+        let fallback_action = registry::command_action(
+            "studio.open-system-browser",
+            vec![
+                "--local-only".to_owned(),
+                "--project-dir".to_owned(),
+                result.session.project_dir.clone(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ],
+        )
+        .expect("registered Studio browser fallback action");
         payload["nextRequiredAction"] = serde_json::json!({
             "intent": "studio.open",
             "required": true,
@@ -1635,6 +1863,7 @@ fn studio_launch_payload(
             "fallback": {
                 "intent": "studio.open-system-browser",
                 "command": "myopenpanels studio open-system-browser",
+                "argv": fallback_action["argv"],
                 "args": [
                     "--local-only",
                     "--project-dir",
