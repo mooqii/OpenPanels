@@ -90,9 +90,8 @@ contains no Projects.
   through its Panel Module.
 - `myopenpanels wiki page search`: search the selected Wiki space before
   reading relevant pages.
-- `myopenpanels agent guide list`: list compact Guide summaries, optionally
-  filtered by `--panel-kind` and `--task-type`.
-- `myopenpanels agent guide read --guide-id <id>`: print one full workflow guide.
+- `myopenpanels agent skill read --skill-id task-queue`: load the generic Task
+  queue lifecycle contract when the request handles queued work.
 - `myopenpanels panel list`: list panels in the current Project.
 - `myopenpanels panel current`: read the active Project panel.
 - `myopenpanels panel activate`: activate a Project panel; this is the only panel command that changes focus.

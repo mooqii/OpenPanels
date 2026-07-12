@@ -1,0 +1,2 @@
+-- Rust migration coordinator rewrites legacy Canvas asset URLs embedded in JSON.
+-- This artifact gives the data repair a stable checksum and audit trail.

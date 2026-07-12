@@ -1,9 +1,8 @@
 use crate::agent as agent_resources;
 use crate::bridge;
 use crate::control::{
-    create_project, create_runtime_session, delete_session, ensure_project_bootstrap, now_iso,
-    open_runtime_panel, read_active_panel_value, rename_session, write_active_session_id,
-    BootstrapRequest,
+    create_project, delete_project, ensure_project_bootstrap, now_iso, open_runtime_panel,
+    read_active_panel_value, rename_project, write_active_project_id, BootstrapRequest,
 };
 use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
@@ -23,7 +22,7 @@ use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post, put};
+use axum::routing::{delete, get, patch, post};
 use axum::Json;
 use axum::Router;
 use base64::Engine;
@@ -129,7 +128,7 @@ fn build_router(
         .route("/api/bootstrap", get(api_bootstrap))
         .route("/api/studio/focus", post(api_studio_focus))
         .route("/api/studio/open-browser", post(api_studio_open_browser))
-        .route("/api/projects", post(api_projects_create))
+        .route("/api/projects", get(api_projects).post(api_projects_create))
         .route("/api/update/status", get(api_update_status))
         .route("/api/update/download", post(api_update_download))
         .route(
@@ -166,10 +165,9 @@ fn build_router(
         )
         .route("/api/agent/skills", get(api_agent_skills))
         .route("/api/agent/bridge/status", get(api_bridge_status))
-        .route("/api/sessions", get(api_sessions).post(api_create_session))
         .route(
-            "/api/sessions/{session_id}",
-            patch(api_rename_session).delete(api_delete_session),
+            "/api/projects/{project_id}",
+            patch(api_rename_project).delete(api_delete_project),
         )
         .route("/api/panels", post(api_open_panel))
         .route("/api/artifacts", post(api_insert_artifact))
@@ -220,18 +218,6 @@ fn build_router(
             "/api/wiki/generated-documents/{document_id}/publish",
             post(api_wiki_publish_generated_document),
         )
-        .route("/api/wiki/tasks", get(api_wiki_tasks))
-        .route("/api/wiki/tasks/next", get(api_wiki_next_task))
-        .route("/api/wiki/tasks/{task_id}/claim", post(api_wiki_claim_task))
-        .route(
-            "/api/wiki/tasks/{task_id}/complete",
-            post(api_wiki_complete_task),
-        )
-        .route("/api/wiki/tasks/{task_id}/fail", post(api_wiki_fail_task))
-        .route(
-            "/api/wiki/agent-targets",
-            get(api_wiki_agent_targets).post(api_wiki_register_agent_target),
-        )
         .route(
             "/api/wiki/active-space",
             get(api_wiki_active_space).put(api_wiki_set_active_space),
@@ -258,27 +244,27 @@ fn build_router(
                 .post(api_wiki_write_page),
         )
         .route(
-            "/api/active-session",
-            get(api_active_session).put(api_set_active_session),
+            "/api/active-project",
+            get(api_active_project).put(api_set_active_project),
         )
         .route(
             "/api/active-panel",
             get(api_active_panel).put(api_set_active_panel),
         )
         .route(
-            "/api/panels/{session_id}/{panel_id}/state",
-            put(api_save_panel_state),
+            "/api/projects/{project_id}/panels/{panel_id}/state",
+            get(api_get_panel_state).put(api_save_panel_state),
         )
         .route(
-            "/api/panels/{session_id}/{panel_id}/selection",
-            put(api_save_panel_selection),
+            "/api/projects/{project_id}/panels/{panel_id}/selection",
+            get(api_get_panel_selection).put(api_save_panel_selection),
         )
         .route(
-            "/api/panels/{session_id}/{panel_id}/assets",
+            "/api/projects/{project_id}/panels/{panel_id}/assets",
             post(api_write_panel_asset),
         )
         .route(
-            "/api/panels/{session_id}/{panel_id}/assets/{*asset_name}",
+            "/api/projects/{project_id}/panels/{panel_id}/assets/{*asset_name}",
             get(api_read_panel_asset),
         )
         .route("/", get(index))
@@ -299,7 +285,7 @@ fn build_router(
 struct BootstrapQuery {
     panel_id: Option<String>,
     panel_kind: Option<String>,
-    session_id: Option<String>,
+    project_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,7 +321,7 @@ async fn api_bootstrap(
     let request = BootstrapRequest {
         requested_panel_id: query.panel_id,
         requested_panel_kind: query.panel_kind.as_deref().and_then(PanelKind::parse),
-        requested_session_id: query.session_id,
+        requested_project_id: query.project_id,
     };
     no_store_response(match ensure_project_bootstrap(&state.paths, request) {
         Ok(bootstrap) => json_response(StatusCode::OK, &with_build_info(bootstrap, &state)),
@@ -720,8 +706,18 @@ async fn api_inspect_task(
     }
 }
 
-async fn api_project_events(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectEventsQuery {
+    project_id: Option<String>,
+}
+
+async fn api_project_events(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ProjectEventsQuery>,
+) -> impl IntoResponse {
     let paths = state.paths.clone();
+    let project_id = query.project_id;
     let (sender, receiver) = mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
 
     tokio::spawn(async move {
@@ -732,39 +728,38 @@ async fn api_project_events(State(state): State<Arc<AppState>>) -> impl IntoResp
 
         loop {
             interval.tick().await;
-            let next_seq = match read_storage_change_seq(&paths) {
-                Ok(seq) => seq,
-                Err(error) => {
-                    let payload = json!({
-                        "kind": "error",
-                        "message": error.message(),
-                    });
-                    if sender
-                        .send(Ok(Event::default()
-                            .event("error")
-                            .data(payload.to_string())))
-                        .is_err()
-                    {
-                        break;
+            let (next_seq, changes) =
+                match read_change_scopes_after(&paths, last_seq, project_id.as_deref()) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let payload = json!({
+                            "kind": "error",
+                            "message": error.message(),
+                        });
+                        if sender
+                            .send(Ok(Event::default()
+                                .event("error")
+                                .data(payload.to_string())))
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
                     }
-                    continue;
-                }
-            };
+                };
             if next_seq == last_seq {
                 continue;
             }
             last_seq = next_seq;
-            let payload = json!({
-                "kind": "storage",
-                "revision": next_seq,
-            });
-            if sender
-                .send(Ok(Event::default()
-                    .event("project")
-                    .data(payload.to_string())))
-                .is_err()
-            {
-                break;
+            for change in changes {
+                if sender
+                    .send(Ok(Event::default().event("project").data(
+                        serde_json::to_string(&change).unwrap_or_else(|_| "{}".to_owned()),
+                    )))
+                    .is_err()
+                {
+                    return;
+                }
             }
         }
     });
@@ -776,49 +771,42 @@ fn read_storage_change_seq(paths: &MyOpenPanelsPaths) -> Result<i64, CliError> {
     Storage::open(paths).and_then(|storage| storage.read_change_seq())
 }
 
-async fn api_sessions(State(state): State<Arc<AppState>>) -> Response {
-    match Storage::open(&state.paths).and_then(|storage| storage.list_sessions()) {
-        Ok(sessions) => json_response(StatusCode::OK, &sessions),
+fn read_change_scopes_after(
+    paths: &MyOpenPanelsPaths,
+    revision: i64,
+    project_id: Option<&str>,
+) -> Result<(i64, Vec<crate::storage::ChangeScope>), CliError> {
+    Storage::open(paths).and_then(|storage| storage.read_changes_after(revision, project_id))
+}
+
+async fn api_projects(State(state): State<Arc<AppState>>) -> Response {
+    match Storage::open(&state.paths).and_then(|storage| storage.list_projects()) {
+        Ok(projects) => json_response(StatusCode::OK, &projects),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
 }
 
 #[derive(Debug, Deserialize)]
-struct CreateSessionBody {
+struct RenameProjectBody {
     title: Option<String>,
 }
 
-async fn api_create_session(
+async fn api_rename_project(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<CreateSessionBody>,
+    Path(project_id): Path<String>,
+    Json(body): Json<RenameProjectBody>,
 ) -> Response {
-    match create_runtime_session(&state.paths, body.title.as_deref()) {
-        Ok(session) => json_response(StatusCode::OK, &session),
+    match rename_project(&state.paths, &project_id, body.title.as_deref()) {
+        Ok(project) => json_response(StatusCode::OK, &json!({ "project": project })),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct RenameSessionBody {
-    title: Option<String>,
-}
-
-async fn api_rename_session(
+async fn api_delete_project(
     State(state): State<Arc<AppState>>,
-    Path(session_id): Path<String>,
-    Json(body): Json<RenameSessionBody>,
+    Path(project_id): Path<String>,
 ) -> Response {
-    match rename_session(&state.paths, &session_id, body.title.as_deref()) {
-        Ok(session) => json_response(StatusCode::OK, &json!({ "session": session })),
-        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
-    }
-}
-
-async fn api_delete_session(
-    State(state): State<Arc<AppState>>,
-    Path(session_id): Path<String>,
-) -> Response {
-    match delete_session(&state.paths, &session_id) {
+    match delete_project(&state.paths, &project_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
@@ -829,7 +817,7 @@ async fn api_delete_session(
 struct OpenPanelBody {
     initial_state: Option<Value>,
     kind: String,
-    session_id: String,
+    project_id: String,
     title: Option<String>,
 }
 
@@ -845,7 +833,7 @@ async fn api_open_panel(
     };
     match open_runtime_panel(
         &state.paths,
-        &body.session_id,
+        &body.project_id,
         kind,
         body.title.as_deref(),
         body.initial_state,
@@ -860,7 +848,7 @@ async fn api_open_panel(
 struct InsertArtifactBody {
     artifact: Value,
     panel_id: Option<String>,
-    session_id: String,
+    project_id: String,
 }
 
 async fn api_insert_artifact(
@@ -884,7 +872,7 @@ async fn api_insert_artifact(
                 object.insert("panelId".to_owned(), json!(panel_id));
             }
         }
-        storage.write_artifact(&body.session_id, &artifact)?;
+        storage.write_artifact(&body.project_id, &artifact)?;
         Ok(artifact)
     });
     match result {
@@ -1004,11 +992,11 @@ fn schedule_current_server_exit() {
     });
 }
 
-async fn api_active_session(State(state): State<Arc<AppState>>) -> Response {
+async fn api_active_project(State(state): State<Arc<AppState>>) -> Response {
     match ensure_project_bootstrap(&state.paths, BootstrapRequest::new()) {
         Ok(bootstrap) => json_response(
             StatusCode::OK,
-            &json!({ "sessionId": bootstrap.session.id }),
+            &json!({ "projectId": bootstrap.project.id }),
         ),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
@@ -1016,33 +1004,33 @@ async fn api_active_session(State(state): State<Arc<AppState>>) -> Response {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ActiveSessionBody {
-    session_id: Option<String>,
+struct ActiveProjectBody {
+    project_id: Option<String>,
 }
 
-async fn api_set_active_session(
+async fn api_set_active_project(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<ActiveSessionBody>,
+    Json(body): Json<ActiveProjectBody>,
 ) -> Response {
-    let Some(session_id) = body.session_id.filter(|value| !value.trim().is_empty()) else {
-        return json_error(StatusCode::BAD_REQUEST, "Missing sessionId.");
+    let Some(project_id) = body.project_id.filter(|value| !value.trim().is_empty()) else {
+        return json_error(StatusCode::BAD_REQUEST, "Missing projectId.");
     };
     let result = Storage::open(&state.paths).and_then(|storage| {
-        if storage.read_session(&session_id)?.is_none() {
+        if storage.read_project(&project_id)?.is_none() {
             return Err(CliError::new(format!(
-                "MyOpenPanels session not found: {session_id}"
+                "MyOpenPanels project not found: {project_id}"
             )));
         }
-        write_active_session_id(&state.paths, &session_id)?;
+        write_active_project_id(&state.paths, &project_id)?;
         ensure_project_bootstrap(
             &state.paths,
             BootstrapRequest {
-                requested_session_id: Some(session_id.clone()),
+                requested_project_id: Some(project_id.clone()),
                 requested_panel_id: None,
                 requested_panel_kind: None,
             },
         )?;
-        Ok(json!({ "sessionId": session_id }))
+        Ok(json!({ "projectId": project_id }))
     });
     match result {
         Ok(payload) => json_response(StatusCode::OK, &payload),
@@ -1064,7 +1052,7 @@ async fn api_active_panel(State(state): State<Arc<AppState>>) -> Response {
 struct ActivePanelBody {
     kind: Option<String>,
     panel_id: Option<String>,
-    session_id: Option<String>,
+    project_id: Option<String>,
 }
 
 async fn api_set_active_panel(
@@ -1074,7 +1062,7 @@ async fn api_set_active_panel(
     let result = ensure_project_bootstrap(
         &state.paths,
         BootstrapRequest {
-            requested_session_id: body.session_id,
+            requested_project_id: body.project_id,
             requested_panel_id: body.panel_id,
             requested_panel_kind: body.kind.as_deref().and_then(PanelKind::parse),
         },
@@ -1096,19 +1084,19 @@ async fn api_set_active_panel(
 
 async fn api_save_panel_state(
     State(state): State<Arc<AppState>>,
-    Path((session_id, panel_id)): Path<(String, String)>,
+    Path((project_id, panel_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Response {
     let base_revision = body.get("baseRevision").and_then(Value::as_i64);
     let panel_state = body.get("state").cloned().unwrap_or_else(|| body.clone());
     let result = Storage::open(&state.paths).and_then(|storage| {
         storage
-            .write_panel_state_if_current(&session_id, &panel_id, &panel_state, base_revision)
+            .write_panel_state_if_current(&project_id, &panel_id, &panel_state, base_revision)
             .map(|result| {
                 result.map(|revision| {
                     json!({
                         "saved": true,
-                        "sessionId": session_id,
+                        "projectId": project_id,
                         "panelId": panel_id,
                         "revision": revision,
                     })
@@ -1117,7 +1105,7 @@ async fn api_save_panel_state(
     });
     match result {
         Ok(Ok(payload)) => {
-            if let Err(error) = write_active_session_id(&state.paths, &session_id) {
+            if let Err(error) = write_active_project_id(&state.paths, &project_id) {
                 return json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message());
             }
             json_response(StatusCode::OK, &payload)
@@ -1129,11 +1117,36 @@ async fn api_save_panel_state(
                 "error": "Canvas state is stale.",
                 "baseRevision": conflict.base_revision,
                 "currentRevision": conflict.current_revision,
-                "sessionId": session_id,
+                "projectId": project_id,
                 "panelId": panel_id,
             }),
         ),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_get_panel_state(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, panel_id)): Path<(String, String)>,
+) -> Response {
+    let result = Storage::open(&state.paths).and_then(|storage| {
+        let panel = storage.read_panel(&project_id, &panel_id)?.ok_or_else(|| {
+            CliError::with_code("panel_not_found", format!("Panel not found: {panel_id}"))
+        })?;
+        let state = storage
+            .read_panel_state(&project_id, &panel_id)?
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "panel_state_not_found",
+                    format!("Panel state not found: {panel_id}"),
+                )
+            })?;
+        let revision = storage.read_panel_state_revision(&project_id, &panel_id)?;
+        Ok(json!({ "panel": panel, "state": state, "revision": revision }))
+    });
+    match result {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
     }
 }
 
@@ -1144,9 +1157,27 @@ struct SelectionBody {
     selection: Option<Value>,
 }
 
+async fn api_get_panel_selection(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, panel_id)): Path<(String, String)>,
+) -> Response {
+    let result = Storage::open(&state.paths).and_then(|storage| {
+        let panel = storage.read_panel(&project_id, &panel_id)?.ok_or_else(|| {
+            CliError::with_code("panel_not_found", format!("Panel not found: {panel_id}"))
+        })?;
+        let selection = storage.read_panel_selection(&project_id, &panel_id)?;
+        let revision = storage.read_panel_selection_revision(&project_id, &panel_id)?;
+        Ok(json!({ "panel": panel, "selection": selection, "revision": revision }))
+    });
+    match result {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
 async fn api_save_panel_selection(
     State(state): State<Arc<AppState>>,
-    Path((session_id, panel_id)): Path<(String, String)>,
+    Path((project_id, panel_id)): Path<(String, String)>,
     Json(body): Json<SelectionBody>,
 ) -> Response {
     let result = Storage::open(&state.paths).and_then(|storage| {
@@ -1163,7 +1194,7 @@ async fn api_save_panel_selection(
         {
             let image = data_url_to_buffer(data_url)?;
             let written = storage.write_asset_from_buffer(
-                &session_id,
+                &project_id,
                 &panel_id,
                 "__selection/current.png",
                 &image.bytes,
@@ -1186,15 +1217,15 @@ async fn api_save_panel_selection(
             .cloned()
             .unwrap_or_default();
         let selection = json!({
-            "sessionId": session_id,
+            "projectId": project_id,
             "panelId": panel_id,
             "selectedShapeIds": selected_shape_ids,
             "selectedShapes": selected_shapes,
             "assetRef": asset_ref,
             "updatedAt": now_iso(),
         });
-        storage.write_panel_selection(&session_id, &panel_id, &selection)?;
-        write_active_session_id(&state.paths, &session_id)?;
+        storage.write_panel_selection(&project_id, &panel_id, &selection)?;
+        write_active_project_id(&state.paths, &project_id)?;
         Ok(json!({ "saved": true, "selection": selection }))
     });
     match result {
@@ -1213,14 +1244,14 @@ struct AssetBody {
 
 async fn api_write_panel_asset(
     State(state): State<Arc<AppState>>,
-    Path((session_id, panel_id)): Path<(String, String)>,
+    Path((project_id, panel_id)): Path<(String, String)>,
     Json(body): Json<AssetBody>,
 ) -> Response {
     let result = Storage::open(&state.paths).and_then(|storage| {
         let image = data_url_to_buffer(&body.data_url)?;
         let requested_name = body.file_name.as_deref().unwrap_or("asset.png");
         let written = storage.write_asset_from_buffer(
-            &session_id,
+            &project_id,
             &panel_id,
             requested_name,
             &image.bytes,
@@ -1236,8 +1267,8 @@ async fn api_write_panel_asset(
             },
             "mimeType": body.mime_type.unwrap_or(image.mime_type),
             "src": format!(
-                "/api/panels/{}/{}/assets/{}",
-                session_id,
+                "/api/projects/{}/panels/{}/assets/{}",
+                project_id,
                 panel_id,
                 written.file_name
             ),
@@ -1251,9 +1282,9 @@ async fn api_write_panel_asset(
 
 async fn api_read_panel_asset(
     State(state): State<Arc<AppState>>,
-    Path((session_id, panel_id, asset_name)): Path<(String, String, String)>,
+    Path((project_id, panel_id, asset_name)): Path<(String, String, String)>,
 ) -> Response {
-    let asset_ref = format!("sessions/{session_id}/panels/{panel_id}/assets/{asset_name}");
+    let asset_ref = format!("projects/{project_id}/panels/{panel_id}/assets/{asset_name}");
     match Storage::open(&state.paths).and_then(|storage| storage.read_asset(&asset_ref)) {
         Ok(bytes) => bytes_response(StatusCode::OK, bytes, mime_type(&asset_name)),
         Err(error) => json_error(StatusCode::NOT_FOUND, error.message()),
@@ -1671,7 +1702,7 @@ mod tests {
             Query(BootstrapQuery {
                 panel_id: None,
                 panel_kind: None,
-                session_id: None,
+                project_id: None,
             }),
         )
         .await;

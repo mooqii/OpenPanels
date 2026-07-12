@@ -1,12 +1,6 @@
-export type MyOpenPanelsPanelKind =
-  | "wiki"
-  | "canvas"
-  | "image"
-  | "diff"
-  | "preview"
-  | "files"
+export type MyOpenPanelsPanelKind = "wiki" | "canvas"
 
-export interface MyOpenPanelsSession {
+export interface MyOpenPanelsProject {
   createdAt: string
   id: string
   panelIds: string[]
@@ -18,7 +12,7 @@ export interface MyOpenPanelsPanel {
   createdAt: string
   id: string
   kind: MyOpenPanelsPanelKind
-  sessionId: string
+  projectId: string
   stateRef?: string
   title: string
   updatedAt: string

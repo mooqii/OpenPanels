@@ -4,6 +4,76 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const COMMAND_CATALOG_VERSION: u32 = 4;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CommandId {
+    Catalog(usize),
+    InternalStudioServe,
+    ParseError,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CommandGroup {
+    Version,
+    Studio,
+    Update,
+    Project,
+    Panel,
+    Canvas,
+    Wiki,
+    Task,
+    Operation,
+    Agent,
+    InternalStudioServe,
+    ParseError,
+}
+
+impl CommandId {
+    pub(crate) fn from_intent(intent: &str) -> Option<Self> {
+        match intent {
+            "internal.studio.serve" => Some(Self::InternalStudioServe),
+            "cli.parse" => Some(Self::ParseError),
+            _ => SPECS
+                .iter()
+                .position(|spec| spec.intent == intent)
+                .map(Self::Catalog),
+        }
+    }
+
+    pub(crate) fn intent(self) -> &'static str {
+        match self {
+            Self::Catalog(index) => SPECS[index].intent,
+            Self::InternalStudioServe => "internal.studio.serve",
+            Self::ParseError => "cli.parse",
+        }
+    }
+
+    pub(crate) fn registered(intent: &str) -> Self {
+        Self::from_intent(intent)
+            .filter(|id| matches!(id, Self::Catalog(_)))
+            .unwrap_or_else(|| panic!("command is not registered: {intent}"))
+    }
+
+    pub(crate) fn group(self) -> CommandGroup {
+        match self {
+            Self::InternalStudioServe => CommandGroup::InternalStudioServe,
+            Self::ParseError => CommandGroup::ParseError,
+            Self::Catalog(index) => match SPECS[index].path[0] {
+                "version" => CommandGroup::Version,
+                "studio" => CommandGroup::Studio,
+                "update" => CommandGroup::Update,
+                "project" => CommandGroup::Project,
+                "panel" => CommandGroup::Panel,
+                "canvas" => CommandGroup::Canvas,
+                "wiki" => CommandGroup::Wiki,
+                "task" => CommandGroup::Task,
+                "operation" => CommandGroup::Operation,
+                "agent" => CommandGroup::Agent,
+                path => panic!("unsupported registered command group: {path}"),
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct CommandSpec {
     intent: &'static str,
@@ -557,22 +627,6 @@ const SPECS: &[CommandSpec] = &[
         true
     ),
     spec!(
-        "agent.guide.list",
-        ["agent", "guide", "list"],
-        "List Agent Guides",
-        "agent",
-        "none",
-        false
-    ),
-    spec!(
-        "agent.guide.read",
-        ["agent", "guide", "read"],
-        "Read an Agent Guide",
-        "agent",
-        "current-project",
-        false
-    ),
-    spec!(
         "agent.skill.list",
         ["agent", "skill", "list"],
         "List Agent Skills",
@@ -647,8 +701,11 @@ pub(crate) fn capabilities() -> Vec<Value> {
         .collect()
 }
 
-pub(crate) fn command_action(intent: &str, args: Vec<String>) -> Option<Value> {
-    let spec = SPECS.iter().find(|spec| spec.intent == intent)?;
+pub(crate) fn command_action(command_id: CommandId, args: Vec<String>) -> Option<Value> {
+    let CommandId::Catalog(index) = command_id else {
+        return None;
+    };
+    let spec = SPECS.get(index)?;
     let mut argv = spec
         .path
         .iter()
@@ -656,7 +713,7 @@ pub(crate) fn command_action(intent: &str, args: Vec<String>) -> Option<Value> {
         .collect::<Vec<_>>();
     argv.extend(args);
     Some(json!({
-        "intent": intent,
+        "intent": spec.intent,
         "executor": "cli",
         "argv": argv,
     }))
@@ -673,7 +730,8 @@ pub(crate) fn scope_index() -> Value {
         .into_iter()
         .map(|(scope, count)| {
             let mut action = command_action(
-                "agent.capability.list",
+                CommandId::from_intent("agent.capability.list")
+                    .expect("registered capability list"),
                 vec![
                     "--scope".to_owned(),
                     scope.to_owned(),
@@ -715,7 +773,8 @@ pub(crate) fn scope_capabilities(scope: &str) -> Option<Value> {
         .iter()
         .map(|spec| {
             let mut action = command_action(
-                "agent.capability.read",
+                CommandId::from_intent("agent.capability.read")
+                    .expect("registered capability read"),
                 vec![
                     "--intent".to_owned(),
                     spec.intent.to_owned(),

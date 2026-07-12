@@ -3,6 +3,7 @@ pub mod agent_control;
 pub mod bridge;
 pub mod canvas;
 pub mod cli;
+pub mod context_cleanup;
 pub mod control;
 pub mod error;
 pub mod operations;

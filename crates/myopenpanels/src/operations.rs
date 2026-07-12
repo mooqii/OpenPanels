@@ -16,6 +16,7 @@ use std::fs;
 use std::path::Path;
 
 pub const OPERATION_PROTOCOL_VERSION: i64 = 2;
+const OPERATION_ARTIFACT_RETENTION_DAYS: i64 = 7;
 
 fn operation_id() -> String {
     let random: u128 = rand::rng().random();
@@ -59,7 +60,40 @@ fn active_operation(paths: &MyOpenPanelsPaths, id: &str, intent: &str) -> Result
 }
 
 fn save(paths: &MyOpenPanelsPaths, operation: &Value) -> Result<(), CliError> {
-    Storage::open(paths)?.write_agent_operation(operation)
+    let storage = Storage::open(paths)?;
+    storage.write_agent_operation(operation)?;
+    cleanup_artifacts_with_storage(paths, &storage, chrono::Utc::now());
+    Ok(())
+}
+
+/// Best-effort cleanup of files that can no longer be used by an Operation.
+pub fn cleanup_operation_artifacts(paths: &MyOpenPanelsPaths) {
+    let Ok(storage) = Storage::open(paths) else {
+        return;
+    };
+    cleanup_artifacts_with_storage(paths, &storage, chrono::Utc::now());
+}
+
+fn cleanup_artifacts_with_storage(
+    paths: &MyOpenPanelsPaths,
+    storage: &Storage,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let cutoff = (now - chrono::Duration::days(OPERATION_ARTIFACT_RETENTION_DAYS))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let Ok(operation_ids) = storage.list_terminal_agent_operation_ids_before(&cutoff) else {
+        return;
+    };
+    let operations_dir = paths.storage_dir.join("operations");
+    for operation_id in operation_ids {
+        let operation_dir = operations_dir.join(sanitize_path_part(&operation_id));
+        let Ok(metadata) = fs::symlink_metadata(&operation_dir) else {
+            continue;
+        };
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            let _ = fs::remove_dir_all(operation_dir);
+        }
+    }
 }
 
 fn finish(operation: &mut Value, status: &str, result: Value, error: Value) {
@@ -132,7 +166,7 @@ pub fn begin_canvas(
     }
     let placeholder = insert_placeholder_for_target(
         paths,
-        &bootstrap.session.id,
+        &bootstrap.project.id,
         &bootstrap.panel.id,
         InsertPlaceholderInput {
             anchor_shape_id: selected_ids.first().map(String::as_str),
@@ -149,8 +183,8 @@ pub fn begin_canvas(
         "ownerContextId": paths.context_id,
         "intent": "canvas.image.generate",
         "status": "active",
-        "sessionId": bootstrap.session.id,
-        "projectTitle": bootstrap.session.title,
+        "projectId": bootstrap.project.id,
+        "projectTitle": bootstrap.project.title,
         "panelId": bootstrap.panel.id,
         "panelTitle": bootstrap.panel.title,
         "panelKind": "canvas",
@@ -224,14 +258,14 @@ pub fn complete_canvas(
             );
         }
     }
-    let session_id = operation["sessionId"].as_str().unwrap_or_default();
+    let project_id = operation["projectId"].as_str().unwrap_or_default();
     let panel_id = operation["panelId"].as_str().unwrap_or_default();
     let placeholder = operation
         .pointer("/target/placeholderShapeId")
         .and_then(Value::as_str);
     let inserted = match insert_image_for_target(
         paths,
-        session_id,
+        project_id,
         panel_id,
         InsertImageInput {
             anchor_shape_id: None,
@@ -276,7 +310,7 @@ pub fn finish_canvas(
     message: Option<&str>,
 ) -> Result<Value, CliError> {
     let mut operation = active_operation(paths, id, "canvas.image.generate")?;
-    let session_id = operation["sessionId"].as_str().unwrap_or_default();
+    let project_id = operation["projectId"].as_str().unwrap_or_default();
     let panel_id = operation["panelId"].as_str().unwrap_or_default();
     let placeholder = operation
         .pointer("/target/placeholderShapeId")
@@ -284,7 +318,7 @@ pub fn finish_canvas(
         .unwrap_or_default();
     update_placeholder_for_target(
         paths,
-        session_id,
+        project_id,
         panel_id,
         placeholder,
         message,
@@ -316,7 +350,7 @@ pub fn begin_wiki(
     let is_update = document_id.is_some();
     let started = wiki::begin_generated_document_for_target(
         paths,
-        &bootstrap.session.id,
+        &bootstrap.project.id,
         &bootstrap.panel.id,
         &id,
         title,
@@ -329,7 +363,7 @@ pub fn begin_wiki(
     let operation = json!({
         "id": id, "ownerContextId": paths.context_id,
         "intent": "wiki.document.generate", "status": "active",
-        "sessionId": bootstrap.session.id, "projectTitle": bootstrap.session.title,
+        "projectId": bootstrap.project.id, "projectTitle": bootstrap.project.title,
         "panelId": bootstrap.panel.id, "panelTitle": bootstrap.panel.title, "panelKind": "wiki",
         "skillId": wiki::WIKI_PANEL_SKILL_ID, "guideId": null, "protocolVersion": OPERATION_PROTOCOL_VERSION,
         "target": { "documentId": document_id, "baseContentVersion": started["baseContentVersion"] },
@@ -351,7 +385,7 @@ pub fn complete_wiki(paths: &MyOpenPanelsPaths, id: &str, file: &str) -> Result<
         .unwrap_or("document.md");
     let result = match wiki::complete_generated_document_for_target(
         paths,
-        operation["sessionId"].as_str().unwrap_or_default(),
+        operation["projectId"].as_str().unwrap_or_default(),
         operation["panelId"].as_str().unwrap_or_default(),
         operation
             .pointer("/target/documentId")
@@ -392,7 +426,7 @@ pub fn finish_wiki(
     let mut operation = active_operation(paths, id, "wiki.document.generate")?;
     wiki::finish_generated_document_operation(
         paths,
-        operation["sessionId"].as_str().unwrap_or_default(),
+        operation["projectId"].as_str().unwrap_or_default(),
         operation["panelId"].as_str().unwrap_or_default(),
         operation
             .pointer("/target/documentId")
@@ -478,7 +512,7 @@ fn to_cli_error(error: impl std::fmt::Display) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::control::{create_project, ensure_project_bootstrap, read_active_session_id};
+    use crate::control::{create_project, ensure_project_bootstrap, read_active_project_id};
     use crate::paths::resolve_myopenpanels_paths;
     use base64::Engine;
 
@@ -494,6 +528,100 @@ mod tests {
         )
         .expect("paths");
         (temp, paths)
+    }
+
+    fn operation_record(id: &str, status: &str, completed_at: Option<&str>) -> Value {
+        json!({
+            "id": id,
+            "ownerContextId": "operation-test",
+            "intent": "canvas.image.generate",
+            "status": status,
+            "projectId": "session:test",
+            "panelId": "panel:test",
+            "panelKind": "canvas",
+            "guideId": null,
+            "protocolVersion": OPERATION_PROTOCOL_VERSION,
+            "target": {},
+            "input": {},
+            "result": null,
+            "error": null,
+            "createdAt": "2026-01-01T00:00:00.000Z",
+            "updatedAt": completed_at.unwrap_or("2026-01-01T00:00:00.000Z"),
+            "completedAt": completed_at,
+        })
+    }
+
+    #[test]
+    fn cleanup_removes_only_expired_terminal_operation_artifacts() {
+        let (_temp, paths) = test_paths();
+        let bootstrap = crate::control::ensure_project_bootstrap(
+            &paths,
+            crate::control::BootstrapRequest::new(),
+        )
+        .expect("bootstrap");
+        let storage = Storage::open(&paths).expect("storage");
+        let cases = [
+            (
+                "operation:old-completed",
+                "completed",
+                Some("2026-01-01T00:00:00.000Z"),
+            ),
+            (
+                "operation:old-cancelled",
+                "cancelled",
+                Some("2026-01-02T00:00:00.000Z"),
+            ),
+            (
+                "operation:recent-completed",
+                "completed",
+                Some("2026-01-09T00:00:00.001Z"),
+            ),
+            (
+                "operation:retryable-failed",
+                "failed",
+                Some("2026-01-01T00:00:00.000Z"),
+            ),
+            ("operation:active", "active", None),
+        ];
+        for (id, status, completed_at) in cases {
+            let mut operation = operation_record(id, status, completed_at);
+            operation["projectId"] = json!(bootstrap.project.id);
+            operation["panelId"] = json!(bootstrap.panel.id);
+            operation["panelKind"] = json!(bootstrap.panel.kind);
+            storage
+                .write_agent_operation(&operation)
+                .expect("operation");
+            let operation_dir = paths
+                .storage_dir
+                .join("operations")
+                .join(sanitize_path_part(id));
+            fs::create_dir_all(&operation_dir).expect("operation dir");
+            fs::write(operation_dir.join("reference.png"), b"reference").expect("reference");
+        }
+
+        cleanup_artifacts_with_storage(
+            &paths,
+            &storage,
+            chrono::DateTime::parse_from_rfc3339("2026-01-16T00:00:00.000Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        );
+
+        let operation_dir = |id: &str| {
+            paths
+                .storage_dir
+                .join("operations")
+                .join(sanitize_path_part(id))
+        };
+        assert!(!operation_dir("operation:old-completed").exists());
+        assert!(!operation_dir("operation:old-cancelled").exists());
+        assert!(operation_dir("operation:recent-completed").exists());
+        assert!(operation_dir("operation:retryable-failed").exists());
+        assert!(operation_dir("operation:active").exists());
+        assert!(storage
+            .read_agent_operation("operation:old-completed")
+            .expect("read operation")
+            .is_some());
     }
 
     #[test]
@@ -523,14 +651,14 @@ mod tests {
             }),
         )
         .expect("complete");
-        assert_eq!(completed["operation"]["sessionId"], canvas.session.id);
+        assert_eq!(completed["operation"]["projectId"], canvas.project.id);
         assert_eq!(
-            read_active_session_id(&paths).unwrap(),
-            Some(next_project.session.id)
+            read_active_project_id(&paths).unwrap(),
+            Some(next_project.project.id)
         );
         let state = Storage::open(&paths)
             .unwrap()
-            .read_panel_state(&canvas.session.id, &canvas.panel.id)
+            .read_panel_state(&canvas.project.id, &canvas.panel.id)
             .unwrap()
             .unwrap();
         let shape_id = completed["image"]["shapeId"].as_str().unwrap();
@@ -568,8 +696,8 @@ mod tests {
         let completed =
             complete_wiki(&paths, &operation_id, file.to_str().unwrap()).expect("complete");
         assert_eq!(
-            completed["operation"]["sessionId"],
-            wiki_bootstrap.session.id
+            completed["operation"]["projectId"],
+            wiki_bootstrap.project.id
         );
         assert_eq!(completed["document"]["contentVersion"], 1);
         assert_eq!(completed["document"]["generation"]["status"], "completed");

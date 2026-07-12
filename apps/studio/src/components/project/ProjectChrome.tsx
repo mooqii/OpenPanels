@@ -11,34 +11,34 @@ import { apiFetch, apiUrl, fileToDataUrl } from "../../lib/api"
 import type {
   MyOpenPanelsPanel,
   MyOpenPanelsPanelKind,
-  MyOpenPanelsSession,
+  MyOpenPanelsProject,
 } from "../../protocol"
 
 export function ProjectChrome({
-  currentSession,
-  sessions,
+  currentProject,
+  projects,
   onCreateProject,
   onDeleteProject,
   onRenameProject,
   onSwitchProject,
 }: {
-  currentSession: MyOpenPanelsSession
+  currentProject: MyOpenPanelsProject
   onCreateProject: () => void
-  onDeleteProject: (sessionId: string) => void
+  onDeleteProject: (projectId: string) => void
   onRenameProject: (title: string) => void
-  onSwitchProject: (sessionId: string) => void
-  sessions: MyOpenPanelsSession[]
+  onSwitchProject: (projectId: string) => void
+  projects: MyOpenPanelsProject[]
 }) {
   return (
     <>
       <CanvasMenu />
       <ProjectTitleControl
-        currentSession={currentSession}
+        currentProject={currentProject}
         onCreateProject={onCreateProject}
         onDeleteProject={onDeleteProject}
         onRenameProject={onRenameProject}
         onSwitchProject={onSwitchProject}
-        sessions={sessions}
+        projects={projects}
       />
     </>
   )
@@ -95,26 +95,26 @@ export function BottomPanelTabs({
 }
 
 function ProjectTitleControl({
-  currentSession,
-  sessions,
+  currentProject,
+  projects,
   onCreateProject,
   onDeleteProject,
   onRenameProject,
   onSwitchProject,
 }: {
-  currentSession: MyOpenPanelsSession
+  currentProject: MyOpenPanelsProject
   onCreateProject: () => void
-  onDeleteProject: (sessionId: string) => void
+  onDeleteProject: (projectId: string) => void
   onRenameProject: (title: string) => void
-  onSwitchProject: (sessionId: string) => void
-  sessions: MyOpenPanelsSession[]
+  onSwitchProject: (projectId: string) => void
+  projects: MyOpenPanelsProject[]
 }) {
   const { t } = useMyOpenPanelsI18n()
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
-  const [pendingDeleteSession, setPendingDeleteSession] =
-    useState<MyOpenPanelsSession | null>(null)
-  const [draftTitle, setDraftTitle] = useState(currentSession.title)
+  const [pendingDeleteProject, setPendingDeleteProject] =
+    useState<MyOpenPanelsProject | null>(null)
+  const [draftTitle, setDraftTitle] = useState(currentProject.title)
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const clearCloseTimer = useCallback(() => {
@@ -139,9 +139,9 @@ function ProjectTitleControl({
 
   useEffect(() => {
     if (!isEditing) {
-      setDraftTitle(currentSession.title)
+      setDraftTitle(currentProject.title)
     }
-  }, [currentSession.title, isEditing])
+  }, [currentProject.title, isEditing])
 
   useEffect(() => clearCloseTimer, [clearCloseTimer])
 
@@ -149,19 +149,19 @@ function ProjectTitleControl({
     const nextTitle = draftTitle.trim()
     setIsEditing(false)
     setIsMenuOpen(false)
-    if (nextTitle && nextTitle !== currentSession.title) {
+    if (nextTitle && nextTitle !== currentProject.title) {
       onRenameProject(nextTitle)
     } else {
-      setDraftTitle(currentSession.title)
+      setDraftTitle(currentProject.title)
     }
-  }, [currentSession.title, draftTitle, onRenameProject])
+  }, [currentProject.title, draftTitle, onRenameProject])
 
   const confirmDeleteProject = useCallback(() => {
-    if (!pendingDeleteSession) return
+    if (!pendingDeleteProject) return
     setIsMenuOpen(false)
-    onDeleteProject(pendingDeleteSession.id)
-    setPendingDeleteSession(null)
-  }, [onDeleteProject, pendingDeleteSession])
+    onDeleteProject(pendingDeleteProject.id)
+    setPendingDeleteProject(null)
+  }, [onDeleteProject, pendingDeleteProject])
 
   if (isEditing) {
     return (
@@ -179,7 +179,7 @@ function ProjectTitleControl({
             }
             if (event.key === "Escape") {
               event.preventDefault()
-              setDraftTitle(currentSession.title)
+              setDraftTitle(currentProject.title)
               setIsEditing(false)
               setIsMenuOpen(false)
             }
@@ -201,7 +201,7 @@ function ProjectTitleControl({
         onPress={() => setIsMenuOpen((open) => !open)}
         variant="ghost"
       >
-        <span>{currentSession.title}</span>
+        <span>{currentProject.title}</span>
       </Button>
       <Button
         aria-label={t`Rename project`}
@@ -221,9 +221,9 @@ function ProjectTitleControl({
         <div className="op-project-title__menu">
           <div className="op-project-title__menu-header">{t`Projects`}</div>
           <div className="op-project-title__menu-list">
-            {sessions.map((session) => {
-              const isActive = session.id === currentSession.id
-              const canDelete = sessions.length > 1
+            {projects.map((project) => {
+              const isActive = project.id === currentProject.id
+              const canDelete = projects.length > 1
               return (
                 <div
                   className={
@@ -231,19 +231,19 @@ function ProjectTitleControl({
                       ? "op-project-title__menu-item op-project-title__menu-item--active"
                       : "op-project-title__menu-item"
                   }
-                  key={session.id}
+                  key={project.id}
                 >
                   <Button
                     className="op-project-title__switch-button"
                     onPress={() => {
                       setIsMenuOpen(false)
                       if (!isActive) {
-                        onSwitchProject(session.id)
+                        onSwitchProject(project.id)
                       }
                     }}
                     variant="ghost"
                   >
-                    <span>{session.title}</span>
+                    <span>{project.title}</span>
                   </Button>
                   <span
                     className="op-project-title__delete-wrap"
@@ -261,7 +261,7 @@ function ProjectTitleControl({
                       onPress={() => {
                         if (!canDelete) return
                         setIsMenuOpen(false)
-                        setPendingDeleteSession(session)
+                        setPendingDeleteProject(project)
                       }}
                       size="sm"
                       variant="ghost"
@@ -287,11 +287,11 @@ function ProjectTitleControl({
         </div>
       ) : null}
 
-      {pendingDeleteSession ? (
+      {pendingDeleteProject ? (
         <Modal.Backdrop
           isOpen
           onOpenChange={(isOpen) => {
-            if (!isOpen) setPendingDeleteSession(null)
+            if (!isOpen) setPendingDeleteProject(null)
           }}
         >
           <Modal.Container placement="center">
@@ -304,12 +304,12 @@ function ProjectTitleControl({
                   {t`Deleting this project removes all content in the current project, including every Wiki page and everything on the canvas. This cannot be undone.`}
                 </p>
                 <div className="op-project-title__confirm-name">
-                  {pendingDeleteSession.title}
+                  {pendingDeleteProject.title}
                 </div>
               </Modal.Body>
               <Modal.Footer>
                 <Button
-                  onPress={() => setPendingDeleteSession(null)}
+                  onPress={() => setPendingDeleteProject(null)}
                   variant="secondary"
                 >
                   {t`Cancel`}
@@ -329,11 +329,11 @@ function ProjectTitleControl({
 export class MyOpenPanelsBrowserAssetStore implements AssetStore {
   private readonly apiBase: string
   private readonly panelId: string
-  private readonly sessionId: string
+  private readonly projectId: string
 
-  constructor(apiBase: string, sessionId: string, panelId: string) {
+  constructor(apiBase: string, projectId: string, panelId: string) {
     this.apiBase = apiBase
-    this.sessionId = sessionId
+    this.projectId = projectId
     this.panelId = panelId
   }
 
@@ -341,7 +341,7 @@ export class MyOpenPanelsBrowserAssetStore implements AssetStore {
     const dataUrl = await fileToDataUrl(file)
     const response = await apiFetch(
       this.apiBase,
-      `/api/panels/${encodeURIComponent(this.sessionId)}/${encodeURIComponent(this.panelId)}/assets`,
+      `/api/projects/${encodeURIComponent(this.projectId)}/panels/${encodeURIComponent(this.panelId)}/assets`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },

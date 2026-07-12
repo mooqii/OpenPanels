@@ -1,1 +1,1 @@
-export const ACTIVE_SESSION_STORAGE_KEY = "myopenpanels.activeSessionId"
+export const ACTIVE_PROJECT_STORAGE_KEY = "myopenpanels.activeProjectId"

@@ -33,7 +33,7 @@ pub struct SelectionAssetPayload {
 
 pub fn read_selection(
     paths: &MyOpenPanelsPaths,
-    requested_session_id: Option<&str>,
+    requested_project_id: Option<&str>,
     include_image_base64: bool,
 ) -> Result<SelectionPayload, CliError> {
     let database_path = paths.storage_dir.join(DATABASE_FILE_NAME);
@@ -44,13 +44,13 @@ pub fn read_selection(
         )));
     }
 
-    let connection = Connection::open(&database_path).map_err(to_cli_error)?;
-    let session_id = resolve_session_id(&connection, paths, requested_session_id)?;
-    let panel_id = resolve_canvas_panel_id(&connection, &session_id)?;
+    let connection = open_connection(&database_path)?;
+    let project_id = resolve_project_id(&connection, paths, requested_project_id)?;
+    let panel_id = resolve_canvas_panel_id(&connection, &project_id)?;
     read_selection_from_connection(
         paths,
         &connection,
-        &session_id,
+        &project_id,
         &panel_id,
         include_image_base64,
         true,
@@ -59,29 +59,39 @@ pub fn read_selection(
 
 pub fn read_selection_for_panel(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
 ) -> Result<SelectionPayload, CliError> {
     let database_path = paths.storage_dir.join(DATABASE_FILE_NAME);
-    let connection = Connection::open(&database_path).map_err(to_cli_error)?;
-    read_selection_from_connection(paths, &connection, session_id, panel_id, false, false)
+    let connection = open_connection(&database_path)?;
+    read_selection_from_connection(paths, &connection, project_id, panel_id, false, false)
+}
+
+fn open_connection(path: &Path) -> Result<Connection, CliError> {
+    let connection = Connection::open(path).map_err(to_cli_error)?;
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;",
+        )
+        .map_err(to_cli_error)?;
+    Ok(connection)
 }
 
 fn read_selection_from_connection(
     paths: &MyOpenPanelsPaths,
     connection: &Connection,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
     include_image_base64: bool,
     include_fallback: bool,
 ) -> Result<SelectionPayload, CliError> {
-    let raw_selection = read_panel_selection(connection, session_id, panel_id)?
-        .unwrap_or_else(|| empty_selection(session_id, panel_id));
+    let raw_selection = read_panel_selection(connection, project_id, panel_id)?
+        .unwrap_or_else(|| empty_selection(project_id, panel_id));
     let raw_selection = with_explicit_marker(raw_selection);
     let selection = if include_fallback {
         with_last_image_fallback(
             raw_selection,
-            read_panel_state(connection, session_id, panel_id)?,
+            read_panel_state(connection, project_id, panel_id)?,
         )
     } else {
         raw_selection
@@ -102,7 +112,7 @@ fn read_selection_from_connection(
 
     Ok(SelectionPayload {
         selection,
-        selection_file: panel_file(paths, session_id, panel_id, "selection.json")
+        selection_file: panel_file(paths, project_id, panel_id, "selection.json")
             .display()
             .to_string(),
         base64,
@@ -137,11 +147,11 @@ fn with_explicit_marker(selection: Value) -> Value {
 
 pub fn read_selection_asset_for_panel(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
     output_path: &str,
 ) -> Result<SelectionAssetPayload, CliError> {
-    let mut selection = read_selection_for_panel(paths, session_id, panel_id)?;
+    let mut selection = read_selection_for_panel(paths, project_id, panel_id)?;
     let is_explicit_selection = selection
         .selection
         .get("isExplicitSelection")
@@ -166,11 +176,11 @@ pub fn read_selection_asset_for_panel(
 
 pub fn read_selection_asset_to_file(
     paths: &MyOpenPanelsPaths,
-    requested_session_id: Option<&str>,
+    requested_project_id: Option<&str>,
     output_path: &str,
     allow_fallback: bool,
 ) -> Result<SelectionAssetPayload, CliError> {
-    let selection = read_selection(paths, requested_session_id, true)?;
+    let selection = read_selection(paths, requested_project_id, true)?;
     let is_explicit_selection = selection
         .selection
         .get("isExplicitSelection")
@@ -217,61 +227,61 @@ fn write_selection_asset(
     })
 }
 
-fn resolve_session_id(
+fn resolve_project_id(
     connection: &Connection,
     paths: &MyOpenPanelsPaths,
-    requested_session_id: Option<&str>,
+    requested_project_id: Option<&str>,
 ) -> Result<String, CliError> {
-    if let Some(session_id) = requested_session_id {
-        if !session_id.trim().is_empty() {
-            return Ok(session_id.to_owned());
+    if let Some(project_id) = requested_project_id {
+        if !project_id.trim().is_empty() {
+            return Ok(project_id.to_owned());
         }
     }
 
-    if let Some(active_session_id) = read_active_session_id(paths)? {
+    if let Some(active_project_id) = read_active_project_id(paths)? {
         let exists = connection
             .query_row(
-                "SELECT 1 FROM sessions WHERE id = ?",
-                params![active_session_id],
+                "SELECT 1 FROM projects WHERE id = ?",
+                params![active_project_id],
                 |_| Ok(()),
             )
             .optional()
             .map_err(to_cli_error)?
             .is_some();
         if exists {
-            return Ok(active_session_id);
+            return Ok(active_project_id);
         }
     }
 
     connection
         .query_row(
-            "SELECT id FROM sessions ORDER BY updated_at DESC, id ASC LIMIT 1",
+            "SELECT id FROM projects ORDER BY updated_at DESC, id ASC LIMIT 1",
             [],
             |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(to_cli_error)?
-        .ok_or_else(|| CliError::new("No MyOpenPanels session is available."))
+        .ok_or_else(|| CliError::new("No MyOpenPanels project is available."))
 }
 
-fn read_active_session_id(paths: &MyOpenPanelsPaths) -> Result<Option<String>, CliError> {
-    let active_session_path = paths.context_dir.join("active-session.json");
-    if !active_session_path.exists() {
+fn read_active_project_id(paths: &MyOpenPanelsPaths) -> Result<Option<String>, CliError> {
+    let active_project_path = paths.context_dir.join("active-project.json");
+    if !active_project_path.exists() {
         return Ok(None);
     }
-    let content = fs::read_to_string(&active_session_path).map_err(to_cli_error)?;
+    let content = fs::read_to_string(&active_project_path).map_err(to_cli_error)?;
     let value = serde_json::from_str::<Value>(&content).map_err(to_cli_error)?;
     Ok(value
-        .get("sessionId")
+        .get("projectId")
         .and_then(Value::as_str)
         .map(str::to_owned))
 }
 
-fn resolve_canvas_panel_id(connection: &Connection, session_id: &str) -> Result<String, CliError> {
+fn resolve_canvas_panel_id(connection: &Connection, project_id: &str) -> Result<String, CliError> {
     connection
         .query_row(
-            "SELECT id FROM panels WHERE session_id = ? AND kind = 'canvas' ORDER BY updated_at DESC, id ASC LIMIT 1",
-            params![session_id],
+            "SELECT id FROM panels WHERE project_id = ? AND kind = 'canvas' ORDER BY updated_at DESC, id ASC LIMIT 1",
+            params![project_id],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -281,13 +291,13 @@ fn resolve_canvas_panel_id(connection: &Connection, session_id: &str) -> Result<
 
 fn read_panel_state(
     connection: &Connection,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
 ) -> Result<Option<Value>, CliError> {
     let state_json = connection
         .query_row(
-            "SELECT state_json FROM panel_states WHERE session_id = ? AND panel_id = ?",
-            params![session_id, panel_id],
+            "SELECT state_json FROM panel_states WHERE project_id = ? AND panel_id = ?",
+            params![project_id, panel_id],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -299,13 +309,13 @@ fn read_panel_state(
 
 fn read_panel_selection(
     connection: &Connection,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
 ) -> Result<Option<Value>, CliError> {
     let selection_json = connection
         .query_row(
-            "SELECT selection_json FROM panel_selections WHERE session_id = ? AND panel_id = ?",
-            params![session_id, panel_id],
+            "SELECT selection_json FROM panel_selections WHERE project_id = ? AND panel_id = ?",
+            params![project_id, panel_id],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -315,9 +325,9 @@ fn read_panel_selection(
         .transpose()
 }
 
-fn empty_selection(session_id: &str, panel_id: &str) -> Value {
+fn empty_selection(project_id: &str, panel_id: &str) -> Value {
     json!({
-        "sessionId": session_id,
+        "projectId": project_id,
         "panelId": panel_id,
         "selectedShapeIds": [],
         "selectedShapes": [],
@@ -427,11 +437,11 @@ fn asset_path(storage_dir: &Path, asset_ref: &str) -> Result<PathBuf, CliError> 
     }
 }
 
-fn panel_file(paths: &MyOpenPanelsPaths, session_id: &str, panel_id: &str, name: &str) -> PathBuf {
+fn panel_file(paths: &MyOpenPanelsPaths, project_id: &str, panel_id: &str, name: &str) -> PathBuf {
     paths
         .storage_dir
-        .join("sessions")
-        .join(sanitize_path_part(session_id))
+        .join("projects")
+        .join(sanitize_path_part(project_id))
         .join("panels")
         .join(sanitize_path_part(panel_id))
         .join(sanitize_path_part(name))

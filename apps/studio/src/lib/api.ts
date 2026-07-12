@@ -1,5 +1,5 @@
 import type { CanvasSelectionSnapshot, StoreSnapshot } from "../canvas"
-import type { MyOpenPanelsPanelKind, MyOpenPanelsSession } from "../protocol"
+import type { MyOpenPanelsPanelKind, MyOpenPanelsProject } from "../protocol"
 import type {
   AppState,
   BootstrapResponse,
@@ -101,7 +101,7 @@ export function wikiStateFromAppState(appState: AppState): WikiState {
 
 export function emptyWikiState(): WikiState {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     rawDocuments: [],
     generatedDocuments: [],
     ruleSets: [],
@@ -109,7 +109,6 @@ export function emptyWikiState(): WikiState {
     activeRawDocumentId: null,
     activeWikiSpaceId: null,
     activeWikiPagePath: null,
-    tasks: [],
   }
 }
 
@@ -117,13 +116,12 @@ export function isWikiState(state: unknown): state is WikiState {
   return (
     typeof state === "object" &&
     state !== null &&
-    (state as { schemaVersion?: unknown }).schemaVersion === 3 &&
+    (state as { schemaVersion?: unknown }).schemaVersion === 4 &&
     Array.isArray((state as { rawDocuments?: unknown }).rawDocuments) &&
     Array.isArray(
       (state as { generatedDocuments?: unknown }).generatedDocuments
     ) &&
-    Array.isArray((state as { wikiSpaces?: unknown }).wikiSpaces) &&
-    Array.isArray((state as { tasks?: unknown }).tasks)
+    Array.isArray((state as { wikiSpaces?: unknown }).wikiSpaces)
   )
 }
 
@@ -135,7 +133,7 @@ export function serializeBootstrapForCompare(appState: AppState): string {
     pendingTaskCount: appState.pendingTaskCount ?? 0,
     agentWorker: appState.agentWorker ?? { status: "idle" },
     agentOperations: appState.agentOperations ?? [],
-    session: appState.session,
+    project: appState.project,
     states: appState.panels.map(({ panel, state }) => ({
       id: panel.id,
       kind: panel.kind,
@@ -352,11 +350,11 @@ export function fetchStudioHealth(
 
 export async function loadBootstrap(
   transport: MyOpenPanelsTransport,
-  sessionId?: string | null
+  projectId?: string | null
 ): Promise<BootstrapResponse> {
   const url = apiUrl(transport.apiBase, "/api/bootstrap")
-  if (sessionId) {
-    url.searchParams.set("sessionId", sessionId)
+  if (projectId) {
+    url.searchParams.set("projectId", projectId)
   }
   const response = await apiFetch(transport.apiBase, url)
   if (!response.ok) {
@@ -403,14 +401,14 @@ export function requestUpdateInstallRestart(
 
 export async function savePanelState(
   transport: MyOpenPanelsTransport,
-  sessionId: string,
+  projectId: string,
   panelId: string,
   snapshot: StoreSnapshot,
   baseRevision: number
 ): Promise<{ revision: number }> {
   const response = await apiFetch(
     transport.apiBase,
-    `/api/panels/${encodeURIComponent(sessionId)}/${encodeURIComponent(panelId)}/state`,
+    `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/state`,
     {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -428,7 +426,7 @@ export async function savePanelState(
 
 export async function saveSelectionState(
   transport: MyOpenPanelsTransport,
-  sessionId: string,
+  projectId: string,
   panelId: string,
   selection: CanvasSelectionSnapshot
 ) {
@@ -442,7 +440,7 @@ export async function saveSelectionState(
   }
   await apiFetch(
     transport.apiBase,
-    `/api/panels/${encodeURIComponent(sessionId)}/${encodeURIComponent(panelId)}/selection`,
+    `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/selection`,
     {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -499,13 +497,13 @@ function padDatePart(value: number): string {
   return String(value).padStart(2, "0")
 }
 
-export async function fetchSessions(transport: MyOpenPanelsTransport) {
-  const response = await apiFetch(transport.apiBase, "/api/sessions")
-  return (await response.json()) as MyOpenPanelsSession[]
+export async function fetchProjects(transport: MyOpenPanelsTransport) {
+  const response = await apiFetch(transport.apiBase, "/api/projects")
+  return (await response.json()) as MyOpenPanelsProject[]
 }
 
-export async function fetchActiveSessionId(transport: MyOpenPanelsTransport) {
-  const response = await apiFetch(transport.apiBase, "/api/active-session")
-  const data = (await response.json()) as { sessionId?: string | null }
-  return data.sessionId ?? null
+export async function fetchActiveProjectId(transport: MyOpenPanelsTransport) {
+  const response = await apiFetch(transport.apiBase, "/api/active-project")
+  const data = (await response.json()) as { projectId?: string | null }
+  return data.projectId ?? null
 }

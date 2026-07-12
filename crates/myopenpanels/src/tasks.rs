@@ -11,6 +11,8 @@ use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub(crate) mod model;
+
 const BLOCKED_REASON_ATTEMPTS_EXCEEDED: &str = "attemptsExceeded";
 const BLOCKED_REASON_LEASED: &str = "leased";
 const BLOCKED_REASON_RETRY_LATER: &str = "retryLater";
@@ -49,10 +51,9 @@ pub fn list_tasks(
 ) -> Result<Value, CliError> {
     recover_expired_tasks(paths)?;
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    import_legacy_targets(paths, &bootstrap.session.id)?;
     let tasks = annotate_dispatch_state(
         paths,
-        &bootstrap.session.id,
+        &bootstrap.project.id,
         annotate_tasks(filter_tasks(bootstrap.tasks, &filter)),
     )?;
     let tasks = sort_tasks_for_display(tasks);
@@ -77,10 +78,9 @@ pub fn list_tasks(
 pub fn next_task(paths: &MyOpenPanelsPaths, filter: TaskListFilter<'_>) -> Result<Value, CliError> {
     recover_expired_tasks(paths)?;
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    import_legacy_targets(paths, &bootstrap.session.id)?;
     let tasks = annotate_dispatch_state(
         paths,
-        &bootstrap.session.id,
+        &bootstrap.project.id,
         annotate_tasks(filter_tasks(bootstrap.tasks, &filter)),
     )?;
     let task = tasks
@@ -98,30 +98,29 @@ pub fn next_task(paths: &MyOpenPanelsPaths, filter: TaskListFilter<'_>) -> Resul
 }
 
 pub fn inspect_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let session_id = task_session_id(paths, task_id)?;
-    recover_expired_tasks_in_session(paths, &session_id)?;
-    inspect_task_in_session(paths, &session_id, task_id)
+    let project_id = task_project_id(paths, task_id)?;
+    recover_expired_tasks_in_session(paths, &project_id)?;
+    inspect_task_in_session(paths, &project_id, task_id)
 }
 
 fn inspect_task_in_session(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     task_id: &str,
 ) -> Result<Value, CliError> {
-    import_legacy_targets(paths, session_id)?;
-    let tasks = Storage::open(paths)?.list_project_tasks(session_id)?;
-    let task = annotate_dispatch_state(paths, session_id, annotate_tasks(tasks))?
+    let tasks = Storage::open(paths)?.list_tasks(project_id)?;
+    let task = annotate_dispatch_state(paths, project_id, annotate_tasks(tasks))?
         .into_iter()
         .find(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
         .ok_or_else(|| CliError::new(format!("Project task not found: {task_id}")))?;
     Ok(json!({ "task": task }))
 }
 
-fn task_session_id(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<String, CliError> {
+fn task_project_id(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<String, CliError> {
     Storage::open(paths)?
         .connection()
         .query_row(
-            "SELECT session_id FROM project_tasks WHERE id = ? LIMIT 1",
+            "SELECT project_id FROM tasks WHERE id = ? LIMIT 1",
             [task_id],
             |row| row.get::<_, String>(0),
         )
@@ -144,8 +143,7 @@ fn is_active_task(task: &Value) -> bool {
 
 pub fn list_targets(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    import_legacy_targets(paths, &bootstrap.session.id)?;
-    let targets = read_targets(paths, &bootstrap.session.id)?;
+    let targets = read_targets(paths, &bootstrap.project.id)?;
     let online_count = targets
         .iter()
         .filter(|target| target.get("status").and_then(Value::as_str) == Some("online"))
@@ -193,7 +191,6 @@ pub fn register_target(
     }
 
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    import_legacy_targets(paths, &bootstrap.session.id)?;
     let mut storage = Storage::open(paths)?;
     let now = crate::control::now_iso();
     let token = random_secret("opt");
@@ -201,19 +198,21 @@ pub fn register_target(
     let existing_id = storage
         .connection()
         .query_row(
-            "SELECT id FROM agent_targets WHERE session_id = ? AND name = ? AND transport = ? ORDER BY updated_at DESC LIMIT 1",
-            params![bootstrap.session.id, registration.name, transport],
+            "SELECT id FROM agent_targets WHERE project_id = ? AND name = ? AND transport = ? ORDER BY updated_at DESC LIMIT 1",
+            params![bootstrap.project.id, registration.name, transport],
             |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(to_cli_error)?;
     let target_id = existing_id.unwrap_or_else(|| random_id("agent-target"));
-    storage
+    let tx = storage
         .connection_mut()
-        .execute(
-            r#"
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(to_cli_error)?;
+    tx.execute(
+        r#"
             INSERT INTO agent_targets (
-              id, session_id, name, host, transport, endpoint, capabilities_json,
+              id, project_id, name, host, transport, endpoint, capabilities_json,
               priority, status, token_hash, last_error, last_heartbeat_at,
               created_at, updated_at
             )
@@ -231,51 +230,58 @@ pub fn register_target(
               last_heartbeat_at = excluded.last_heartbeat_at,
               updated_at = excluded.updated_at
             "#,
-            params![
-                target_id,
-                bootstrap.session.id,
-                registration.name,
-                registration.host.unwrap_or(registration.name),
-                transport,
-                registration.endpoint,
-                serde_json::to_string(&capabilities).map_err(to_cli_error)?,
-                registration.priority,
-                token_hash,
-                now,
-                now,
-                now,
-            ],
-        )
-        .map_err(to_cli_error)?;
+        params![
+            target_id,
+            bootstrap.project.id,
+            registration.name,
+            registration.host.unwrap_or(registration.name),
+            transport,
+            registration.endpoint,
+            serde_json::to_string(&capabilities).map_err(to_cli_error)?,
+            registration.priority,
+            token_hash,
+            now,
+            now,
+            now,
+        ],
+    )
+    .map_err(to_cli_error)?;
     write_target_secret(paths, &target_id, &token)?;
-    record_change(
-        storage.connection(),
-        "agent_target",
-        &bootstrap.session.id,
-        None,
-    )?;
-    let target = read_target_value(storage.connection(), &bootstrap.session.id, &target_id)?
+    crate::storage::record_scope(&tx, "agent_targets", Some(&bootstrap.project.id), None)?;
+    let target = read_target_value(&tx, &bootstrap.project.id, &target_id)?
         .ok_or_else(|| CliError::new("Registered target could not be read."))?;
+    tx.commit().map_err(to_cli_error)?;
     Ok(json!({ "target": target, "token": token }))
 }
 
 pub fn heartbeat_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    heartbeat_target_in_session(paths, &bootstrap.session.id, target_id)
+    heartbeat_target_in_session(paths, &bootstrap.project.id, target_id)
 }
 
 fn heartbeat_target_in_session(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     target_id: &str,
 ) -> Result<Value, CliError> {
     let storage = Storage::open(paths)?;
-    let now = crate::control::now_iso();
-    let changed = storage
+    let tx = storage
         .connection()
-        .execute(
-            "UPDATE agent_targets SET status = 'online', last_error = NULL, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND session_id = ?",
-            params![now, now, target_id, session_id],
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
+    let now = crate::control::now_iso();
+    let previous = tx.query_row(
+        "SELECT status, last_error, last_heartbeat_at FROM agent_targets WHERE id = ? AND project_id = ?",
+        params![target_id, project_id],
+        |row| Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
+        )),
+    ).optional().map_err(to_cli_error)?;
+    let changed = tx.execute(
+            "UPDATE agent_targets SET status = 'online', last_error = NULL, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND project_id = ?",
+            params![now, now, target_id, project_id],
         )
         .map_err(to_cli_error)?;
     if changed == 0 {
@@ -284,20 +290,36 @@ fn heartbeat_target_in_session(
             format!("Agent target not found: {target_id}"),
         ));
     }
-    record_change(storage.connection(), "agent_target", session_id, None)?;
-    let target = read_target_value(storage.connection(), session_id, target_id)?
+    let should_notify = previous.is_none_or(|(status, error, heartbeat)| {
+        status != "online"
+            || error.is_some()
+            || chrono::DateTime::parse_from_rfc3339(&heartbeat)
+                .ok()
+                .is_none_or(|heartbeat| {
+                    heartbeat.with_timezone(&chrono::Utc)
+                        <= chrono::Utc::now() - chrono::Duration::seconds(30)
+                })
+    });
+    if should_notify {
+        crate::storage::record_scope(&tx, "agent_targets", Some(project_id), None)?;
+    }
+    let target = read_target_value(&tx, project_id, target_id)?
         .ok_or_else(|| CliError::new("Agent target could not be read."))?;
+    tx.commit().map_err(to_cli_error)?;
     Ok(json!({ "target": target }))
 }
 
 pub fn remove_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let storage = Storage::open(paths)?;
-    let changed = storage
+    let tx = storage
         .connection()
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
+    let changed = tx
         .execute(
-            "DELETE FROM agent_targets WHERE id = ? AND session_id = ?",
-            params![target_id, bootstrap.session.id],
+            "DELETE FROM agent_targets WHERE id = ? AND project_id = ?",
+            params![target_id, bootstrap.project.id],
         )
         .map_err(to_cli_error)?;
     if changed == 0 {
@@ -307,12 +329,8 @@ pub fn remove_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value
         ));
     }
     let _ = fs::remove_file(target_secret_path(paths, target_id));
-    record_change(
-        storage.connection(),
-        "agent_target",
-        &bootstrap.session.id,
-        None,
-    )?;
+    crate::storage::record_scope(&tx, "agent_targets", Some(&bootstrap.project.id), None)?;
+    tx.commit().map_err(to_cli_error)?;
     Ok(json!({ "removed": true, "targetId": target_id }))
 }
 
@@ -326,8 +344,8 @@ pub fn verify_target_token(
     let expected = storage
         .connection()
         .query_row(
-            "SELECT token_hash FROM agent_targets WHERE id = ? AND session_id = ?",
-            params![target_id, bootstrap.session.id],
+            "SELECT token_hash FROM agent_targets WHERE id = ? AND project_id = ?",
+            params![target_id, bootstrap.project.id],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -367,11 +385,11 @@ pub fn claim_next_filtered(
         .unwrap_or(DEFAULT_LONG_POLL_MS)
         .min(DEFAULT_LONG_POLL_MS);
     let started = Instant::now();
-    let session_id = read_project_bootstrap(paths, BootstrapRequest::new())?
-        .session
+    let project_id = read_project_bootstrap(paths, BootstrapRequest::new())?
+        .project
         .id;
     loop {
-        if let Some(payload) = claim_once(paths, &session_id, target_id, None, capability, queue)? {
+        if let Some(payload) = claim_once(paths, &project_id, target_id, None, capability, queue)? {
             return Ok(payload);
         }
         if started.elapsed() >= Duration::from_millis(wait_ms) {
@@ -386,8 +404,8 @@ pub fn claim_task(
     task_id: &str,
     target_id: &str,
 ) -> Result<Value, CliError> {
-    let session_id = task_session_id(paths, task_id)?;
-    claim_once(paths, &session_id, target_id, Some(task_id), None, None)?.ok_or_else(|| {
+    let project_id = task_project_id(paths, task_id)?;
+    claim_once(paths, &project_id, target_id, Some(task_id), None, None)?.ok_or_else(|| {
         CliError::with_code(
             "task_not_claimable",
             format!("Project task is not claimable: {task_id}"),
@@ -397,18 +415,17 @@ pub fn claim_task(
 
 fn claim_once(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     target_id: &str,
     task_id: Option<&str>,
     requested_capability: Option<&str>,
     requested_queue: Option<&str>,
 ) -> Result<Option<Value>, CliError> {
-    recover_expired_tasks_in_session(paths, session_id)?;
-    import_legacy_targets(paths, session_id)?;
-    heartbeat_target_in_session(paths, session_id, target_id)?;
+    recover_expired_tasks_in_session(paths, project_id)?;
+    heartbeat_target_in_session(paths, project_id, target_id)?;
     let mut storage = Storage::open(paths)?;
     let target =
-        read_target_value(storage.connection(), session_id, target_id)?.ok_or_else(|| {
+        read_target_value(storage.connection(), project_id, target_id)?.ok_or_else(|| {
             CliError::with_code(
                 "target_not_found",
                 format!("Agent target not found: {target_id}"),
@@ -416,7 +433,7 @@ fn claim_once(
         })?;
     let reserved = reserve_task(
         &mut storage,
-        session_id,
+        project_id,
         &target,
         task_id,
         requested_capability,
@@ -427,12 +444,7 @@ fn claim_once(
     };
 
     let claim_result = match reserved.queue.as_str() {
-        "wiki" => crate::wiki::claim_task(
-            paths,
-            &reserved.id,
-            target.get("host").and_then(Value::as_str),
-            Some(target_id),
-        ),
+        "wiki" => crate::wiki::claim_task(paths, &reserved.id),
         queue => Err(CliError::with_code(
             "queue_adapter_missing",
             format!("No task lifecycle adapter is available for queue: {queue}"),
@@ -441,7 +453,7 @@ fn claim_once(
     let claimed = match claim_result {
         Ok(claimed) => claimed,
         Err(error) => {
-            release_reservation(paths, session_id, &reserved)?;
+            release_reservation(paths, project_id, &reserved)?;
             return Err(error);
         }
     };
@@ -451,15 +463,17 @@ fn claim_once(
     let lease_token = random_secret("lease");
     let lease_expires_at = lease_expires_at();
     let storage = Storage::open(paths)?;
-    storage
+    let tx = storage
         .connection()
-        .execute(
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
+    tx.execute(
             r#"
-            UPDATE project_tasks
-            SET status = ?, attempts = ?, assigned_target_id = ?, lease_owner = ?, lease_token_hash = ?,
+            UPDATE tasks
+            SET status = ?, attempts = ?, assigned_agent_id = ?, lease_owner = ?, lease_token_hash = ?,
                 lease_expires_at = ?, last_heartbeat_at = ?, retry_after = NULL,
                 error_json = NULL, updated_at = ?
-            WHERE id = ? AND session_id = ?
+            WHERE id = ? AND project_id = ?
             "#,
             params![
                 claimed_status,
@@ -471,18 +485,17 @@ fn claim_once(
                 crate::control::now_iso(),
                 crate::control::now_iso(),
                 reserved.id,
-                session_id,
+                project_id,
             ],
         )
         .map_err(to_cli_error)?;
-    storage
-        .connection()
-        .execute(
-            "UPDATE task_deliveries SET status = 'acknowledged', acknowledged_at = ?, updated_at = ? WHERE task_id = ? AND target_id = ?",
+    tx.execute(
+            "UPDATE task_deliveries SET status = 'acknowledged', acknowledged_at = ?, updated_at = ? WHERE task_id = ? AND agent_target_id = ?",
             params![crate::control::now_iso(), crate::control::now_iso(), reserved.id, target_id],
         )
         .map_err(to_cli_error)?;
-    record_change(storage.connection(), "task", session_id, None)?;
+    crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
+    tx.commit().map_err(to_cli_error)?;
     let mut payload = inspect_task(paths, &reserved.id)?;
     payload["leaseToken"] = json!(lease_token);
     payload["target"] = target;
@@ -506,17 +519,20 @@ pub fn heartbeat_task(
         }
     };
     let storage = Storage::open(paths)?;
-    let now = crate::control::now_iso();
-    storage
+    let tx = storage
         .connection()
-        .execute(
-            "UPDATE project_tasks SET lease_expires_at = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND lease_token_hash = ?",
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
+    let now = crate::control::now_iso();
+    tx.execute(
+            "UPDATE tasks SET lease_expires_at = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND lease_token_hash = ?",
             params![expires_at, now, now, task_id, hash_secret(lease_token)],
         )
         .map_err(to_cli_error)?;
-    let session_id = lease["sessionId"].as_str().unwrap_or_default();
-    record_change(storage.connection(), "task", session_id, None)?;
-    inspect_task_in_session(paths, session_id, task_id)
+    let project_id = lease["projectId"].as_str().unwrap_or_default();
+    crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
+    tx.commit().map_err(to_cli_error)?;
+    inspect_task_in_session(paths, project_id, task_id)
 }
 
 pub fn complete_task(
@@ -535,9 +551,9 @@ pub fn complete_task(
             ))
         }
     };
-    let session_id = lease["sessionId"].as_str().unwrap_or_default();
-    finalize_task_runtime(paths, session_id, task_id, "succeeded", result, None, None)?;
-    inspect_task_in_session(paths, session_id, task_id)
+    let project_id = lease["projectId"].as_str().unwrap_or_default();
+    finalize_task_runtime(paths, project_id, task_id, "succeeded", result, None, None)?;
+    inspect_task_in_session(paths, project_id, task_id)
 }
 
 pub fn fail_task(
@@ -568,7 +584,7 @@ pub fn fail_task(
     };
     finalize_task_runtime(
         paths,
-        lease["sessionId"].as_str().unwrap_or_default(),
+        lease["projectId"].as_str().unwrap_or_default(),
         task_id,
         "failed",
         None,
@@ -584,7 +600,7 @@ pub fn fail_task(
     )?;
     inspect_task_in_session(
         paths,
-        lease["sessionId"].as_str().unwrap_or_default(),
+        lease["projectId"].as_str().unwrap_or_default(),
         task_id,
     )
 }
@@ -606,7 +622,7 @@ pub fn release_task(
     };
     finalize_task_runtime(
         paths,
-        lease["sessionId"].as_str().unwrap_or_default(),
+        lease["projectId"].as_str().unwrap_or_default(),
         task_id,
         "queued",
         None,
@@ -622,14 +638,14 @@ pub fn release_task(
     )?;
     inspect_task_in_session(
         paths,
-        lease["sessionId"].as_str().unwrap_or_default(),
+        lease["projectId"].as_str().unwrap_or_default(),
         task_id,
     )
 }
 
 pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     let task = inspect_task(paths, task_id)?;
-    let session_id = task["task"]["sessionId"]
+    let project_id = task["task"]["projectId"]
         .as_str()
         .unwrap_or_default()
         .to_owned();
@@ -642,14 +658,14 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
             ))
         }
     };
-    finalize_task_runtime(paths, &session_id, task_id, "queued", None, None, None)?;
+    finalize_task_runtime(paths, &project_id, task_id, "queued", None, None, None)?;
     reset_task_delivery(paths, task_id, None, None, None)?;
-    inspect_task_in_session(paths, &session_id, task_id)
+    inspect_task_in_session(paths, &project_id, task_id)
 }
 
 pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     let task = inspect_task(paths, task_id)?;
-    let session_id = task["task"]["sessionId"]
+    let project_id = task["task"]["projectId"]
         .as_str()
         .unwrap_or_default()
         .to_owned();
@@ -662,19 +678,19 @@ pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cl
             ))
         }
     };
-    finalize_task_runtime(paths, &session_id, task_id, "cancelled", None, None, None)?;
-    inspect_task_in_session(paths, &session_id, task_id)
+    finalize_task_runtime(paths, &project_id, task_id, "cancelled", None, None, None)?;
+    inspect_task_in_session(paths, &project_id, task_id)
 }
 
 pub fn list_deliveries(
     paths: &MyOpenPanelsPaths,
     task_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    let session_id = match task_id {
-        Some(task_id) => task_session_id(paths, task_id)?,
+    let project_id = match task_id {
+        Some(task_id) => task_project_id(paths, task_id)?,
         None => {
             read_project_bootstrap(paths, BootstrapRequest::new())?
-                .session
+                .project
                 .id
         }
     };
@@ -683,18 +699,18 @@ pub fn list_deliveries(
         .connection()
         .prepare(
             r#"
-            SELECT d.id, d.task_id, d.target_id, d.status, d.attempts,
+            SELECT d.id, d.task_id, d.agent_target_id, d.status, d.attempts,
                    d.next_attempt_at, d.last_error, d.delivered_at,
                    d.acknowledged_at, d.created_at, d.updated_at
             FROM task_deliveries d
-            JOIN project_tasks t ON t.id = d.task_id
-            WHERE t.session_id = ? AND (? IS NULL OR d.task_id = ?)
+            JOIN tasks t ON t.id = d.task_id
+            WHERE t.project_id = ? AND (? IS NULL OR d.task_id = ?)
             ORDER BY d.updated_at DESC
             "#,
         )
         .map_err(to_cli_error)?;
     let rows = statement
-        .query_map(params![session_id, task_id, task_id], delivery_from_row)
+        .query_map(params![project_id, task_id, task_id], delivery_from_row)
         .map_err(to_cli_error)?;
     let deliveries = rows
         .map(|row| row.map_err(to_cli_error))
@@ -704,7 +720,7 @@ pub fn list_deliveries(
 
 fn reserve_task(
     storage: &mut Storage,
-    session_id: &str,
+    project_id: &str,
     target: &Value,
     requested_task_id: Option<&str>,
     requested_capability: Option<&str>,
@@ -716,16 +732,16 @@ fn reserve_task(
         .connection_mut()
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(to_cli_error)?;
-    let targets = read_targets_from_connection(&tx, session_id)?;
+    let targets = read_targets_from_connection(&tx, project_id)?;
     tx.execute(
         r#"
-        UPDATE project_tasks
+        UPDATE tasks
         SET status = CASE WHEN status = 'reserved' THEN 'queued' ELSE status END,
-            assigned_target_id = CASE WHEN status = 'reserved' THEN NULL ELSE assigned_target_id END
-        WHERE session_id = ? AND status = 'reserved' AND updated_at < ?
+            assigned_agent_id = CASE WHEN status = 'reserved' THEN NULL ELSE assigned_agent_id END
+        WHERE project_id = ? AND status = 'reserved' AND updated_at < ?
         "#,
         params![
-            session_id,
+            project_id,
             (chrono::Utc::now() - chrono::Duration::seconds(30))
                 .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
         ],
@@ -736,8 +752,8 @@ fn reserve_task(
             .prepare(
                 r#"
                 SELECT id, queue, status, capability
-                FROM project_tasks
-                WHERE session_id = ?
+                FROM tasks
+                WHERE project_id = ?
                   AND status IN ('queued', 'failed')
                   AND attempts < max_attempts
                   AND (retry_after IS NULL OR retry_after <= ?)
@@ -753,7 +769,7 @@ fn reserve_task(
         let rows = statement
             .query_map(
                 params![
-                    session_id,
+                    project_id,
                     now,
                     now,
                     requested_task_id,
@@ -790,7 +806,7 @@ fn reserve_task(
     };
     let changed = tx
         .execute(
-            "UPDATE project_tasks SET status = 'reserved', assigned_target_id = ?, updated_at = ? WHERE id = ? AND status = ?",
+            "UPDATE tasks SET status = 'reserved', assigned_agent_id = ?, updated_at = ? WHERE id = ? AND status = ?",
             params![target["id"].as_str(), now, id, previous_status],
         )
         .map_err(to_cli_error)?;
@@ -808,18 +824,20 @@ fn reserve_task(
 
 fn release_reservation(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     reserved: &ReservedTask,
 ) -> Result<(), CliError> {
     let storage = Storage::open(paths)?;
-    storage
+    let tx = storage
         .connection()
-        .execute(
-            "UPDATE project_tasks SET status = ?, assigned_target_id = NULL, updated_at = ? WHERE id = ? AND session_id = ? AND status = 'reserved'",
-            params![reserved.previous_status, crate::control::now_iso(), reserved.id, session_id],
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
+    tx.execute(
+            "UPDATE tasks SET status = ?, assigned_agent_id = NULL, updated_at = ? WHERE id = ? AND project_id = ? AND status = 'reserved'",
+            params![reserved.previous_status, crate::control::now_iso(), reserved.id, project_id],
         )
         .map_err(to_cli_error)?;
-    Ok(())
+    tx.commit().map_err(to_cli_error)
 }
 
 fn verify_lease(
@@ -833,9 +851,9 @@ fn verify_lease(
         .connection()
         .query_row(
             r#"
-            SELECT queue, attempts, assigned_target_id, lease_token_hash, lease_expires_at,
-                   session_id, panel_id
-            FROM project_tasks
+            SELECT queue, attempts, assigned_agent_id, lease_token_hash, lease_expires_at,
+                   project_id, panel_id
+            FROM tasks
             WHERE id = ?
             "#,
             params![task_id],
@@ -846,7 +864,7 @@ fn verify_lease(
                     "targetId": row.get::<_, Option<String>>(2)?,
                     "tokenHash": row.get::<_, Option<String>>(3)?,
                     "expiresAt": row.get::<_, Option<String>>(4)?,
-                    "sessionId": row.get::<_, String>(5)?,
+                    "projectId": row.get::<_, String>(5)?,
                     "panelId": row.get::<_, String>(6)?,
                 }))
             },
@@ -880,7 +898,7 @@ fn verify_lease(
 
 fn finalize_task_runtime(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     task_id: &str,
     status: &str,
     result: Option<Value>,
@@ -888,6 +906,10 @@ fn finalize_task_runtime(
     retry_after: Option<&str>,
 ) -> Result<(), CliError> {
     let storage = Storage::open(paths)?;
+    let tx = storage
+        .connection()
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
     let now = crate::control::now_iso();
     let result_json = result
         .as_ref()
@@ -899,35 +921,33 @@ fn finalize_task_runtime(
         .map(serde_json::to_string)
         .transpose()
         .map_err(to_cli_error)?;
-    storage
-        .connection()
-        .execute(
-            r#"
-            UPDATE project_tasks
-            SET status = ?, assigned_target_id = NULL, lease_owner = NULL,
+    tx.execute(
+        r#"
+            UPDATE tasks
+            SET status = ?, assigned_agent_id = NULL, lease_owner = NULL,
                 lease_expires_at = NULL, last_heartbeat_at = NULL,
                 lease_token_hash = NULL, retry_after = ?, result_json = ?,
                 error_json = ?, completed_at = ?, updated_at = ?
-            WHERE id = ? AND session_id = ?
+            WHERE id = ? AND project_id = ?
             "#,
-            params![
-                status,
-                retry_after,
-                result_json,
-                error_json,
-                if matches!(status, "succeeded" | "cancelled") {
-                    Some(now.clone())
-                } else {
-                    None
-                },
-                now,
-                task_id,
-                session_id,
-            ],
-        )
-        .map_err(to_cli_error)?;
-    record_change(storage.connection(), "task", session_id, None)?;
-    Ok(())
+        params![
+            status,
+            retry_after,
+            result_json,
+            error_json,
+            if matches!(status, "succeeded" | "cancelled") {
+                Some(now.clone())
+            } else {
+                None
+            },
+            now,
+            task_id,
+            project_id,
+        ],
+    )
+    .map_err(to_cli_error)?;
+    crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
+    tx.commit().map_err(to_cli_error)
 }
 
 fn reset_task_delivery(
@@ -945,7 +965,7 @@ fn reset_task_delivery(
             UPDATE task_deliveries
             SET status = 'pending', attempts = 0, next_attempt_at = ?,
                 last_error = ?, acknowledged_at = NULL, updated_at = ?
-            WHERE task_id = ? AND (? IS NULL OR target_id = ?)
+            WHERE task_id = ? AND ( ? IS NULL OR agent_target_id = ?)
             "#,
             params![
                 next_attempt_at,
@@ -966,22 +986,22 @@ fn recover_expired_tasks(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
         Err(error) if error.code() == Some("no_current_project") => return Ok(()),
         Err(error) => return Err(error),
     };
-    recover_expired_tasks_in_session(paths, &bootstrap.session.id)
+    recover_expired_tasks_in_session(paths, &bootstrap.project.id)
 }
 
 fn recover_expired_tasks_in_session(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
 ) -> Result<(), CliError> {
     let storage = Storage::open(paths)?;
     let now = crate::control::now_iso();
     storage
         .connection()
         .execute(
-            "UPDATE project_tasks SET status = 'queued', assigned_target_id = NULL, updated_at = ? WHERE session_id = ? AND status = 'reserved' AND updated_at < ?",
+            "UPDATE tasks SET status = 'queued', assigned_agent_id = NULL, updated_at = ? WHERE project_id = ? AND status = 'reserved' AND updated_at < ?",
             params![
                 now,
-                session_id,
+                project_id,
                 (chrono::Utc::now() - chrono::Duration::seconds(30))
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
             ],
@@ -992,9 +1012,9 @@ fn recover_expired_tasks_in_session(
             .connection()
             .prepare(
                 r#"
-                SELECT id, queue, attempts, assigned_target_id
-                FROM project_tasks
-                WHERE session_id = ?
+                SELECT id, queue, attempts, assigned_agent_id
+                FROM tasks
+                WHERE project_id = ?
                   AND status IN ('running', 'claimed', 'converting', 'indexing')
                   AND lease_expires_at IS NOT NULL
                   AND lease_expires_at <= ?
@@ -1002,7 +1022,7 @@ fn recover_expired_tasks_in_session(
             )
             .map_err(to_cli_error)?;
         let rows = statement
-            .query_map(params![session_id, now], |row| {
+            .query_map(params![project_id, now], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -1026,7 +1046,7 @@ fn recover_expired_tasks_in_session(
         }
         finalize_task_runtime(
             paths,
-            session_id,
+            project_id,
             &task_id,
             "failed",
             None,
@@ -1046,10 +1066,10 @@ fn recover_expired_tasks_in_session(
 
 fn annotate_dispatch_state(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     tasks: Vec<Value>,
 ) -> Result<Vec<Value>, CliError> {
-    let targets = read_targets(paths, session_id)?;
+    let targets = read_targets(paths, project_id)?;
     let storage = Storage::open(paths)?;
     let mut output = Vec::with_capacity(tasks.len());
     for mut task in tasks {
@@ -1097,14 +1117,14 @@ fn annotate_dispatch_state(
     Ok(output)
 }
 
-fn read_targets(paths: &MyOpenPanelsPaths, session_id: &str) -> Result<Vec<Value>, CliError> {
+fn read_targets(paths: &MyOpenPanelsPaths, project_id: &str) -> Result<Vec<Value>, CliError> {
     let storage = Storage::open(paths)?;
-    read_targets_from_connection(storage.connection(), session_id)
+    read_targets_from_connection(storage.connection(), project_id)
 }
 
 fn read_targets_from_connection(
     connection: &rusqlite::Connection,
-    session_id: &str,
+    project_id: &str,
 ) -> Result<Vec<Value>, CliError> {
     let mut statement = connection
         .prepare(
@@ -1112,13 +1132,13 @@ fn read_targets_from_connection(
             SELECT id, name, host, transport, endpoint, capabilities_json,
                    priority, status, last_error, last_heartbeat_at, created_at, updated_at
             FROM agent_targets
-            WHERE session_id = ?
+            WHERE project_id = ?
             ORDER BY priority DESC, last_heartbeat_at DESC, id ASC
             "#,
         )
         .map_err(to_cli_error)?;
     let rows = statement
-        .query_map(params![session_id], target_from_row)
+        .query_map(params![project_id], target_from_row)
         .map_err(to_cli_error)?;
     rows.map(|row| row.map(compute_target_status).map_err(to_cli_error))
         .collect()
@@ -1126,7 +1146,7 @@ fn read_targets_from_connection(
 
 fn read_target_value(
     connection: &rusqlite::Connection,
-    session_id: &str,
+    project_id: &str,
     target_id: &str,
 ) -> Result<Option<Value>, CliError> {
     connection
@@ -1135,9 +1155,9 @@ fn read_target_value(
             SELECT id, name, host, transport, endpoint, capabilities_json,
                    priority, status, last_error, last_heartbeat_at, created_at, updated_at
             FROM agent_targets
-            WHERE session_id = ? AND id = ?
+            WHERE project_id = ? AND id = ?
             "#,
-            params![session_id, target_id],
+            params![project_id, target_id],
             target_from_row,
         )
         .optional()
@@ -1238,7 +1258,7 @@ fn read_last_delivery(
     connection
         .query_row(
             r#"
-            SELECT id, task_id, target_id, status, attempts, next_attempt_at,
+            SELECT id, task_id, agent_target_id, status, attempts, next_attempt_at,
                    last_error, delivered_at, acknowledged_at, created_at, updated_at
             FROM task_deliveries
             WHERE task_id = ?
@@ -1293,8 +1313,7 @@ pub fn dispatch_webhooks_once(
 ) -> Result<Value, CliError> {
     recover_expired_tasks(paths)?;
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    import_legacy_targets(paths, &bootstrap.session.id)?;
-    let targets = read_targets(paths, &bootstrap.session.id)?;
+    let targets = read_targets(paths, &bootstrap.project.id)?;
     let tasks = annotate_tasks(bootstrap.tasks);
     let mut delivered = 0usize;
     for task in tasks
@@ -1312,7 +1331,7 @@ pub fn dispatch_webhooks_once(
                 continue;
             }
             if due {
-                deliver_webhook(paths, &bootstrap.session.id, server_url, task, target)?;
+                deliver_webhook(paths, &bootstrap.project.id, server_url, task, target)?;
                 delivered += 1;
             }
             break;
@@ -1382,7 +1401,7 @@ fn delivery_schedule(
     let delivery = storage
         .connection()
         .query_row(
-            "SELECT status, attempts, next_attempt_at FROM task_deliveries WHERE task_id = ? AND target_id = ?",
+            "SELECT status, attempts, next_attempt_at FROM task_deliveries WHERE task_id = ? AND agent_target_id = ?",
             params![task["id"].as_str(), target["id"].as_str()],
             |row| {
                 Ok((
@@ -1414,7 +1433,7 @@ fn delivery_schedule(
 
 fn deliver_webhook(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     server_url: &str,
     task: &Value,
     target: &Value,
@@ -1452,7 +1471,7 @@ fn deliver_webhook(
     };
     record_delivery_attempt(
         paths,
-        session_id,
+        project_id,
         task_id,
         target_id,
         success,
@@ -1487,7 +1506,7 @@ fn deliver_webhook(
 
 fn record_delivery_attempt(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     task_id: &str,
     target_id: &str,
     success: bool,
@@ -1501,7 +1520,7 @@ fn record_delivery_attempt(
         .map_err(to_cli_error)?;
     let existing = tx
         .query_row(
-            "SELECT id, attempts FROM task_deliveries WHERE task_id = ? AND target_id = ?",
+            "SELECT id, attempts FROM task_deliveries WHERE task_id = ? AND agent_target_id = ?",
             params![task_id, target_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )
@@ -1534,11 +1553,11 @@ fn record_delivery_attempt(
     tx.execute(
         r#"
         INSERT INTO task_deliveries (
-          id, task_id, target_id, status, attempts, next_attempt_at,
+          id, task_id, agent_target_id, status, attempts, next_attempt_at,
           last_error, delivered_at, acknowledged_at, created_at, updated_at
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
-        ON CONFLICT(task_id, target_id) DO UPDATE SET
+        ON CONFLICT(task_id, agent_target_id) DO UPDATE SET
           status = excluded.status,
           attempts = excluded.attempts,
           next_attempt_at = excluded.next_attempt_at,
@@ -1565,106 +1584,8 @@ fn record_delivery_attempt(
         params![delivery_id, attempts, if success { "sent" } else { "failed" }, error, now],
     )
     .map_err(to_cli_error)?;
-    tx.execute(
-        "INSERT INTO storage_changes (kind, session_id, panel_id, created_at) VALUES ('task_delivery', ?, NULL, ?)",
-        params![session_id, now],
-    )
-    .map_err(to_cli_error)?;
+    crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
     tx.commit().map_err(to_cli_error)
-}
-
-fn import_legacy_targets(paths: &MyOpenPanelsPaths, session_id: &str) -> Result<(), CliError> {
-    let path = paths.context_dir.join("agent-targets.json");
-    if !path.exists() {
-        return Ok(());
-    }
-    let raw = fs::read_to_string(path).map_err(to_cli_error)?;
-    let targets = serde_json::from_str::<Value>(&raw)
-        .ok()
-        .and_then(|value| value.as_array().cloned())
-        .unwrap_or_default();
-    if targets.is_empty() {
-        return Ok(());
-    }
-    let storage = Storage::open(paths)?;
-    for target in targets {
-        let target_id = target
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| random_id("agent-target"));
-        let exists = storage
-            .connection()
-            .query_row(
-                "SELECT 1 FROM agent_targets WHERE id = ?",
-                params![target_id],
-                |_| Ok(()),
-            )
-            .optional()
-            .map_err(to_cli_error)?
-            .is_some();
-        if exists {
-            continue;
-        }
-        let wake_url = target.get("wakeUrl").and_then(Value::as_str);
-        let now = target
-            .get("updatedAt")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| {
-                target
-                    .get("createdAt")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-            });
-        let now = if now.is_empty() {
-            crate::control::now_iso()
-        } else {
-            now.to_owned()
-        };
-        let token = random_secret("opt");
-        storage
-            .connection()
-            .execute(
-                r#"
-                INSERT OR IGNORE INTO agent_targets (
-                  id, session_id, name, host, transport, endpoint, capabilities_json,
-                  priority, status, token_hash, last_error, last_heartbeat_at,
-                  created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'online', ?, NULL, ?, ?, ?)
-                "#,
-                params![
-                    target_id,
-                    session_id,
-                    target
-                        .get("threadId")
-                        .and_then(Value::as_str)
-                        .unwrap_or("legacy-agent"),
-                    target
-                        .get("host")
-                        .and_then(Value::as_str)
-                        .unwrap_or("legacy"),
-                    if wake_url.is_some() {
-                        "webhook"
-                    } else {
-                        "poll"
-                    },
-                    wake_url,
-                    serde_json::to_string(&vec![
-                        "wiki.convertDocument",
-                        "wiki.ingestMarkdown",
-                        "wiki.rebuildIndex",
-                    ])
-                    .map_err(to_cli_error)?,
-                    hash_secret(&token),
-                    now,
-                    now,
-                    now,
-                ],
-            )
-            .map_err(to_cli_error)?;
-        write_target_secret(paths, &target_id, &token)?;
-    }
-    Ok(())
 }
 
 fn random_id(prefix: &str) -> String {
@@ -1717,21 +1638,6 @@ fn read_target_secret(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Stri
     fs::read_to_string(target_secret_path(paths, target_id))
         .map(|value| value.trim().to_owned())
         .map_err(to_cli_error)
-}
-
-fn record_change(
-    connection: &rusqlite::Connection,
-    kind: &str,
-    session_id: &str,
-    panel_id: Option<&str>,
-) -> Result<(), CliError> {
-    connection
-        .execute(
-            "INSERT INTO storage_changes (kind, session_id, panel_id, created_at) VALUES (?, ?, ?, ?)",
-            params![kind, session_id, panel_id, crate::control::now_iso()],
-        )
-        .map_err(to_cli_error)?;
-    Ok(())
 }
 
 fn lease_expires_at() -> String {

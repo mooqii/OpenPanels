@@ -4,7 +4,7 @@
 
 MyOpenPanels exposes a small, pull-based Agent protocol. `agent bootstrap` gives
 the Agent enough information to understand the current focus and choose what to
-load next. Command parameters, Skills, Guides, Tasks, Operations, and selection
+load next. Command parameters, Skills, Tasks, Operations, and selection
 details are then read only when the user request needs them.
 
 The separately installed `myopenpanels` entry Skill detects or installs the
@@ -55,7 +55,7 @@ Bootstrap `data` contains only:
 - Task counts and at most one next-Task reference;
 - active Operation count and at most three Operation references;
 - capability discovery commands, the required active Panel Skill reference,
-  and at most eight applicable Guide references;
+  and the optional Task Queue Skill reference;
 - a `load-required-skills` action that references every mandatory Skill load.
 
 Normally Bootstrap contains no Entry Skill version check or update reminder. A
@@ -70,7 +70,7 @@ Panel context is bounded to depth 4, strings of 256 UTF-8 bytes, arrays of 16
 items, and objects of 32 fields. `contextTruncated` reports whether this happened.
 Project, Panel, Task, and Operation identity fields are never shortened.
 
-Bootstrap does not contain the full capability catalog, Skill or Guide content,
+Bootstrap does not contain the full capability catalog or Skill content,
 Task or Operation records, selection values, local paths, or Studio binding.
 Because the Entry Skill requests Bootstrap only for panel-related work,
 `activePanelSkill` is mandatory whenever Bootstrap is called. Its read action is
@@ -119,11 +119,10 @@ preconditions, target mode, output schema id, and large-output marker.
 An unknown scope returns `capability_scope_not_found` with a recovery command
 pointing back to the unfiltered scope index.
 
-`agent guide list` and `agent skill list` accept optional `--panel-kind` and
-`--task-type` filters. Lists contain compact metadata, while their corresponding
-read actions appear only in the response-level `nextActions` array.
-Markdown, full capability requirements, and Skill local paths are returned by
-the corresponding `read` command.
+`agent skill list` accepts optional `--panel-kind` and `--task-type` filters.
+Lists contain compact metadata, while read actions appear only in the
+response-level `nextActions` array. Markdown, full capability requirements, and
+Skill local paths are returned by `agent skill read`.
 
 ## Persistent Operations
 
@@ -131,6 +130,10 @@ Canvas image generation and Wiki document generation remain persistent
 Operations. Begin captures the original target; read, complete, fail, and cancel
 continue to work across Project or Panel switches and restarts. Operation storage
 keeps schema version 2 and is deliberately independent from guidance Protocol v4.
+Filesystem artifacts for completed or cancelled Operations are retained for seven
+days, then removed during Studio housekeeping or later Operation activity. The
+small database record remains available for history. Active and retryable failed
+Operations are never pruned by this policy.
 
 Target-bound writes never change the user's active Project, Panel, or selection.
 Canvas completion still requires generation metadata. Wiki completion still

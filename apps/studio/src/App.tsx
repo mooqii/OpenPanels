@@ -26,14 +26,14 @@ import {
 } from "./components/update/StudioRuntimeStatus"
 import { UpdatePrompt } from "./components/update/UpdatePrompt"
 import { WikiPanel } from "./components/wiki/WikiPanel"
-import { ACTIVE_SESSION_STORAGE_KEY } from "./constants"
+import { ACTIVE_PROJECT_STORAGE_KEY } from "./constants"
 import {
   apiFetch,
   apiUrl,
   canvasRevisionFromState,
   canvasSnapshotFromState,
-  fetchActiveSessionId,
-  fetchSessions,
+  fetchActiveProjectId,
+  fetchProjects,
   fetchStudioHealth,
   fetchUpdateStatus,
   isNotFoundError,
@@ -63,7 +63,7 @@ import {
 import type {
   MyOpenPanelsPanel,
   MyOpenPanelsPanelKind,
-  MyOpenPanelsSession,
+  MyOpenPanelsProject,
 } from "./protocol"
 import type {
   AgentOperation,
@@ -91,7 +91,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   const [selection, setSelection] = useState<CanvasSelectionSnapshot | null>(
     null
   )
-  const [sessions, setSessions] = useState<MyOpenPanelsSession[]>([])
+  const [projects, setProjects] = useState<MyOpenPanelsProject[]>([])
   const [snapshotLoadVersion, setSnapshotLoadVersion] = useState(0)
   const [updateStatus, setUpdateStatus] =
     useState<MyOpenPanelsUpdateStatus | null>(null)
@@ -187,13 +187,13 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   }, [transport])
 
   const loadProject = useCallback(
-    async (sessionId?: string | null) => {
+    async (projectId?: string | null) => {
       setBootstrapError(null)
-      const data = await loadBootstrap(transport, sessionId)
+      const data = await loadBootstrap(transport, projectId)
       const normalized = normalizeBootstrap(data)
       window.localStorage.setItem(
-        ACTIVE_SESSION_STORAGE_KEY,
-        normalized.session.id
+        ACTIVE_PROJECT_STORAGE_KEY,
+        normalized.project.id
       )
       const nextCanvasSnapshot = canvasSnapshotFromState(normalized)
       appStateRef.current = normalized
@@ -205,7 +205,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       setAppState(normalized)
       setCanvasSnapshot(nextCanvasSnapshot)
       setSnapshotLoadVersion((version) => version + 1)
-      setSessions(data.sessions ?? (await fetchSessions(transport)))
+      setProjects(data.projects ?? (await fetchProjects(transport)))
     },
     [transport]
   )
@@ -213,10 +213,10 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const sessionId =
-        transport.kind === "http" ? await fetchActiveSessionId(transport) : null
+      const projectId =
+        transport.kind === "http" ? await fetchActiveProjectId(transport) : null
       if (cancelled) return
-      await loadProject(sessionId)
+      await loadProject(projectId)
     })().catch((error) => {
       console.error("Failed to bootstrap MyOpenPanels", error)
       setBootstrapError(String(error?.message || error))
@@ -226,18 +226,18 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     }
   }, [loadProject, transport])
 
-  const activeAppSessionId = appState?.session.id
+  const activeAppProjectId = appState?.project.id
 
   useEffect(() => {
-    if (!(activeAppSessionId && transport.kind === "http")) return
+    if (!(activeAppProjectId && transport.kind === "http")) return
     let syncing = false
     const timer = window.setInterval(async () => {
       if (syncing) return
       syncing = true
       try {
-        const activeSessionId = await fetchActiveSessionId(transport)
-        if (activeSessionId && activeSessionId !== activeAppSessionId) {
-          await loadProject(activeSessionId)
+        const activeProjectId = await fetchActiveProjectId(transport)
+        if (activeProjectId && activeProjectId !== activeAppProjectId) {
+          await loadProject(activeProjectId)
         }
       } catch (error) {
         console.error("Failed to sync MyOpenPanels active project", error)
@@ -246,7 +246,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       }
     }, 5000)
     return () => window.clearInterval(timer)
-  }, [activeAppSessionId, loadProject, transport])
+  }, [activeAppProjectId, loadProject, transport])
 
   useEffect(() => {
     if (transport.kind !== "http") return
@@ -265,7 +265,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           pending = false
           const current = appStateRef.current
           if (!current) return
-          const data = await loadBootstrap(transport, current.session.id)
+          const data = await loadBootstrap(transport, current.project.id)
           if (cancelled) return
 
           const latest = appStateRef.current ?? current
@@ -276,8 +276,8 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             remote: data,
           })
           canvasRevisionRef.current = merged.canvasRevision
-          if (data.sessions) {
-            setSessions(data.sessions)
+          if (data.projects) {
+            setProjects(data.projects)
           }
           if (merged.changed) {
             appStateRef.current = merged.appState
@@ -301,20 +301,27 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       }
     }
 
-    const source = new EventSource(
-      apiUrl(transport.apiBase, "/api/events").toString()
-    )
-    source.addEventListener("project", () => {
+    const eventsUrl = apiUrl(transport.apiBase, "/api/events")
+    if (activeAppProjectId)
+      eventsUrl.searchParams.set("projectId", activeAppProjectId)
+    const source = new EventSource(eventsUrl.toString())
+    source.addEventListener("project", (event) => {
+      const change = JSON.parse((event as MessageEvent<string>).data) as {
+        kind?: string
+      }
+      if (change.kind === "panel_selection") return
       syncProject()
     })
     source.addEventListener("open", () => {
       window.dispatchEvent(new Event("myopenpanels:runtime-check"))
     })
+    const targetStatusTimer = window.setInterval(syncProject, 15_000)
     return () => {
       cancelled = true
+      window.clearInterval(targetStatusTimer)
       source.close()
     }
-  }, [transport])
+  }, [activeAppProjectId, transport])
 
   const refreshUpdateStatus = useCallback(
     async (options?: { refresh?: boolean }) => {
@@ -427,17 +434,17 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       null,
     [appState]
   )
-  const activeSessionId = appState?.session.id ?? null
+  const activeProjectId = appState?.project.id ?? null
   const canvasPanelId = canvasPanel?.id ?? null
 
   const assetStore = useMemo(() => {
-    if (!(canvasPanelId && activeSessionId)) return new DataUrlAssetStore()
+    if (!(canvasPanelId && activeProjectId)) return new DataUrlAssetStore()
     return new MyOpenPanelsBrowserAssetStore(
       transport.apiBase,
-      activeSessionId,
+      activeProjectId,
       canvasPanelId
     )
-  }, [activeSessionId, canvasPanelId, transport.apiBase])
+  }, [activeProjectId, canvasPanelId, transport.apiBase])
 
   const saveSnapshot = useCallback((nextSnapshot: StoreSnapshot) => {
     canvasSaveGenerationRef.current += 1
@@ -469,7 +476,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       body: JSON.stringify({}),
     })
     const data = (await response.json()) as BootstrapResponse
-    window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, data.session.id)
+    window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, data.project.id)
     const normalized = normalizeBootstrap(data)
     const nextCanvasSnapshot = canvasSnapshotFromState(normalized)
     appStateRef.current = normalized
@@ -481,7 +488,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     setAppState(normalized)
     setCanvasSnapshot(nextCanvasSnapshot)
     setSnapshotLoadVersion((version) => version + 1)
-    setSessions(data.sessions ?? (await fetchSessions(transport)))
+    setProjects(data.projects ?? (await fetchProjects(transport)))
   }, [transport])
 
   const renameProject = useCallback(
@@ -489,22 +496,22 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       if (!appState) return
       const response = await apiFetch(
         transport.apiBase,
-        `/api/sessions/${encodeURIComponent(appState.session.id)}`,
+        `/api/projects/${encodeURIComponent(appState.project.id)}`,
         {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ title }),
         }
       )
-      const data = (await response.json()) as { session: MyOpenPanelsSession }
+      const data = (await response.json()) as { project: MyOpenPanelsProject }
       setAppState((current) =>
-        current && current.session.id === data.session.id
-          ? { ...current, session: data.session }
+        current && current.project.id === data.project.id
+          ? { ...current, project: data.project }
           : current
       )
-      setSessions((current) =>
-        current.map((session) =>
-          session.id === data.session.id ? data.session : session
+      setProjects((current) =>
+        current.map((project) =>
+          project.id === data.project.id ? data.project : project
         )
       )
     },
@@ -512,25 +519,25 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   )
 
   const deleteProject = useCallback(
-    async (sessionId: string) => {
-      if (!appState || sessions.length <= 1) return
+    async (projectId: string) => {
+      if (!appState || projects.length <= 1) return
       const response = await apiFetch(
         transport.apiBase,
-        `/api/sessions/${encodeURIComponent(sessionId)}`,
+        `/api/projects/${encodeURIComponent(projectId)}`,
         { method: "DELETE" }
       )
       const data = (await response.json()) as {
-        activeSessionId: string
-        deletedSessionId: string
-        sessions: MyOpenPanelsSession[]
+        activeProjectId: string
+        deletedProjectId: string
+        projects: MyOpenPanelsProject[]
       }
-      if (sessionId === appState.session.id) {
-        await loadProject(data.activeSessionId)
+      if (projectId === appState.project.id) {
+        await loadProject(data.activeProjectId)
         return
       }
-      setSessions(data.sessions)
+      setProjects(data.projects)
     },
-    [appState, loadProject, sessions.length, transport]
+    [appState, loadProject, projects.length, transport]
   )
 
   const switchPanel = useCallback(
@@ -540,7 +547,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          sessionId: appState.session.id,
+          projectId: appState.project.id,
           kind,
         }),
       })
@@ -572,7 +579,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       appStateRef.current = nextAppState
       setSelection(null)
       setAppState((current) =>
-        current && current.session.id === appState.session.id
+        current && current.project.id === appState.project.id
           ? nextAppState
           : current
       )
@@ -590,9 +597,9 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   )
 
   const reloadCurrentProject = useCallback(async () => {
-    if (!appState?.session.id) return
-    await loadProject(appState.session.id)
-  }, [appState?.session.id, loadProject])
+    if (!appState?.project.id) return
+    await loadProject(appState.project.id)
+  }, [appState?.project.id, loadProject])
 
   const flushCanvasSave = useCallback(async () => {
     if (!canvasDirtyRef.current) return
@@ -606,7 +613,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     const generation = canvasSaveGenerationRef.current
     const payload = await savePanelState(
       transport,
-      current.session.id,
+      current.project.id,
       panel.id,
       snapshot,
       canvasRevisionRef.current
@@ -627,7 +634,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     const timer = window.setTimeout(() => {
       flushCanvasSave().catch((error) => {
         if (error instanceof Error && error.message === "HTTP 409") {
-          loadProject(appState.session.id).catch((reloadError) => {
+          loadProject(appState.project.id).catch((reloadError) => {
             console.error(
               "Failed to reload stale MyOpenPanels canvas",
               reloadError
@@ -646,7 +653,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     const timer = window.setTimeout(() => {
       saveSelectionState(
         transport,
-        appState.session.id,
+        appState.project.id,
         canvasPanel.id,
         selection
       ).catch((error) => {
@@ -803,12 +810,12 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
 
   const projectChrome = (
     <ProjectChrome
-      currentSession={appState.session}
+      currentProject={appState.project}
       onCreateProject={createProject}
       onDeleteProject={deleteProject}
       onRenameProject={renameProject}
       onSwitchProject={loadProject}
-      sessions={sessions}
+      projects={projects}
     />
   )
 
@@ -839,7 +846,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           <CanvasPanel
             assetStore={assetStore}
             height="100vh"
-            key={`${appState.session.id}:${canvasPanel?.id ?? "canvas"}`}
+            key={`${appState.project.id}:${canvasPanel?.id ?? "canvas"}`}
             onSelectionChange={setSelection}
             onSnapshotChange={saveSnapshot}
             snapshot={canvasSnapshot}
@@ -874,7 +881,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
                 : t`Agent work failed`}
             </strong>
             <span>
-              {operationNotice.projectTitle ?? operationNotice.sessionId}
+              {operationNotice.projectTitle ?? operationNotice.projectId}
               {" · "}
               {operationNotice.panelTitle ?? operationNotice.panelKind}
             </span>

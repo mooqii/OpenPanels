@@ -348,23 +348,6 @@ fn resolve_local_agent_bridge(paths: &MyOpenPanelsPaths) -> Option<LocalAgentBri
             });
         }
     }
-    if std::env::var("MYOPENPANELS_ENABLE_LEGACY_LOCAL_AGENT")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
-        if let Ok(command) = std::env::var("MYOPENPANELS_LEGACY_AGENT_COMMAND") {
-            if !command.trim().is_empty() {
-                return Some(LocalAgentBridge {
-                    agent_prompt: false,
-                    command,
-                    host: "legacy-local-agent".to_owned(),
-                    manual_lifecycle: true,
-                    name: format!("legacy-local-agent:{}", paths.context_id),
-                });
-            }
-        }
-    }
     if has_codex_environment() {
         let executable =
             find_executable("codex", std::env::var("MYOPENPANELS_CODEX_EXECUTABLE").ok())?;

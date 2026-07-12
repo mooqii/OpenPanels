@@ -595,7 +595,6 @@ enum AgentCommand {
     Bootstrap,
     Capability(AgentCapabilityArgs),
     EntrySkill(AgentEntrySkillArgs),
-    Guide(AgentGuideArgs),
     Skill(AgentSkillArgs),
     Bridge(AgentBridgeArgs),
     Target(AgentTargetArgs),
@@ -632,28 +631,6 @@ enum AgentCapabilityCommand {
     Read {
         #[arg(long)]
         intent: String,
-    },
-}
-
-#[derive(Debug, Args)]
-struct AgentGuideArgs {
-    #[command(subcommand)]
-    command: AgentGuideCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum AgentGuideCommand {
-    List {
-        #[arg(long, value_parser = panel_kind_values())]
-        panel_kind: Option<String>,
-        #[arg(long)]
-        task_type: Option<String>,
-    },
-    Read {
-        #[arg(long)]
-        guide_id: String,
-        #[arg(long)]
-        task_id: Option<String>,
     },
 }
 
@@ -756,8 +733,9 @@ pub(super) fn parse(argv: &[String]) -> ParseOutcome {
             put(&mut flags, "format", Some("json".to_owned()));
         }
         return ParseOutcome::Invocation(Invocation {
+            command_id: super::registry::CommandId::from_intent("cli.version.read")
+                .expect("version command is registered"),
             flags,
-            intent: "cli.version.read".to_owned(),
             positionals: vec!["version".to_owned()],
         });
     }
@@ -788,8 +766,9 @@ fn normalize(cli: CliArgs) -> Invocation {
     put(&mut flags, "format", Some(cli.format));
     let (positionals, intent) = normalize_command(cli.command, &mut flags);
     Invocation {
+        command_id: super::registry::CommandId::from_intent(intent)
+            .expect("normalized command is registered"),
         flags,
-        intent: intent.to_owned(),
         positionals,
     }
 }
@@ -882,8 +861,11 @@ fn normalize_project(
             (vec!["project".into(), "create".into()], "project.create")
         }
         ProjectCommand::Activate { project_id } => {
-            put(flags, "id", Some(project_id));
-            (vec!["project".into(), "select".into()], "project.activate")
+            put(flags, "project-id", Some(project_id));
+            (
+                vec!["project".into(), "activate".into()],
+                "project.activate",
+            )
         }
     }
 }
@@ -896,8 +878,8 @@ fn normalize_panel(
         PanelCommand::Current => (vec!["panel".into(), "current".into()], "panel.current.read"),
         PanelCommand::List => (vec!["panel".into(), "list".into()], "panel.list"),
         PanelCommand::Activate { panel_kind } => {
-            put(flags, "kind", Some(panel_kind));
-            (vec!["panel".into(), "switch".into()], "panel.activate")
+            put(flags, "panel-kind", Some(panel_kind));
+            (vec!["panel".into(), "activate".into()], "panel.activate")
         }
         PanelCommand::Context(_) => (
             vec!["panel".into(), "context".into(), "read".into()],
@@ -921,7 +903,7 @@ fn normalize_canvas(
     match command {
         CanvasCommand::Selection(args) => match args.command {
             CanvasSelectionCommand::Export { output_file } => {
-                put(flags, "output", Some(output_file));
+                put(flags, "output-file", Some(output_file));
                 (
                     vec!["canvas".into(), "selection".into(), "export".into()],
                     "canvas.selection.export",
@@ -930,7 +912,7 @@ fn normalize_canvas(
         },
         CanvasCommand::Image(args) => match args.command {
             CanvasImageCommand::Insert(args) => {
-                put(flags, "image", Some(args.image_file));
+                put(flags, "image-file", Some(args.image_file));
                 put(flags, "placement", Some(args.placement));
                 put(flags, "metadata-file", args.metadata_file);
                 put(flags, "replace-shape-id", args.replace_shape_id);
@@ -980,7 +962,7 @@ fn normalize_wiki(
         WikiCommand::GeneratedDocument(args) => normalize_wiki_generated(args.command, flags),
         WikiCommand::Space(args) => match args.command {
             WikiSpaceCommand::List => (
-                vec!["wiki".into(), "spaces".into(), "list".into()],
+                vec!["wiki".into(), "space".into(), "list".into()],
                 "wiki.space.list",
             ),
             WikiSpaceCommand::Activate {
@@ -990,7 +972,7 @@ fn normalize_wiki(
                 put(flags, "wiki-space-id", Some(wiki_space_id));
                 put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
                 (
-                    vec!["wiki".into(), "spaces".into(), "switch".into()],
+                    vec!["wiki".into(), "space".into(), "activate".into()],
                     "wiki.space.activate",
                 )
             }
@@ -1005,7 +987,7 @@ fn normalize_wiki(
             } => {
                 put(flags, "title", Some(title));
                 put(flags, "document-format", Some(document_format));
-                put(flags, "document-id", generated_document_id);
+                put(flags, "generated-document-id", generated_document_id);
                 put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
                 (
                     vec!["wiki".into(), "generation".into(), "begin".into()],
@@ -1022,7 +1004,7 @@ fn normalize_wiki_raw(
 ) -> (Vec<String>, &'static str) {
     match command {
         WikiRawDocumentCommand::List => (
-            vec!["wiki".into(), "documents".into(), "list".into()],
+            vec!["wiki".into(), "raw-document".into(), "list".into()],
             "wiki.raw-document.list",
         ),
         WikiRawDocumentCommand::Add {
@@ -1033,14 +1015,14 @@ fn normalize_wiki_raw(
             wiki_space_id,
             expect_focus_revision,
         } => {
-            put(flags, "file", Some(input_file));
+            put(flags, "input-file", Some(input_file));
             put(flags, "file-name", file_name);
             put(flags, "title", title);
             put(flags, "mime-type", mime_type);
             put(flags, "wiki-space-id", Some(wiki_space_id));
             put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
             (
-                vec!["wiki".into(), "documents".into(), "add".into()],
+                vec!["wiki".into(), "raw-document".into(), "add".into()],
                 "wiki.raw-document.add",
             )
         }
@@ -1053,21 +1035,30 @@ fn normalize_wiki_raw(
             expect_focus_revision,
         } => {
             put(flags, "title", Some(title));
-            put(flags, "file", content_file);
+            put(flags, "content-file", content_file);
             put(flags, "content", content);
             put(flags, "file-name", file_name);
             put(flags, "wiki-space-id", Some(wiki_space_id));
             put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
             (
-                vec!["wiki".into(), "documents".into(), "create-markdown".into()],
+                vec![
+                    "wiki".into(),
+                    "raw-document".into(),
+                    "create-markdown".into(),
+                ],
                 "wiki.raw-document.create-markdown",
             )
         }
         WikiRawDocumentCommand::Markdown(args) => match args.command {
             WikiRawMarkdownCommand::Read { raw_document_id } => {
-                put(flags, "document-id", Some(raw_document_id));
+                put(flags, "raw-document-id", Some(raw_document_id));
                 (
-                    vec!["wiki".into(), "markdown".into(), "read".into()],
+                    vec![
+                        "wiki".into(),
+                        "raw-document".into(),
+                        "markdown".into(),
+                        "read".into(),
+                    ],
                     "wiki.raw-document.markdown.read",
                 )
             }
@@ -1077,12 +1068,17 @@ fn normalize_wiki_raw(
                 task_id,
                 expect_focus_revision,
             } => {
-                put(flags, "document-id", Some(raw_document_id));
-                put(flags, "file", Some(content_file));
+                put(flags, "raw-document-id", Some(raw_document_id));
+                put(flags, "content-file", Some(content_file));
                 put(flags, "task-id", task_id);
                 put_num(flags, "expect-focus-revision", expect_focus_revision);
                 (
-                    vec!["wiki".into(), "markdown".into(), "write".into()],
+                    vec![
+                        "wiki".into(),
+                        "raw-document".into(),
+                        "markdown".into(),
+                        "write".into(),
+                    ],
                     "wiki.raw-document.markdown.write",
                 )
             }
@@ -1094,7 +1090,7 @@ fn normalize_wiki_generated(
     command: WikiGeneratedDocumentCommand,
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
-    let base = vec!["wiki".to_owned(), "generated-documents".to_owned()];
+    let base = vec!["wiki".to_owned(), "generated-document".to_owned()];
     match command {
         WikiGeneratedDocumentCommand::List => {
             (with_action(&base, "list"), "wiki.generated-document.list")
@@ -1107,7 +1103,7 @@ fn normalize_wiki_generated(
             title,
             expect_focus_revision,
         } => {
-            put(flags, "file", Some(content_file));
+            put(flags, "content-file", Some(content_file));
             put(flags, "mime-type", mime_type);
             put(flags, "task-id", task_id);
             put(flags, "thread-id", thread_id);
@@ -1121,7 +1117,7 @@ fn normalize_wiki_generated(
         WikiGeneratedDocumentCommand::Read {
             generated_document_id,
         } => {
-            put(flags, "document-id", Some(generated_document_id));
+            put(flags, "generated-document-id", Some(generated_document_id));
             (with_action(&base, "read"), "wiki.generated-document.read")
         }
         WikiGeneratedDocumentCommand::Write {
@@ -1130,8 +1126,8 @@ fn normalize_wiki_generated(
             mime_type,
             expect_focus_revision,
         } => {
-            put(flags, "document-id", Some(generated_document_id));
-            put(flags, "file", Some(content_file));
+            put(flags, "generated-document-id", Some(generated_document_id));
+            put(flags, "content-file", Some(content_file));
             put(flags, "mime-type", mime_type);
             put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
             (with_action(&base, "write"), "wiki.generated-document.write")
@@ -1141,7 +1137,7 @@ fn normalize_wiki_generated(
             title,
             expect_focus_revision,
         } => {
-            put(flags, "document-id", Some(generated_document_id));
+            put(flags, "generated-document-id", Some(generated_document_id));
             put(flags, "title", Some(title));
             put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
             (
@@ -1153,7 +1149,7 @@ fn normalize_wiki_generated(
             generated_document_id,
             expect_focus_revision,
         } => {
-            put(flags, "document-id", Some(generated_document_id));
+            put(flags, "generated-document-id", Some(generated_document_id));
             put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
             (
                 with_action(&base, "delete"),
@@ -1165,7 +1161,7 @@ fn normalize_wiki_generated(
             wiki_space_id,
             expect_focus_revision,
         } => {
-            put(flags, "document-id", Some(generated_document_id));
+            put(flags, "generated-document-id", Some(generated_document_id));
             put(flags, "wiki-space-id", Some(wiki_space_id));
             put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
             (
@@ -1180,7 +1176,7 @@ fn normalize_wiki_page(
     command: WikiPageCommand,
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
-    let base = vec!["wiki".to_owned(), "pages".to_owned()];
+    let base = vec!["wiki".to_owned(), "page".to_owned()];
     match command {
         WikiPageCommand::List { wiki_space_id } => {
             put(flags, "wiki-space-id", Some(wiki_space_id));
@@ -1214,7 +1210,7 @@ fn normalize_wiki_page(
         } => {
             put(flags, "wiki-space-id", Some(wiki_space_id));
             put(flags, "path", Some(path));
-            put(flags, "file", Some(content_file));
+            put(flags, "content-file", Some(content_file));
             put(flags, "title", title);
             put(flags, "task-id", task_id);
             put_num(flags, "expect-focus-revision", expect_focus_revision);
@@ -1238,7 +1234,7 @@ fn normalize_task(
         }
         TaskCommand::Read(args) => {
             task_id(flags, args);
-            ("inspect", "task.read")
+            ("read", "task.read")
         }
         TaskCommand::ClaimNext {
             target_id,
@@ -1289,11 +1285,11 @@ fn normalize_task(
         TaskCommand::Delivery(args) => match args.command {
             TaskDeliveryCommand::List { task_id } => {
                 put(flags, "task-id", task_id);
-                ("deliveries", "task.delivery.list")
+                ("delivery", "task.delivery.list")
             }
         },
     };
-    (vec!["tasks".into(), action.into()], intent)
+    (vec!["task".into(), action.into()], intent)
 }
 
 fn normalize_operation(
@@ -1352,7 +1348,7 @@ fn normalize_agent(
             AgentCapabilityCommand::List { scope } => {
                 put(flags, "scope", scope);
                 (
-                    vec!["agent".into(), "capabilities".into()],
+                    vec!["agent".into(), "capability".into(), "list".into()],
                     "agent.capability.list",
                 )
             }
@@ -1377,23 +1373,6 @@ fn normalize_agent(
                 )
             }
         },
-        AgentCommand::Guide(args) => match args.command {
-            AgentGuideCommand::List {
-                panel_kind,
-                task_type,
-            } => {
-                put(flags, "panel-kind", panel_kind);
-                put(flags, "task-type", task_type);
-                (vec!["agent".into(), "guides".into()], "agent.guide.list")
-            }
-            AgentGuideCommand::Read { guide_id, task_id } => {
-                put(flags, "task-id", task_id);
-                (
-                    vec!["agent".into(), "guide".into(), guide_id],
-                    "agent.guide.read",
-                )
-            }
-        },
         AgentCommand::Skill(args) => match args.command {
             AgentSkillCommand::List {
                 panel_kind,
@@ -1401,12 +1380,16 @@ fn normalize_agent(
             } => {
                 put(flags, "panel-kind", panel_kind);
                 put(flags, "task-type", task_type);
-                (vec!["agent".into(), "skills".into()], "agent.skill.list")
+                (
+                    vec!["agent".into(), "skill".into(), "list".into()],
+                    "agent.skill.list",
+                )
             }
             AgentSkillCommand::Read { skill_id, task_id } => {
+                put(flags, "skill-id", Some(skill_id));
                 put(flags, "task-id", task_id);
                 (
-                    vec!["agent".into(), "skill".into(), skill_id],
+                    vec!["agent".into(), "skill".into(), "read".into()],
                     "agent.skill.read",
                 )
             }
@@ -1425,12 +1408,15 @@ fn normalize_agent(
                 put_bool(flags, "once", args.once);
                 put(flags, "queue", args.queue);
                 put_num(flags, "timeout-ms", args.timeout_ms);
-                (vec!["agent".into(), "bridge".into()], "agent.bridge.run")
+                (
+                    vec!["agent".into(), "bridge".into(), "run".into()],
+                    "agent.bridge.run",
+                )
             }
         },
         AgentCommand::Target(args) => match args.command {
             AgentTargetCommand::List => (
-                vec!["agent".into(), "targets".into(), "list".into()],
+                vec!["agent".into(), "target".into(), "list".into()],
                 "agent.target.list",
             ),
             AgentTargetCommand::Register {
@@ -1448,21 +1434,21 @@ fn normalize_agent(
                 put_many(flags, "capability", capability);
                 put_num(flags, "priority", Some(priority));
                 (
-                    vec!["agent".into(), "targets".into(), "register".into()],
+                    vec!["agent".into(), "target".into(), "register".into()],
                     "agent.target.register",
                 )
             }
             AgentTargetCommand::Heartbeat { target_id } => {
                 put(flags, "target-id", Some(target_id));
                 (
-                    vec!["agent".into(), "targets".into(), "heartbeat".into()],
+                    vec!["agent".into(), "target".into(), "heartbeat".into()],
                     "agent.target.heartbeat",
                 )
             }
             AgentTargetCommand::Remove { target_id } => {
                 put(flags, "target-id", Some(target_id));
                 (
-                    vec!["agent".into(), "targets".into(), "remove".into()],
+                    vec!["agent".into(), "target".into(), "remove".into()],
                     "agent.target.remove",
                 )
             }
@@ -1515,6 +1501,6 @@ fn put_many(flags: &mut BTreeMap<String, FlagValue>, name: &str, values: Vec<Str
     }
 }
 
-fn panel_kind_values() -> [&'static str; 6] {
-    ["wiki", "canvas", "image", "diff", "preview", "files"]
+fn panel_kind_values() -> [&'static str; 2] {
+    ["wiki", "canvas"]
 }

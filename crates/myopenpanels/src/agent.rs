@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-static AGENT_GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/guides");
 static AGENT_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/skills");
 pub const CANVAS_PANEL_SKILL_ID: &str = "canvas-panel";
+pub const TASK_QUEUE_SKILL_ID: &str = "task-queue";
 pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 4;
 pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
 const MYOPENPANELS_SKILL_SOURCE: &str =
@@ -22,35 +22,6 @@ const ACTIVE_PANEL_SKILL_ACTION_REF: &str = "active-panel-skill";
 const TASK_AUTHORING_SKILL_ACTION_REF: &str = "next-task-authoring-skill";
 const ENTRY_SKILL_UPDATE_ACTION_REF: &str = "entry-skill-update";
 const ENTRY_SKILL_ACK_ACTION_REF: &str = "entry-skill-update-ack";
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentGuideMetadata {
-    pub applies_to: Vec<String>,
-    pub id: String,
-    pub load_when: Vec<String>,
-    pub requires_capabilities: Vec<String>,
-    pub source: String,
-    pub task_types: Vec<String>,
-    pub title: String,
-    pub tokens: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct AgentGuide {
-    pub metadata: AgentGuideMetadata,
-    pub body: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AgentGuideReadPayload {
-    pub guide: AgentGuideMetadata,
-    pub markdown: String,
-    #[serde(rename = "nextActions")]
-    pub next_actions: Vec<Value>,
-    #[serde(rename = "nextRequiredAction")]
-    pub next_required_action: Value,
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,23 +76,11 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
             &update,
         ));
     }
-    let guides = list_agent_guides()?;
-    let applicable_guides = guides
-        .iter()
-        .filter(|guide| {
-            guide
-                .applies_to
-                .iter()
-                .any(|kind| kind == bootstrap.active_panel_kind.as_str())
-                || guide.applies_to.iter().any(|kind| kind == "any")
-        })
-        .cloned()
-        .collect::<Vec<_>>();
     let operations = storage.list_agent_operations(Some(&paths.context_id), Some("active"))?;
     let focus_revision = crate::control::read_focus_revision(paths)?;
     let focus = json!({
         "focusRevision": focus_revision,
-        "projectId": bootstrap.session.id,
+        "projectId": bootstrap.project.id,
         "panelId": bootstrap.panel.id,
         "panelKind": bootstrap.panel.kind,
     });
@@ -222,6 +181,21 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         next_actions.push(action);
         required_action_refs.push(TASK_AUTHORING_SKILL_ACTION_REF);
     }
+    if !bootstrap.tasks.is_empty() {
+        let mut action = project_command_action(
+            paths,
+            "agent.skill.read",
+            vec![
+                "--skill-id".to_owned(),
+                TASK_QUEUE_SKILL_ID.to_owned(),
+                "--format".to_owned(),
+                "json".to_owned(),
+            ],
+        );
+        action["loadWhen"] = json!("The user request handles work from the project Task queue.");
+        action["skillId"] = json!(TASK_QUEUE_SKILL_ID);
+        next_actions.push(action);
+    }
     next_actions.extend(
         recommended_scopes
             .iter()
@@ -246,20 +220,6 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
     );
     capability_index_action["loadWhen"] = json!("No recommended scope matches the user request.");
     next_actions.push(capability_index_action);
-    next_actions.extend(applicable_guides.iter().map(|guide| {
-        let mut action = project_command_action(
-            paths,
-            "agent.guide.read",
-            vec![
-                "--guide-id".to_owned(),
-                guide.id.clone(),
-                "--format".to_owned(),
-                "json".to_owned(),
-            ],
-        );
-        action["loadWhen"] = json!(guide.load_when.join(" "));
-        action
-    }));
     if let Some(task_id) = next_task_id(&bootstrap) {
         let mut action = project_command_action(
             paths,
@@ -303,7 +263,7 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         },
         "focus": {
             "focusRevision": focus_revision,
-            "projectId": bootstrap.session.id,
+            "projectId": bootstrap.project.id,
             "panelId": bootstrap.panel.id,
             "panelKind": bootstrap.panel.kind,
             "availablePanelKinds": available_panel_kinds,
@@ -320,10 +280,9 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
             "capabilityIndexCommand": "myopenpanels agent capability list --format json",
             "capabilityListCommandTemplate": "myopenpanels agent capability list --scope <scope> --format json",
             "capabilityReadCommandTemplate": "myopenpanels agent capability read --intent <intent> --format json",
-            "guideListCommand": format!("myopenpanels agent guide list --panel-kind {} --format json", bootstrap.active_panel_kind.as_str()),
             "skillListCommand": format!("myopenpanels agent skill list --panel-kind {} --format json", bootstrap.active_panel_kind.as_str()),
             "activePanelSkill": active_panel_skill,
-            "applicableGuides": compact_guide_references(&applicable_guides),
+            "taskQueueSkillId": TASK_QUEUE_SKILL_ID,
         },
         "nextActions": next_actions,
         "nextRequiredAction": {
@@ -382,7 +341,7 @@ fn entry_skill_update_bootstrap(
         },
         "entrySkillUpdate": update,
         "focus": {
-            "projectId": bootstrap.session.id,
+            "projectId": bootstrap.project.id,
             "panelId": bootstrap.panel.id,
             "panelKind": bootstrap.panel.kind,
         },
@@ -433,8 +392,8 @@ fn next_wiki_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str,
                 .and_then(|input| input.get("agentSkillId"))
         })
         .or_else(|| {
-            task.get("task")
-                .and_then(|stored| stored.get("agentSkillId"))
+            task.get("source")
+                .and_then(|source| source.get("agentSkillId"))
         })
         .and_then(Value::as_str)
         .or_else(|| {
@@ -448,7 +407,7 @@ fn next_wiki_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str,
 }
 
 fn command_action(intent: &str, args: Vec<String>) -> Value {
-    crate::cli::registry::command_action(intent, args)
+    crate::cli::registry::command_action(crate::cli::registry::CommandId::registered(intent), args)
         .unwrap_or_else(|| panic!("missing Command Registry action for {intent}"))
 }
 
@@ -520,25 +479,6 @@ fn compact_operation_summary(operations: &[Value]) -> Value {
     })
 }
 
-fn compact_guide_references(guides: &[AgentGuideMetadata]) -> Value {
-    const MAX_ITEMS: usize = 8;
-    let items = guides
-        .iter()
-        .take(MAX_ITEMS)
-        .map(|guide| {
-            json!({
-                "id": guide.id,
-                "readCommand": format!("myopenpanels agent guide read --guide-id {} --format json", shell_quote(&guide.id)),
-            })
-        })
-        .collect::<Vec<_>>();
-    json!({
-        "count": guides.len(),
-        "items": items,
-        "truncated": guides.len() > MAX_ITEMS,
-    })
-}
-
 fn bounded_json(value: Value, depth: usize, truncated: &mut bool) -> Value {
     const MAX_DEPTH: usize = 4;
     const MAX_STRING_BYTES: usize = 256;
@@ -591,64 +531,6 @@ fn bounded_json(value: Value, depth: usize, truncated: &mut bool) -> Value {
         }
         value => value,
     }
-}
-
-pub fn list_agent_guides() -> Result<Vec<AgentGuideMetadata>, CliError> {
-    Ok(load_agent_guides()?
-        .into_iter()
-        .map(|guide| guide.metadata)
-        .collect())
-}
-
-pub fn list_agent_guide_summaries(
-    panel_kind: Option<&str>,
-    task_type: Option<&str>,
-) -> Result<Vec<Value>, CliError> {
-    Ok(load_agent_guides()?
-        .into_iter()
-        .filter(|guide| metadata_matches(&guide.metadata.applies_to, &guide.metadata.task_types, panel_kind, task_type))
-        .map(|guide| {
-            let metadata = guide.metadata;
-            json!({
-                "id": metadata.id,
-                "title": metadata.title,
-                "appliesTo": metadata.applies_to,
-                "taskTypes": metadata.task_types,
-                "loadWhen": metadata.load_when,
-                "readCommand": format!("myopenpanels agent guide read --guide-id {} --format json", shell_quote(&metadata.id)),
-            })
-        })
-        .collect())
-}
-
-pub fn read_agent_guide(
-    paths: &MyOpenPanelsPaths,
-    guide_id: &str,
-    task_id: Option<&str>,
-) -> Result<AgentGuideReadPayload, CliError> {
-    let guide = load_agent_guides()?
-        .into_iter()
-        .find(|guide| guide.metadata.id == guide_id)
-        .ok_or_else(|| CliError::new(format!("MyOpenPanels agent guide not found: {guide_id}")))?;
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    let selection = read_selection(paths, None, false).ok();
-    let wiki_selection = read_agent_selection(paths).ok();
-    let markdown = render_agent_guide(
-        &guide,
-        &bootstrap,
-        selection.as_ref(),
-        wiki_selection.as_ref(),
-        task_id,
-    )?;
-    Ok(AgentGuideReadPayload {
-        next_actions: capability_read_actions(&guide.metadata.requires_capabilities),
-        next_required_action: json!({
-            "intent": "apply-guide",
-            "instruction": "Apply the Guide to the user request. Load an entry from nextActions only when the Guide requires that capability.",
-        }),
-        guide: guide.metadata,
-        markdown,
-    })
 }
 
 pub fn sync_builtin_agent_skills(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
@@ -776,7 +658,7 @@ fn capability_read_actions(intents: &[String]) -> Vec<Value> {
                     "json".to_owned(),
                 ],
             );
-            action["loadWhen"] = json!("This Skill or Guide requires the referenced capability.");
+            action["loadWhen"] = json!("This Skill requires the referenced capability.");
             action
         })
         .collect()
@@ -786,44 +668,11 @@ pub fn capabilities() -> Vec<Value> {
     crate::cli::registry::capabilities()
 }
 
-pub fn render_agent_guides_markdown(guides: &[AgentGuideMetadata]) -> String {
-    format!(
-        "# MyOpenPanels Agent Guides\n\n{}\n",
-        render_guide_table(guides)
-    )
-}
-
 pub fn render_agent_skills_markdown(skills: &[AgentSkillListing]) -> String {
     format!(
         "# MyOpenPanels Agent Skills\n\n{}\n",
         render_skill_table(skills)
     )
-}
-
-fn render_agent_guide(
-    guide: &AgentGuide,
-    bootstrap: &ProjectBootstrap,
-    selection: Option<&crate::selection::SelectionPayload>,
-    wiki_selection: Option<&Value>,
-    task_id: Option<&str>,
-) -> Result<String, CliError> {
-    let task = task_id.and_then(|id| find_wiki_task(bootstrap, id));
-    if task_id.is_some() && task.is_none() {
-        return Err(CliError::new(format!(
-            "Wiki task not found: {}",
-            task_id.unwrap_or_default()
-        )));
-    }
-    Ok(format!(
-        "# Guide: {}\n\nTitle: {}\nSource: {}\nApplies to: {}\n\n## Current Context\n\n{}\n\n## Commands For This Guide\n\n{}\n\n## Instructions\n\n{}\n",
-        guide.metadata.id,
-        guide.metadata.title,
-        guide.metadata.source,
-        if guide.metadata.applies_to.is_empty() { "any".to_owned() } else { guide.metadata.applies_to.join(", ") },
-        render_current_context(bootstrap, selection, wiki_selection, task.as_ref()),
-        render_guide_commands(guide, task.as_ref()),
-        guide.body.trim(),
-    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -860,40 +709,6 @@ fn render_agent_skill(
             selected_wiki_skill_id,
         ),
     ))
-}
-
-fn load_agent_guides() -> Result<Vec<AgentGuide>, CliError> {
-    if let Ok(dir) = std::env::var("MYOPENPANELS_AGENT_GUIDES_DIR") {
-        if !dir.trim().is_empty() {
-            return load_agent_guides_from_dir(PathBuf::from(dir));
-        }
-    }
-    let mut guides = AGENT_GUIDES
-        .files()
-        .filter(|file| file.path().extension().and_then(|ext| ext.to_str()) == Some("md"))
-        .map(|file| {
-            let name = file.path().display().to_string();
-            let source = std::str::from_utf8(file.contents()).map_err(to_cli_error)?;
-            parse_guide(source, &name)
-        })
-        .collect::<Result<Vec<_>, CliError>>()?;
-    guides.sort_by(|left, right| left.metadata.id.cmp(&right.metadata.id));
-    Ok(guides)
-}
-
-fn load_agent_guides_from_dir(dir: PathBuf) -> Result<Vec<AgentGuide>, CliError> {
-    let mut guides = Vec::new();
-    for entry in fs::read_dir(dir).map_err(to_cli_error)? {
-        let entry = entry.map_err(to_cli_error)?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
-            continue;
-        }
-        let source = fs::read_to_string(&path).map_err(to_cli_error)?;
-        guides.push(parse_guide(&source, &path.display().to_string())?);
-    }
-    guides.sort_by(|left, right| left.metadata.id.cmp(&right.metadata.id));
-    Ok(guides)
 }
 
 fn load_agent_skills() -> Result<Vec<AgentSkill>, CliError> {
@@ -947,40 +762,6 @@ fn extract_embedded_dir_contents(
         extract_embedded_dir_contents(child_dir, root, destination)?;
     }
     Ok(())
-}
-
-fn parse_guide(source: &str, file_name: &str) -> Result<AgentGuide, CliError> {
-    let normalized_source;
-    let source = if source.contains("\r\n") {
-        normalized_source = source.replace("\r\n", "\n");
-        normalized_source.as_str()
-    } else {
-        source
-    };
-    let rest = source
-        .strip_prefix("---\n")
-        .ok_or_else(|| CliError::new(format!("Agent guide is missing frontmatter: {file_name}")))?;
-    let (frontmatter, body) = rest
-        .split_once("\n---")
-        .ok_or_else(|| CliError::new(format!("Agent guide is missing frontmatter: {file_name}")))?;
-    let frontmatter = parse_frontmatter(frontmatter);
-    let id = scalar(&frontmatter, "id")
-        .ok_or_else(|| CliError::new(format!("Agent guide requires id and title: {file_name}")))?;
-    let title = scalar(&frontmatter, "title")
-        .ok_or_else(|| CliError::new(format!("Agent guide requires id and title: {file_name}")))?;
-    Ok(AgentGuide {
-        metadata: AgentGuideMetadata {
-            applies_to: list(&frontmatter, "appliesTo"),
-            id,
-            load_when: list(&frontmatter, "loadWhen"),
-            requires_capabilities: list(&frontmatter, "requiresCapabilities"),
-            source: scalar(&frontmatter, "source").unwrap_or_else(|| "builtin".to_owned()),
-            task_types: list(&frontmatter, "taskTypes"),
-            title,
-            tokens: scalar(&frontmatter, "tokens").unwrap_or_else(|| "medium".to_owned()),
-        },
-        body: body.trim_start_matches('\n').to_owned(),
-    })
 }
 
 fn parse_skill(source: &str, file_name: &str) -> Result<AgentSkill, CliError> {
@@ -1056,27 +837,6 @@ fn scalar(frontmatter: &BTreeMap<String, Vec<String>>, key: &str) -> Option<Stri
 
 fn list(frontmatter: &BTreeMap<String, Vec<String>>, key: &str) -> Vec<String> {
     frontmatter.get(key).cloned().unwrap_or_default()
-}
-
-fn render_guide_table(guides: &[AgentGuideMetadata]) -> String {
-    if guides.is_empty() {
-        return "- none".to_owned();
-    }
-    let rows = guides
-        .iter()
-        .map(|guide| {
-            format!(
-                "| `{}` | {} | {} | {} | {} |",
-                guide.id,
-                guide.source,
-                guide.applies_to.join(", "),
-                guide.task_types.join(", "),
-                guide.load_when.join("; ")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("| ID | Source | Applies To | Task Types | Load When |\n| --- | --- | --- | --- | --- |\n{rows}")
 }
 
 fn render_skill_table(skills: &[AgentSkillListing]) -> String {
@@ -1272,7 +1032,7 @@ fn render_current_context(
     let mut lines = vec![
         format!(
             "- project: {} ({})",
-            bootstrap.session.title, bootstrap.session.id
+            bootstrap.project.title, bootstrap.project.id
         ),
         format!(
             "- active panel: {} ({})",
@@ -1315,26 +1075,6 @@ fn render_current_context(
         ));
     }
     lines.join("\n")
-}
-
-fn render_guide_commands(guide: &AgentGuide, task: Option<&Value>) -> String {
-    if let Some(task) = task {
-        let task_id = task["id"].as_str().unwrap_or("<task-id>");
-        let document_id = task["documentId"].as_str().unwrap_or("<document-id>");
-        let wiki_space_id = task["wikiSpaceId"].as_str().unwrap_or("<wiki-space-id>");
-        return format!(
-            "```bash\nmyopenpanels task claim --task-id {task_id} --target-id <target-id> --format json\nmyopenpanels wiki raw-document markdown read --raw-document-id {document_id} --format json\nmyopenpanels wiki page write --wiki-space-id {wiki_space_id} --path <page-path> --content-file <md-file> --task-id {task_id} --format json\nmyopenpanels task complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
-        );
-    }
-    if guide
-        .metadata
-        .applies_to
-        .iter()
-        .any(|value| value == "canvas")
-    {
-        return "```bash\nmyopenpanels canvas generation begin --display-width <w> --display-height <h> [--use-selection] --expect-focus-revision <focus-revision> --format json\nmyopenpanels operation complete --operation-id <operation-id> --artifact-file <generated-path> --metadata-file <metadata.json> --format json\n```".to_owned();
-    }
-    "- No task-specific commands.".to_owned()
 }
 
 fn render_skill_commands(
@@ -1390,16 +1130,21 @@ fn render_skill_commands(
 
 fn find_wiki_task(bootstrap: &ProjectBootstrap, task_id: &str) -> Option<Value> {
     bootstrap
-        .panels
-        .iter()
-        .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
-        .map(|snapshot| &snapshot.state)
-        .unwrap_or(&bootstrap.state)
-        .get("tasks")?
-        .as_array()?
+        .tasks
         .iter()
         .find(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
-        .cloned()
+        .map(|task| {
+            let mut normalized = task.as_object().cloned().unwrap_or_default();
+            for field in ["input", "source"] {
+                if let Some(values) = normalized
+                    .remove(field)
+                    .and_then(|value| value.as_object().cloned())
+                {
+                    normalized.extend(values);
+                }
+            }
+            Value::Object(normalized)
+        })
 }
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {
@@ -1409,19 +1154,6 @@ fn to_cli_error(error: impl std::fmt::Display) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_guide_accepts_crlf_frontmatter() {
-        let guide = parse_guide(
-            "---\r\nid: test.guide\r\ntitle: Test Guide\r\n---\r\n\r\nBody.\r\n",
-            "test.md",
-        )
-        .expect("guide");
-
-        assert_eq!(guide.metadata.id, "test.guide");
-        assert_eq!(guide.metadata.title, "Test Guide");
-        assert_eq!(guide.body, "Body.\n");
-    }
 
     #[test]
     fn bounded_json_limits_utf8_depth_arrays_and_objects() {

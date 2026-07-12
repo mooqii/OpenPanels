@@ -133,7 +133,7 @@ fn canvas_selection(
     bootstrap: &ProjectBootstrap,
     focus: Value,
 ) -> Result<PanelSelectionEnvelope, CliError> {
-    let payload = read_selection_for_panel(paths, &bootstrap.session.id, &bootstrap.panel.id)?;
+    let payload = read_selection_for_panel(paths, &bootstrap.project.id, &bootstrap.panel.id)?;
     let value = payload.selection;
     let is_explicit = value
         .get("isExplicitSelection")
@@ -217,7 +217,7 @@ fn wiki_selection(
 
 fn panel_skill_actions(skill_id: &str, load_when: &str) -> Vec<Value> {
     let mut action = crate::cli::registry::command_action(
-        "agent.skill.read",
+        crate::cli::registry::CommandId::registered("agent.skill.read"),
         vec![
             "--skill-id".to_owned(),
             skill_id.to_owned(),
@@ -233,7 +233,7 @@ fn panel_skill_actions(skill_id: &str, load_when: &str) -> Vec<Value> {
 fn focus(paths: &MyOpenPanelsPaths, bootstrap: &ProjectBootstrap) -> Result<Value, CliError> {
     Ok(json!({
         "focusRevision": read_focus_revision(paths)?,
-        "projectId": bootstrap.session.id,
+        "projectId": bootstrap.project.id,
         "panelId": bootstrap.panel.id,
         "panelKind": bootstrap.panel.kind,
     }))

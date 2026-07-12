@@ -6,10 +6,6 @@ use serde_json::Value;
 pub enum PanelKind {
     Wiki,
     Canvas,
-    Image,
-    Diff,
-    Preview,
-    Files,
 }
 
 impl PanelKind {
@@ -17,10 +13,6 @@ impl PanelKind {
         match self {
             Self::Wiki => "wiki",
             Self::Canvas => "canvas",
-            Self::Image => "image",
-            Self::Diff => "diff",
-            Self::Preview => "preview",
-            Self::Files => "files",
         }
     }
 
@@ -28,10 +20,6 @@ impl PanelKind {
         match value {
             "wiki" => Some(Self::Wiki),
             "canvas" => Some(Self::Canvas),
-            "image" => Some(Self::Image),
-            "diff" => Some(Self::Diff),
-            "preview" => Some(Self::Preview),
-            "files" => Some(Self::Files),
             _ => None,
         }
     }
@@ -39,7 +27,7 @@ impl PanelKind {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Session {
+pub struct Project {
     pub id: String,
     pub title: String,
     pub created_at: String,
@@ -51,7 +39,7 @@ pub struct Session {
 #[serde(rename_all = "camelCase")]
 pub struct Panel {
     pub id: String,
-    pub session_id: String,
+    pub project_id: String,
     pub kind: PanelKind,
     pub title: String,
     pub created_at: String,
@@ -80,8 +68,8 @@ pub struct ProjectBootstrap {
     pub panels: Vec<ProjectPanelSnapshot>,
     pub pending_task_count: usize,
     pub revision: i64,
-    pub session: Session,
-    pub sessions: Vec<Session>,
+    pub project: Project,
+    pub projects: Vec<Project>,
     pub state: Value,
     pub storage_dir: String,
     pub tasks: Vec<Value>,

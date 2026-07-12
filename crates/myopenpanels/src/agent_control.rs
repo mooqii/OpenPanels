@@ -2,7 +2,6 @@ use crate::control::now_iso;
 use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
 use crate::storage::Storage;
-use rusqlite::{params, OptionalExtension};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -142,35 +141,14 @@ fn read_value<T: for<'de> Deserialize<'de>>(
     storage: &Storage,
     key: &str,
 ) -> Result<Option<T>, CliError> {
-    let raw = storage
-        .connection()
-        .query_row(
-            "SELECT value_json FROM key_values WHERE namespace = ? AND key = ?",
-            params![NAMESPACE, key],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(to_cli_error)?;
+    let raw = storage.read_setting(NAMESPACE, key)?;
     raw.map(|raw| serde_json::from_str(&raw).map_err(to_cli_error))
         .transpose()
 }
 
 fn write_value<T: Serialize>(storage: &Storage, key: &str, value: &T) -> Result<(), CliError> {
     let raw = serde_json::to_string(value).map_err(to_cli_error)?;
-    storage
-        .connection()
-        .execute(
-            r#"
-            INSERT INTO key_values (namespace, key, value_json, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(namespace, key) DO UPDATE SET
-              value_json = excluded.value_json,
-              updated_at = excluded.updated_at
-            "#,
-            params![NAMESPACE, key, raw, now_iso()],
-        )
-        .map_err(to_cli_error)?;
-    Ok(())
+    storage.write_setting(NAMESPACE, key, &raw)
 }
 
 fn version_at_least(actual: &str, required: &str) -> bool {

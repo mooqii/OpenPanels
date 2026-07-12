@@ -118,9 +118,9 @@ describe("canvasAssetStoreKey", () => {
     const secondPanel = panel("canvas", "panel:canvas")
 
     expect(
-      canvasAssetStoreKey("http://127.0.0.1:3000", "session:1", firstPanel.id)
+      canvasAssetStoreKey("http://127.0.0.1:3000", "project:1", firstPanel.id)
     ).toBe(
-      canvasAssetStoreKey("http://127.0.0.1:3000", "session:1", secondPanel.id)
+      canvasAssetStoreKey("http://127.0.0.1:3000", "project:1", secondPanel.id)
     )
   })
 })
@@ -138,9 +138,9 @@ function appState({
   pendingTaskCount?: number
   tasks?: ProjectTask[]
 }): AppState & BootstrapResponse {
-  const session = {
+  const project = {
     createdAt: "2026-07-09T00:00:00.000Z",
-    id: "session:1",
+    id: "project:1",
     panelIds: ["panel:wiki", "panel:canvas"],
     title: "Project",
     updatedAt: "2026-07-09T00:00:00.000Z",
@@ -165,7 +165,7 @@ function appState({
     panels: [wikiSnapshot, canvasPanelSnapshot],
     pendingTaskCount,
     revision: canvasRevision,
-    session,
+    project,
     state: canvasSnapshot,
     tasks,
   }
@@ -181,7 +181,7 @@ function agentOperation(status: AgentOperation["status"]): AgentOperation {
     panelId: "panel:canvas",
     panelKind: "canvas",
     result: null,
-    sessionId: "session:1",
+    projectId: "project:1",
     status,
     updatedAt: "2026-07-09T00:01:00.000Z",
   }
@@ -192,7 +192,7 @@ function panel(kind: MyOpenPanelsPanelKind, id: string): MyOpenPanelsPanel {
     createdAt: "2026-07-09T00:00:00.000Z",
     id,
     kind,
-    sessionId: "session:1",
+    projectId: "project:1",
     title: kind,
     updatedAt: "2026-07-09T00:00:00.000Z",
   }
@@ -222,8 +222,7 @@ function wikiState(): WikiState {
     rawDocuments: [],
     generatedDocuments: [],
     ruleSets: [],
-    schemaVersion: 3,
-    tasks: [],
+    schemaVersion: 4,
     wikiSpaces: [],
   }
 }
@@ -235,10 +234,9 @@ function projectTask(id: string): ProjectTask {
     panelId: "panel:wiki",
     panelKind: "wiki",
     queue: "wiki",
-    sessionId: "session:1",
+    projectId: "project:1",
     status: "queued",
     targetId: "target",
-    task: { id },
     type: "demo",
     updatedAt: "2026-07-09T00:00:00.000Z",
   }

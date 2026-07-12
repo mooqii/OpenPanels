@@ -1,0 +1,2 @@
+-- Rust migration coordinator rewrites legacy Session keys and filesystem paths
+-- embedded in normalized JSON columns.

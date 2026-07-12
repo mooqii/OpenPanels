@@ -25,11 +25,11 @@ export interface LiveProjectMergeResult {
 
 export function canvasAssetStoreKey(
   apiBase: string,
-  sessionId: string | null,
+  projectId: string | null,
   canvasPanelId: string | null
 ): string | null {
-  if (!(sessionId && canvasPanelId)) return null
-  return `${apiBase}\n${sessionId}\n${canvasPanelId}`
+  if (!(projectId && canvasPanelId)) return null
+  return `${apiBase}\n${projectId}\n${canvasPanelId}`
 }
 
 export function mergeLiveProjectBootstrap({
@@ -42,7 +42,7 @@ export function mergeLiveProjectBootstrap({
   const currentCanvasPanel = findCanvasPanel(current)
   const nextCanvasPanel = findCanvasPanel(next)
   const sameCanvasPanel =
-    current.session.id === next.session.id &&
+    current.project.id === next.project.id &&
     currentCanvasPanel?.panel.id === nextCanvasPanel?.panel.id
   const nextCanvasRevision = nextCanvasPanel?.revision ?? next.revision ?? 0
   const shouldKeepLocalCanvas =

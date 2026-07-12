@@ -114,6 +114,7 @@ pub fn start_studio(
     paths: &MyOpenPanelsPaths,
     options: StudioStartOptions,
 ) -> Result<StudioStartResult, CliError> {
+    crate::context_cleanup::cleanup_context_storage(paths);
     if let Some(session) = reuse_existing_studio(paths)? {
         let previous_version = studio_version(&session)?;
         match compare_studio_version(previous_version.as_deref())? {
@@ -686,7 +687,7 @@ fn wait_for_studio_version(
     ))
 }
 
-fn process_exists(pid: u32) -> bool {
+pub(crate) fn process_exists(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }

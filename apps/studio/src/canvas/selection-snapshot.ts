@@ -70,12 +70,12 @@ function assetRefFromAsset(asset: { meta?: unknown; props?: unknown }) {
   if (typeof src !== "string") return null
   const match = src.match(/^\/api\/panels\/([^/]+)\/([^/]+)\/assets\/(.+)$/)
   if (!match) return null
-  const sessionId = decodeURIComponent(match[1] ?? "")
+  const projectId = decodeURIComponent(match[1] ?? "")
   const panelId = decodeURIComponent(match[2] ?? "")
   const assetPath = (match[3] ?? "").split("/").map(decodeURIComponent)
   return [
-    "sessions",
-    sessionId,
+    "projects",
+    projectId,
     "panels",
     panelId,
     "assets",

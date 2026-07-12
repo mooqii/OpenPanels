@@ -2,7 +2,7 @@ use crate::control::{now_iso, read_project_bootstrap, BootstrapRequest};
 use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
 use crate::storage::Storage;
-use crate::types::{Panel, PanelKind, Session};
+use crate::types::{Panel, PanelKind, Project};
 use rand::Rng;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -44,7 +44,7 @@ pub struct CanvasBounds {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InsertPlaceholderPayload {
-    pub session_id: String,
+    pub project_id: String,
     pub panel_id: String,
     pub revision: i64,
     pub shape_id: String,
@@ -54,7 +54,7 @@ pub struct InsertPlaceholderPayload {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InsertImagePayload {
-    pub session_id: String,
+    pub project_id: String,
     pub panel_id: String,
     pub revision: i64,
     pub asset_id: String,
@@ -67,7 +67,7 @@ pub struct InsertImagePayload {
 }
 
 struct CanvasTarget {
-    session: Session,
+    project: Project,
     panel: Panel,
     state: Value,
 }
@@ -79,7 +79,7 @@ pub fn insert_placeholder(
     let bootstrap = canvas_bootstrap(paths)?;
     insert_placeholder_for_target(
         paths,
-        &bootstrap.session.id,
+        &bootstrap.project.id,
         &bootstrap.panel.id,
         input,
         true,
@@ -88,12 +88,12 @@ pub fn insert_placeholder(
 
 pub fn insert_placeholder_for_target(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
     input: InsertPlaceholderInput<'_>,
     select_result: bool,
 ) -> Result<InsertPlaceholderPayload, CliError> {
-    let bootstrap = load_canvas_target(paths, session_id, panel_id)?;
+    let bootstrap = load_canvas_target(paths, project_id, panel_id)?;
     let storage = Storage::open(paths)?;
     let mut state = bootstrap.state;
     let mut store = state_store(&state);
@@ -138,7 +138,7 @@ pub fn insert_placeholder_for_target(
     );
     let revision = write_canvas_state(
         &storage,
-        &bootstrap.session.id,
+        &bootstrap.project.id,
         &bootstrap.panel.id,
         &mut state,
         store,
@@ -147,7 +147,7 @@ pub fn insert_placeholder_for_target(
         select_result,
     )?;
     Ok(InsertPlaceholderPayload {
-        session_id: bootstrap.session.id,
+        project_id: bootstrap.project.id,
         panel_id: bootstrap.panel.id,
         revision,
         shape_id,
@@ -167,7 +167,7 @@ pub fn insert_image(
     let bootstrap = canvas_bootstrap(paths)?;
     insert_image_for_target(
         paths,
-        &bootstrap.session.id,
+        &bootstrap.project.id,
         &bootstrap.panel.id,
         input,
         true,
@@ -176,12 +176,12 @@ pub fn insert_image(
 
 pub fn insert_image_for_target(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
     input: InsertImageInput<'_>,
     select_result: bool,
 ) -> Result<InsertImagePayload, CliError> {
-    let bootstrap = load_canvas_target(paths, session_id, panel_id)?;
+    let bootstrap = load_canvas_target(paths, project_id, panel_id)?;
     let storage = Storage::open(paths)?;
     let mut asset_meta = match input.metadata {
         Some(Value::Object(object)) => object,
@@ -200,7 +200,7 @@ pub fn insert_image_for_target(
         .or_else(|| source.file_name().and_then(|name| name.to_str()))
         .unwrap_or("image.png");
     let written = storage.write_asset_from_buffer(
-        &bootstrap.session.id,
+        &bootstrap.project.id,
         &bootstrap.panel.id,
         requested_name,
         &image,
@@ -253,8 +253,8 @@ pub fn insert_image_for_target(
     let asset_id = create_id("asset");
     let shape_id = create_id("shape");
     let asset_url = format!(
-        "/api/panels/{}/{}/assets/{}",
-        bootstrap.session.id, bootstrap.panel.id, written.file_name
+        "/api/projects/{}/panels/{}/assets/{}",
+        bootstrap.project.id, bootstrap.panel.id, written.file_name
     );
     let mime_type = mime_guess::from_path(&written.file_name)
         .first_raw()
@@ -303,7 +303,7 @@ pub fn insert_image_for_target(
     }
     let revision = write_canvas_state(
         &storage,
-        &bootstrap.session.id,
+        &bootstrap.project.id,
         &bootstrap.panel.id,
         &mut state,
         store,
@@ -312,7 +312,7 @@ pub fn insert_image_for_target(
         select_result,
     )?;
     Ok(InsertImagePayload {
-        session_id: bootstrap.session.id,
+        project_id: bootstrap.project.id,
         panel_id: bootstrap.panel.id,
         revision,
         asset_id,
@@ -338,17 +338,17 @@ fn canvas_bootstrap(paths: &MyOpenPanelsPaths) -> Result<crate::types::ProjectBo
 
 fn load_canvas_target(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
 ) -> Result<CanvasTarget, CliError> {
     let storage = Storage::open(paths)?;
-    let session = storage.read_session(session_id)?.ok_or_else(|| {
+    let project = storage.read_project(project_id)?.ok_or_else(|| {
         CliError::with_code(
             "target_not_found",
-            format!("Project not found: {session_id}"),
+            format!("Project not found: {project_id}"),
         )
     })?;
-    let panel = storage.read_panel(session_id, panel_id)?.ok_or_else(|| {
+    let panel = storage.read_panel(project_id, panel_id)?.ok_or_else(|| {
         CliError::with_code(
             "target_not_found",
             format!("Canvas panel not found: {panel_id}"),
@@ -361,7 +361,7 @@ fn load_canvas_target(
         ));
     }
     let state = storage
-        .read_panel_state(session_id, panel_id)?
+        .read_panel_state(project_id, panel_id)?
         .ok_or_else(|| {
             CliError::with_code(
                 "target_not_found",
@@ -369,7 +369,7 @@ fn load_canvas_target(
             )
         })?;
     Ok(CanvasTarget {
-        session,
+        project,
         panel,
         state,
     })
@@ -377,13 +377,13 @@ fn load_canvas_target(
 
 pub fn update_placeholder_for_target(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
     shape_id: &str,
     text: Option<&str>,
     remove: bool,
 ) -> Result<i64, CliError> {
-    let target = load_canvas_target(paths, session_id, panel_id)?;
+    let target = load_canvas_target(paths, project_id, panel_id)?;
     let storage = Storage::open(paths)?;
     let mut state = target.state;
     let mut store = state_store(&state);
@@ -394,7 +394,7 @@ pub fn update_placeholder_for_target(
         shape["meta"]["myopenpanelsGenerationStatus"] = json!("failed");
     }
     ensure_state_object(&mut state).insert("store".to_owned(), Value::Object(store));
-    storage.write_panel_state(session_id, panel_id, &state)
+    storage.write_panel_state(project_id, panel_id, &state)
 }
 
 fn state_store(state: &Value) -> Map<String, Value> {
@@ -429,7 +429,7 @@ fn ensure_page(store: &mut Map<String, Value>, current_page_id: Option<&str>) ->
 #[allow(clippy::too_many_arguments)]
 fn write_canvas_state(
     storage: &Storage,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
     state: &mut Value,
     store: Map<String, Value>,
@@ -443,7 +443,7 @@ fn write_canvas_state(
         ensure_state_object(state)
             .insert("selectedShapeIds".to_owned(), json!([selected_shape_id]));
     }
-    let revision = storage.write_panel_state(session_id, panel_id, state)?;
+    let revision = storage.write_panel_state(project_id, panel_id, state)?;
     Ok(revision)
 }
 

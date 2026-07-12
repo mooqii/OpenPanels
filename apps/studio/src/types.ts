@@ -1,7 +1,7 @@
 import type {
   MyOpenPanelsPanel,
   MyOpenPanelsPanelKind,
-  MyOpenPanelsSession,
+  MyOpenPanelsProject,
 } from "./protocol"
 
 export interface BootstrapResponse {
@@ -14,11 +14,11 @@ export interface BootstrapResponse {
   panel: MyOpenPanelsPanel
   panels: PanelStateSnapshot[]
   pendingTaskCount?: number
+  project: MyOpenPanelsProject
+  projects?: MyOpenPanelsProject[]
   readyCount?: number
   revision: number
   runningCount?: number
-  session: MyOpenPanelsSession
-  sessions?: MyOpenPanelsSession[]
   state: unknown
   tasks?: ProjectTask[]
   unhandledCount?: number
@@ -33,9 +33,9 @@ export interface AgentOperation {
   panelId: string
   panelKind: MyOpenPanelsPanelKind
   panelTitle?: string
+  projectId: string
   projectTitle?: string
   result: unknown
-  sessionId: string
   status: "active" | "completed" | "failed" | "cancelled"
   updatedAt: string
 }
@@ -189,15 +189,14 @@ export interface ProjectTask {
   nextRunAt?: string | null
   panelId: string
   panelKind: MyOpenPanelsPanelKind | string
+  projectId: string
   queue: string
   ready?: boolean
   result?: unknown
   retryAfter?: string | null
-  sessionId: string
   source?: unknown
   status: string
   targetId: string
-  task?: unknown
   type: string
   updatedAt: string
 }
@@ -215,8 +214,7 @@ export interface WikiState {
   generatedDocuments: WikiGeneratedDocument[]
   rawDocuments: WikiRawDocument[]
   ruleSets: unknown[]
-  schemaVersion: 3
-  tasks: WikiTask[]
+  schemaVersion: 4
   wikiAgentSkillConfigured?: boolean
   wikiAgentSkillId?: string | null
   wikiSpaces: WikiSpace[]

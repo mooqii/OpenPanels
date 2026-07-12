@@ -2,7 +2,7 @@ use crate::error::CliError;
 use crate::paths::{sanitize_path_part, MyOpenPanelsPaths};
 use crate::storage::Storage;
 use crate::tasks::{annotate_tasks, pending_task_count};
-use crate::types::{Panel, PanelKind, ProjectBootstrap, ProjectPanelSnapshot, Session};
+use crate::types::{Panel, PanelKind, Project, ProjectBootstrap, ProjectPanelSnapshot};
 use rand::Rng;
 use serde_json::{json, Value};
 use std::fs;
@@ -16,7 +16,7 @@ const DEFAULT_WIKI_SPACE_ID: &str = "wiki:default";
 pub struct BootstrapRequest {
     pub requested_panel_id: Option<String>,
     pub requested_panel_kind: Option<PanelKind>,
-    pub requested_session_id: Option<String>,
+    pub requested_project_id: Option<String>,
 }
 
 impl BootstrapRequest {
@@ -24,7 +24,7 @@ impl BootstrapRequest {
         Self {
             requested_panel_id: None,
             requested_panel_kind: None,
-            requested_session_id: None,
+            requested_project_id: None,
         }
     }
 }
@@ -40,43 +40,32 @@ pub fn ensure_project_bootstrap(
     request: BootstrapRequest,
 ) -> Result<ProjectBootstrap, CliError> {
     let storage = Storage::open(paths)?;
-    let sessions = storage.list_sessions()?;
-    let active_session_id = read_active_session(paths)?;
-    let mut session = if let Some(session) = requested_or_active_session(
+    let projects = storage.list_projects()?;
+    let active_project_id = read_active_project(paths)?;
+    let mut project = if let Some(project) = requested_or_active_project(
         &storage,
         &request,
-        active_session_id.as_deref(),
-        Some(&sessions),
+        active_project_id.as_deref(),
+        Some(&projects),
     )? {
-        session
+        project
     } else {
-        create_session(&storage, next_project_title(&sessions))?
+        create_project_record(&storage, next_project_title(&projects))?
     };
 
     for kind in DEFAULT_PANEL_KINDS {
-        session = ensure_panel_for_session(&storage, &session, *kind)?;
+        project = ensure_panel_for_project(&storage, &project, *kind)?;
     }
 
-    let panels = read_panel_snapshots(&storage, &session)?;
-    for snapshot in &panels {
-        if snapshot.panel.kind == PanelKind::Wiki {
-            storage.sync_project_tasks_from_panel(
-                &session.id,
-                &snapshot.panel.id,
-                snapshot.panel.kind.as_str(),
-                "wiki",
-                &snapshot.state,
-            )?;
-        }
-    }
-    let tasks = annotate_tasks(storage.list_project_tasks(&session.id)?);
+    let panels = read_panel_snapshots(&storage, &project)?;
+    let tasks = annotate_tasks(storage.list_tasks(&project.id)?);
     let pending_task_count = pending_task_count(&tasks);
     let active_panel = read_active_panel(paths)?;
     let preferred_kind = request
         .requested_panel_kind
         .or_else(|| {
             active_panel.as_ref().and_then(|active| {
-                if active.session_id.as_deref() == Some(&session.id) {
+                if active.project_id.as_deref() == Some(&project.id) {
                     active.kind
                 } else {
                     None
@@ -100,12 +89,12 @@ pub fn ensure_project_bootstrap(
         .ok_or_else(|| {
             CliError::new(format!(
                 "MyOpenPanels project has no panels: {}",
-                session.id
+                project.id
             ))
         })?
         .clone();
 
-    write_active_session(paths, &session.id)?;
+    write_active_project(paths, &project.id)?;
     write_active_panel(paths, &snapshot.panel)?;
 
     Ok(ProjectBootstrap {
@@ -116,14 +105,14 @@ pub fn ensure_project_bootstrap(
         context_id_source: paths.context_id_source.clone(),
         panel: snapshot.panel.clone(),
         panel_dir: storage
-            .panel_dir(&session.id, &snapshot.panel.id)
+            .panel_dir(&project.id, &snapshot.panel.id)
             .display()
             .to_string(),
         panels,
         pending_task_count,
         revision: snapshot.revision,
-        session,
-        sessions: storage.list_sessions()?,
+        project,
+        projects: storage.list_projects()?,
         state: snapshot.state.clone(),
         storage_dir: paths.storage_dir.display().to_string(),
         tasks,
@@ -135,13 +124,13 @@ pub fn read_project_bootstrap(
     request: BootstrapRequest,
 ) -> Result<ProjectBootstrap, CliError> {
     let storage = Storage::open(paths)?;
-    let sessions = storage.list_sessions()?;
-    let active_session_id = read_active_session(paths)?;
-    let session = requested_or_active_session(
+    let projects = storage.list_projects()?;
+    let active_project_id = read_active_project(paths)?;
+    let project = requested_or_active_project(
         &storage,
         &request,
-        active_session_id.as_deref(),
-        Some(&sessions),
+        active_project_id.as_deref(),
+        Some(&projects),
     )?
     .ok_or_else(|| {
         CliError::with_recovery(
@@ -152,26 +141,15 @@ pub fn read_project_bootstrap(
         )
     })?;
 
-    let panels = read_panel_snapshots(&storage, &session)?;
-    for snapshot in &panels {
-        if snapshot.panel.kind == PanelKind::Wiki {
-            storage.sync_project_tasks_from_panel(
-                &session.id,
-                &snapshot.panel.id,
-                snapshot.panel.kind.as_str(),
-                "wiki",
-                &snapshot.state,
-            )?;
-        }
-    }
-    let tasks = annotate_tasks(storage.list_project_tasks(&session.id)?);
+    let panels = read_panel_snapshots(&storage, &project)?;
+    let tasks = annotate_tasks(storage.list_tasks(&project.id)?);
     let pending_task_count = pending_task_count(&tasks);
     let active_panel = read_active_panel(paths)?;
     let preferred_kind = request
         .requested_panel_kind
         .or_else(|| {
             active_panel.as_ref().and_then(|active| {
-                if active.session_id.as_deref() == Some(&session.id) {
+                if active.project_id.as_deref() == Some(&project.id) {
                     active.kind
                 } else {
                     None
@@ -196,12 +174,12 @@ pub fn read_project_bootstrap(
         .ok_or_else(|| {
             CliError::new(format!(
                 "MyOpenPanels project has no panels: {}",
-                session.id
+                project.id
             ))
         })?
         .clone();
 
-    write_active_session(paths, &session.id)?;
+    write_active_project(paths, &project.id)?;
     write_active_panel(paths, &snapshot.panel)?;
 
     Ok(ProjectBootstrap {
@@ -212,14 +190,14 @@ pub fn read_project_bootstrap(
         context_id_source: paths.context_id_source.clone(),
         panel: snapshot.panel.clone(),
         panel_dir: storage
-            .panel_dir(&session.id, &snapshot.panel.id)
+            .panel_dir(&project.id, &snapshot.panel.id)
             .display()
             .to_string(),
         panels,
         pending_task_count,
         revision: snapshot.revision,
-        session,
-        sessions,
+        project,
+        projects,
         state: snapshot.state.clone(),
         storage_dir: paths.storage_dir.display().to_string(),
         tasks,
@@ -266,56 +244,56 @@ pub fn create_project(
     title: Option<&str>,
 ) -> Result<ProjectBootstrap, CliError> {
     let storage = Storage::open(paths)?;
-    let sessions = storage.list_sessions()?;
-    let session_title = title
+    let projects = storage.list_projects()?;
+    let project_title = title
         .filter(|value| !value.trim().is_empty())
         .map(|value| value.trim().to_owned())
-        .unwrap_or_else(|| next_project_title(&sessions));
-    let session = create_session(&storage, session_title)?;
-    write_active_session_id(paths, &session.id)?;
+        .unwrap_or_else(|| next_project_title(&projects));
+    let project = create_project_record(&storage, project_title)?;
+    write_active_project_id(paths, &project.id)?;
     ensure_project_bootstrap(
         paths,
         BootstrapRequest {
-            requested_session_id: Some(session.id),
+            requested_project_id: Some(project.id),
             requested_panel_id: None,
             requested_panel_kind: None,
         },
     )
 }
 
-pub fn create_runtime_session(
+pub fn create_runtime_project(
     paths: &MyOpenPanelsPaths,
     title: Option<&str>,
-) -> Result<Session, CliError> {
+) -> Result<Project, CliError> {
     let storage = Storage::open(paths)?;
-    let session = create_session(
+    let project = create_project_record(
         &storage,
         title
             .filter(|value| !value.trim().is_empty())
             .map(|value| value.trim().to_owned())
-            .unwrap_or_else(|| "MyOpenPanels Session".to_owned()),
+            .unwrap_or_else(|| "MyOpenPanels Project".to_owned()),
     )?;
-    write_active_session_id(paths, &session.id)?;
-    Ok(session)
+    write_active_project_id(paths, &project.id)?;
+    Ok(project)
 }
 
 pub fn open_runtime_panel(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     kind: PanelKind,
     title: Option<&str>,
     initial_state: Option<Value>,
 ) -> Result<Panel, CliError> {
     let storage = Storage::open(paths)?;
-    let Some(session) = storage.read_session(session_id)? else {
+    let Some(project) = storage.read_project(project_id)? else {
         return Err(CliError::new(format!(
-            "MyOpenPanels session not found: {session_id}"
+            "MyOpenPanels project not found: {project_id}"
         )));
     };
     let timestamp = now_iso();
     let mut panel = Panel {
         id: create_myopenpanels_id("panel"),
-        session_id: session.id.clone(),
+        project_id: project.id.clone(),
         kind,
         title: title
             .filter(|value| !value.trim().is_empty())
@@ -327,77 +305,78 @@ pub fn open_runtime_panel(
     };
     panel.state_ref = Some(format!(
         "sqlite:panel-states/{}/{}",
-        panel.session_id, panel.id
+        panel.project_id, panel.id
     ));
     storage.write_panel(&panel)?;
     storage.write_panel_state(
-        &session.id,
+        &project.id,
         &panel.id,
         &initial_state.unwrap_or_else(|| initial_panel_state(kind)),
     )?;
-    let mut next_session = session;
-    next_session.updated_at = timestamp;
-    next_session.panel_ids.push(panel.id.clone());
-    storage.write_session(&next_session)?;
+    let mut next_project = project;
+    next_project.updated_at = timestamp;
+    next_project.panel_ids.push(panel.id.clone());
+    storage.write_project(&next_project)?;
     Ok(panel)
 }
 
-pub fn rename_session(
+pub fn rename_project(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     title: Option<&str>,
-) -> Result<Session, CliError> {
+) -> Result<Project, CliError> {
     let storage = Storage::open(paths)?;
-    let Some(mut session) = storage.read_session(session_id)? else {
+    let Some(mut project) = storage.read_project(project_id)? else {
         return Err(CliError::new(format!(
-            "MyOpenPanels session not found: {session_id}"
+            "MyOpenPanels project not found: {project_id}"
         )));
     };
     let Some(title) = title.map(str::trim).filter(|value| !value.is_empty()) else {
         return Err(CliError::new("Project title is required"));
     };
-    session.title = title.to_owned();
-    session.updated_at = now_iso();
-    storage.write_session(&session)?;
-    Ok(session)
+    project.title = title.to_owned();
+    project.updated_at = now_iso();
+    storage.write_project(&project)?;
+    Ok(project)
 }
 
-pub fn delete_session(paths: &MyOpenPanelsPaths, session_id: &str) -> Result<Value, CliError> {
+pub fn delete_project(paths: &MyOpenPanelsPaths, project_id: &str) -> Result<Value, CliError> {
     let storage = Storage::open(paths)?;
-    let sessions = storage.list_sessions()?;
-    if sessions.len() <= 1 {
+    let projects = storage.list_projects()?;
+    if projects.len() <= 1 {
         return Err(CliError::new("At least one project must remain"));
     }
-    if !sessions.iter().any(|session| session.id == session_id) {
+    if !projects.iter().any(|project| project.id == project_id) {
         return Err(CliError::new(format!(
-            "MyOpenPanels session not found: {session_id}"
+            "MyOpenPanels project not found: {project_id}"
         )));
     }
-    storage.delete_session(session_id)?;
-    let remaining_sessions = storage.list_sessions()?;
-    let current_active_session_id = read_active_session(paths)?;
-    let next_active_session = remaining_sessions
+    storage.delete_project(project_id)?;
+    crate::context_cleanup::clear_deleted_project_references(paths, project_id);
+    let remaining_projects = storage.list_projects()?;
+    let current_active_project_id = read_active_project(paths)?;
+    let next_active_project = remaining_projects
         .iter()
-        .find(|session| Some(session.id.as_str()) == current_active_session_id.as_deref())
-        .or_else(|| remaining_sessions.first())
+        .find(|project| Some(project.id.as_str()) == current_active_project_id.as_deref())
+        .or_else(|| remaining_projects.first())
         .ok_or_else(|| CliError::new("At least one project must remain"))?;
-    write_active_session(paths, &next_active_session.id)?;
+    write_active_project(paths, &next_active_project.id)?;
     Ok(json!({
-        "activeSessionId": next_active_session.id,
-        "deletedSessionId": session_id,
-        "sessions": remaining_sessions,
+        "activeProjectId": next_active_project.id,
+        "deletedProjectId": project_id,
+        "projects": remaining_projects,
     }))
 }
 
-pub fn read_active_session_id(paths: &MyOpenPanelsPaths) -> Result<Option<String>, CliError> {
-    read_active_session(paths)
+pub fn read_active_project_id(paths: &MyOpenPanelsPaths) -> Result<Option<String>, CliError> {
+    read_active_project(paths)
 }
 
-pub fn write_active_session_id(
+pub fn write_active_project_id(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
 ) -> Result<(), CliError> {
-    write_active_session(paths, session_id)
+    write_active_project(paths, project_id)
 }
 
 pub fn read_active_panel_value(paths: &MyOpenPanelsPaths) -> Result<Option<Value>, CliError> {
@@ -408,33 +387,33 @@ pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn requested_or_active_session(
+fn requested_or_active_project(
     storage: &Storage,
     request: &BootstrapRequest,
-    active_session_id: Option<&str>,
-    stale_active_fallback: Option<&[Session]>,
-) -> Result<Option<Session>, CliError> {
-    if let Some(session_id) = request.requested_session_id.as_deref() {
-        if let Some(session) = storage.read_session(session_id)? {
-            return Ok(Some(session));
+    active_project_id: Option<&str>,
+    stale_active_fallback: Option<&[Project]>,
+) -> Result<Option<Project>, CliError> {
+    if let Some(project_id) = request.requested_project_id.as_deref() {
+        if let Some(project) = storage.read_project(project_id)? {
+            return Ok(Some(project));
         }
         return Err(CliError::with_recovery(
             "project_not_found",
-            format!("MyOpenPanels project not found: {session_id}"),
+            format!("MyOpenPanels project not found: {project_id}"),
             false,
             "Run `myopenpanels project list --format json` and select an existing Project id.",
         ));
     }
-    if let Some(session_id) = active_session_id {
-        if let Some(session) = storage.read_session(session_id)? {
-            return Ok(Some(session));
+    if let Some(project_id) = active_project_id {
+        if let Some(project) = storage.read_project(project_id)? {
+            return Ok(Some(project));
         }
     }
-    Ok(stale_active_fallback.and_then(most_recently_updated_session))
+    Ok(stale_active_fallback.and_then(most_recently_updated_project))
 }
 
-fn most_recently_updated_session(sessions: &[Session]) -> Option<Session> {
-    sessions
+fn most_recently_updated_project(projects: &[Project]) -> Option<Project> {
+    projects
         .iter()
         .max_by(|left, right| {
             left.updated_at
@@ -445,37 +424,37 @@ fn most_recently_updated_session(sessions: &[Session]) -> Option<Session> {
         .cloned()
 }
 
-fn create_session(storage: &Storage, title: String) -> Result<Session, CliError> {
+fn create_project_record(storage: &Storage, title: String) -> Result<Project, CliError> {
     let timestamp = now_iso();
-    let session = Session {
-        id: create_myopenpanels_id("session"),
+    let project = Project {
+        id: create_myopenpanels_id("project"),
         title,
         created_at: timestamp.clone(),
         updated_at: timestamp,
         panel_ids: Vec::new(),
     };
-    storage.write_session(&session)?;
-    Ok(session)
+    storage.write_project(&project)?;
+    Ok(project)
 }
 
-fn ensure_panel_for_session(
+fn ensure_panel_for_project(
     storage: &Storage,
-    session: &Session,
+    project: &Project,
     kind: PanelKind,
-) -> Result<Session, CliError> {
-    for panel_id in &session.panel_ids {
+) -> Result<Project, CliError> {
+    for panel_id in &project.panel_ids {
         if storage
-            .read_panel(&session.id, panel_id)?
+            .read_panel(&project.id, panel_id)?
             .is_some_and(|panel| panel.kind == kind)
         {
-            return Ok(session.clone());
+            return Ok(project.clone());
         }
     }
 
     let timestamp = now_iso();
     let mut panel = Panel {
         id: create_myopenpanels_id("panel"),
-        session_id: session.id.clone(),
+        project_id: project.id.clone(),
         kind,
         title: initial_panel_title(kind).to_owned(),
         created_at: timestamp.clone(),
@@ -484,33 +463,33 @@ fn ensure_panel_for_session(
     };
     panel.state_ref = Some(format!(
         "sqlite:panel-states/{}/{}",
-        panel.session_id, panel.id
+        panel.project_id, panel.id
     ));
     storage.write_panel(&panel)?;
-    storage.write_panel_state(&session.id, &panel.id, &initial_panel_state(kind))?;
+    storage.write_panel_state(&project.id, &panel.id, &initial_panel_state(kind))?;
 
-    let mut next_session = session.clone();
-    next_session.updated_at = timestamp;
-    next_session.panel_ids.push(panel.id);
-    storage.write_session(&next_session)?;
-    Ok(next_session)
+    let mut next_project = project.clone();
+    next_project.updated_at = timestamp;
+    next_project.panel_ids.push(panel.id);
+    storage.write_project(&next_project)?;
+    Ok(next_project)
 }
 
 fn read_panel_snapshots(
     storage: &Storage,
-    session: &Session,
+    project: &Project,
 ) -> Result<Vec<ProjectPanelSnapshot>, CliError> {
     let mut snapshots = Vec::new();
-    for panel_id in &session.panel_ids {
-        let Some(panel) = storage.read_panel(&session.id, panel_id)? else {
+    for panel_id in &project.panel_ids {
+        let Some(panel) = storage.read_panel(&project.id, panel_id)? else {
             continue;
         };
-        let raw_state = storage.read_panel_state(&session.id, &panel.id)?;
-        let migrated_state = migrate_panel_state(storage, session, &panel, raw_state)?;
+        let raw_state = storage.read_panel_state(&project.id, &panel.id)?;
+        let migrated_state = migrate_panel_state(storage, project, &panel, raw_state)?;
         let revision = if migrated_state.changed {
-            storage.write_panel_state(&session.id, &panel.id, &migrated_state.state)?
+            storage.write_panel_state(&project.id, &panel.id, &migrated_state.state)?
         } else {
-            storage.read_panel_state_revision(&session.id, &panel.id)?
+            storage.read_panel_state_revision(&project.id, &panel.id)?
         };
         snapshots.push(ProjectPanelSnapshot {
             state: migrated_state.state,
@@ -529,20 +508,13 @@ struct PanelStateMigrationResult {
 
 fn migrate_panel_state(
     storage: &Storage,
-    session: &Session,
+    project: &Project,
     panel: &Panel,
     state: Option<Value>,
 ) -> Result<PanelStateMigrationResult, CliError> {
     match panel.kind {
         PanelKind::Canvas => migrate_canvas_state(state),
-        PanelKind::Wiki => migrate_wiki_state(storage, session, panel, state),
-        _ => {
-            let changed = state.is_none();
-            Ok(PanelStateMigrationResult {
-                state: state.unwrap_or_else(|| json!({})),
-                changed,
-            })
-        }
+        PanelKind::Wiki => migrate_wiki_state(storage, project, panel, state),
     }
 }
 
@@ -573,7 +545,7 @@ fn migrate_canvas_state(state: Option<Value>) -> Result<PanelStateMigrationResul
 
 fn migrate_wiki_state(
     storage: &Storage,
-    session: &Session,
+    project: &Project,
     panel: &Panel,
     state: Option<Value>,
 ) -> Result<PanelStateMigrationResult, CliError> {
@@ -584,13 +556,31 @@ fn migrate_wiki_state(
         });
     };
     match state.get("schemaVersion").and_then(Value::as_i64) {
+        Some(4) => {
+            if is_wiki_state_v4(&state) {
+                Ok(normalize_wiki_state_v4(state))
+            } else {
+                Err(CliError::new(
+                    "Malformed wiki panel state: schemaVersion 4 is missing required arrays.",
+                ))
+            }
+        }
         Some(3) => {
             if is_wiki_state_v3(&state) {
-                let normalized = normalize_wiki_state_v3(state);
-                Ok(PanelStateMigrationResult {
-                    changed: normalized.changed,
-                    state: normalized.state,
-                })
+                storage.upsert_tasks(
+                    &project.id,
+                    &panel.id,
+                    "wiki",
+                    state["tasks"].as_array().expect("validated Wiki v3 tasks"),
+                )?;
+                let mut migrated = state;
+                migrated
+                    .as_object_mut()
+                    .map(|object| object.remove("tasks"));
+                migrated["schemaVersion"] = json!(4);
+                let mut normalized = normalize_wiki_state_v4(migrated);
+                normalized.changed = true;
+                Ok(normalized)
             } else {
                 Err(CliError::new(
                     "Malformed wiki panel state: schemaVersion 3 is missing required arrays.",
@@ -599,10 +589,19 @@ fn migrate_wiki_state(
         }
         Some(2) => {
             if is_wiki_state_v2(&state) {
+                storage.upsert_tasks(
+                    &project.id,
+                    &panel.id,
+                    "wiki",
+                    state["tasks"].as_array().expect("validated Wiki v2 tasks"),
+                )?;
                 let mut migrated = state;
-                migrated["schemaVersion"] = json!(3);
+                migrated["schemaVersion"] = json!(4);
                 migrated["generatedDocuments"] = json!([]);
-                let normalized = normalize_wiki_state_v3(migrated);
+                migrated
+                    .as_object_mut()
+                    .map(|object| object.remove("tasks"));
+                let normalized = normalize_wiki_state_v4(migrated);
                 Ok(PanelStateMigrationResult {
                     changed: true,
                     state: normalized.state,
@@ -614,7 +613,7 @@ fn migrate_wiki_state(
             }
         }
         Some(1) => Ok(PanelStateMigrationResult {
-            state: migrate_wiki_state_v1_to_v3(storage, session, panel, &state)?,
+            state: migrate_wiki_state_v1_to_v4(storage, project, panel, &state)?,
             changed: true,
         }),
         Some(version) => Err(CliError::new(format!(
@@ -671,8 +670,16 @@ fn normalize_wiki_state_v2(mut state: Value) -> PanelStateMigrationResult {
     PanelStateMigrationResult { state, changed }
 }
 
-fn normalize_wiki_state_v3(state: Value) -> PanelStateMigrationResult {
+fn normalize_wiki_state_v4(state: Value) -> PanelStateMigrationResult {
     normalize_wiki_state_v2(state)
+}
+
+fn is_wiki_state_v4(state: &Value) -> bool {
+    state.get("rawDocuments").is_some_and(Value::is_array)
+        && state.get("ruleSets").is_some_and(Value::is_array)
+        && state.get("wikiSpaces").is_some_and(Value::is_array)
+        && state.get("generatedDocuments").is_some_and(Value::is_array)
+        && state.get("tasks").is_none()
 }
 
 fn is_wiki_state_v3(state: &Value) -> bool {
@@ -686,9 +693,9 @@ fn is_wiki_state_v2(state: &Value) -> bool {
         && state.get("tasks").is_some_and(Value::is_array)
 }
 
-fn migrate_wiki_state_v1_to_v3(
+fn migrate_wiki_state_v1_to_v4(
     storage: &Storage,
-    session: &Session,
+    project: &Project,
     panel: &Panel,
     state: &Value,
 ) -> Result<Value, CliError> {
@@ -697,7 +704,7 @@ fn migrate_wiki_state_v1_to_v3(
         .and_then(Value::as_array)
         .ok_or_else(|| CliError::new("Malformed wiki v1 state: pages must be an array."))?;
     let active_page_id = state.get("activePageId").and_then(Value::as_str);
-    let panel_dir = storage.panel_dir(&session.id, &panel.id);
+    let panel_dir = storage.panel_dir(&project.id, &panel.id);
     let mut migrated = empty_wiki_state();
     let mut page_index = Vec::new();
     let mut first_page_path = None;
@@ -811,7 +818,6 @@ fn initial_panel_state(kind: PanelKind) -> Value {
     match kind {
         PanelKind::Canvas => empty_canvas_snapshot(),
         PanelKind::Wiki => empty_wiki_state(),
-        _ => json!({}),
     }
 }
 
@@ -839,7 +845,7 @@ fn empty_canvas_snapshot() -> Value {
 fn empty_wiki_state() -> Value {
     let now = now_iso();
     json!({
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "rawDocuments": [],
         "generatedDocuments": [],
         "ruleSets": [{
@@ -865,8 +871,6 @@ fn empty_wiki_state() -> Value {
         "activeRawDocumentId": null,
         "activeWikiSpaceId": DEFAULT_WIKI_SPACE_ID,
         "activeWikiPagePath": "index.md",
-        "agentProcesses": [],
-        "tasks": [],
         "wikiAgentSkillConfigured": false,
         "wikiAgentSkillId": "karpathy-llm-wiki",
     })
@@ -876,17 +880,13 @@ fn initial_panel_title(kind: PanelKind) -> &'static str {
     match kind {
         PanelKind::Wiki => "文档库",
         PanelKind::Canvas => "Design canvas",
-        PanelKind::Image => "Images",
-        PanelKind::Diff => "Diff",
-        PanelKind::Preview => "Preview",
-        PanelKind::Files => "Files",
     }
 }
 
-fn next_project_title(sessions: &[Session]) -> String {
-    let max_project_number = sessions
+fn next_project_title(projects: &[Project]) -> String {
+    let max_project_number = projects
         .iter()
-        .filter_map(|session| session.title.strip_prefix("Project "))
+        .filter_map(|project| project.title.strip_prefix("Project "))
         .filter_map(|number| number.parse::<u32>().ok())
         .max()
         .unwrap_or(0);
@@ -905,20 +905,20 @@ fn create_myopenpanels_id(prefix: &str) -> String {
     format!("{prefix}:{random:032x}")
 }
 
-fn read_active_session(paths: &MyOpenPanelsPaths) -> Result<Option<String>, CliError> {
-    let value = read_json_object_or_null(&paths.context_dir.join("active-session.json"))?;
+fn read_active_project(paths: &MyOpenPanelsPaths) -> Result<Option<String>, CliError> {
+    let value = read_json_object_or_null(&paths.context_dir.join("active-project.json"))?;
     Ok(value.and_then(|value| {
         value
-            .get("sessionId")
+            .get("projectId")
             .and_then(Value::as_str)
             .map(str::to_owned)
     }))
 }
 
-fn write_active_session(paths: &MyOpenPanelsPaths, session_id: &str) -> Result<(), CliError> {
+fn write_active_project(paths: &MyOpenPanelsPaths, project_id: &str) -> Result<(), CliError> {
     write_json(
-        &paths.context_dir.join("active-session.json"),
-        &json!({ "sessionId": session_id, "updatedAt": now_iso() }),
+        &paths.context_dir.join("active-project.json"),
+        &json!({ "projectId": project_id, "updatedAt": now_iso() }),
     )
 }
 
@@ -932,8 +932,8 @@ fn read_active_panel(paths: &MyOpenPanelsPaths) -> Result<Option<ActivePanel>, C
             .get("kind")
             .and_then(Value::as_str)
             .and_then(PanelKind::parse),
-        session_id: value
-            .get("sessionId")
+        project_id: value
+            .get("projectId")
             .and_then(Value::as_str)
             .map(str::to_owned),
     }))
@@ -942,7 +942,7 @@ fn read_active_panel(paths: &MyOpenPanelsPaths) -> Result<Option<ActivePanel>, C
 fn write_active_panel(paths: &MyOpenPanelsPaths, panel: &Panel) -> Result<(), CliError> {
     let current = read_json_object_or_null(&paths.context_dir.join("active-panel.json"))?;
     let unchanged = current.as_ref().is_some_and(|value| {
-        value.get("sessionId").and_then(Value::as_str) == Some(panel.session_id.as_str())
+        value.get("projectId").and_then(Value::as_str) == Some(panel.project_id.as_str())
             && value.get("panelId").and_then(Value::as_str) == Some(panel.id.as_str())
             && value.get("kind").and_then(Value::as_str) == Some(panel.kind.as_str())
     });
@@ -955,7 +955,7 @@ fn write_active_panel(paths: &MyOpenPanelsPaths, panel: &Panel) -> Result<(), Cl
     write_json(
         &paths.context_dir.join("active-panel.json"),
         &json!({
-            "sessionId": panel.session_id,
+            "projectId": panel.project_id,
             "panelId": panel.id,
             "kind": panel.kind,
             "focusRevision": focus_revision,
@@ -975,7 +975,7 @@ pub fn read_focus_revision(paths: &MyOpenPanelsPaths) -> Result<u64, CliError> {
 #[derive(Debug)]
 struct ActivePanel {
     kind: Option<PanelKind>,
-    session_id: Option<String>,
+    project_id: Option<String>,
 }
 
 fn read_json_object_or_null(path: &Path) -> Result<Option<Value>, CliError> {
@@ -1028,7 +1028,7 @@ mod tests {
         let bootstrap =
             ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
 
-        assert_eq!(bootstrap.session.title, "Project 1");
+        assert_eq!(bootstrap.project.title, "Project 1");
         assert_eq!(bootstrap.active_panel_kind, PanelKind::Wiki);
         assert_eq!(
             bootstrap
@@ -1038,9 +1038,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["wiki", "canvas"]
         );
-        assert_eq!(bootstrap.state["schemaVersion"], json!(3));
+        assert_eq!(bootstrap.state["schemaVersion"], json!(4));
         assert_eq!(bootstrap.state["wikiSpaces"][0]["title"], json!("Wiki"));
-        assert!(paths.context_dir.join("active-session.json").exists());
+        assert!(paths.context_dir.join("active-project.json").exists());
         assert!(paths.context_dir.join("active-panel.json").exists());
         assert!(storage_dir
             .join(crate::storage::DATABASE_FILE_NAME)
@@ -1066,14 +1066,14 @@ mod tests {
             .unwrap()
             .remove("wikiAgentSkillConfigured");
 
-        let normalized = normalize_wiki_state_v3(state);
+        let normalized = normalize_wiki_state_v4(state);
 
         assert!(normalized.changed);
         assert_eq!(normalized.state["wikiAgentSkillConfigured"], json!(false));
     }
 
     #[test]
-    fn migrate_wiki_v2_to_v3_preserves_existing_content() {
+    fn migrate_wiki_v2_to_v4_preserves_existing_content() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -1095,6 +1095,7 @@ mod tests {
             .clone();
         let mut state = empty_wiki_state();
         state["schemaVersion"] = json!(2);
+        state["tasks"] = json!([]);
         state["rawDocuments"] = json!([{ "id": "raw:kept" }]);
         state
             .as_object_mut()
@@ -1102,13 +1103,13 @@ mod tests {
             .remove("generatedDocuments");
         let migrated = migrate_wiki_state(
             &Storage::open(&paths).expect("storage"),
-            &bootstrap.session,
+            &bootstrap.project,
             &wiki_panel,
             Some(state),
         )
         .expect("migration");
         assert!(migrated.changed);
-        assert_eq!(migrated.state["schemaVersion"], 3);
+        assert_eq!(migrated.state["schemaVersion"], 4);
         assert_eq!(migrated.state["rawDocuments"][0]["id"], "raw:kept");
         assert_eq!(
             migrated.state["generatedDocuments"]
@@ -1150,37 +1151,37 @@ mod tests {
         let first_again =
             ensure_project_bootstrap(&first_paths, BootstrapRequest::new()).expect("again");
 
-        assert_eq!(first.session.title, "Project 1");
-        assert_eq!(first_again.session.id, first.session.id);
-        assert_eq!(third.session.id, latest.session.id);
-        assert_eq!(third.sessions.len(), 2);
+        assert_eq!(first.project.title, "Project 1");
+        assert_eq!(first_again.project.id, first.project.id);
+        assert_eq!(third.project.id, latest.project.id);
+        assert_eq!(third.projects.len(), 2);
     }
 
     #[test]
     fn newest_project_prefers_updated_time_then_created_time_and_id() {
-        let session = |id: &str, created_at: &str, updated_at: &str| Session {
+        let project = |id: &str, created_at: &str, updated_at: &str| Project {
             id: id.to_owned(),
             title: id.to_owned(),
             created_at: created_at.to_owned(),
             updated_at: updated_at.to_owned(),
             panel_ids: Vec::new(),
         };
-        let sessions = vec![
-            session(
-                "session:older",
+        let projects = vec![
+            project(
+                "project:older",
                 "2026-07-11T10:00:00Z",
                 "2026-07-11T12:00:00Z",
             ),
-            session(
-                "session:newer",
+            project(
+                "project:newer",
                 "2026-07-11T11:00:00Z",
                 "2026-07-11T13:00:00Z",
             ),
         ];
 
         assert_eq!(
-            most_recently_updated_session(&sessions).unwrap().id,
-            "session:newer"
+            most_recently_updated_project(&projects).unwrap().id,
+            "project:newer"
         );
     }
 
@@ -1198,25 +1199,25 @@ mod tests {
         .expect("paths");
 
         create_project(&paths, Some("Demo")).expect("demo project");
-        write_active_session_id(&paths, "session:deleted").expect("stale active project");
+        write_active_project_id(&paths, "project:deleted").expect("stale active project");
 
         let error = ensure_project_bootstrap(
             &paths,
             BootstrapRequest {
                 requested_panel_id: None,
                 requested_panel_kind: None,
-                requested_session_id: Some("session:deleted".to_owned()),
+                requested_project_id: Some("project:deleted".to_owned()),
             },
         )
         .expect_err("missing requested project should fail");
 
         assert_eq!(error.code(), Some("project_not_found"));
-        let sessions = Storage::open(&paths)
+        let projects = Storage::open(&paths)
             .expect("storage")
-            .list_sessions()
-            .expect("sessions");
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].title, "Demo");
+            .list_projects()
+            .expect("projects");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].title, "Demo");
     }
 
     #[test]
@@ -1233,26 +1234,26 @@ mod tests {
         .expect("paths");
 
         let demo = create_project(&paths, Some("Demo")).expect("demo project");
-        write_active_session_id(&paths, "session:deleted").expect("stale active project");
+        write_active_project_id(&paths, "project:deleted").expect("stale active project");
 
         let recovered =
             ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
 
-        assert_eq!(recovered.session.id, demo.session.id);
-        let sessions = Storage::open(&paths)
+        assert_eq!(recovered.project.id, demo.project.id);
+        let projects = Storage::open(&paths)
             .expect("storage")
-            .list_sessions()
-            .expect("sessions");
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].title, "Demo");
+            .list_projects()
+            .expect("projects");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].title, "Demo");
         assert_eq!(
-            read_active_session_id(&paths).expect("active project"),
-            Some(demo.session.id)
+            read_active_project_id(&paths).expect("active project"),
+            Some(demo.project.id)
         );
     }
 
     #[test]
-    fn bootstrap_migrates_wiki_v1_state_to_v3_without_clearing_pages() {
+    fn bootstrap_migrates_wiki_v1_state_to_v4_without_clearing_pages() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -1275,7 +1276,7 @@ mod tests {
         let storage = Storage::open(&paths).expect("storage");
         storage
             .write_panel_state(
-                &bootstrap.session.id,
+                &bootstrap.project.id,
                 &wiki_panel.id,
                 &json!({
                     "schemaVersion": 1,
@@ -1291,11 +1292,11 @@ mod tests {
                 }),
             )
             .expect("write v1 state");
-        let panel_dir = storage.panel_dir(&bootstrap.session.id, &wiki_panel.id);
+        let panel_dir = storage.panel_dir(&bootstrap.project.id, &wiki_panel.id);
         drop(storage);
 
         let migrated = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("migrated");
-        assert_eq!(migrated.state["schemaVersion"], json!(3));
+        assert_eq!(migrated.state["schemaVersion"], json!(4));
         assert_eq!(
             migrated.state["activeWikiPagePath"],
             json!("research/notes.md")
@@ -1342,7 +1343,7 @@ mod tests {
         let storage = Storage::open(&paths).expect("storage");
         storage
             .write_panel_state(
-                &bootstrap.session.id,
+                &bootstrap.project.id,
                 &wiki_panel.id,
                 &json!({ "schemaVersion": 2, "rawDocuments": [] }),
             )
@@ -1380,9 +1381,9 @@ mod tests {
         let storage = Storage::open(&paths).expect("storage");
         storage
             .write_panel_state(
-                &bootstrap.session.id,
+                &bootstrap.project.id,
                 &wiki_panel.id,
-                &json!({ "schemaVersion": 4, "rawDocuments": [] }),
+                &json!({ "schemaVersion": 5, "rawDocuments": [] }),
             )
             .expect("write future wiki state");
         drop(storage);
@@ -1418,7 +1419,7 @@ mod tests {
         let storage = Storage::open(&paths).expect("storage");
         storage
             .write_panel_state(
-                &bootstrap.session.id,
+                &bootstrap.project.id,
                 &canvas_panel.id,
                 &json!({ "schema": { "schemaVersion": 2 }, "store": {} }),
             )

@@ -1,11 +1,12 @@
 use super::*;
-use rusqlite::OptionalExtension;
+use std::env;
 
 #[derive(Clone)]
 pub(super) struct WikiBootstrapValue {
     pub(super) panel: crate::types::Panel,
-    pub(super) session: crate::types::Session,
+    pub(super) project: crate::types::Project,
     pub(super) state: Value,
+    pub(super) tasks: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -31,30 +32,37 @@ pub(super) fn get_wiki_bootstrap(
     }
     ensure_default_wiki_files(
         paths,
-        &bootstrap.session.id,
+        &bootstrap.project.id,
         &bootstrap.panel.id,
         &bootstrap.state,
     )?;
+    let state = bootstrap.state;
+    let tasks = read_tasks(
+        &Storage::open(paths)?,
+        &bootstrap.project.id,
+        &bootstrap.panel.id,
+    )?;
     Ok(WikiBootstrapValue {
-        session: bootstrap.session,
+        project: bootstrap.project,
         panel: bootstrap.panel,
-        state: bootstrap.state,
+        state,
+        tasks,
     })
 }
 
 pub(super) fn get_wiki_target(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
 ) -> Result<WikiBootstrapValue, CliError> {
     let storage = Storage::open(paths)?;
-    let session = storage.read_session(session_id)?.ok_or_else(|| {
+    let project = storage.read_project(project_id)?.ok_or_else(|| {
         CliError::with_code(
             "target_not_found",
-            format!("Project not found: {session_id}"),
+            format!("Project not found: {project_id}"),
         )
     })?;
-    let panel = storage.read_panel(session_id, panel_id)?.ok_or_else(|| {
+    let panel = storage.read_panel(project_id, panel_id)?.ok_or_else(|| {
         CliError::with_code(
             "target_not_found",
             format!("Wiki panel not found: {panel_id}"),
@@ -67,18 +75,20 @@ pub(super) fn get_wiki_target(
         ));
     }
     let state = storage
-        .read_panel_state(session_id, panel_id)?
+        .read_panel_state(project_id, panel_id)?
         .ok_or_else(|| {
             CliError::with_code(
                 "target_not_found",
                 format!("Wiki state not found: {panel_id}"),
             )
         })?;
-    ensure_default_wiki_files(paths, session_id, panel_id, &state)?;
+    let tasks = read_tasks(&storage, project_id, panel_id)?;
+    ensure_default_wiki_files(paths, project_id, panel_id, &state)?;
     Ok(WikiBootstrapValue {
-        session,
+        project,
         panel,
         state,
+        tasks,
     })
 }
 
@@ -87,21 +97,12 @@ pub(super) fn get_wiki_task_target(
     task_id: &str,
 ) -> Result<WikiBootstrapValue, CliError> {
     let storage = Storage::open(paths)?;
-    let target = storage
-        .connection()
-        .query_row(
-            "SELECT session_id, panel_id FROM project_tasks WHERE id = ? LIMIT 1",
-            [task_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    let target = storage.task_panel_target(task_id)?.ok_or_else(|| {
+        CliError::with_code(
+            "task_not_found",
+            format!("Project task not found: {task_id}"),
         )
-        .optional()
-        .map_err(to_cli_error)?
-        .ok_or_else(|| {
-            CliError::with_code(
-                "task_not_found",
-                format!("Project task not found: {task_id}"),
-            )
-        })?;
+    })?;
     get_wiki_target(paths, &target.0, &target.1)
 }
 
@@ -110,25 +111,59 @@ pub(super) fn save_wiki_state(
     wiki: &WikiBootstrapValue,
 ) -> Result<(), CliError> {
     let storage = Storage::open(paths)?;
-    storage.write_panel_state(&wiki.session.id, &wiki.panel.id, &wiki.state)?;
-    storage.sync_wiki_tasks(&wiki.session.id, &wiki.panel.id, &wiki.state)?;
-    storage.sync_project_tasks_from_panel(
-        &wiki.session.id,
-        &wiki.panel.id,
-        wiki.panel.kind.as_str(),
-        "wiki",
-        &wiki.state,
-    )
+    storage.upsert_tasks(&wiki.project.id, &wiki.panel.id, "wiki", &wiki.tasks)?;
+    let mut persisted_state = wiki.state.clone();
+    persisted_state["schemaVersion"] = json!(4);
+    storage.write_panel_state(&wiki.project.id, &wiki.panel.id, &persisted_state)?;
+    Ok(())
+}
+
+fn read_tasks(storage: &Storage, project_id: &str, panel_id: &str) -> Result<Vec<Value>, CliError> {
+    let tasks = storage
+        .list_tasks(project_id)?
+        .into_iter()
+        .filter(|task| task.get("panelId").and_then(Value::as_str) == Some(panel_id))
+        .map(|task| {
+            let mut hydrated = task.as_object().cloned().unwrap_or_default();
+            for field in ["input", "source"] {
+                if let Some(values) = hydrated
+                    .remove(field)
+                    .and_then(|value| value.as_object().cloned())
+                {
+                    hydrated.extend(values);
+                }
+            }
+            if let Some(lease) = hydrated
+                .remove("lease")
+                .and_then(|value| value.as_object().cloned())
+            {
+                hydrated.insert(
+                    "leaseOwner".to_owned(),
+                    lease.get("owner").cloned().unwrap_or(Value::Null),
+                );
+                hydrated.insert(
+                    "leaseExpiresAt".to_owned(),
+                    lease.get("expiresAt").cloned().unwrap_or(Value::Null),
+                );
+                hydrated.insert(
+                    "lastHeartbeatAt".to_owned(),
+                    lease.get("heartbeatAt").cloned().unwrap_or(Value::Null),
+                );
+            }
+            Value::Object(hydrated)
+        })
+        .collect::<Vec<_>>();
+    Ok(tasks)
 }
 
 pub(super) fn ensure_default_wiki_files(
     paths: &MyOpenPanelsPaths,
-    session_id: &str,
+    project_id: &str,
     panel_id: &str,
     state: &Value,
 ) -> Result<(), CliError> {
     let storage = Storage::open(paths)?;
-    let panel_dir = storage.panel_dir(session_id, panel_id);
+    let panel_dir = storage.panel_dir(project_id, panel_id);
     write_file_if_missing(
         &wiki_panel_path(&panel_dir, "rules/default/rules.md")?,
         default_rules_markdown(),
@@ -153,7 +188,8 @@ pub(super) fn ensure_default_wiki_files(
 }
 
 pub(super) fn create_wiki_task(
-    state: &mut Value,
+    state: &Value,
+    tasks: &mut Vec<Value>,
     task_type: &str,
     target_id: &str,
     document_id: Option<&str>,
@@ -174,7 +210,6 @@ pub(super) fn create_wiki_task(
         "ruleSetVersion": space.value.get("ruleSetVersion").cloned().unwrap_or(Value::Null),
         "agentSkillId": agent_skill_id,
         "markdownVersion": markdown_version,
-        "claimedByProcessId": null,
         "attempt": 0,
         "maxAttempts": 3,
         "leaseOwner": null,
@@ -186,7 +221,7 @@ pub(super) fn create_wiki_task(
         "createdAt": now,
         "updatedAt": now,
     });
-    state_array_mut(state, "tasks")?.insert(0, task.clone());
+    tasks.insert(0, task.clone());
     trace_task_event(
         "queued",
         &task,
@@ -197,11 +232,13 @@ pub(super) fn create_wiki_task(
 }
 
 pub(super) fn create_wiki_rebuild_index_task(
-    state: &mut Value,
+    state: &Value,
+    tasks: &mut Vec<Value>,
     wiki_space_id: Option<&str>,
 ) -> Result<Value, CliError> {
     create_wiki_task(
         state,
+        tasks,
         "rebuild_wiki_index",
         "index.md",
         None,
@@ -220,33 +257,21 @@ pub(super) fn create_ingestion_state(task: &Value, markdown_version: i64) -> Val
     })
 }
 
-pub(super) fn task_mut<'a>(state: &'a mut Value, task_id: &str) -> Result<&'a mut Value, CliError> {
-    state_array_mut(state, "tasks")?
+pub(super) fn task_mut<'a>(
+    tasks: &'a mut [Value],
+    task_id: &str,
+) -> Result<&'a mut Value, CliError> {
+    tasks
         .iter_mut()
         .find(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
         .ok_or_else(|| CliError::new(format!("Wiki task not found: {task_id}")))
 }
 
-pub(super) fn task_value<'a>(state: &'a Value, task_id: &str) -> Result<&'a Value, CliError> {
-    state
-        .get("tasks")
-        .and_then(Value::as_array)
-        .and_then(|tasks| {
-            tasks
-                .iter()
-                .find(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
-        })
+pub(super) fn task_value<'a>(tasks: &'a [Value], task_id: &str) -> Result<&'a Value, CliError> {
+    tasks
+        .iter()
+        .find(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
         .ok_or_else(|| CliError::new(format!("Wiki task not found: {task_id}")))
-}
-
-pub(super) fn process_mut<'a>(
-    state: &'a mut Value,
-    process_id: &str,
-) -> Result<&'a mut Value, CliError> {
-    state_array_mut(state, "agentProcesses")?
-        .iter_mut()
-        .find(|process| process.get("id").and_then(Value::as_str) == Some(process_id))
-        .ok_or_else(|| CliError::new(format!("Wiki process not found: {process_id}")))
 }
 
 pub(super) fn find_document<'a>(
@@ -449,36 +474,6 @@ pub(super) fn wiki_page_path(
         ));
     }
     Ok(path)
-}
-
-pub(super) fn agent_targets_path(paths: &MyOpenPanelsPaths) -> PathBuf {
-    paths.context_dir.join("agent-targets.json")
-}
-
-pub(super) fn read_agent_targets(paths: &MyOpenPanelsPaths) -> Result<Vec<Value>, CliError> {
-    let path = agent_targets_path(paths);
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let raw = fs::read_to_string(path).map_err(to_cli_error)?;
-    Ok(serde_json::from_str::<Value>(&raw)
-        .ok()
-        .and_then(|value| value.as_array().cloned())
-        .unwrap_or_default())
-}
-
-pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), CliError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(
-        path,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(value).map_err(to_cli_error)?
-        ),
-    )
-    .map_err(to_cli_error)
 }
 
 pub(super) fn write_file_if_missing(path: &Path, content: &str) -> Result<(), CliError> {
