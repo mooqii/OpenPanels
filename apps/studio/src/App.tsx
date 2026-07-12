@@ -174,27 +174,6 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     canvasSnapshotRef.current = canvasSnapshot
   }, [canvasSnapshot])
 
-  useEffect(() => {
-    if (transport.kind !== "http") return
-    let cancelled = false
-    const markFocused = () => {
-      if (cancelled) return
-      apiFetch(transport.apiBase, "/api/studio/focus", {
-        method: "POST",
-      }).catch((error) => {
-        console.error("Failed to update MyOpenPanels Studio focus", error)
-      })
-    }
-    markFocused()
-    window.addEventListener("focus", markFocused)
-    document.addEventListener("visibilitychange", markFocused)
-    return () => {
-      cancelled = true
-      window.removeEventListener("focus", markFocused)
-      document.removeEventListener("visibilitychange", markFocused)
-    }
-  }, [transport])
-
   const loadProject = useCallback(
     async (projectId?: string | null) => {
       setBootstrapError(null)

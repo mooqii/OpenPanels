@@ -19,24 +19,12 @@ pub fn cleanup_context_storage(paths: &MyOpenPanelsPaths) {
     crate::selection::cleanup_materializations(paths);
 }
 
-/// Removes per-context pointers to a Project that has already been deleted.
+/// Removes global focus pointers to a deleted Project.
 pub fn clear_deleted_project_references(paths: &MyOpenPanelsPaths, project_id: &str) {
-    let contexts_dir = paths.storage_dir.join("contexts");
-    let Ok(entries) = fs::read_dir(contexts_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() || file_type.is_symlink() {
-            continue;
-        }
-        for file_name in ["active-project.json", "active-panel.json"] {
-            let path = entry.path().join(file_name);
-            if json_project_id(&path).as_deref() == Some(project_id) {
-                let _ = fs::remove_file(path);
-            }
+    for file_name in ["active-project.json", "active-panel.json"] {
+        let path = paths.focus_dir.join(file_name);
+        if json_project_id(&path).as_deref() == Some(project_id) {
+            let _ = fs::remove_file(path);
         }
     }
 }
@@ -56,7 +44,7 @@ fn cleanup_context_storage_at(paths: &MyOpenPanelsPaths, now: SystemTime) -> std
         }
         let context_dir = entry.path();
         let is_current = context_dir == paths.context_dir;
-        let has_live_studio = live_studio_session(&context_dir);
+        let has_live_studio = live_studio_session(paths, &context_dir);
         let is_expired = latest_modified(&context_dir).is_some_and(|last_modified| {
             now.duration_since(last_modified)
                 .is_ok_and(|age| age > CONTEXT_RETENTION)
@@ -68,7 +56,6 @@ fn cleanup_context_storage_at(paths: &MyOpenPanelsPaths, now: SystemTime) -> std
         }
 
         prune_transient_files(&context_dir, now);
-        remove_legacy_agent_files(&context_dir);
         if !has_live_studio {
             compact_studio_log(&context_dir.join("studio.log"));
         }
@@ -76,20 +63,14 @@ fn cleanup_context_storage_at(paths: &MyOpenPanelsPaths, now: SystemTime) -> std
     Ok(())
 }
 
-fn remove_legacy_agent_files(context_dir: &Path) {
-    for name in ["agent-runs", "wakeups"] {
-        let _ = fs::remove_dir_all(context_dir.join(name));
+fn live_studio_session(paths: &MyOpenPanelsPaths, context_dir: &Path) -> bool {
+    if context_dir != paths.storage_dir.join("contexts/studio") {
+        return false;
     }
-    let _ = fs::remove_file(context_dir.join("agent-targets.json"));
-}
-
-fn live_studio_session(context_dir: &Path) -> bool {
-    let Ok(raw) = fs::read_to_string(context_dir.join("studio-session.json")) else {
+    let Ok(raw) = fs::read_to_string(paths.studio_dir.join("instance.json")) else {
         return false;
     };
-    serde_json::from_str::<StudioSession>(&raw).is_ok_and(|session| {
-        PathBuf::from(session.context_dir) == context_dir && process_exists(session.pid)
-    })
+    serde_json::from_str::<StudioSession>(&raw).is_ok_and(|session| process_exists(session.pid))
 }
 
 fn latest_modified(path: &Path) -> Option<SystemTime> {
@@ -238,35 +219,32 @@ mod tests {
     }
 
     #[test]
-    fn preserves_a_live_studio_owner_but_not_an_expired_borrower_binding() {
+    fn preserves_the_studio_context_but_not_an_expired_agent_context() {
         let temp = tempfile::tempdir().expect("temp dir");
         let paths = test_paths(&temp, "current");
-        let owner = paths.storage_dir.join("contexts/owner");
+        let owner = paths.storage_dir.join("contexts/studio");
         let borrower = paths.storage_dir.join("contexts/borrower");
         for dir in [&owner, &borrower] {
             fs::create_dir_all(dir).expect("context");
-            let session = StudioSession {
-                system_browser_url: None,
-                context_dir: owner.display().to_string(),
-                context_id: "owner".to_owned(),
-                context_id_source: "test".to_owned(),
-                host: None,
-                lan_server_urls: None,
-                local_server_url: None,
-                log_path: owner.join("studio.log").display().to_string(),
-                pid: std::process::id(),
-                port: 1234,
-                project_dir: paths.project_dir.display().to_string(),
-                server_url: "http://127.0.0.1:1234".to_owned(),
-                started_at: "2026-01-01T00:00:00Z".to_owned(),
-                storage_dir: paths.storage_dir.display().to_string(),
-            };
-            fs::write(
-                dir.join("studio-session.json"),
-                serde_json::to_vec(&session).expect("session json"),
-            )
-            .expect("session binding");
         }
+        let session = StudioSession {
+            system_browser_url: None,
+            host: None,
+            lan_server_urls: None,
+            local_server_url: None,
+            log_path: paths.studio_dir.join("studio.log").display().to_string(),
+            pid: std::process::id(),
+            port: 1234,
+            server_url: "http://127.0.0.1:1234".to_owned(),
+            started_at: "2026-01-01T00:00:00Z".to_owned(),
+            storage_dir: paths.storage_dir.display().to_string(),
+        };
+        fs::create_dir_all(&paths.studio_dir).expect("studio dir");
+        fs::write(
+            paths.studio_dir.join("instance.json"),
+            serde_json::to_vec(&session).expect("session json"),
+        )
+        .expect("studio instance");
         let latest = latest_modified(&borrower).expect("modified time");
         let future = latest + CONTEXT_RETENTION + Duration::from_secs(1);
 
@@ -299,12 +277,11 @@ mod tests {
     }
 
     #[test]
-    fn clears_deleted_project_pointers_in_every_context() {
+    fn clears_deleted_project_pointers_from_global_focus() {
         let temp = tempfile::tempdir().expect("temp dir");
         let paths = test_paths(&temp, "current");
-        let sibling = paths.storage_dir.join("contexts/sibling");
-        for dir in [&paths.context_dir, &sibling] {
-            fs::create_dir_all(dir).expect("context");
+        for dir in [&paths.focus_dir] {
+            fs::create_dir_all(dir).expect("focus");
             fs::write(
                 dir.join("active-project.json"),
                 r#"{"projectId":"session:deleted"}"#,
@@ -319,7 +296,7 @@ mod tests {
 
         clear_deleted_project_references(&paths, "session:deleted");
 
-        for dir in [&paths.context_dir, &sibling] {
+        for dir in [&paths.focus_dir] {
             assert!(!dir.join("active-project.json").exists());
             assert!(!dir.join("active-panel.json").exists());
         }

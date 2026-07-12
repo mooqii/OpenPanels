@@ -208,7 +208,7 @@ fn materialize_selection_image(
     }
 
     cleanup_materializations(paths);
-    if !paths.context_dir.join("studio-session.json").is_file() {
+    if !paths.studio_dir.join("instance.json").is_file() {
         return Err(CliError::with_code(
             "selection_render_unavailable",
             "Studio is not running, so the Canvas selection cannot be rendered.",
@@ -622,7 +622,7 @@ fn resolve_project_id(
 }
 
 fn read_active_project_id(paths: &MyOpenPanelsPaths) -> Result<Option<String>, CliError> {
-    let active_project_path = paths.context_dir.join("active-project.json");
+    let active_project_path = paths.focus_dir.join("active-project.json");
     if !active_project_path.exists() {
         return Ok(None);
     }
@@ -902,8 +902,8 @@ mod tests {
     fn composite_selection_is_rendered_once_to_an_immutable_artifact() {
         let (_temp, paths) = test_paths();
         let (project_id, panel_id) = canvas_target(&paths);
-        fs::create_dir_all(&paths.context_dir).expect("context");
-        fs::write(paths.context_dir.join("studio-session.json"), "{}\n").expect("session");
+        fs::create_dir_all(&paths.studio_dir).expect("studio");
+        fs::write(paths.studio_dir.join("instance.json"), "{}\n").expect("session");
         Storage::open(&paths)
             .expect("storage")
             .write_panel_selection(

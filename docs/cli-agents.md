@@ -31,11 +31,11 @@ Studio, independent of the Agent's working directory. Canvas data is stored in
 the global MyOpenPanels data directory so agents and projects can share the same
 boards and assets.
 
-The current project and studio process are isolated per agent conversation when
-the agent exposes a thread/session environment variable such as
-`CODEX_THREAD_ID` or a Hermes conversation id. A new conversation reuses the
-most recently updated Project, and creates a default Project only when storage
-contains no Projects.
+The Studio process and user-visible Project/Panel focus are singletons for each
+storage directory. Agent thread/session environment variables such as
+`CODEX_THREAD_ID` or a Hermes conversation id still isolate Agent-owned
+Operations, Entry Skill acknowledgements, and loader files; they do not select
+or own a separate Studio process.
 
 ## Agent Workflow
 
@@ -64,10 +64,10 @@ contains no Projects.
 ## Command Map
 
 - `myopenpanels studio start`: start or reuse the MyOpenPanels Studio.
-- `myopenpanels studio status`: show the conversation-scoped MyOpenPanels Studio process status.
+- `myopenpanels studio status`: show the storage-wide singleton Studio status.
 - `myopenpanels studio open-system-browser`: explicitly open the studio URL in the system browser.
 - `myopenpanels studio wait`: wait for the studio HTTP server to become ready.
-- `myopenpanels studio stop`: stop the conversation-scoped MyOpenPanels Studio process.
+- `myopenpanels studio stop`: stop the storage-wide singleton Studio process.
 - `myopenpanels agent bootstrap`: print the compact Protocol v5 focus, bounded
   context, work summaries, prepared required Skill files, and optional
   progressive-discovery actions. Read every required Skill context and body

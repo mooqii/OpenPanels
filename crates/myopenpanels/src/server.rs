@@ -8,8 +8,8 @@ use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
 use crate::storage::Storage;
 use crate::studio::{
-    open_browser, record_current_studio, spawn_studio_server_process, write_studio_session,
-    StudioSession,
+    acquire_studio_transition_lock, open_browser, spawn_studio_server_process,
+    write_studio_session, StudioSession,
 };
 use crate::tasks;
 use crate::trace::{self, TraceEventInput};
@@ -93,6 +93,7 @@ async fn run_server_async(
     let std_listener = TcpListener::bind((host, port)).map_err(to_cli_error)?;
     std_listener.set_nonblocking(true).map_err(to_cli_error)?;
     let listener = tokio::net::TcpListener::from_std(std_listener).map_err(to_cli_error)?;
+    write_studio_session(&paths, &studio_session_for_server(host, port, &paths))?;
     axum::serve(
         listener,
         build_router(host.to_owned(), port, paths, static_dir, build_info),
@@ -103,6 +104,22 @@ async fn run_server_async(
     .await
     .map_err(to_cli_error)?;
     Ok(0)
+}
+
+fn studio_session_for_server(host: &str, port: u16, paths: &MyOpenPanelsPaths) -> StudioSession {
+    let local_server_url = format!("http://127.0.0.1:{port}");
+    StudioSession {
+        system_browser_url: Some(local_server_url.clone()),
+        host: Some(host.to_owned()),
+        lan_server_urls: Some(Vec::new()),
+        local_server_url: Some(local_server_url.clone()),
+        log_path: paths.studio_dir.join("studio.log").display().to_string(),
+        pid: std::process::id(),
+        port,
+        server_url: local_server_url,
+        started_at: now_iso(),
+        storage_dir: paths.storage_dir.display().to_string(),
+    }
 }
 
 fn build_router(
@@ -126,7 +143,6 @@ fn build_router(
     Router::new()
         .route("/api/health", get(api_health))
         .route("/api/bootstrap", get(api_bootstrap))
-        .route("/api/studio/focus", post(api_studio_focus))
         .route("/api/studio/open-browser", post(api_studio_open_browser))
         .route("/api/projects", get(api_projects).post(api_projects_create))
         .route("/api/update/status", get(api_update_status))
@@ -324,9 +340,6 @@ async fn api_bootstrap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<BootstrapQuery>,
 ) -> Response {
-    if let Err(error) = record_current_studio(&state.paths, &studio_session_for_state(&state)) {
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message());
-    }
     let request = BootstrapRequest {
         requested_panel_id: query.panel_id,
         requested_panel_kind: query.panel_kind.as_deref().and_then(PanelKind::parse),
@@ -336,13 +349,6 @@ async fn api_bootstrap(
         Ok(bootstrap) => json_response(StatusCode::OK, &with_build_info(bootstrap, &state)),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),
     })
-}
-
-async fn api_studio_focus(State(state): State<Arc<AppState>>) -> Response {
-    match record_current_studio(&state.paths, &studio_session_for_state(&state)) {
-        Ok(()) => json_response(StatusCode::OK, &json!({ "ok": true })),
-        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -965,6 +971,7 @@ async fn api_update_install_restart(State(state): State<Arc<AppState>>) -> Respo
 }
 
 fn spawn_restarted_studio(state: &AppState) -> Result<StudioSession, CliError> {
+    let _transition_lock = acquire_studio_transition_lock(&state.paths)?;
     let process = spawn_studio_server_process(
         &state.paths,
         state.port,
@@ -976,16 +983,12 @@ fn spawn_restarted_studio(state: &AppState) -> Result<StudioSession, CliError> {
     let local_server_url = format!("http://127.0.0.1:{}", state.port);
     let session = StudioSession {
         system_browser_url: Some(local_server_url.clone()),
-        context_dir: state.paths.context_dir.display().to_string(),
-        context_id: state.paths.context_id.clone(),
-        context_id_source: state.paths.context_id_source.clone(),
         host: Some(state.host.clone()),
         lan_server_urls: Some(Vec::new()),
         local_server_url: Some(local_server_url.clone()),
         log_path: process.log_path.display().to_string(),
         pid: process.pid,
         port: state.port,
-        project_dir: state.paths.project_dir.display().to_string(),
         server_url: local_server_url,
         started_at: now_iso(),
         storage_dir: state.paths.storage_dir.display().to_string(),
@@ -1440,31 +1443,6 @@ fn with_build_info(payload: impl Serialize, state: &AppState) -> Value {
         }
     }
     value
-}
-
-fn studio_session_for_state(state: &AppState) -> StudioSession {
-    let local_server_url = format!("http://127.0.0.1:{}", state.port);
-    StudioSession {
-        system_browser_url: Some(local_server_url.clone()),
-        context_dir: state.paths.context_dir.display().to_string(),
-        context_id: state.paths.context_id.clone(),
-        context_id_source: state.paths.context_id_source.clone(),
-        host: Some(state.host.clone()),
-        lan_server_urls: Some(Vec::new()),
-        local_server_url: Some(local_server_url.clone()),
-        log_path: state
-            .paths
-            .context_dir
-            .join("studio.log")
-            .display()
-            .to_string(),
-        pid: std::process::id(),
-        port: state.port,
-        project_dir: state.paths.project_dir.display().to_string(),
-        server_url: local_server_url,
-        started_at: now_iso(),
-        storage_dir: state.paths.storage_dir.display().to_string(),
-    }
 }
 
 fn current_build_info() -> StudioBuildInfo {

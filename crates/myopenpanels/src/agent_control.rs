@@ -174,6 +174,8 @@ fn to_cli_error(error: impl std::fmt::Display) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::resolve_myopenpanels_paths;
+    use std::fs;
 
     #[test]
     fn skill_versions_compare_short_semver_values() {
@@ -181,5 +183,38 @@ mod tests {
         assert!(version_at_least("3.5", "3.4"));
         assert!(!version_at_least("3.3", "3.4"));
         assert!(!version_at_least("invalid", "3.4"));
+    }
+
+    #[test]
+    fn entry_skill_acknowledgement_remains_agent_context_scoped() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join("storage");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths_a = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("agent-a"),
+        )
+        .expect("agent a");
+        let paths_b = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("agent-b"),
+        )
+        .expect("agent b");
+        let pending = pending_entry_skill_update(&paths_a, "1.0.0")
+            .expect("pending a")
+            .expect("requirement");
+
+        acknowledge_entry_skill_update(&paths_a, &pending.event_id, ENTRY_SKILL_VERSION)
+            .expect("acknowledge a");
+
+        assert!(pending_entry_skill_update(&paths_a, "1.0.0")
+            .expect("pending a after ack")
+            .is_none());
+        assert!(pending_entry_skill_update(&paths_b, "1.0.0")
+            .expect("pending b")
+            .is_some());
     }
 }

@@ -106,6 +106,10 @@ callable URL opener:
 myopenpanels studio start --local-only --project-dir /path/to/project --format json
 ```
 
+Each storage directory owns exactly one Studio process and one user-visible
+Project/Panel focus. Calls from other Agents or working directories reuse that
+same service while retaining their own Agent context for private lifecycle data.
+
 If the host has no callable opener, or the attempt fails or cannot report
 success, execute `data.nextRequiredAction.fallback.argv` with the same resolved
 CLI executable. The CLI reports `data.opened: true` only after the

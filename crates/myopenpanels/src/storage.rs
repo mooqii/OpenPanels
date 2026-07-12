@@ -2061,11 +2061,14 @@ mod tests {
     use tempfile::tempdir;
 
     fn paths_for(storage_dir: PathBuf) -> MyOpenPanelsPaths {
+        let studio_dir = storage_dir.join("studio");
         MyOpenPanelsPaths {
             context_dir: storage_dir.join("contexts").join("test"),
             context_id: "test".to_owned(),
             context_id_source: "test".to_owned(),
+            focus_dir: studio_dir.join("focus"),
             project_dir: storage_dir.join("project"),
+            studio_dir,
             storage_dir,
         }
     }

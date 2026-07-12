@@ -43,10 +43,9 @@
   the browser. Do not assume an already-running service picked up the new CLI.
 - If `studio start --format json` returns `"data.reusedExisting": true` after local
   Studio/CLI changes, the browser is still pointed at an older detached server
-  process. Stop that exact session before opening it: use
-  `scripts/myopenpanels-dev studio stop --project-dir "$PWD" --context-id <contextId>`
-  from `data.contextId` in the JSON payload (or terminate the returned `data.pid` if it is a borrowed
-  session), then run `corepack pnpm --dir apps/studio build`
+  process. Stop the storage-wide singleton before opening it with
+  `scripts/myopenpanels-dev studio stop --project-dir "$PWD" --format json`,
+  then run `corepack pnpm --dir apps/studio build`
   when UI assets changed, rerun `scripts/myopenpanels-dev` to rebuild the
   embedded CLI, and start Studio again. A healthy reused server is not evidence
   that it contains the latest checkout-local code.

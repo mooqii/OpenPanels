@@ -249,16 +249,12 @@ fn cli_trace_url_falls_back_to_running_studio_session() {
         &paths,
         &StudioSession {
             system_browser_url: Some(server_url.clone()),
-            context_dir: paths.context_dir.display().to_string(),
-            context_id: paths.context_id.clone(),
-            context_id_source: paths.context_id_source.clone(),
             host: Some("127.0.0.1".to_owned()),
             lan_server_urls: Some(Vec::new()),
             local_server_url: Some(server_url.clone()),
             log_path: paths.context_dir.join("studio.log").display().to_string(),
             pid: std::process::id(),
             port,
-            project_dir: paths.project_dir.display().to_string(),
             server_url: server_url.clone(),
             started_at: "2026-07-09T00:00:00.000Z".to_owned(),
             storage_dir: paths.storage_dir.display().to_string(),
@@ -288,7 +284,7 @@ fn cli_trace_url_falls_back_to_running_studio_session() {
 }
 
 #[test]
-fn studio_start_json_reuses_same_project_studio() {
+fn studio_start_json_reuses_the_storage_singleton() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -305,9 +301,6 @@ fn studio_start_json_reuses_same_project_studio() {
         &owner_paths,
         &StudioSession {
             system_browser_url: Some(server_url.clone()),
-            context_dir: owner_paths.context_dir.display().to_string(),
-            context_id: owner_paths.context_id.clone(),
-            context_id_source: owner_paths.context_id_source.clone(),
             host: Some("127.0.0.1".to_owned()),
             lan_server_urls: Some(Vec::new()),
             local_server_url: Some(server_url.clone()),
@@ -318,7 +311,6 @@ fn studio_start_json_reuses_same_project_studio() {
                 .to_string(),
             pid: std::process::id(),
             port,
-            project_dir: owner_paths.project_dir.display().to_string(),
             server_url: server_url.clone(),
             started_at: "2026-07-09T00:00:00.000Z".to_owned(),
             storage_dir: owner_paths.storage_dir.display().to_string(),
@@ -343,7 +335,7 @@ fn studio_start_json_reuses_same_project_studio() {
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(payload["embeddedBrowserUrl"], server_url);
     assert_eq!(payload["systemBrowserUrl"], server_url);
-    assert_eq!(payload["context"]["id"], "owner");
+    assert_eq!(payload["context"]["id"], "studio");
     assert_eq!(payload["projectReady"], true);
     assert_eq!(payload["reusedExisting"], true);
     assert_eq!(payload["serverVersion"], VERSION);
@@ -392,11 +384,7 @@ fn studio_start_json_reuses_same_project_studio() {
         .as_str()
         .unwrap()
         .contains("accepted"));
-    assert!(storage_dir
-        .join("contexts")
-        .join("borrower")
-        .join("studio-session.json")
-        .exists());
+    assert!(storage_dir.join("studio").join("instance.json").exists());
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -433,21 +421,32 @@ fn agent_bootstrap_without_project_dir_uses_user_visible_studio() {
     let server_url = format!("http://127.0.0.1:{port}");
     let session = StudioSession {
         system_browser_url: Some(server_url.clone()),
-        context_dir: paths.context_dir.display().to_string(),
-        context_id: paths.context_id.clone(),
-        context_id_source: paths.context_id_source.clone(),
         host: Some("127.0.0.1".to_owned()),
         lan_server_urls: Some(Vec::new()),
         local_server_url: Some(server_url.clone()),
         log_path: paths.context_dir.join("studio.log").display().to_string(),
         pid: std::process::id(),
         port,
-        project_dir: paths.project_dir.display().to_string(),
         server_url,
         started_at: "2026-07-12T00:00:00.000Z".to_owned(),
         storage_dir: paths.storage_dir.display().to_string(),
     };
-    record_current_studio(&paths, &session).expect("current studio");
+    write_studio_session(&paths, &session).expect("current studio");
+    let caller_paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        None,
+    )
+    .expect("caller paths");
+    let pending = crate::agent_control::pending_entry_skill_update(&caller_paths, VERSION)
+        .expect("entry skill requirement")
+        .expect("pending update");
+    crate::agent_control::acknowledge_entry_skill_update(
+        &caller_paths,
+        &pending.event_id,
+        crate::agent_control::ENTRY_SKILL_VERSION,
+    )
+    .expect("acknowledge caller skill");
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -465,6 +464,11 @@ fn agent_bootstrap_without_project_dir_uses_user_visible_studio() {
         payload["nextRequiredAction"]["intent"],
         "complete-required-steps"
     );
+    let loader_path = payload["nextRequiredAction"]["steps"][0]["skills"][0]["contextPath"]
+        .as_str()
+        .expect("loader path");
+    assert!(Path::new(loader_path).starts_with(&caller_paths.context_dir));
+    assert!(!Path::new(loader_path).starts_with(&paths.context_dir));
     server.join().expect("server thread");
 }
 
@@ -492,63 +496,6 @@ fn agent_bootstrap_without_visible_studio_has_direct_recovery() {
 }
 
 #[test]
-fn panel_commands_follow_borrowed_running_studio_context() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let project_dir = temp.path().join("project");
-    let storage_dir = temp.path().join(".myopenpanels");
-    fs::create_dir_all(&project_dir).expect("project dir");
-    let owner_paths = resolve_myopenpanels_paths(
-        Some(project_dir.to_str().unwrap()),
-        Some(storage_dir.to_str().unwrap()),
-        Some("owner"),
-    )
-    .expect("owner paths");
-    let borrower_paths = resolve_myopenpanels_paths(
-        Some(project_dir.to_str().unwrap()),
-        Some(storage_dir.to_str().unwrap()),
-        Some("borrower"),
-    )
-    .expect("borrower paths");
-    let (port, server) = fake_studio_server(1);
-    let server_url = format!("http://127.0.0.1:{port}");
-    write_studio_session(
-        &borrower_paths,
-        &StudioSession {
-            system_browser_url: Some(server_url.clone()),
-            context_dir: owner_paths.context_dir.display().to_string(),
-            context_id: owner_paths.context_id.clone(),
-            context_id_source: owner_paths.context_id_source.clone(),
-            host: Some("127.0.0.1".to_owned()),
-            lan_server_urls: Some(Vec::new()),
-            local_server_url: Some(server_url.clone()),
-            log_path: owner_paths
-                .context_dir
-                .join("studio.log")
-                .display()
-                .to_string(),
-            pid: std::process::id(),
-            port,
-            project_dir: owner_paths.project_dir.display().to_string(),
-            server_url,
-            started_at: "2026-07-09T00:00:00.000Z".to_owned(),
-            storage_dir: owner_paths.storage_dir.display().to_string(),
-        },
-    )
-    .expect("borrowed studio session");
-
-    let resolved =
-        resolve_panel_paths_for_active_studio(borrower_paths.clone(), false).expect("resolved");
-    assert_eq!(resolved.context_id, "owner");
-    assert_eq!(resolved.context_dir, owner_paths.context_dir);
-
-    let explicit =
-        resolve_panel_paths_for_active_studio(borrower_paths.clone(), true).expect("explicit");
-    assert_eq!(explicit.context_id, "borrower");
-    assert_eq!(explicit.context_dir, borrower_paths.context_dir);
-    server.join().expect("server thread");
-}
-
-#[test]
 fn system_browser_payload_requires_a_successful_launcher() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
@@ -565,16 +512,12 @@ fn system_browser_payload_requires_a_successful_launcher() {
     let result = StudioStartResult {
         session: StudioSession {
             system_browser_url: Some(server_url.clone()),
-            context_dir: paths.context_dir.display().to_string(),
-            context_id: paths.context_id.clone(),
-            context_id_source: paths.context_id_source.clone(),
             host: Some("127.0.0.1".to_owned()),
             lan_server_urls: Some(Vec::new()),
             local_server_url: Some(server_url.clone()),
             log_path: paths.context_dir.join("studio.log").display().to_string(),
             pid: std::process::id(),
             port: 43_217,
-            project_dir: paths.project_dir.display().to_string(),
             server_url: server_url.clone(),
             started_at: "2026-07-11T00:00:00.000Z".to_owned(),
             storage_dir: paths.storage_dir.display().to_string(),
@@ -586,7 +529,7 @@ fn system_browser_payload_requires_a_successful_launcher() {
         browser_refresh_required: false,
     };
 
-    let payload = studio_system_browser_payload(&result, &bootstrap, |url| {
+    let payload = studio_system_browser_payload(&paths, &result, &bootstrap, |url| {
         assert_eq!(url, server_url);
         Ok(())
     })
@@ -595,7 +538,7 @@ fn system_browser_payload_requires_a_successful_launcher() {
     assert_eq!(payload["openTarget"], "system_browser");
     assert!(payload.get("nextRequiredAction").is_none());
 
-    let error = studio_system_browser_payload(&result, &bootstrap, |_| {
+    let error = studio_system_browser_payload(&paths, &result, &bootstrap, |_| {
         Err(CliError::with_recovery(
             "browser_open_failed",
             "launcher failed",
@@ -627,9 +570,6 @@ fn studio_serve_reuses_existing_studio_without_foreground_server() {
         &owner_paths,
         &StudioSession {
             system_browser_url: Some(server_url.clone()),
-            context_dir: owner_paths.context_dir.display().to_string(),
-            context_id: owner_paths.context_id.clone(),
-            context_id_source: owner_paths.context_id_source.clone(),
             host: Some("127.0.0.1".to_owned()),
             lan_server_urls: Some(Vec::new()),
             local_server_url: Some(server_url.clone()),
@@ -640,7 +580,6 @@ fn studio_serve_reuses_existing_studio_without_foreground_server() {
                 .to_string(),
             pid: std::process::id(),
             port,
-            project_dir: owner_paths.project_dir.display().to_string(),
             server_url: server_url.clone(),
             started_at: "2026-07-09T00:00:00.000Z".to_owned(),
             storage_dir: owner_paths.storage_dir.display().to_string(),
@@ -691,9 +630,6 @@ fn failed_project_prepare_does_not_stop_a_reused_studio() {
     let (port, server) = fake_studio_server(1);
     let session = StudioSession {
         system_browser_url: Some(format!("http://127.0.0.1:{port}")),
-        context_dir: owner_paths.context_dir.display().to_string(),
-        context_id: owner_paths.context_id.clone(),
-        context_id_source: owner_paths.context_id_source.clone(),
         host: Some("127.0.0.1".to_owned()),
         lan_server_urls: Some(Vec::new()),
         local_server_url: Some(format!("http://127.0.0.1:{port}")),
@@ -704,7 +640,6 @@ fn failed_project_prepare_does_not_stop_a_reused_studio() {
             .to_string(),
         pid: std::process::id(),
         port,
-        project_dir: owner_paths.project_dir.display().to_string(),
         server_url: format!("http://127.0.0.1:{port}"),
         started_at: "2026-07-11T00:00:00.000Z".to_owned(),
         storage_dir: owner_paths.storage_dir.display().to_string(),
@@ -727,45 +662,9 @@ fn failed_project_prepare_does_not_stop_a_reused_studio() {
     ]);
 
     assert_eq!(code, 1, "{stderr}{stdout}");
-    assert!(owner_paths.context_dir.join("studio-session.json").exists());
+    assert!(owner_paths.studio_dir.join("instance.json").exists());
     assert_eq!(session.pid, std::process::id());
     server.join().expect("server thread");
-}
-
-#[test]
-fn studio_binding_failure_is_structured() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let project_dir = temp.path().join("project");
-    let storage_file = temp.path().join("storage-file");
-    fs::create_dir_all(&project_dir).expect("project dir");
-    fs::write(&storage_file, "not a directory").expect("storage file");
-    let paths = resolve_myopenpanels_paths(
-        Some(project_dir.to_str().unwrap()),
-        Some(storage_file.to_str().unwrap()),
-        Some("ctx"),
-    )
-    .expect("paths");
-    let session = StudioSession {
-        system_browser_url: Some("http://127.0.0.1:1".to_owned()),
-        context_dir: paths.context_dir.display().to_string(),
-        context_id: paths.context_id.clone(),
-        context_id_source: paths.context_id_source.clone(),
-        host: Some("127.0.0.1".to_owned()),
-        lan_server_urls: Some(Vec::new()),
-        local_server_url: Some("http://127.0.0.1:1".to_owned()),
-        log_path: paths.context_dir.join("studio.log").display().to_string(),
-        pid: std::process::id(),
-        port: 1,
-        project_dir: paths.project_dir.display().to_string(),
-        server_url: "http://127.0.0.1:1".to_owned(),
-        started_at: "2026-07-11T00:00:00.000Z".to_owned(),
-        storage_dir: paths.storage_dir.display().to_string(),
-    };
-
-    let error = bind_and_bootstrap_studio(&paths, &session).expect_err("binding should fail");
-    assert_eq!(error.code(), Some("studio_binding_failed"));
-    assert!(error.retryable());
-    assert!(error.recovery().is_some());
 }
 
 #[test]
@@ -3501,7 +3400,7 @@ fn studio_status_reports_missing_session() {
     let payload = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(payload["ok"], true);
     assert_eq!(payload["server"], "missing");
-    assert_eq!(payload["contextId"], "ctx");
+    assert!(payload.get("contextId").is_none());
     assert_eq!(stderr, "");
 }
 
@@ -3948,8 +3847,8 @@ fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing()
 fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
     let install = include_str!("../../../../skills/myopenpanels/references/install.md");
-    assert!(skill.contains("version: \"4.1\""));
-    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "4.1");
+    assert!(skill.contains("version: \"4.2\""));
+    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "4.2");
     assert!(skill.lines().count() <= 60);
     assert!(skill.contains("references/install.md"));
     assert!(!skill.contains("curl -fsSL"));

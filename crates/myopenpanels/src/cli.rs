@@ -9,15 +9,15 @@ use crate::control::{
 };
 use crate::error::CliError;
 use crate::operations;
-use crate::paths::resolve_myopenpanels_paths;
+use crate::paths::{resolve_myopenpanels_paths, resolve_studio_service_paths};
 use crate::selection::read_selection_asset_for_panel;
 use crate::server::run_server;
 use crate::storage::Storage;
 use crate::studio::{
-    discard_studio_session_binding, find_open_port, open_browser, record_current_studio,
-    resolve_current_studio_session, resolve_focused_studio_session, reuse_existing_studio,
-    start_studio, stop_studio_session, studio_status, wait_for_existing_studio,
-    write_studio_session, StudioServerStatus, StudioSession, StudioStartOptions, StudioStartResult,
+    acquire_studio_transition_lock, find_open_port, open_browser, resolve_current_studio_session,
+    reuse_existing_studio, start_studio, stop_studio_session, studio_status,
+    wait_for_existing_studio, write_studio_session, StudioServerStatus, StudioSession,
+    StudioStartOptions, StudioStartResult,
 };
 use crate::tasks;
 use crate::trace::{self, TraceEventInput};
@@ -41,9 +41,6 @@ use self::update::run_update_command;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
-#[cfg(test)]
-use std::path::PathBuf;
-
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -288,6 +285,7 @@ fn run_parsed_cli(
         CommandGroup::Task => run_tasks_command(parsed, stdout),
         CommandGroup::InternalStudioServe => {
             let paths = parsed_paths(parsed)?;
+            let service_paths = resolve_studio_service_paths(&paths)?;
             let port = string_flag(parsed, "port")
                 .ok_or_else(|| CliError::new("Missing --port for internal studio server."))?
                 .parse::<u16>()
@@ -300,7 +298,7 @@ fn run_parsed_cli(
                     .map_err(|_| CliError::new("Expected --restart-delay-ms to be a number."))?;
                 std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             }
-            let exit_code = run_server(host, port, paths, static_dir)?;
+            let exit_code = run_server(host, port, service_paths, static_dir)?;
             std::process::exit(exit_code);
         }
         CommandGroup::ParseError => {
@@ -659,7 +657,7 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
                     static_dir: string_flag(parsed, "static-dir").map(std::path::PathBuf::from),
                 },
             )?;
-            let bootstrap = match bind_and_bootstrap_studio(&paths, &result.session) {
+            let bootstrap = match bootstrap_studio(&paths) {
                 Ok(bootstrap) => bootstrap,
                 Err(error) => {
                     if !result.reused_existing {
@@ -668,7 +666,7 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
                     return Err(error);
                 }
             };
-            let payload = studio_launch_payload(&result, &bootstrap, None, true)?;
+            let payload = studio_launch_payload(&paths, &result, &bootstrap, None, true)?;
             let text = payload["embeddedBrowserUrl"].as_str().unwrap_or("");
             write_result(parsed, stdout, &payload, text)
         }
@@ -688,7 +686,7 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
                     static_dir: string_flag(parsed, "static-dir").map(std::path::PathBuf::from),
                 },
             )?;
-            let bootstrap = match bind_and_bootstrap_studio(&paths, &result.session) {
+            let bootstrap = match bootstrap_studio(&paths) {
                 Ok(bootstrap) => bootstrap,
                 Err(error) => {
                     if !result.reused_existing {
@@ -697,16 +695,18 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
                     return Err(error);
                 }
             };
-            let payload = studio_system_browser_payload(&result, &bootstrap, open_browser)?;
+            let payload = studio_system_browser_payload(&paths, &result, &bootstrap, open_browser)?;
             let system_url = payload["systemBrowserUrl"].as_str().unwrap_or("");
             write_result(parsed, stdout, &payload, &format!("Opened {system_url}"))
         }
         Some("serve") => {
             let paths = parsed_paths(parsed)?;
+            let service_paths = resolve_studio_service_paths(&paths)?;
+            let transition_lock = acquire_studio_transition_lock(&paths)?;
             crate::context_cleanup::cleanup_context_storage(&paths);
             sync_builtin_agent_skills(&paths)?;
             if let Some(session) = reuse_existing_studio(&paths)? {
-                let bootstrap = bind_and_bootstrap_studio(&paths, &session)?;
+                let bootstrap = bootstrap_studio(&paths)?;
                 let server_version = crate::studio::studio_version(&session)?
                     .unwrap_or_else(|| "unknown".to_owned());
                 let result = StudioStartResult {
@@ -717,8 +717,13 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
                     previous_version: None,
                     browser_refresh_required: false,
                 };
-                let payload =
-                    studio_launch_payload(&result, &bootstrap, Some(("foreground", false)), true)?;
+                let payload = studio_launch_payload(
+                    &paths,
+                    &result,
+                    &bootstrap,
+                    Some(("foreground", false)),
+                    true,
+                )?;
                 let text = payload["embeddedBrowserUrl"].as_str().unwrap_or("");
                 return write_result(parsed, stdout, &payload, text);
             }
@@ -727,26 +732,18 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
             let local_server_url = format!("http://127.0.0.1:{port}");
             let session = StudioSession {
                 system_browser_url: Some(local_server_url.clone()),
-                context_dir: paths.context_dir.display().to_string(),
-                context_id: paths.context_id.clone(),
-                context_id_source: paths.context_id_source.clone(),
                 host: Some(host.clone()),
                 lan_server_urls: Some(Vec::new()),
                 local_server_url: Some(local_server_url.clone()),
-                log_path: paths.context_dir.join("studio.log").display().to_string(),
+                log_path: paths.studio_dir.join("studio.log").display().to_string(),
                 pid: std::process::id(),
                 port,
-                project_dir: paths.project_dir.display().to_string(),
                 server_url: local_server_url.clone(),
                 started_at: crate::control::now_iso(),
                 storage_dir: paths.storage_dir.display().to_string(),
             };
-            let bootstrap = ensure_project_bootstrap(&paths, BootstrapRequest::new())?;
+            let bootstrap = ensure_project_bootstrap(&service_paths, BootstrapRequest::new())?;
             write_studio_session(&paths, &session)?;
-            if let Err(error) = record_current_studio(&paths, &session) {
-                let _ = discard_studio_session_binding(&paths);
-                return Err(studio_binding_error(error));
-            }
             let result = StudioStartResult {
                 session,
                 reused_existing: false,
@@ -755,15 +752,21 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
                 previous_version: None,
                 browser_refresh_required: false,
             };
-            let payload =
-                studio_launch_payload(&result, &bootstrap, Some(("foreground", true)), true)?;
+            let payload = studio_launch_payload(
+                &paths,
+                &result,
+                &bootstrap,
+                Some(("foreground", true)),
+                true,
+            )?;
             let text = payload["embeddedBrowserUrl"].as_str().unwrap_or("");
             write_result(parsed, stdout, &payload, text)?;
             stdout
                 .flush()
                 .map_err(|error| CliError::new(error.to_string()))?;
+            drop(transition_lock);
             let static_dir = string_flag(parsed, "static-dir").map(std::path::PathBuf::from);
-            let exit_code = run_server(&host, port, paths, static_dir)?;
+            let exit_code = run_server(&host, port, service_paths, static_dir)?;
             std::process::exit(exit_code);
         }
         Some("wait") => {
@@ -788,14 +791,11 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
                 "projectDir": paths.project_dir,
                 "storageDir": paths.storage_dir,
                 "stopped": result.stopped,
-                "unbound": result.unbound,
             });
             let text = if result.stopped {
                 "Stopped MyOpenPanels"
-            } else if result.unbound {
-                "Unbound MyOpenPanels studio"
             } else {
-                "No MyOpenPanels studio binding"
+                "No MyOpenPanels Studio is running"
             };
             write_result(parsed, stdout, &payload, text)
         }
@@ -1614,17 +1614,14 @@ fn parsed_current_paths(parsed: &Invocation) -> Result<crate::paths::MyOpenPanel
     }
     let Some(session) = resolve_current_studio_session(&paths)? else {
         return Err(CliError::with_recovery(
-            "no_current_project",
-            "No running MyOpenPanels Studio is bound to this project directory.",
+            "no_current_studio",
+            "No running MyOpenPanels Studio is available for this storage directory.",
             true,
-            "Run `myopenpanels studio start --project-dir <dir> --format json`, then retry.",
+            "Run `myopenpanels studio start --local-only --project-dir <dir> --format json`, then retry.",
         ));
     };
-    resolve_myopenpanels_paths(
-        Some(&session.project_dir),
-        Some(&session.storage_dir),
-        Some(&session.context_id),
-    )
+    let _ = session;
+    Ok(paths)
 }
 
 fn parsed_bootstrap_paths(
@@ -1635,7 +1632,7 @@ fn parsed_bootstrap_paths(
     }
 
     let paths = parsed_paths(parsed)?;
-    let Some(session) = resolve_focused_studio_session(&paths)? else {
+    let Some(session) = resolve_current_studio_session(&paths)? else {
         return Err(CliError::with_recovery(
             "no_current_studio",
             "No running user-visible MyOpenPanels Studio is available for Agent Bootstrap.",
@@ -1643,41 +1640,8 @@ fn parsed_bootstrap_paths(
             "Run `myopenpanels studio start --local-only --project-dir <dir> --format json`, open the returned URL, then retry `myopenpanels agent bootstrap --format json`.",
         ));
     };
-    resolve_myopenpanels_paths(
-        Some(&session.project_dir),
-        Some(&session.storage_dir),
-        Some(&session.context_id),
-    )
-}
-
-#[cfg(test)]
-fn resolve_panel_paths_for_active_studio(
-    paths: crate::paths::MyOpenPanelsPaths,
-    has_explicit_context_id: bool,
-) -> Result<crate::paths::MyOpenPanelsPaths, CliError> {
-    if has_explicit_context_id {
-        return Ok(paths);
-    }
-    let Ok(status) = studio_status(&paths) else {
-        return Ok(paths);
-    };
-    if status.server != StudioServerStatus::Running {
-        return Ok(paths);
-    }
-    let Some(session) = status.session else {
-        return Ok(paths);
-    };
-    if PathBuf::from(&session.project_dir) != paths.project_dir
-        || PathBuf::from(&session.storage_dir) != paths.storage_dir
-        || session.context_id == paths.context_id
-    {
-        return Ok(paths);
-    }
-    resolve_myopenpanels_paths(
-        Some(&session.project_dir),
-        Some(&session.storage_dir),
-        Some(&session.context_id),
-    )
+    let _ = session;
+    Ok(paths)
 }
 
 fn image_metadata_flag(parsed: &Invocation) -> Result<Option<Value>, CliError> {
@@ -1739,27 +1703,12 @@ fn studio_session_payload(
     Ok(value)
 }
 
-fn bind_and_bootstrap_studio(
-    paths: &crate::paths::MyOpenPanelsPaths,
-    session: &StudioSession,
-) -> Result<ProjectBootstrap, CliError> {
-    record_current_studio(paths, session).map_err(studio_binding_error)?;
+fn bootstrap_studio(paths: &crate::paths::MyOpenPanelsPaths) -> Result<ProjectBootstrap, CliError> {
     ensure_project_bootstrap(paths, BootstrapRequest::new())
 }
 
-fn studio_binding_error(error: CliError) -> CliError {
-    CliError::with_recovery(
-        "studio_binding_failed",
-        format!(
-            "Failed to bind the MyOpenPanels Studio: {}",
-            error.message()
-        ),
-        true,
-        "Fix access to the MyOpenPanels storage directory, then retry `studio start`.",
-    )
-}
-
 fn studio_launch_payload(
+    paths: &crate::paths::MyOpenPanelsPaths,
     result: &StudioStartResult,
     bootstrap: &ProjectBootstrap,
     extra: Option<(&str, bool)>,
@@ -1783,9 +1732,8 @@ fn studio_launch_payload(
         "systemBrowserUrl": system_browser_url,
         "recommendedOpenTarget": "in_app_browser",
         "context": {
-            "id": result.session.context_id,
-            "source": result.session.context_id_source,
-            "projectDir": result.session.project_dir,
+            "id": "studio",
+            "projectDir": paths.project_dir,
             "storageDir": result.session.storage_dir,
         },
         "project": {
@@ -1807,7 +1755,7 @@ fn studio_launch_payload(
             vec![
                 "--local-only".to_owned(),
                 "--project-dir".to_owned(),
-                result.session.project_dir.clone(),
+                paths.project_dir.display().to_string(),
                 "--format".to_owned(),
                 "json".to_owned(),
             ],
@@ -1826,7 +1774,7 @@ fn studio_launch_payload(
                 "args": [
                     "--local-only",
                     "--project-dir",
-                    result.session.project_dir,
+                    paths.project_dir,
                     "--format",
                     "json",
                 ],
@@ -1838,6 +1786,7 @@ fn studio_launch_payload(
 }
 
 fn studio_system_browser_payload(
+    paths: &crate::paths::MyOpenPanelsPaths,
     result: &StudioStartResult,
     bootstrap: &ProjectBootstrap,
     opener: impl FnOnce(&str) -> Result<(), CliError>,
@@ -1848,7 +1797,7 @@ fn studio_system_browser_payload(
         .as_deref()
         .unwrap_or(&result.session.server_url);
     opener(system_url)?;
-    let mut payload = studio_launch_payload(result, bootstrap, None, false)?;
+    let mut payload = studio_launch_payload(paths, result, bootstrap, None, false)?;
     payload["opened"] = serde_json::json!(true);
     payload["openTarget"] = serde_json::json!("system_browser");
     Ok(payload)

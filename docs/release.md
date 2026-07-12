@@ -146,7 +146,7 @@ asset without replacing the running binary. `install-restart` is only invoked
 after user confirmation; it installs the cached update when possible and then
 spawns a delayed replacement studio process on the same host, port, project,
 storage directory, context id, and static asset override. The new process
-writes `studio-session.json` before the current server exits.
+writes the storage-wide `studio/instance.json` before the current server exits.
 
 Environment controls:
 

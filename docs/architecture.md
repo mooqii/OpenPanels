@@ -20,7 +20,10 @@ and its `change_scopes` revision must commit in the same transaction.
 - Wiki panel state owns documents, spaces, rules, page indexes, and ingestion
   projections. It does not persist Agent process records.
 - `agent_operations` owns persistent Canvas and Wiki generation operations.
-- Context files contain only current focus and Studio process bindings.
+- `studio/instance.json` owns the storage-wide Studio process binding, while
+  `studio/focus/` owns the single user-visible Project and Panel focus.
+- Agent context files contain only Agent-private loader and lifecycle state;
+  they never select or own a Studio process.
 
 ## Compatibility
 

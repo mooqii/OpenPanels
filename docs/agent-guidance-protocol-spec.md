@@ -39,6 +39,11 @@ The CLI does not push prompts into the Agent. A normal discovery flow is:
 5. Execute their `argv` with the same resolved CLI executable and repeat against
    each next response until the user request is complete.
 
+The resolved Studio and focus are storage-wide singletons. Bootstrap keeps the
+calling Agent's context id for Entry Skill acknowledgement, Operation ownership,
+and loader files; it never replaces that identity with the Studio service
+context.
+
 ## Bootstrap Contract
 
 The successful JSON envelope, including its trailing newline, must not exceed

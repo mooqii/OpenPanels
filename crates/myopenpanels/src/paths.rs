@@ -14,7 +14,9 @@ pub struct MyOpenPanelsPaths {
     pub context_dir: PathBuf,
     pub context_id: String,
     pub context_id_source: String,
+    pub focus_dir: PathBuf,
     pub project_dir: PathBuf,
+    pub studio_dir: PathBuf,
     pub storage_dir: PathBuf,
 }
 
@@ -49,15 +51,31 @@ pub fn resolve_myopenpanels_paths(
     let storage_dir = absolutize(&storage_dir)?;
     let (context_id, context_id_source) = resolve_context_id(context_id);
     let context_dir = storage_dir.join("contexts").join(&context_id);
+    let studio_dir = storage_dir.join("studio");
+    let focus_dir = studio_dir.join("focus");
     assert_inside(&storage_dir, &context_dir)?;
+    assert_inside(&storage_dir, &studio_dir)?;
+    assert_inside(&storage_dir, &focus_dir)?;
 
     Ok(MyOpenPanelsPaths {
         context_dir,
         context_id,
         context_id_source,
+        focus_dir,
         project_dir,
+        studio_dir,
         storage_dir,
     })
+}
+
+pub fn resolve_studio_service_paths(
+    paths: &MyOpenPanelsPaths,
+) -> Result<MyOpenPanelsPaths, CliError> {
+    resolve_myopenpanels_paths(
+        Some(paths.project_dir.to_string_lossy().as_ref()),
+        Some(paths.storage_dir.to_string_lossy().as_ref()),
+        Some("studio"),
+    )
 }
 
 pub fn sanitize_path_part(value: &str) -> String {
@@ -181,4 +199,37 @@ fn assert_inside(root: &Path, candidate: &Path) -> Result<(), CliError> {
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {
     CliError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn studio_and_focus_paths_are_shared_while_agent_contexts_remain_distinct() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_a = temp.path().join("project-a");
+        let project_b = temp.path().join("project-b");
+        let storage = temp.path().join("storage");
+        fs::create_dir_all(&project_a).expect("project a");
+        fs::create_dir_all(&project_b).expect("project b");
+        let a = resolve_myopenpanels_paths(
+            Some(project_a.to_str().unwrap()),
+            Some(storage.to_str().unwrap()),
+            Some("agent-a"),
+        )
+        .expect("paths a");
+        let b = resolve_myopenpanels_paths(
+            Some(project_b.to_str().unwrap()),
+            Some(storage.to_str().unwrap()),
+            Some("agent-b"),
+        )
+        .expect("paths b");
+
+        assert_eq!(a.studio_dir, b.studio_dir);
+        assert_eq!(a.focus_dir, b.focus_dir);
+        assert_ne!(a.context_id, b.context_id);
+        assert_ne!(a.context_dir, b.context_dir);
+    }
 }

@@ -380,7 +380,7 @@ pub fn write_active_project_id(
 }
 
 pub fn read_active_panel_value(paths: &MyOpenPanelsPaths) -> Result<Option<Value>, CliError> {
-    read_json_object_or_null(&paths.context_dir.join("active-panel.json"))
+    read_json_object_or_null(&paths.focus_dir.join("active-panel.json"))
 }
 
 pub fn now_iso() -> String {
@@ -906,7 +906,7 @@ fn create_myopenpanels_id(prefix: &str) -> String {
 }
 
 fn read_active_project(paths: &MyOpenPanelsPaths) -> Result<Option<String>, CliError> {
-    let value = read_json_object_or_null(&paths.context_dir.join("active-project.json"))?;
+    let value = read_json_object_or_null(&paths.focus_dir.join("active-project.json"))?;
     Ok(value.and_then(|value| {
         value
             .get("projectId")
@@ -917,14 +917,13 @@ fn read_active_project(paths: &MyOpenPanelsPaths) -> Result<Option<String>, CliE
 
 fn write_active_project(paths: &MyOpenPanelsPaths, project_id: &str) -> Result<(), CliError> {
     write_json(
-        &paths.context_dir.join("active-project.json"),
+        &paths.focus_dir.join("active-project.json"),
         &json!({ "projectId": project_id, "updatedAt": now_iso() }),
     )
 }
 
 fn read_active_panel(paths: &MyOpenPanelsPaths) -> Result<Option<ActivePanel>, CliError> {
-    let Some(value) = read_json_object_or_null(&paths.context_dir.join("active-panel.json"))?
-    else {
+    let Some(value) = read_json_object_or_null(&paths.focus_dir.join("active-panel.json"))? else {
         return Ok(None);
     };
     Ok(Some(ActivePanel {
@@ -940,7 +939,7 @@ fn read_active_panel(paths: &MyOpenPanelsPaths) -> Result<Option<ActivePanel>, C
 }
 
 fn write_active_panel(paths: &MyOpenPanelsPaths, panel: &Panel) -> Result<(), CliError> {
-    let current = read_json_object_or_null(&paths.context_dir.join("active-panel.json"))?;
+    let current = read_json_object_or_null(&paths.focus_dir.join("active-panel.json"))?;
     let unchanged = current.as_ref().is_some_and(|value| {
         value.get("projectId").and_then(Value::as_str) == Some(panel.project_id.as_str())
             && value.get("panelId").and_then(Value::as_str) == Some(panel.id.as_str())
@@ -953,7 +952,7 @@ fn write_active_panel(paths: &MyOpenPanelsPaths, panel: &Panel) -> Result<(), Cl
         .unwrap_or(0)
         + u64::from(!unchanged);
     write_json(
-        &paths.context_dir.join("active-panel.json"),
+        &paths.focus_dir.join("active-panel.json"),
         &json!({
             "projectId": panel.project_id,
             "panelId": panel.id,
@@ -966,7 +965,7 @@ fn write_active_panel(paths: &MyOpenPanelsPaths, panel: &Panel) -> Result<(), Cl
 
 pub fn read_focus_revision(paths: &MyOpenPanelsPaths) -> Result<u64, CliError> {
     Ok(
-        read_json_object_or_null(&paths.context_dir.join("active-panel.json"))?
+        read_json_object_or_null(&paths.focus_dir.join("active-panel.json"))?
             .and_then(|value| value.get("focusRevision").and_then(Value::as_u64))
             .unwrap_or(0),
     )
@@ -1040,8 +1039,8 @@ mod tests {
         );
         assert_eq!(bootstrap.state["schemaVersion"], json!(4));
         assert_eq!(bootstrap.state["wikiSpaces"][0]["title"], json!("Wiki"));
-        assert!(paths.context_dir.join("active-project.json").exists());
-        assert!(paths.context_dir.join("active-panel.json").exists());
+        assert!(paths.focus_dir.join("active-project.json").exists());
+        assert!(paths.focus_dir.join("active-panel.json").exists());
         assert!(storage_dir
             .join(crate::storage::DATABASE_FILE_NAME)
             .exists());
@@ -1120,7 +1119,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_reuses_the_latest_project_for_a_new_context() {
+    fn bootstrap_uses_the_global_studio_project_for_every_context() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -1152,7 +1151,7 @@ mod tests {
             ensure_project_bootstrap(&first_paths, BootstrapRequest::new()).expect("again");
 
         assert_eq!(first.project.title, "Project 1");
-        assert_eq!(first_again.project.id, first.project.id);
+        assert_eq!(first_again.project.id, latest.project.id);
         assert_eq!(third.project.id, latest.project.id);
         assert_eq!(third.projects.len(), 2);
     }

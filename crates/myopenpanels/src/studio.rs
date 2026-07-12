@@ -1,30 +1,29 @@
 use crate::error::CliError;
-use crate::paths::MyOpenPanelsPaths;
+use crate::paths::{resolve_studio_service_paths, MyOpenPanelsPaths};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const STUDIO_HEALTH_REQUEST_TIMEOUT_MS: u64 = 700;
+const STUDIO_TRANSITION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const STUDIO_TRANSITION_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioSession {
     pub system_browser_url: Option<String>,
-    pub context_dir: String,
-    pub context_id: String,
-    pub context_id_source: String,
     pub host: Option<String>,
     pub lan_server_urls: Option<Vec<String>>,
     pub local_server_url: Option<String>,
     pub log_path: String,
     pub pid: u32,
     pub port: u16,
-    pub project_dir: String,
     pub server_url: String,
     pub started_at: String,
     pub storage_dir: String,
@@ -34,21 +33,10 @@ pub struct StudioSession {
 #[serde(rename_all = "camelCase")]
 pub struct StudioStatusPayload {
     pub ok: bool,
-    pub context_dir: String,
-    pub context_id: String,
-    pub context_id_source: String,
     pub log_path: String,
-    pub project_dir: String,
     pub server: StudioServerStatus,
     pub session: Option<StudioSession>,
     pub storage_dir: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CurrentStudioRecord {
-    pub focused_at: String,
-    pub session: StudioSession,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
@@ -102,7 +90,6 @@ enum StudioVersionRelation {
 #[serde(rename_all = "camelCase")]
 pub struct StudioStopResult {
     pub stopped: bool,
-    pub unbound: bool,
 }
 
 pub(crate) struct StudioServeProcess {
@@ -110,10 +97,21 @@ pub(crate) struct StudioServeProcess {
     pub pid: u32,
 }
 
+pub(crate) struct StudioTransitionLock {
+    path: PathBuf,
+}
+
+impl Drop for StudioTransitionLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.path);
+    }
+}
+
 pub fn start_studio(
     paths: &MyOpenPanelsPaths,
     options: StudioStartOptions,
 ) -> Result<StudioStartResult, CliError> {
+    let _transition_lock = acquire_studio_transition_lock(paths)?;
     crate::context_cleanup::cleanup_context_storage(paths);
     if let Some(session) = reuse_existing_studio(paths)? {
         let previous_version = studio_version(&session)?;
@@ -139,26 +137,13 @@ pub fn start_studio(
                 ));
             }
             StudioVersionRelation::Older => {
-                if is_session_owner(paths, &session) {
-                    let host = session.host.clone().unwrap_or_else(|| options.host.clone());
-                    let port = session.port;
-                    terminate_process(session.pid);
-                    remove_file_if_exists(&studio_session_path(paths))?;
-                    return launch_studio(
-                        paths,
-                        &host,
-                        port,
-                        options.static_dir.as_ref(),
-                        StudioLifecycle::VersionRestarted,
-                        previous_version,
-                    );
-                }
-
-                discard_studio_session_binding(paths)?;
-                let port = find_open_port(&options.host)?;
+                let host = session.host.clone().unwrap_or_else(|| options.host.clone());
+                let port = session.port;
+                terminate_process(session.pid);
+                remove_file_if_exists(&studio_session_path(paths))?;
                 return launch_studio(
                     paths,
-                    &options.host,
+                    &host,
                     port,
                     options.static_dir.as_ref(),
                     StudioLifecycle::VersionRestarted,
@@ -187,27 +172,24 @@ fn launch_studio(
     lifecycle: StudioLifecycle,
     previous_version: Option<String>,
 ) -> Result<StudioStartResult, CliError> {
-    fs::create_dir_all(&paths.context_dir).map_err(to_cli_error)?;
+    let service_paths = resolve_studio_service_paths(paths)?;
+    fs::create_dir_all(&service_paths.context_dir).map_err(to_cli_error)?;
     let local_server_url = format!("http://127.0.0.1:{port}");
     let server_url = local_server_url.clone();
     let system_browser_url = server_url.clone();
-    let process = spawn_studio_server_process(paths, port, host, static_dir, None)?;
+    let process = spawn_studio_server_process(&service_paths, port, host, static_dir, None)?;
 
     let session = StudioSession {
         system_browser_url: Some(system_browser_url.clone()),
-        context_dir: paths.context_dir.display().to_string(),
-        context_id: paths.context_id.clone(),
-        context_id_source: paths.context_id_source.clone(),
         host: Some(host.to_owned()),
         lan_server_urls: Some(Vec::new()),
         local_server_url: Some(local_server_url.clone()),
         log_path: process.log_path.display().to_string(),
         pid: process.pid,
         port,
-        project_dir: paths.project_dir.display().to_string(),
         server_url,
         started_at: crate::control::now_iso(),
-        storage_dir: paths.storage_dir.display().to_string(),
+        storage_dir: service_paths.storage_dir.display().to_string(),
     };
     write_studio_session(paths, &session)?;
     if let Err(error) = wait_for_studio_version(
@@ -246,11 +228,7 @@ pub fn reuse_existing_studio(paths: &MyOpenPanelsPaths) -> Result<Option<StudioS
         }
     }
 
-    let Some(session) = find_running_project_studio(paths)? else {
-        return Ok(None);
-    };
-    write_studio_session(paths, &session)?;
-    Ok(Some(session))
+    Ok(None)
 }
 
 pub(crate) fn spawn_studio_server_process(
@@ -260,8 +238,8 @@ pub(crate) fn spawn_studio_server_process(
     static_dir: Option<&PathBuf>,
     restart_delay_ms: Option<u64>,
 ) -> Result<StudioServeProcess, CliError> {
-    fs::create_dir_all(&paths.context_dir).map_err(to_cli_error)?;
-    let log_path = paths.context_dir.join("studio.log");
+    fs::create_dir_all(&paths.studio_dir).map_err(to_cli_error)?;
+    let log_path = paths.studio_dir.join("studio.log");
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -289,7 +267,7 @@ pub(crate) fn find_open_port(host: &str) -> Result<u16, CliError> {
 }
 
 pub fn studio_status(paths: &MyOpenPanelsPaths) -> Result<StudioStatusPayload, CliError> {
-    let log_path = paths.context_dir.join("studio.log");
+    let log_path = paths.studio_dir.join("studio.log");
     let session = read_studio_session(paths)?;
     let server = match session.as_ref() {
         None => StudioServerStatus::Missing,
@@ -300,127 +278,22 @@ pub fn studio_status(paths: &MyOpenPanelsPaths) -> Result<StudioStatusPayload, C
 
     Ok(StudioStatusPayload {
         ok: true,
-        context_dir: paths.context_dir.display().to_string(),
-        context_id: paths.context_id.clone(),
-        context_id_source: paths.context_id_source.clone(),
         log_path: log_path.display().to_string(),
-        project_dir: paths.project_dir.display().to_string(),
         server,
         session,
         storage_dir: paths.storage_dir.display().to_string(),
     })
 }
 
-pub fn record_current_studio(
-    paths: &MyOpenPanelsPaths,
-    session: &StudioSession,
-) -> Result<(), CliError> {
-    fs::create_dir_all(&paths.storage_dir).map_err(to_cli_error)?;
-    let record = CurrentStudioRecord {
-        focused_at: crate::control::now_iso(),
-        session: session.clone(),
-    };
-    fs::write(
-        current_studio_path(paths),
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&record).map_err(to_cli_error)?
-        ),
-    )
-    .map_err(to_cli_error)
-}
-
 pub fn resolve_current_studio_session(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Option<StudioSession>, CliError> {
-    if let Some(record) = read_current_studio_record(paths)? {
-        if same_project(paths, &record.session)
-            && process_exists(record.session.pid)
-            && is_studio_healthy(&record.session)
-        {
-            return Ok(Some(record.session));
-        }
-    }
-
     if let Some(session) = read_studio_session(paths)? {
-        if same_project(paths, &session)
-            && process_exists(session.pid)
-            && is_studio_healthy(&session)
-        {
+        if process_exists(session.pid) && is_studio_healthy(&session) {
             return Ok(Some(session));
         }
     }
-
-    let candidates = running_project_studios(paths)?;
-    match candidates.as_slice() {
-        [] => Ok(None),
-        [session] => Ok(Some(session.clone())),
-        _ => Err(CliError::with_code(
-            "ambiguous_current_project",
-            format!(
-                "Multiple running MyOpenPanels studios are available for this project: {}. Focus one Studio window or stop the extra Studio service.",
-                candidates
-                    .iter()
-                    .map(studio_candidate_label)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        )),
-    }
-}
-
-pub fn resolve_focused_studio_session(
-    paths: &MyOpenPanelsPaths,
-) -> Result<Option<StudioSession>, CliError> {
-    if let Some(record) = read_current_studio_record(paths)? {
-        if process_exists(record.session.pid) && is_studio_healthy(&record.session) {
-            return Ok(Some(record.session));
-        }
-    }
-
-    let mut candidates = Vec::new();
-    for path in studio_session_paths(paths)? {
-        let Some(session) = read_studio_session_file(&path)? else {
-            continue;
-        };
-        if !process_exists(session.pid) {
-            remove_file_if_exists(&path)?;
-            continue;
-        }
-        if is_studio_healthy(&session) {
-            candidates.push(session);
-        }
-    }
-    candidates.sort_by(|left, right| right.started_at.cmp(&left.started_at));
-    match candidates.as_slice() {
-        [] => Ok(None),
-        [session] => Ok(Some(session.clone())),
-        _ => Err(CliError::with_code(
-            "ambiguous_current_studio",
-            "Multiple running MyOpenPanels Studios are available. Focus the Studio window you want to use, then retry Agent Bootstrap.",
-        )),
-    }
-}
-
-pub fn running_project_studios(paths: &MyOpenPanelsPaths) -> Result<Vec<StudioSession>, CliError> {
-    let mut candidates = Vec::new();
-    for path in studio_session_paths(paths)? {
-        let Some(session) = read_studio_session_file(&path)? else {
-            continue;
-        };
-        if !same_project(paths, &session) {
-            continue;
-        }
-        if !process_exists(session.pid) {
-            remove_file_if_exists(&path)?;
-            continue;
-        }
-        if is_studio_healthy(&session) {
-            candidates.push(session);
-        }
-    }
-    candidates.sort_by(|left, right| right.started_at.cmp(&left.started_at));
-    Ok(candidates)
+    Ok(None)
 }
 
 pub fn wait_for_existing_studio(
@@ -441,32 +314,48 @@ pub fn wait_for_existing_studio(
 }
 
 pub fn stop_studio_session(paths: &MyOpenPanelsPaths) -> Result<StudioStopResult, CliError> {
+    let _transition_lock = acquire_studio_transition_lock(paths)?;
     let Some(session) = read_studio_session(paths)? else {
-        return Ok(StudioStopResult {
-            stopped: false,
-            unbound: false,
-        });
+        return Ok(StudioStopResult { stopped: false });
     };
-    let borrowed = !is_session_owner(paths, &session);
     let path = studio_session_path(paths);
-    if borrowed {
-        if path.exists() {
-            fs::remove_file(path).map_err(to_cli_error)?;
-        }
-        return Ok(StudioStopResult {
-            stopped: false,
-            unbound: true,
-        });
-    }
-
     terminate_process(session.pid);
     if path.exists() {
         fs::remove_file(path).map_err(to_cli_error)?;
     }
-    Ok(StudioStopResult {
-        stopped: true,
-        unbound: false,
-    })
+    Ok(StudioStopResult { stopped: true })
+}
+
+pub(crate) fn acquire_studio_transition_lock(
+    paths: &MyOpenPanelsPaths,
+) -> Result<StudioTransitionLock, CliError> {
+    fs::create_dir_all(&paths.studio_dir).map_err(to_cli_error)?;
+    let path = paths.studio_dir.join("transition.lock");
+    let started = Instant::now();
+    loop {
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(StudioTransitionLock { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = fs::metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+                    .is_some_and(|age| age >= STUDIO_TRANSITION_LOCK_STALE_AFTER);
+                if stale {
+                    let _ = fs::remove_dir_all(&path);
+                    continue;
+                }
+                if started.elapsed() >= STUDIO_TRANSITION_LOCK_TIMEOUT {
+                    return Err(CliError::with_code(
+                        "studio_transition_busy",
+                        "Another MyOpenPanels process is starting, stopping, or restarting Studio. Retry shortly.",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(to_cli_error(error)),
+        }
+    }
 }
 
 fn read_studio_session(paths: &MyOpenPanelsPaths) -> Result<Option<StudioSession>, CliError> {
@@ -484,93 +373,31 @@ pub fn write_studio_session(
     paths: &MyOpenPanelsPaths,
     session: &StudioSession,
 ) -> Result<(), CliError> {
-    fs::create_dir_all(&paths.context_dir).map_err(to_cli_error)?;
-    fs::write(
-        studio_session_path(paths),
+    fs::create_dir_all(&paths.studio_dir).map_err(to_cli_error)?;
+    let mut file = tempfile::NamedTempFile::new_in(&paths.studio_dir).map_err(to_cli_error)?;
+    file.write_all(
         format!(
             "{}\n",
             serde_json::to_string_pretty(session).map_err(to_cli_error)?
-        ),
+        )
+        .as_bytes(),
     )
-    .map_err(to_cli_error)
-}
-
-pub fn discard_studio_session_binding(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
-    remove_file_if_exists(&studio_session_path(paths))
+    .map_err(to_cli_error)?;
+    file.persist(studio_session_path(paths))
+        .map(|_| ())
+        .map_err(to_cli_error)
 }
 
 fn studio_session_path(paths: &MyOpenPanelsPaths) -> PathBuf {
-    paths.context_dir.join("studio-session.json")
-}
-
-fn current_studio_path(paths: &MyOpenPanelsPaths) -> PathBuf {
-    paths.storage_dir.join("current-studio.json")
-}
-
-fn read_current_studio_record(
-    paths: &MyOpenPanelsPaths,
-) -> Result<Option<CurrentStudioRecord>, CliError> {
-    let path = current_studio_path(paths);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = fs::read_to_string(path).map_err(to_cli_error)?;
-    match serde_json::from_str::<CurrentStudioRecord>(&content) {
-        Ok(record) => Ok(Some(record)),
-        Err(_) => Ok(None),
-    }
-}
-
-fn find_running_project_studio(
-    paths: &MyOpenPanelsPaths,
-) -> Result<Option<StudioSession>, CliError> {
-    Ok(running_project_studios(paths)?.into_iter().next())
-}
-
-fn studio_session_paths(paths: &MyOpenPanelsPaths) -> Result<Vec<PathBuf>, CliError> {
-    let contexts_dir = paths.storage_dir.join("contexts");
-    if !contexts_dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut session_paths = Vec::new();
-    for entry in fs::read_dir(contexts_dir).map_err(to_cli_error)? {
-        let entry = entry.map_err(to_cli_error)?;
-        let path = entry.path().join("studio-session.json");
-        if path.exists() {
-            session_paths.push(path);
-        }
-    }
-    session_paths.sort();
-    Ok(session_paths)
-}
-
-fn read_studio_session_file(path: &Path) -> Result<Option<StudioSession>, CliError> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = fs::read_to_string(path).map_err(to_cli_error)?;
-    match serde_json::from_str::<StudioSession>(&content) {
-        Ok(session) => Ok(Some(session)),
-        Err(_) => Ok(None),
-    }
+    paths.studio_dir.join("instance.json")
 }
 
 fn cleanup_current_session(
     paths: &MyOpenPanelsPaths,
     session: &StudioSession,
 ) -> Result<(), CliError> {
-    if is_session_owner(paths, session) {
-        terminate_process(session.pid);
-    }
+    terminate_process(session.pid);
     remove_file_if_exists(&studio_session_path(paths))
-}
-
-fn same_project(paths: &MyOpenPanelsPaths, session: &StudioSession) -> bool {
-    PathBuf::from(&session.project_dir) == paths.project_dir
-}
-
-fn is_session_owner(paths: &MyOpenPanelsPaths, session: &StudioSession) -> bool {
-    session.context_id == paths.context_id
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), CliError> {
@@ -646,15 +473,6 @@ fn studio_get(server_url: &str, path: &str) -> Result<ureq::Response, ureq::Erro
         .build()
         .get(&url)
         .call()
-}
-
-fn studio_candidate_label(session: &StudioSession) -> String {
-    let url = session
-        .system_browser_url
-        .as_deref()
-        .or(session.local_server_url.as_deref())
-        .unwrap_or(&session.server_url);
-    format!("{} ({url})", session.context_id)
 }
 
 fn wait_for_studio(server_url: &str, timeout: Duration) -> Result<(), CliError> {
@@ -1080,20 +898,40 @@ mod tests {
         assert_eq!(error.code(), Some("studio_version_mismatch"));
     }
 
+    #[test]
+    fn transition_lock_serializes_agents_sharing_storage() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_a = temp.path().join("project-a");
+        let project_b = temp.path().join("project-b");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_a).expect("project a");
+        fs::create_dir_all(&project_b).expect("project b");
+        let paths_a = paths_for(&project_a, &storage_dir, "agent-a");
+        let paths_b = paths_for(&project_b, &storage_dir, "agent-b");
+        let first = acquire_studio_transition_lock(&paths_a).expect("first lock");
+        let started = Instant::now();
+        let waiter = thread::spawn(move || {
+            let _second = acquire_studio_transition_lock(&paths_b).expect("second lock");
+            started.elapsed()
+        });
+
+        thread::sleep(Duration::from_millis(150));
+        drop(first);
+        let waited = waiter.join().expect("waiter");
+
+        assert!(waited >= Duration::from_millis(100));
+    }
+
     fn studio_session(paths: &MyOpenPanelsPaths, port: u16) -> StudioSession {
         let server_url = format!("http://127.0.0.1:{port}");
         StudioSession {
             system_browser_url: Some(server_url.clone()),
-            context_dir: paths.context_dir.display().to_string(),
-            context_id: paths.context_id.clone(),
-            context_id_source: paths.context_id_source.clone(),
             host: Some("127.0.0.1".to_owned()),
             lan_server_urls: Some(Vec::new()),
             local_server_url: Some(server_url.clone()),
             log_path: paths.context_dir.join("studio.log").display().to_string(),
             pid: std::process::id(),
             port,
-            project_dir: paths.project_dir.display().to_string(),
             server_url,
             started_at: "2026-07-09T00:00:00.000Z".to_owned(),
             storage_dir: paths.storage_dir.display().to_string(),
@@ -1101,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn start_reuses_running_studio_from_same_project_context() {
+    fn start_reuses_the_running_storage_singleton() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -1126,13 +964,13 @@ mod tests {
         assert_eq!(result.server_version, env!("CARGO_PKG_VERSION"));
         assert!(!result.browser_refresh_required);
         assert_eq!(result.session.server_url, owner_session.server_url);
-        assert_eq!(result.session.context_id, "owner");
+        assert_eq!(result.session.storage_dir, owner_session.storage_dir);
         assert!(studio_session_path(&borrower_paths).exists());
         server.join().expect("server thread");
     }
 
     #[test]
-    fn reuse_ignores_running_studio_for_different_project() {
+    fn reuse_returns_the_storage_singleton_for_a_different_project_and_context() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let other_project_dir = temp.path().join("other-project");
@@ -1141,17 +979,22 @@ mod tests {
         fs::create_dir_all(&other_project_dir).expect("other project dir");
         let owner_paths = paths_for(&other_project_dir, &storage_dir, "owner");
         let borrower_paths = paths_for(&project_dir, &storage_dir, "borrower");
-        let owner_session = studio_session(&owner_paths, 65_000);
+        let (port, server) = fake_studio_server(1);
+        let owner_session = studio_session(&owner_paths, port);
         write_studio_session(&owner_paths, &owner_session).expect("owner session");
 
-        let result = reuse_existing_studio(&borrower_paths).expect("reuse");
+        let result = reuse_existing_studio(&borrower_paths)
+            .expect("reuse")
+            .expect("singleton session");
 
-        assert!(result.is_none());
-        assert!(!studio_session_path(&borrower_paths).exists());
+        assert_eq!(result.pid, owner_session.pid);
+        assert_eq!(result.server_url, owner_session.server_url);
+        assert_eq!(result.storage_dir, owner_session.storage_dir);
+        server.join().expect("server thread");
     }
 
     #[test]
-    fn reuse_removes_stale_sibling_session() {
+    fn reuse_removes_the_stale_storage_instance() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -1169,48 +1012,44 @@ mod tests {
     }
 
     #[test]
-    fn current_studio_resolution_prefers_the_calling_context_binding() {
+    fn current_studio_resolution_returns_the_storage_singleton() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
         fs::create_dir_all(&project_dir).expect("project dir");
         let caller_paths = paths_for(&project_dir, &storage_dir, "caller");
-        let sibling_paths = paths_for(&project_dir, &storage_dir, "sibling");
         let (port, server) = fake_studio_server(1);
         let caller_session = studio_session(&caller_paths, port);
-        let mut sibling_session = studio_session(&sibling_paths, port);
-        sibling_session.context_id = "sibling".to_owned();
         write_studio_session(&caller_paths, &caller_session).expect("caller session");
-        write_studio_session(&sibling_paths, &sibling_session).expect("sibling session");
 
         let resolved = resolve_current_studio_session(&caller_paths)
             .expect("resolution")
             .expect("session");
 
-        assert_eq!(resolved.context_id, "caller");
+        assert_eq!(resolved.server_url, caller_session.server_url);
         server.join().expect("server thread");
     }
 
     #[test]
-    fn stop_unbinds_borrowed_session_without_stopping_owner() {
+    fn stop_from_another_context_stops_the_storage_singleton() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
         fs::create_dir_all(&project_dir).expect("project dir");
         let owner_paths = paths_for(&project_dir, &storage_dir, "owner");
         let borrower_paths = paths_for(&project_dir, &storage_dir, "borrower");
-        let owner_session = studio_session(&owner_paths, 65_000);
+        let mut owner_session = studio_session(&owner_paths, 65_000);
+        owner_session.pid = 0;
         write_studio_session(&borrower_paths, &owner_session).expect("borrowed session");
 
         let result = stop_studio_session(&borrower_paths).expect("stop");
 
-        assert!(!result.stopped);
-        assert!(result.unbound);
+        assert!(result.stopped);
         assert!(!studio_session_path(&borrower_paths).exists());
     }
 
     #[test]
-    fn stop_removes_owner_session() {
+    fn stop_removes_the_storage_instance() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -1223,7 +1062,6 @@ mod tests {
         let result = stop_studio_session(&owner_paths).expect("stop");
 
         assert!(result.stopped);
-        assert!(!result.unbound);
         assert!(!studio_session_path(&owner_paths).exists());
     }
 }
