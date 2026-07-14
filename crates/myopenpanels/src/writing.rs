@@ -1457,7 +1457,9 @@ mod tests {
 
         let project_skill =
             crate::agent::writing_agent_skill(&paths, skill_id).expect("project Writing Skill");
-        assert!(project_skill.local_path.contains("/projects/"));
+        assert!(Path::new(&project_skill.local_path)
+            .components()
+            .any(|component| component.as_os_str() == "projects"));
         create_requests(
             &paths,
             "Write with the extracted method",

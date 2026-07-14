@@ -902,8 +902,8 @@ impl Storage {
         fs::write(&file_path, bytes).map_err(to_cli_error)?;
         let asset_ref = format!(
             "projects/{}/panels/{}/assets/{}",
-            sanitize_path_part(project_id),
-            sanitize_path_part(panel_id),
+            project_id,
+            panel_id,
             file_name
                 .split('/')
                 .map(sanitize_path_part)
