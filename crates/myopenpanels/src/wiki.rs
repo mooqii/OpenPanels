@@ -18,6 +18,23 @@ use state::*;
 
 pub const WIKI_PANEL_SKILL_ID: &str = "wiki-panel";
 
+fn character_count(content: &str) -> usize {
+    content
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count()
+}
+
+#[cfg(test)]
+mod character_count_tests {
+    use super::character_count;
+
+    #[test]
+    fn counts_non_whitespace_unicode_characters() {
+        assert_eq!(character_count("Hello 世界\n"), 7);
+    }
+}
+
 pub fn wiki_context(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     let wiki = get_wiki_bootstrap(paths)?;
     Ok(json!({
@@ -247,7 +264,7 @@ pub fn create_generated_document(
     thread_id: Option<&str>,
     content: &[u8],
 ) -> Result<Value, CliError> {
-    std::str::from_utf8(content).map_err(|_| {
+    let text = std::str::from_utf8(content).map_err(|_| {
         CliError::with_code(
             "invalid_generated_document",
             "Generated document content must be valid UTF-8.",
@@ -286,6 +303,7 @@ pub fn create_generated_document(
         "taskId": task_id,
         "threadId": thread_id,
         "publishHistory": [],
+        "wordCount": character_count(text),
         "createdAt": now,
         "updatedAt": now,
     });
@@ -344,6 +362,7 @@ pub fn begin_generated_document_for_target(
         "taskId": null,
         "threadId": null,
         "publishHistory": [],
+        "wordCount": 0,
         "generation": { "operationId": operation_id, "status": "generating", "error": null },
         "createdAt": now,
         "updatedAt": now,
@@ -362,7 +381,7 @@ pub fn complete_generated_document_for_target(
     file_name: &str,
     content: &[u8],
 ) -> Result<Value, CliError> {
-    std::str::from_utf8(content).map_err(|_| {
+    let text = std::str::from_utf8(content).map_err(|_| {
         CliError::with_code(
             "invalid_generated_document",
             "Generated document content must be valid UTF-8.",
@@ -401,6 +420,7 @@ pub fn complete_generated_document_for_target(
     document["format"] = json!(format);
     document["mimeType"] = json!(mime_type);
     document["originalFileName"] = json!(sanitize_path_part(file_name));
+    document["wordCount"] = json!(character_count(text));
     document["generation"] = json!({ "status": "completed", "error": null });
     document["updatedAt"] = json!(now_iso());
     let document = document.clone();
@@ -441,10 +461,44 @@ pub fn finish_generated_document_operation(
         }
     } else {
         let document = find_generated_document_mut(&mut wiki.state, document_id)?;
-        document["generation"] = json!({ "status": status, "error": message });
+        let operation_id = document
+            .pointer("/generation/operationId")
+            .cloned()
+            .unwrap_or(Value::Null);
+        document["generation"] = json!({
+            "operationId": operation_id,
+            "status": status,
+            "error": message,
+        });
         document["updatedAt"] = json!(now_iso());
     }
     save_wiki_state(paths, &wiki)
+}
+
+pub fn recover_generated_document_for_target(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    panel_id: &str,
+    document_id: &str,
+    operation_id: Option<&str>,
+) -> Result<Value, CliError> {
+    let mut wiki = get_wiki_target(paths, project_id, panel_id)?;
+    let document = find_generated_document_mut(&mut wiki.state, document_id)?;
+    if document["contentVersion"].as_u64().unwrap_or(0) == 0 {
+        return Err(CliError::with_code(
+            "generation_retry_unavailable",
+            "The failed document has no saved content to recover.",
+        ));
+    }
+    document["generation"] = json!({
+        "operationId": operation_id,
+        "status": "completed",
+        "error": null,
+    });
+    document["updatedAt"] = json!(now_iso());
+    let document = document.clone();
+    save_wiki_state(paths, &wiki)?;
+    Ok(json!({ "document": document, "state": wiki.state }))
 }
 
 pub fn read_generated_document(
@@ -477,7 +531,7 @@ pub fn write_generated_document(
     mime_type: Option<&str>,
     content: &[u8],
 ) -> Result<Value, CliError> {
-    std::str::from_utf8(content).map_err(|_| {
+    let text = std::str::from_utf8(content).map_err(|_| {
         CliError::with_code(
             "invalid_generated_document",
             "Generated document content must be valid UTF-8.",
@@ -486,7 +540,8 @@ pub fn write_generated_document(
     let (format, normalized_mime_type) = generated_document_format(file_name, mime_type)?;
     let mut wiki = get_wiki_bootstrap(paths)?;
     let storage = Storage::open(paths)?;
-    let old_ref = find_generated_document(&wiki.state, document_id)?["contentRef"]
+    let existing_document = find_generated_document(&wiki.state, document_id)?;
+    let old_ref = existing_document["contentRef"]
         .as_str()
         .ok_or_else(|| CliError::new("Generated document contentRef is missing."))?
         .to_owned();
@@ -512,10 +567,39 @@ pub fn write_generated_document(
     document["format"] = json!(format);
     document["mimeType"] = json!(normalized_mime_type);
     document["originalFileName"] = json!(sanitize_path_part(file_name));
+    document["wordCount"] = json!(character_count(text));
+    if document
+        .pointer("/generation/status")
+        .and_then(Value::as_str)
+        == Some("failed")
+    {
+        document["generation"] = json!({ "status": "completed", "error": null });
+    }
     document["updatedAt"] = json!(now);
     let document = document.clone();
     save_wiki_state(paths, &wiki)?;
     Ok(json!({ "document": document, "state": wiki.state }))
+}
+
+pub fn write_generated_document_for_agent(
+    paths: &MyOpenPanelsPaths,
+    document_id: &str,
+    file_name: &str,
+    mime_type: Option<&str>,
+    content: &[u8],
+) -> Result<Value, CliError> {
+    let wiki = get_wiki_bootstrap(paths)?;
+    if find_generated_document(&wiki.state, document_id)?
+        .pointer("/generation/status")
+        .and_then(Value::as_str)
+        == Some("generating")
+    {
+        return Err(CliError::with_code(
+            "generation_in_progress",
+            "Complete the active generation Operation instead of writing the document directly.",
+        ));
+    }
+    write_generated_document(paths, document_id, file_name, mime_type, content)
 }
 
 pub fn rename_generated_document(
@@ -656,6 +740,11 @@ pub fn add_raw_document(
     fs::write(&original_path, content).map_err(to_cli_error)?;
 
     let is_text = is_plain_text_file(&safe_file_name, mime_type);
+    let word_count = if is_text {
+        std::str::from_utf8(content).ok().map(character_count)
+    } else {
+        None
+    };
     if is_text {
         let markdown_path = wiki_panel_path(&panel_dir, &markdown_ref)?;
         if let Some(parent) = markdown_path.parent() {
@@ -722,6 +811,7 @@ pub fn add_raw_document(
         "originalRef": original_ref,
         "markdownRef": if is_text { Value::String(markdown_ref.clone()) } else { Value::Null },
         "markdownVersion": if is_text { 1 } else { 0 },
+        "wordCount": word_count,
         "conversion": {
             "status": if is_text { "not_required" } else { "queued" },
             "taskId": conversion_task.as_ref().map(|task| task["id"].clone()),
@@ -1539,6 +1629,7 @@ pub fn write_markdown(
         + 1;
     document["markdownRef"] = json!(markdown_ref);
     document["markdownVersion"] = json!(version);
+    document["wordCount"] = json!(character_count(content));
     document["updatedAt"] = json!(now);
     let conversion_status = if document
         .get("conversion")

@@ -466,6 +466,7 @@ pub(super) fn upsert_page_index(
         "tags": [],
         "sourceDocumentIds": [],
         "updatedAt": updated_at,
+        "wordCount": character_count(markdown),
     });
     let page_index = space
         .as_object_mut()

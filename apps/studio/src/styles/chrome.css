@@ -29,7 +29,7 @@
   backdrop-filter: blur(14px);
 }
 
-@media (max-width: 479px) {
+@media (max-width: 459px) {
   .op-open-browser-prompt {
     display: inline-flex;
   }
@@ -208,7 +208,7 @@
 .op-build-menu__status span {
   font-size: 11px;
   line-height: 1.3;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-build-menu__actions {
@@ -320,7 +320,7 @@
   text-overflow: ellipsis;
   font-size: 11px;
   line-height: 1.25;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
   white-space: nowrap;
 }
 
@@ -410,7 +410,7 @@
 .op-update-overlay__copy span {
   font-size: 12px;
   line-height: 1.45;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-update-overlay__actions {
@@ -423,8 +423,15 @@
 
 .op-project-title {
   position: relative;
-  display: inline-flex;
+  display: flex;
   flex: 1 1 auto;
+  min-width: 0;
+}
+
+.op-project-title__activation {
+  position: relative;
+  display: inline-flex;
+  flex: 0 1 auto;
   gap: 4px;
   align-items: center;
   min-width: 0;
@@ -442,7 +449,7 @@
   text-align: left;
   letter-spacing: 0;
   white-space: nowrap;
-  cursor: default;
+  cursor: pointer;
   background: transparent;
   border: 0;
 }
@@ -458,7 +465,7 @@
     color 120ms ease;
 }
 
-.op-project-title:hover .op-project-title__edit-button,
+.op-project-title__activation:hover .op-project-title__edit-button,
 .op-project-title__edit-button[data-focus-visible="true"] {
   opacity: 1;
 }

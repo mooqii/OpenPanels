@@ -1365,7 +1365,7 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
                 .file_name()
                 .and_then(|value| value.to_str())
                 .unwrap_or("document.md");
-            let result = wiki::write_generated_document(
+            let result = wiki::write_generated_document_for_agent(
                 &paths,
                 document_id,
                 file_name,

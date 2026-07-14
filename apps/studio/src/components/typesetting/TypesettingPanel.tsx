@@ -42,15 +42,19 @@ import {
 } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import {
+  apiFetch,
   apiJson,
   apiUrl,
   formatBytes,
   isTypesettingState,
   originalPreviewKind,
   savePanelState,
+  tryOpenBrowserWindow,
   wikiRawOriginalUrl,
 } from "../../lib/api"
+import { formatRelativeOrDate } from "../../lib/date-time"
 import {
+  countTypesettingCharacters,
   createTypesettingPublication,
   groupTypesettingAssets,
   isTypesettingDocumentEmpty,
@@ -74,6 +78,16 @@ import type {
   WikiState,
 } from "../../types"
 import { ConfirmDialog } from "../wiki/Dialogs"
+import {
+  GeneratedDocumentsEmpty,
+  RawDocumentsEmpty,
+} from "../wiki/DocumentModuleEmpty"
+import { GeneratedDocumentMeta } from "../wiki/GeneratedDocumentMeta"
+import { RawDocumentMeta } from "../wiki/RawDocumentMeta"
+import {
+  nextCollapsedLibraryModules,
+  type TypesettingLibraryModule,
+} from "./library-accordion"
 
 type SaveStatus = "saved" | "saving" | "failed"
 type AssetScope = "current" | "all"
@@ -86,6 +100,7 @@ type DocumentPreview =
       format: "markdown"
       kind: "raw"
       loading: boolean
+      source: "markdown" | "original"
     }
   | {
       content: string | null
@@ -357,17 +372,57 @@ export function TypesettingPanel({
   )
 
   const openRawDocument = useCallback(
-    async (document: WikiRawDocument) => {
+    async (
+      document: WikiRawDocument,
+      requestedSource: "preferred" | "original" = "preferred"
+    ) => {
+      const source =
+        requestedSource === "preferred" && document.markdownRef
+          ? "markdown"
+          : "original"
       const initial: DocumentPreview = {
         content: null,
         document,
         error: null,
         format: "markdown",
         kind: "raw",
-        loading: Boolean(document.markdownRef),
+        loading:
+          source === "markdown" ||
+          (source === "original" && originalPreviewKind(document) === "text"),
+        source,
       }
       setPreview(initial)
-      if (!document.markdownRef) return
+      if (source === "original") {
+        if (originalPreviewKind(document) !== "text") return
+        try {
+          const response = await apiFetch(
+            transport.apiBase,
+            `/api/wiki/raw-documents/${encodeURIComponent(document.id)}/original`
+          )
+          if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          const content = await response.text()
+          setPreview((current) =>
+            current?.kind === "raw" &&
+            current.document.id === document.id &&
+            current.source === "original"
+              ? { ...current, content, loading: false }
+              : current
+          )
+        } catch (error) {
+          setPreview((current) =>
+            current?.kind === "raw" &&
+            current.document.id === document.id &&
+            current.source === "original"
+              ? {
+                  ...current,
+                  error: String(error instanceof Error ? error.message : error),
+                  loading: false,
+                }
+              : current
+          )
+        }
+        return
+      }
       try {
         const data = await apiJson<{ markdown?: string }>(
           transport.apiBase,
@@ -391,6 +446,30 @@ export function TypesettingPanel({
       }
     },
     [transport.apiBase]
+  )
+
+  const openRawOriginal = useCallback(
+    (document: WikiRawDocument) => {
+      if (originalPreviewKind(document)) {
+        openRawDocument(document, "original").catch((error) => {
+          console.error("Failed to preview raw document", error)
+        })
+        return
+      }
+      if (
+        tryOpenBrowserWindow(wikiRawOriginalUrl(transport.apiBase, document))
+      ) {
+        return
+      }
+      apiFetch(
+        transport.apiBase,
+        `/api/wiki/raw-documents/${encodeURIComponent(document.id)}/reveal`,
+        { method: "POST" }
+      ).catch((error) => {
+        console.error("Failed to reveal raw document", error)
+      })
+    },
+    [openRawDocument, transport.apiBase]
   )
 
   const openGeneratedDocument = useCallback(
@@ -449,6 +528,7 @@ export function TypesettingPanel({
           onClose={() => setIsLibraryOpen(false)}
           onOpenGenerated={openGeneratedDocument}
           onOpenRaw={openRawDocument}
+          onOpenRawOriginal={openRawOriginal}
           projectId={projectId}
           transport={transport}
           wiki={wiki}
@@ -479,7 +559,6 @@ export function TypesettingPanel({
           ) : (
             <PublicationList
               onCreate={createPublication}
-              onDelete={setPendingDelete}
               onOpen={(publication) => {
                 setActivePublicationId(publication.id)
                 setView("detail")
@@ -533,6 +612,7 @@ function TypesettingLibrary({
   onClose,
   onOpenGenerated,
   onOpenRaw,
+  onOpenRawOriginal,
   projectId,
   transport,
   wiki,
@@ -541,6 +621,7 @@ function TypesettingLibrary({
   onClose: () => void
   onOpenGenerated: (document: WikiGeneratedDocument) => void
   onOpenRaw: (document: WikiRawDocument) => void
+  onOpenRawOriginal: (document: WikiRawDocument) => void
   projectId: string
   transport: MyOpenPanelsTransport
   wiki: WikiState
@@ -550,6 +631,9 @@ function TypesettingLibrary({
   const [assets, setAssets] = useState<TypesettingCanvasAsset[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [collapsedLibraryModules, setCollapsedLibraryModules] = useState<
+    Set<TypesettingLibraryModule>
+  >(() => new Set())
 
   useEffect(() => {
     let cancelled = false
@@ -581,6 +665,11 @@ function TypesettingLibrary({
   }, [projectId, scope, transport.apiBase])
 
   const groups = groupTypesettingAssets(assets)
+  const toggleLibraryModule = (module: TypesettingLibraryModule) => {
+    setCollapsedLibraryModules((current) =>
+      nextCollapsedLibraryModules(current, module)
+    )
+  }
 
   return (
     <aside className={`op-typesetting-library ${className}`}>
@@ -596,119 +685,141 @@ function TypesettingLibrary({
           <X size={16} />
         </Button>
       </div>
-      <LibraryModule title={t`Raw Documents`}>
-        {wiki.rawDocuments.length ? (
-          wiki.rawDocuments.map((document) => (
-            <button
-              className="op-typesetting-document"
-              key={document.id}
-              onClick={() => onOpenRaw(document)}
-              type="button"
-            >
-              <FileText size={15} />
-              <span>
-                <strong>{document.title}</strong>
-                <small>{document.originalFileName}</small>
-              </span>
-            </button>
-          ))
-        ) : (
-          <LibraryEmpty>{t`No raw documents yet`}</LibraryEmpty>
-        )}
-      </LibraryModule>
-
-      <LibraryModule title={t`Generated Documents`}>
-        {wiki.generatedDocuments.length ? (
-          wiki.generatedDocuments.map((document) => (
-            <button
-              className="op-typesetting-document"
-              key={document.id}
-              onClick={() => onOpenGenerated(document)}
-              type="button"
-            >
-              <FileText size={15} />
-              <span>
-                <strong>{document.title}</strong>
-                <small>
-                  {document.format === "markdown" ? "Markdown" : t`Plain text`}
-                </small>
-              </span>
-            </button>
-          ))
-        ) : (
-          <LibraryEmpty>{t`No generated documents yet`}</LibraryEmpty>
-        )}
-      </LibraryModule>
-
-      <LibraryModule className="op-typesetting-assets-module" title={t`Assets`}>
-        <Tabs
-          className="op-typesetting-assets-tabs"
-          onSelectionChange={(key) => setScope(String(key) as AssetScope)}
-          selectedKey={scope}
+      <div className="op-typesetting-document-library">
+        <LibraryModule
+          isCollapsed={collapsedLibraryModules.has("raw")}
+          isEmpty={wiki.rawDocuments.length === 0}
+          onToggle={() => toggleLibraryModule("raw")}
+          title={t`Raw Documents`}
         >
-          <Tabs.ListContainer>
-            <Tabs.List aria-label={t`Asset scope`}>
-              <Tabs.Tab id="current">
-                {t`Current project`}
-                <Tabs.Indicator />
-              </Tabs.Tab>
-              <Tabs.Tab id="all">
-                {t`All projects`}
-                <Tabs.Indicator />
-              </Tabs.Tab>
-            </Tabs.List>
-          </Tabs.ListContainer>
-        </Tabs>
-        <div className="op-typesetting-assets">
-          {loading ? (
-            <LibraryEmpty>
-              <LoaderCircle className="op-spin" size={16} />
-              {t`Loading assets`}
-            </LibraryEmpty>
-          ) : error ? (
-            <LibraryEmpty>{t`Failed to load assets`}</LibraryEmpty>
-          ) : groups.length ? (
-            groups.map((group) => (
-              <section
-                className="op-typesetting-asset-group"
-                key={group.projectId}
-              >
-                {scope === "all" ? <h4>{group.projectTitle}</h4> : null}
-                <div className="op-typesetting-asset-grid">
-                  {group.assets.map((asset) => (
-                    <button
-                      className="op-typesetting-asset"
-                      draggable
-                      key={asset.id}
-                      onDragStart={(event) => {
-                        event.dataTransfer.effectAllowed = "copy"
-                        event.dataTransfer.setData(
-                          TYPESETTING_ASSET_DRAG_TYPE,
-                          JSON.stringify(asset)
-                        )
-                        event.dataTransfer.setData(
-                          "text/uri-list",
-                          apiUrl(transport.apiBase, asset.src).toString()
-                        )
-                      }}
-                      title={asset.name}
-                      type="button"
-                    >
-                      <img
-                        alt={asset.name}
-                        draggable={false}
-                        src={apiUrl(transport.apiBase, asset.src).toString()}
-                      />
-                    </button>
-                  ))}
-                </div>
-              </section>
+          {wiki.rawDocuments.length ? (
+            wiki.rawDocuments.map((document) => (
+              <div className="op-typesetting-document" key={document.id}>
+                <button
+                  aria-label={document.title}
+                  className="op-raw-document-open"
+                  onClick={() => onOpenRaw(document)}
+                  type="button"
+                />
+                <FileText size={15} />
+                <span className="op-raw-document-copy">
+                  <strong>{document.title}</strong>
+                  <RawDocumentMeta
+                    document={document}
+                    onOpenOriginal={() => onOpenRawOriginal(document)}
+                  />
+                </span>
+              </div>
             ))
           ) : (
-            <LibraryEmpty>{t`No Canvas images yet`}</LibraryEmpty>
+            <RawDocumentsEmpty />
           )}
-        </div>
-      </LibraryModule>
+        </LibraryModule>
+
+        <LibraryModule
+          isCollapsed={collapsedLibraryModules.has("generated")}
+          isEmpty={wiki.generatedDocuments.length === 0}
+          onToggle={() => toggleLibraryModule("generated")}
+          title={t`Generated Documents`}
+        >
+          {wiki.generatedDocuments.length ? (
+            wiki.generatedDocuments.map((document) => (
+              <button
+                className="op-typesetting-document"
+                key={document.id}
+                onClick={() => onOpenGenerated(document)}
+                type="button"
+              >
+                <FileText size={15} />
+                <span>
+                  <strong>{document.title}</strong>
+                  <GeneratedDocumentMeta
+                    apiBase={transport.apiBase}
+                    document={document}
+                  />
+                </span>
+              </button>
+            ))
+          ) : (
+            <GeneratedDocumentsEmpty />
+          )}
+        </LibraryModule>
+
+        <LibraryModule
+          className="op-typesetting-assets-module"
+          isCollapsed={collapsedLibraryModules.has("assets")}
+          onToggle={() => toggleLibraryModule("assets")}
+          title={t`Assets`}
+        >
+          <Tabs
+            className="op-typesetting-assets-tabs"
+            onSelectionChange={(key) => setScope(String(key) as AssetScope)}
+            selectedKey={scope}
+          >
+            <Tabs.ListContainer>
+              <Tabs.List aria-label={t`Asset scope`}>
+                <Tabs.Tab id="current">
+                  {t`Current project`}
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+                <Tabs.Tab id="all">
+                  {t`All projects`}
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+              </Tabs.List>
+            </Tabs.ListContainer>
+          </Tabs>
+          <div className="op-typesetting-assets">
+            {loading ? (
+              <LibraryEmpty>
+                <LoaderCircle className="op-spin" size={16} />
+                {t`Loading assets`}
+              </LibraryEmpty>
+            ) : error ? (
+              <LibraryEmpty>{t`Failed to load assets`}</LibraryEmpty>
+            ) : groups.length ? (
+              groups.map((group) => (
+                <section
+                  className="op-typesetting-asset-group"
+                  key={group.projectId}
+                >
+                  {scope === "all" ? <h4>{group.projectTitle}</h4> : null}
+                  <div className="op-typesetting-asset-grid">
+                    {group.assets.map((asset) => (
+                      <button
+                        className="op-typesetting-asset"
+                        draggable
+                        key={asset.id}
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = "copy"
+                          event.dataTransfer.setData(
+                            TYPESETTING_ASSET_DRAG_TYPE,
+                            JSON.stringify(asset)
+                          )
+                          event.dataTransfer.setData(
+                            "text/uri-list",
+                            apiUrl(transport.apiBase, asset.src).toString()
+                          )
+                        }}
+                        title={asset.name}
+                        type="button"
+                      >
+                        <img
+                          alt={asset.name}
+                          draggable={false}
+                          src={apiUrl(transport.apiBase, asset.src).toString()}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ))
+            ) : (
+              <LibraryEmpty>{t`No Canvas images yet`}</LibraryEmpty>
+            )}
+          </div>
+        </LibraryModule>
+      </div>
     </aside>
   )
 }
@@ -716,16 +827,43 @@ function TypesettingLibrary({
 function LibraryModule({
   children,
   className = "",
+  isCollapsed,
+  isEmpty = false,
+  onToggle,
   title,
 }: {
   children: ReactNode
   className?: string
+  isCollapsed: boolean
+  isEmpty?: boolean
+  onToggle: () => void
   title: string
 }) {
   return (
-    <section className={`op-typesetting-library-module ${className}`}>
-      <h3>{title}</h3>
-      <div className="op-typesetting-library-module__content">{children}</div>
+    <section
+      className={
+        isCollapsed
+          ? `is-collapsed op-typesetting-library-module ${className}`.trim()
+          : `op-typesetting-library-module ${className}`.trim()
+      }
+    >
+      <button
+        aria-expanded={!isCollapsed}
+        className="op-typesetting-library-module__header"
+        onClick={onToggle}
+        type="button"
+      >
+        <h3>{title}</h3>
+      </button>
+      <div
+        className={
+          isEmpty
+            ? "is-empty op-typesetting-library-module__content"
+            : "op-typesetting-library-module__content"
+        }
+      >
+        {children}
+      </div>
     </section>
   )
 }
@@ -736,7 +874,6 @@ function LibraryEmpty({ children }: { children: ReactNode }) {
 
 function PublicationList({
   onCreate,
-  onDelete,
   onOpen,
   onOpenLibrary,
   onRetrySave,
@@ -746,7 +883,6 @@ function PublicationList({
   transport,
 }: {
   onCreate: () => void
-  onDelete: (publication: TypesettingPublication) => void
   onOpen: (publication: TypesettingPublication) => void
   onOpenLibrary: () => void
   onRetrySave: () => void
@@ -755,7 +891,14 @@ function PublicationList({
   saveStatus: SaveStatus
   transport: MyOpenPanelsTransport
 }) {
-  const { t } = useMyOpenPanelsI18n()
+  const { locale, t } = useMyOpenPanelsI18n()
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
   return (
     <div className="op-typesetting-list-view">
       <div className="op-typesetting-view-header">
@@ -813,19 +956,25 @@ function PublicationList({
                   <strong>
                     {publication.title.trim() || t`Untitled publication`}
                   </strong>
-                  <small>{formatPublicationTime(publication.updatedAt)}</small>
+                  <small className="op-typesetting-publication-row__meta">
+                    <span>
+                      {publication.covers.length.toLocaleString(locale)}{" "}
+                      {publication.covers.length === 1
+                        ? t`cover image`
+                        : t`cover images`}
+                    </span>
+                    <span>
+                      {countTypesettingCharacters(
+                        publication.content
+                      ).toLocaleString(locale)}{" "}
+                      {t`characters`}
+                    </span>
+                    <span>
+                      {formatRelativeOrDate(publication.updatedAt, locale, now)}
+                    </span>
+                  </small>
                 </span>
-                <ChevronRight size={17} />
               </button>
-              <Button
-                aria-label={t`Delete publication project`}
-                isIconOnly
-                onPress={() => onDelete(publication)}
-                size="sm"
-                variant="ghost"
-              >
-                <Trash2 size={15} />
-              </Button>
             </div>
           ))}
         </div>
@@ -1519,7 +1668,9 @@ function DocumentPreviewDialog({
 }) {
   const { t } = useMyOpenPanelsI18n()
   const rawPreviewKind =
-    preview.kind === "raw" ? originalPreviewKind(preview.document) : null
+    preview.kind === "raw" && preview.source === "original"
+      ? originalPreviewKind(preview.document)
+      : null
   const canInsert =
     activePublication &&
     !preview.loading &&
@@ -1535,7 +1686,9 @@ function DocumentPreviewDialog({
             <div>
               <div className="op-wiki-panel__label">
                 {preview.kind === "raw"
-                  ? t`Original file`
+                  ? preview.source === "markdown"
+                    ? t`Markdown`
+                    : t`Original file`
                   : t`Generated Documents`}
               </div>
               <Modal.Heading>{preview.document.title}</Modal.Heading>
@@ -1574,7 +1727,11 @@ function DocumentPreviewDialog({
                   <AlertCircle size={18} />
                   {t`Failed to load document`}
                 </div>
-              ) : preview.kind === "raw" && rawPreviewKind ? (
+              ) : preview.kind === "raw" && rawPreviewKind === "text" ? (
+                <pre>{preview.content ?? ""}</pre>
+              ) : preview.kind === "raw" &&
+                rawPreviewKind &&
+                rawPreviewKind !== "text" ? (
                 <RawDocumentMedia
                   document={preview.document}
                   kind={rawPreviewKind}
@@ -1603,7 +1760,7 @@ function RawDocumentMedia({
   src,
 }: {
   document: WikiRawDocument
-  kind: "audio" | "image" | "pdf" | "video"
+  kind: Exclude<ReturnType<typeof originalPreviewKind>, "text" | null>
   src: string
 }) {
   if (kind === "image") return <img alt={document.title} src={src} />

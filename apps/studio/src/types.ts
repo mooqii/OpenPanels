@@ -297,6 +297,7 @@ export interface WikiGeneratedDocument {
   threadId: string | null
   title: string
   updatedAt: string
+  wordCount?: number | null
 }
 
 export interface AgentSkillListing {
@@ -345,6 +346,7 @@ export interface WikiRawDocument {
   source: "agent" | "user"
   title: string
   updatedAt: string
+  wordCount?: number | null
 }
 
 export interface WikiSpace {
@@ -359,6 +361,7 @@ export interface WikiPageIndexItem {
   title: string
   type: string
   updatedAt: string
+  wordCount?: number | null
 }
 
 export interface WikiTask {
@@ -370,7 +373,7 @@ export interface WikiTask {
   wikiSpaceId: string | null
 }
 
-export type OriginalPreviewKind = "audio" | "image" | "pdf" | "video"
+export type OriginalPreviewKind = "audio" | "image" | "pdf" | "text" | "video"
 
 export type MyOpenPanelsTransport = {
   apiBase: string

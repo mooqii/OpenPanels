@@ -389,7 +389,19 @@ export function originalPreviewKind(
   const extension = extensionFromFileName(document.originalFileName ?? "")
   if (
     mimeType.startsWith("image/") ||
-    [".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"].includes(extension)
+    [
+      ".avif",
+      ".bmp",
+      ".gif",
+      ".ico",
+      ".jpeg",
+      ".jpg",
+      ".png",
+      ".svg",
+      ".tif",
+      ".tiff",
+      ".webp",
+    ].includes(extension)
   ) {
     return "image"
   }
@@ -408,7 +420,88 @@ export function originalPreviewKind(
   ) {
     return "video"
   }
+  if (
+    mimeType.startsWith("text/") ||
+    [
+      "application/javascript",
+      "application/json",
+      "application/ld+json",
+      "application/sql",
+      "application/toml",
+      "application/x-httpd-php",
+      "application/x-javascript",
+      "application/x-sh",
+      "application/x-yaml",
+      "application/xml",
+      "application/yaml",
+    ].includes(mimeType.split(";", 1)[0] ?? "") ||
+    [
+      ".c",
+      ".conf",
+      ".cpp",
+      ".css",
+      ".csv",
+      ".go",
+      ".h",
+      ".hpp",
+      ".htm",
+      ".html",
+      ".ini",
+      ".java",
+      ".js",
+      ".json",
+      ".jsonl",
+      ".jsx",
+      ".kt",
+      ".kts",
+      ".log",
+      ".markdown",
+      ".md",
+      ".mdx",
+      ".php",
+      ".py",
+      ".rb",
+      ".rs",
+      ".sh",
+      ".sql",
+      ".svelte",
+      ".swift",
+      ".tex",
+      ".toml",
+      ".ts",
+      ".tsv",
+      ".tsx",
+      ".txt",
+      ".vue",
+      ".xml",
+      ".yaml",
+      ".yml",
+    ].includes(extension)
+  ) {
+    return "text"
+  }
   return null
+}
+
+type BrowserWindowOpener = (url: string, target: string) => Window | null
+
+export function tryOpenBrowserWindow(
+  url: string,
+  openWindow: BrowserWindowOpener = (nextUrl, target) =>
+    window.open(nextUrl, target)
+): boolean {
+  try {
+    const openedWindow = openWindow(url, "_blank")
+    if (!openedWindow) return false
+    try {
+      openedWindow.opener = null
+    } catch {
+      // The browser window is already open; opener isolation can be restricted.
+    }
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function extensionFromFileName(fileName: string): string {

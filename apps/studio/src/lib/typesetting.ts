@@ -39,6 +39,18 @@ export function isTypesettingDocumentEmpty(content: JSONContent): boolean {
   )
 }
 
+export function countTypesettingCharacters(content: JSONContent): number {
+  const ownCharacters =
+    typeof content.text === "string"
+      ? Array.from(content.text).filter((character) => !/\s/u.test(character))
+          .length
+      : 0
+  return (content.content ?? []).reduce(
+    (total, child) => total + countTypesettingCharacters(child),
+    ownCharacters
+  )
+}
+
 export function plainTextToTypesettingContent(text: string): JSONContent[] {
   const paragraphs = text.replace(/\r\n?/g, "\n").split(/\n{2,}/)
   return paragraphs.map((paragraph) => {

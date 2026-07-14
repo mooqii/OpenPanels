@@ -121,7 +121,7 @@
   text-overflow: ellipsis;
   font-size: 10px;
   line-height: 1.2;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
   white-space: nowrap;
 }
 
@@ -238,7 +238,7 @@
 
 .op-agent-task__topline span {
   font-size: 10px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-agent-task strong {
@@ -250,7 +250,7 @@
 
 .op-agent-task__meta {
   font-size: 10px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-agent-task__meta span {
@@ -337,7 +337,6 @@
   justify-content: space-between;
   min-height: 58px;
   padding: 12px 14px;
-  border-bottom: 1px solid var(--op-border-default);
 }
 
 .op-trace-panel__header div:first-child {
@@ -353,7 +352,7 @@
 
 .op-trace-panel__header span {
   font-size: 11px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-trace-panel__actions {
@@ -433,7 +432,7 @@
 .op-trace-event__time {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 10px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-trace-event__badge {
@@ -455,7 +454,7 @@
   flex-wrap: wrap;
   gap: 5px;
   font-size: 10px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-trace-event__meta span {

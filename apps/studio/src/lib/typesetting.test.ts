@@ -6,6 +6,7 @@ import type {
 } from "../types"
 import { isTypesettingState, normalizePanelState } from "./api"
 import {
+  countTypesettingCharacters,
   createTypesettingPublication,
   groupTypesettingAssets,
   isTypesettingDocumentEmpty,
@@ -72,6 +73,24 @@ describe("Typesetting state", () => {
         content: [{ type: "image", attrs: { src: "/asset.png" } }],
       })
     ).toBe(false)
+  })
+
+  it("counts non-whitespace characters across nested document nodes", () => {
+    expect(
+      countTypesettingCharacters({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: "text", text: "Hello " },
+              { type: "text", text: "世界" },
+            ],
+          },
+          { type: "paragraph", content: [{ type: "text", text: "Again" }] },
+        ],
+      })
+    ).toBe(12)
   })
 })
 

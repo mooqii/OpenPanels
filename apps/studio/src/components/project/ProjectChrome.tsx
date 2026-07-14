@@ -220,101 +220,103 @@ function ProjectTitleControl({
   }
 
   return (
-    <div
-      className="op-project-title"
-      onMouseEnter={openMenu}
-      onMouseLeave={scheduleCloseMenu}
-    >
-      <Button
-        className="op-project-title__trigger"
-        onPress={() => setIsMenuOpen((open) => !open)}
-        variant="ghost"
+    <div className="op-project-title">
+      <div
+        className="op-project-title__activation"
+        onMouseEnter={openMenu}
+        onMouseLeave={scheduleCloseMenu}
       >
-        <span>{currentProject.title}</span>
-      </Button>
-      <Button
-        aria-label={t`Rename project`}
-        className="op-project-title__edit-button"
-        isIconOnly
-        onPress={() => {
-          setIsMenuOpen(false)
-          setIsEditing(true)
-        }}
-        size="sm"
-        variant="ghost"
-      >
-        <Pencil size={14} strokeWidth={1.8} />
-      </Button>
+        <Button
+          className="op-project-title__trigger"
+          onPress={() => setIsMenuOpen((open) => !open)}
+          variant="ghost"
+        >
+          <span>{currentProject.title}</span>
+        </Button>
+        <Button
+          aria-label={t`Rename project`}
+          className="op-project-title__edit-button"
+          isIconOnly
+          onPress={() => {
+            setIsMenuOpen(false)
+            setIsEditing(true)
+          }}
+          size="sm"
+          variant="ghost"
+        >
+          <Pencil size={14} strokeWidth={1.8} />
+        </Button>
 
-      {isMenuOpen ? (
-        <div className="op-project-title__menu">
-          <div className="op-project-title__menu-header">{t`Projects`}</div>
-          <div className="op-project-title__menu-list">
-            {projects.map((project) => {
-              const isActive = project.id === currentProject.id
-              const canDelete = projects.length > 1
-              return (
-                <div
-                  className={
-                    isActive
-                      ? "op-project-title__menu-item op-project-title__menu-item--active"
-                      : "op-project-title__menu-item"
-                  }
-                  key={project.id}
-                >
-                  <Button
-                    className="op-project-title__switch-button"
-                    onPress={() => {
-                      setIsMenuOpen(false)
-                      if (!isActive) {
-                        onSwitchProject(project.id)
-                      }
-                    }}
-                    variant="ghost"
-                  >
-                    <span>{project.title}</span>
-                  </Button>
-                  <span
-                    className="op-project-title__delete-wrap"
-                    title={
-                      canDelete
-                        ? t`Delete project`
-                        : t`Keep at least one project`
+        {isMenuOpen ? (
+          <div className="op-project-title__menu">
+            <div className="op-project-title__menu-header">{t`Projects`}</div>
+            <div className="op-project-title__menu-list">
+              {projects.map((project) => {
+                const isActive = project.id === currentProject.id
+                const canDelete = projects.length > 1
+                return (
+                  <div
+                    className={
+                      isActive
+                        ? "op-project-title__menu-item op-project-title__menu-item--active"
+                        : "op-project-title__menu-item"
                     }
+                    key={project.id}
                   >
                     <Button
-                      aria-disabled={!canDelete}
-                      aria-label={t`Delete project`}
-                      className="op-project-title__delete-button"
-                      isIconOnly
+                      className="op-project-title__switch-button"
                       onPress={() => {
-                        if (!canDelete) return
                         setIsMenuOpen(false)
-                        setPendingDeleteProject(project)
+                        if (!isActive) {
+                          onSwitchProject(project.id)
+                        }
                       }}
-                      size="sm"
                       variant="ghost"
                     >
-                      <Trash2 size={14} strokeWidth={1.8} />
+                      <span>{project.title}</span>
                     </Button>
-                  </span>
-                </div>
-              )
-            })}
+                    <span
+                      className="op-project-title__delete-wrap"
+                      title={
+                        canDelete
+                          ? t`Delete project`
+                          : t`Keep at least one project`
+                      }
+                    >
+                      <Button
+                        aria-disabled={!canDelete}
+                        aria-label={t`Delete project`}
+                        className="op-project-title__delete-button"
+                        isIconOnly
+                        onPress={() => {
+                          if (!canDelete) return
+                          setIsMenuOpen(false)
+                          setPendingDeleteProject(project)
+                        }}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <Trash2 size={14} strokeWidth={1.8} />
+                      </Button>
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            <Button
+              className="op-project-title__menu-item op-project-title__menu-item--create"
+              onPress={() => {
+                setIsMenuOpen(false)
+                onCreateProject()
+              }}
+              variant="ghost"
+            >
+              <Plus size={14} />
+              <span>{t`New project`}</span>
+            </Button>
           </div>
-          <Button
-            className="op-project-title__menu-item op-project-title__menu-item--create"
-            onPress={() => {
-              setIsMenuOpen(false)
-              onCreateProject()
-            }}
-            variant="ghost"
-          >
-            <Plus size={14} />
-            <span>{t`New project`}</span>
-          </Button>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
       {pendingDeleteProject ? (
         <Modal.Backdrop

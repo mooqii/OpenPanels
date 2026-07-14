@@ -1040,6 +1040,7 @@ fn migrate_wiki_state_v1_to_v4(
             "tags": [],
             "sourceDocumentIds": [],
             "updatedAt": updated_at,
+            "wordCount": markdown.chars().filter(|character| !character.is_whitespace()).count(),
         }));
     }
 

@@ -255,6 +255,10 @@ fn build_router(
             post(api_wiki_publish_generated_document),
         )
         .route(
+            "/api/wiki/generated-documents/{document_id}/retry",
+            post(api_wiki_retry_generated_document),
+        )
+        .route(
             "/api/wiki/active-space",
             get(api_wiki_active_space).put(api_wiki_set_active_space),
         )

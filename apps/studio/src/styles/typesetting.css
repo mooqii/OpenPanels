@@ -12,6 +12,7 @@
   position: relative;
   height: 100vh;
   min-height: 100vh;
+  container-type: inline-size;
   overflow: hidden;
   color: var(--op-text-primary);
   background:
@@ -61,27 +62,70 @@
   border-radius: 8px;
 }
 
-.op-typesetting-library-module > h3 {
+.op-typesetting-document-library {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--op-border-default);
+  border-radius: 8px;
+}
+
+.op-typesetting-document-library > .op-typesetting-library-module {
+  flex: 1 1 calc(100% / 3);
+  border: 0;
+  border-radius: 0;
+}
+
+.op-typesetting-document-library
+  > .op-typesetting-library-module
+  + .op-typesetting-library-module {
+  border-top: 1px solid var(--op-border-default);
+}
+
+.op-typesetting-library-module__header {
+  display: flex;
   flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
   min-height: 32px;
-  padding: 0 0 14px;
+  padding: 0;
+  color: var(--op-text-primary);
+  text-align: left;
+  appearance: none;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.op-typesetting-library-module__header h3 {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
   line-height: 1.2;
-  color: var(--op-text-primary);
   letter-spacing: 0;
-  border-bottom: 1px solid var(--op-border-subtle);
 }
 
 .op-typesetting-library-module__content {
-  max-height: 120px;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   padding: 14px 0 0;
   overflow: auto;
 }
 
-.op-typesetting-assets-module {
-  flex: 1 1 auto;
+.op-typesetting-library-module__content.is-empty {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.op-typesetting-document-library > .op-typesetting-library-module.is-collapsed {
+  flex: 0 0 auto;
 }
 
 .op-typesetting-assets-module .op-typesetting-library-module__content {
@@ -94,7 +138,13 @@
   overflow: hidden;
 }
 
+.op-typesetting-library-module.is-collapsed
+  .op-typesetting-library-module__content {
+  display: none;
+}
+
 .op-typesetting-document {
+  position: relative;
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   gap: 8px;
@@ -128,7 +178,26 @@
 }
 
 .op-typesetting-document > svg {
+  position: relative;
+  z-index: 1;
   color: var(--op-text-tertiary);
+  pointer-events: none;
+}
+
+.op-typesetting-document .op-raw-document-copy {
+  pointer-events: none;
+}
+
+.op-typesetting-document .op-raw-document-meta {
+  display: flex;
+  font-size: 10px;
+  color: var(--op-text-subtitle);
+}
+
+.op-typesetting-document .op-generated-document-meta {
+  display: flex;
+  font-size: 10px;
+  color: var(--op-text-subtitle);
 }
 
 .op-typesetting-document span,
@@ -150,7 +219,7 @@
 .op-typesetting-document small {
   margin-top: 2px;
   font-size: 10px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-typesetting-library-empty {
@@ -248,7 +317,6 @@
   align-items: center;
   min-height: 74px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--op-border-subtle);
 }
 
 .op-typesetting-view-header > div:first-of-type,
@@ -268,7 +336,7 @@
 .op-typesetting-view-header p {
   margin: 3px 0 0;
   font-size: 12px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-typesetting-save {
@@ -331,7 +399,7 @@ button.op-typesetting-save {
 .op-typesetting-publication-row__body {
   display: grid;
   flex: 1;
-  grid-template-columns: 52px minmax(0, 1fr) 20px;
+  grid-template-columns: 52px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   min-width: 0;
@@ -371,6 +439,18 @@ button.op-typesetting-save {
   white-space: nowrap;
 }
 
+.op-typesetting-publication-row__text .op-typesetting-publication-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 5px;
+  white-space: normal;
+}
+
+.op-typesetting-publication-row__meta span + span::before {
+  margin-right: 5px;
+  content: "·";
+}
+
 .op-typesetting-publication-row__text strong {
   font-size: 14px;
   font-weight: 700;
@@ -379,7 +459,7 @@ button.op-typesetting-save {
 .op-typesetting-publication-row__text small {
   margin-top: 4px;
   font-size: 11px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-typesetting-list-empty {
@@ -416,7 +496,7 @@ button.op-typesetting-save {
 .op-typesetting-detail-header__title small {
   margin-top: 2px;
   font-size: 10px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-typesetting-detail-scroll {
@@ -472,7 +552,7 @@ button.op-typesetting-save {
   display: block;
   margin-top: -3px;
   font-size: 10px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-typesetting-cover-zone {
@@ -772,7 +852,7 @@ button.op-typesetting-save {
 .op-typesetting-preview header p {
   margin: 4px 0 0;
   font-size: 11px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
 }
 
 .op-typesetting-preview__body,
@@ -841,7 +921,13 @@ button.op-typesetting-save {
   }
 }
 
-@media (max-width: 760px) {
+@container (min-width: 460px) and (max-width: 695px) {
+  .op-typesetting-workbench {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 459px) {
   .op-typesetting-workbench {
     grid-template-columns: minmax(0, 1fr);
     gap: 0;
@@ -954,7 +1040,7 @@ button.op-typesetting-save {
   }
 }
 
-@media (max-width: 520px) {
+@container (max-width: 459px) {
   .op-panel-tabs__tab {
     min-width: 44px;
     padding-inline: 10px;

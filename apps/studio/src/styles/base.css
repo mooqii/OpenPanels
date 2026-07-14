@@ -58,6 +58,7 @@
     var(--foreground) 82%,
     var(--muted) 18%
   );
+  --op-text-subtitle: var(--muted);
   --op-text-tertiary: var(--muted);
   --op-title: var(--foreground);
   --accent-soft: color-mix(in oklab, var(--accent) 16%, transparent);
@@ -169,6 +170,7 @@
     var(--foreground) 76%,
     var(--muted) 24%
   );
+  --op-text-subtitle: var(--muted);
   --op-text-tertiary: var(--muted);
   --op-title: var(--foreground);
   --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
@@ -267,6 +269,6 @@ textarea {
 
 .op-boot-status__detail {
   font-size: 12px;
-  color: var(--op-text-tertiary);
+  color: var(--op-text-subtitle);
   overflow-wrap: anywhere;
 }

@@ -133,6 +133,12 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     window.navigator.userAgent
   )
 
+  const openAgentTaskList = useCallback((filter: TaskFilter) => {
+    setAgentPanelTab("tasks")
+    setAgentTaskFilter(filter)
+    setIsTraceOpen(true)
+  }, [])
+
   const openInDefaultBrowser = useCallback(async () => {
     await apiFetch(transport.apiBase, "/api/studio/open-browser", {
       method: "POST",
@@ -1020,6 +1026,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           <WikiPanel
             chromeContent={projectChrome}
             key={`${appState.project.id}:${appState.activePanelKind}`}
+            onOpenAgentTasks={openAgentTaskList}
             onReload={reloadCurrentProject}
             selectionVersion={wikiSelectionVersion}
             state={wikiStateFromAppState(appState)}
@@ -1102,6 +1109,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
         activeTab={agentPanelTab}
         buildInfo={appState.buildInfo}
         isOpen={isTraceOpen}
+        onClose={() => setIsTraceOpen(false)}
         onTabChange={setAgentPanelTab}
         onTaskFilterChange={setAgentTaskFilter}
         taskFilter={agentTaskFilter}

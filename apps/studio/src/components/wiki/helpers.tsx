@@ -1,23 +1,69 @@
-import { Button, Chip } from "@heroui/react"
-import { FileText } from "lucide-react"
+import { Chip } from "@heroui/react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import type { WikiRawDocument } from "../../types"
 
+export type WikiTaskListFilter = "active" | "pending"
+
+export function conversionStatusTaskFilter(
+  status: WikiRawDocument["conversion"]["status"]
+): WikiTaskListFilter {
+  return status === "converting" ? "active" : "pending"
+}
+
+export function indexStatusTaskFilter(
+  status: ReturnType<typeof documentIndexStatus>
+): WikiTaskListFilter {
+  return status.kind === "running" ? "active" : "pending"
+}
+
+function TaskStatusChip({
+  color,
+  filter,
+  label,
+  onOpenTasks,
+}: {
+  color: "accent" | "danger" | "warning"
+  filter: WikiTaskListFilter
+  label: string
+  onOpenTasks: (filter: WikiTaskListFilter) => void
+}) {
+  const { t } = useMyOpenPanelsI18n()
+  return (
+    <button
+      aria-label={`${label}. ${t`View related tasks`}`}
+      className="op-wiki-task-status"
+      onClick={() => onOpenTasks(filter)}
+      title={t`View related tasks`}
+      type="button"
+    >
+      <Chip
+        className="op-wiki-task-status__chip"
+        color={color}
+        size="sm"
+        variant="soft"
+      >
+        {label}
+      </Chip>
+    </button>
+  )
+}
+
 export function WikiStatus({
   document,
-  isDisabled,
-  onOpenMarkdown,
+  onOpenTasks,
 }: {
   document: WikiRawDocument
-  isDisabled?: boolean
-  onOpenMarkdown?: () => void
+  onOpenTasks: (filter: WikiTaskListFilter) => void
 }) {
   const { t } = useMyOpenPanelsI18n()
   if (document.conversion.status === "failed") {
     return (
-      <Chip color="danger" size="sm" variant="soft">
-        {t`Conversion failed`}
-      </Chip>
+      <TaskStatusChip
+        color="danger"
+        filter={conversionStatusTaskFilter(document.conversion.status)}
+        label={t`Conversion failed`}
+        onOpenTasks={onOpenTasks}
+      />
     )
   }
   if (
@@ -25,28 +71,22 @@ export function WikiStatus({
     document.conversion.status === "converting"
   ) {
     return (
-      <Chip color="warning" size="sm" variant="soft">
-        {t`Converting`}
-      </Chip>
+      <TaskStatusChip
+        color="warning"
+        filter={conversionStatusTaskFilter(document.conversion.status)}
+        label={t`Converting`}
+        onOpenTasks={onOpenTasks}
+      />
     )
   }
-  return (
-    <Button
-      aria-label={t`Open Markdown`}
-      isDisabled={isDisabled}
-      isIconOnly
-      onPress={onOpenMarkdown}
-      size="sm"
-      variant="ghost"
-    >
-      <FileText size={15} />
-    </Button>
-  )
+  return null
 }
 
 export function WikiIndexStatus({
+  onOpenTasks,
   status,
 }: {
+  onOpenTasks: (filter: WikiTaskListFilter) => void
   status: ReturnType<typeof documentIndexStatus>
 }) {
   const { t } = useMyOpenPanelsI18n()
@@ -57,9 +97,12 @@ export function WikiIndexStatus({
         ? "accent"
         : "warning"
   return (
-    <Chip color={color} size="sm" variant="soft">
-      {t(status.label)}
-    </Chip>
+    <TaskStatusChip
+      color={color}
+      filter={indexStatusTaskFilter(status)}
+      label={t(status.label)}
+      onOpenTasks={onOpenTasks}
+    />
   )
 }
 

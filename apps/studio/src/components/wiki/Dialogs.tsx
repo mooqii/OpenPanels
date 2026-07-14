@@ -1,6 +1,15 @@
 import { Button, Input, Modal, TextArea } from "@heroui/react"
-import { Save, Trash2, X, ZoomIn, ZoomOut } from "lucide-react"
-import { useState } from "react"
+import {
+  AlertCircle,
+  LoaderCircle,
+  Save,
+  Trash2,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react"
+import { useEffect, useState } from "react"
+import { useMyOpenPanelsI18n } from "../../canvas"
 import {
   clampImageScale,
   formatBytes,
@@ -240,6 +249,67 @@ function ImagePreviewDialog({
   )
 }
 
+function OriginalTextPreview({
+  previewUrl,
+  title,
+}: {
+  previewUrl: string
+  title: string
+}) {
+  const { t } = useMyOpenPanelsI18n()
+  const [content, setContent] = useState<string | null>(null)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setContent(null)
+    setError(false)
+    fetch(previewUrl, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return response.text()
+      })
+      .then(setContent)
+      .catch((fetchError: unknown) => {
+        if (
+          fetchError instanceof DOMException &&
+          fetchError.name === "AbortError"
+        ) {
+          return
+        }
+        setError(true)
+      })
+    return () => controller.abort()
+  }, [previewUrl])
+
+  if (error) {
+    return (
+      <div className="op-original-preview-dialog__status">
+        <AlertCircle size={18} />
+        {t`Failed to load document`}
+      </div>
+    )
+  }
+  if (content === null) {
+    return (
+      <div className="op-original-preview-dialog__status">
+        <LoaderCircle className="op-spin" size={18} />
+        {t`Loading document`}
+      </div>
+    )
+  }
+  return (
+    <TextArea
+      aria-label={title}
+      className="op-original-preview-dialog__text"
+      fullWidth
+      readOnly
+      value={content}
+      variant="secondary"
+    />
+  )
+}
+
 export function OriginalPreviewDialog({
   closeLabel,
   document,
@@ -305,6 +375,12 @@ export function OriginalPreviewDialog({
                 <video controls src={previewUrl}>
                   {document.originalFileName}
                 </video>
+              ) : null}
+              {kind === "text" ? (
+                <OriginalTextPreview
+                  previewUrl={previewUrl}
+                  title={document.title}
+                />
               ) : null}
             </div>
           </Modal.Body>

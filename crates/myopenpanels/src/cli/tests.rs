@@ -2286,6 +2286,11 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let page = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(page["task"]["type"], "rebuild_wiki_index");
     assert_eq!(page["task"]["wikiSpaceId"], "wiki:default");
+    let page_index_item = page["wikiSpace"]["pageIndex"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["path"] == "topics/topic.md"))
+        .expect("wiki page index item");
+    assert_eq!(page_index_item["wordCount"], 21);
 
     let (code, stdout, stderr) = run(&[
         "task",
@@ -2688,6 +2693,7 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
         .expect("document id")
         .to_owned();
     assert_eq!(created["document"]["contentVersion"], 1);
+    assert_eq!(created["document"]["wordCount"], 18);
     assert!(wiki::create_generated_document(
         &paths,
         "report.pdf",
@@ -2737,6 +2743,7 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
     )
     .expect("update");
     assert_eq!(updated["document"]["contentVersion"], 2);
+    assert_eq!(updated["document"]["wordCount"], 18);
     let second_publish =
         wiki::publish_generated_document(&paths, &document_id, None).expect("second publish");
     assert_eq!(
@@ -2773,11 +2780,8 @@ fn wiki_mdx_upload_skips_conversion_and_queues_ingest() {
         json!("karpathy-llm-wiki-zh"),
     );
     let mdx_path = project_dir.join("component.mdx");
-    fs::write(
-        &mdx_path,
-        "# Component\n\n<ComponentPreview name=\"Button\" />\n",
-    )
-    .expect("mdx file");
+    let mdx_content = "# Component\n\n<ComponentPreview name=\"Button\" />\n";
+    fs::write(&mdx_path, mdx_content).expect("mdx file");
 
     let (code, stdout, stderr) = run(&[
         "wiki",
@@ -2803,6 +2807,13 @@ fn wiki_mdx_upload_skips_conversion_and_queues_ingest() {
     let result = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(result["document"]["conversion"]["status"], "not_required");
     assert_eq!(result["document"]["markdownVersion"], 1);
+    assert_eq!(
+        result["document"]["wordCount"],
+        mdx_content
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .count()
+    );
     assert_eq!(
         result["document"]["ingestionByWikiSpace"]["wiki:default"]["status"],
         "queued"

@@ -32,19 +32,24 @@
 }
 
 .op-original-preview-dialog__panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   width: min(1040px, 100%);
   height: min(760px, calc(100vh - 36px));
+  overflow: hidden;
 }
 
 .op-original-preview-dialog__meta {
   margin: 5px 0 0;
   font-size: 12px;
-  color: var(--op-text-secondary);
+  color: var(--op-text-subtitle);
 }
 
 .op-original-preview-dialog__body {
   display: grid;
   place-items: center;
+  width: 100%;
+  height: 100%;
   min-height: 0;
   padding: 16px;
   overflow: hidden;
@@ -79,6 +84,30 @@
 
 .op-original-preview-dialog__body audio {
   width: min(560px, 100%);
+}
+
+.op-original-preview-dialog__text {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 18px;
+  overflow: auto;
+  font:
+    13px / 1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  color: var(--op-text-primary);
+  white-space: pre-wrap;
+  resize: none;
+}
+
+.op-original-preview-dialog__status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--op-text-subtitle);
 }
 
 .op-image-preview {

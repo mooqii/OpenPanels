@@ -570,6 +570,105 @@ pub fn finish_wiki(
     Ok(operation)
 }
 
+pub fn retry_wiki_document(
+    paths: &MyOpenPanelsPaths,
+    document_id: &str,
+) -> Result<Value, CliError> {
+    let context = wiki::wiki_context(paths)?;
+    let project_id = context["project"]["id"].as_str().unwrap_or_default();
+    let panel_id = context["panel"]["id"].as_str().unwrap_or_default();
+    let generated = wiki::read_generated_document(paths, document_id)?;
+    let document = &generated["document"];
+    if document
+        .pointer("/generation/status")
+        .and_then(Value::as_str)
+        != Some("failed")
+    {
+        return Err(CliError::with_code(
+            "generation_not_failed",
+            "Only a failed generated document can be retried.",
+        ));
+    }
+
+    let operation_id = document
+        .pointer("/generation/operationId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let storage = Storage::open(paths)?;
+    let mut operation = match operation_id.as_deref() {
+        Some(operation_id) => storage.read_agent_operation(operation_id)?,
+        None => None,
+    };
+    if operation.is_none() {
+        operation = storage
+            .list_agent_operations(None, None)?
+            .into_iter()
+            .find(|candidate| {
+                candidate.get("intent").and_then(Value::as_str) == Some("wiki.document.generate")
+                    && candidate.get("projectId").and_then(Value::as_str) == Some(project_id)
+                    && candidate.get("panelId").and_then(Value::as_str) == Some(panel_id)
+                    && candidate
+                        .pointer("/target/documentId")
+                        .and_then(Value::as_str)
+                        == Some(document_id)
+            });
+    }
+
+    if let Some(task_id) = operation
+        .as_ref()
+        .and_then(|value| value.pointer("/target/writingTaskId"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    {
+        if let Some(operation_id) = operation
+            .as_ref()
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str)
+        {
+            finish_wiki(
+                paths,
+                operation_id,
+                "cancelled",
+                Some("Writing generation retried."),
+            )?;
+        }
+        let task = crate::tasks::retry_task(paths, &task_id)?;
+        return Ok(json!({ "retryMode": "task", "task": task["task"] }));
+    }
+
+    let base_content_version = operation
+        .as_ref()
+        .and_then(|value| value.pointer("/target/baseContentVersion"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let current_content_version = document["contentVersion"].as_u64().unwrap_or(0);
+    if current_content_version <= base_content_version {
+        return Err(CliError::with_code(
+            "generation_retry_unavailable",
+            "This generation has no saved result to recover. Ask the Agent to generate it again.",
+        ));
+    }
+
+    let recovered = wiki::recover_generated_document_for_target(
+        paths,
+        project_id,
+        panel_id,
+        document_id,
+        operation
+            .as_ref()
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str),
+    )?;
+    if let Some(operation) = operation.as_mut() {
+        finish(operation, "completed", recovered.clone(), Value::Null);
+        save(paths, operation)?;
+    }
+    Ok(json!({
+        "retryMode": "recovered",
+        "document": recovered["document"],
+    }))
+}
+
 pub fn complete(
     paths: &MyOpenPanelsPaths,
     id: &str,
@@ -855,5 +954,79 @@ mod tests {
             .expect_err("content conflict");
         assert_eq!(error.code(), Some("content_conflict"));
         assert_eq!(inspect(&paths, operation_id).unwrap()["status"], "active");
+    }
+
+    #[test]
+    fn generated_document_write_rejects_an_active_generation_target() {
+        let (_temp, paths) = test_paths();
+        ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let started = begin_wiki(&paths, "Report", "markdown", None).expect("begin");
+        let document_id = started["document"]["id"].as_str().unwrap();
+
+        let error = wiki::write_generated_document_for_agent(
+            &paths,
+            document_id,
+            "report.md",
+            None,
+            b"# Written through the wrong path",
+        )
+        .expect_err("active generation should reject a direct write");
+
+        assert_eq!(error.code(), Some("generation_in_progress"));
+        assert_eq!(
+            wiki::read_generated_document(&paths, document_id).unwrap()["document"]
+                ["contentVersion"],
+            0
+        );
+    }
+
+    #[test]
+    fn retry_recovers_a_failed_generation_whose_content_was_already_written() {
+        let (_temp, paths) = test_paths();
+        let bootstrap =
+            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let started = begin_wiki(&paths, "Report", "markdown", None).expect("begin");
+        let operation_id = started["operation"]["id"].as_str().unwrap().to_owned();
+        let document_id = started["document"]["id"].as_str().unwrap().to_owned();
+        let generated = wiki::read_generated_document(&paths, &document_id).expect("document");
+        fs::write(
+            generated["contentFilePath"].as_str().unwrap(),
+            "# Already written\n",
+        )
+        .expect("content");
+
+        let storage = Storage::open(&paths).expect("storage");
+        let mut state = storage
+            .read_panel_state(&bootstrap.project.id, &bootstrap.panel.id)
+            .expect("read state")
+            .expect("wiki state");
+        let document = state["generatedDocuments"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|document| document["id"].as_str() == Some(document_id.as_str()))
+            .unwrap();
+        document["contentVersion"] = json!(1);
+        document["wordCount"] = json!(15);
+        storage
+            .write_panel_state(&bootstrap.project.id, &bootstrap.panel.id, &state)
+            .expect("write state");
+        finish_wiki(
+            &paths,
+            &operation_id,
+            "failed",
+            Some("Content version conflict"),
+        )
+        .expect("fail operation");
+
+        let retried = retry_wiki_document(&paths, &document_id).expect("retry");
+
+        assert_eq!(retried["retryMode"], "recovered");
+        assert_eq!(retried["document"]["generation"]["status"], "completed");
+        assert_eq!(retried["document"]["contentVersion"], 1);
+        assert_eq!(
+            inspect(&paths, &operation_id).unwrap()["status"],
+            "completed"
+        );
     }
 }

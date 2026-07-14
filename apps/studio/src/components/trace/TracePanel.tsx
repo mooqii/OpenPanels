@@ -11,6 +11,7 @@ import {
   Play,
   RefreshCw,
   Trash2,
+  X,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
@@ -74,6 +75,7 @@ export function AgentPanel({
   activeTab,
   buildInfo,
   isOpen,
+  onClose,
   onTabChange,
   onTaskFilterChange,
   taskFilter,
@@ -84,6 +86,7 @@ export function AgentPanel({
   activeTab: AgentPanelTab
   buildInfo?: MyOpenPanelsBuildInfo
   isOpen: boolean
+  onClose: () => void
   onTabChange: (tab: AgentPanelTab) => void
   onTaskFilterChange: (filter: TaskFilter) => void
   taskFilter: TaskFilter
@@ -216,6 +219,15 @@ export function AgentPanel({
                 </Button>
               </>
             ) : null}
+            <Button
+              aria-label="关闭 Agent 面板"
+              isIconOnly
+              onPress={onClose}
+              size="sm"
+              variant="ghost"
+            >
+              <X size={16} />
+            </Button>
           </div>
         </header>
 

@@ -42,6 +42,9 @@ pub(super) async fn api_wiki_set_selection(
 fn wiki_document_error(error: CliError) -> Response {
     let status = match error.code() {
         Some("not_found") => StatusCode::NOT_FOUND,
+        Some(
+            "generation_in_progress" | "generation_not_failed" | "generation_retry_unavailable",
+        ) => StatusCode::CONFLICT,
         Some("invalid_generated_document" | "already_published") => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -152,6 +155,16 @@ pub(super) async fn api_wiki_publish_generated_document(
         &document_id,
         body.wiki_space_id.as_deref(),
     ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => wiki_document_error(error),
+    }
+}
+
+pub(super) async fn api_wiki_retry_generated_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<String>,
+) -> Response {
+    match crate::operations::retry_wiki_document(&state.paths, &document_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => wiki_document_error(error),
     }
