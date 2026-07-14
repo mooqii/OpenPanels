@@ -32,6 +32,7 @@ enum RootCommand {
     Panel(PanelArgs),
     Canvas(CanvasArgs),
     Wiki(WikiArgs),
+    Writing(WritingArgs),
     Task(TaskArgs),
     Operation(OperationArgs),
     Agent(AgentArgs),
@@ -464,6 +465,82 @@ enum WikiGenerationCommand {
 }
 
 #[derive(Debug, Args)]
+struct WritingArgs {
+    #[command(subcommand)]
+    command: WritingCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WritingCommand {
+    Request(WritingRequestArgs),
+    Refinement(WritingRefinementArgs),
+    Generation(WritingGenerationArgs),
+    Skill(WritingSkillArgs),
+}
+
+#[derive(Debug, Args)]
+struct WritingRequestArgs {
+    #[command(subcommand)]
+    command: WritingRequestCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WritingRequestCommand {
+    Read {
+        #[arg(long)]
+        task_id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct WritingRefinementArgs {
+    #[command(subcommand)]
+    command: WritingRefinementCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WritingRefinementCommand {
+    Read {
+        #[arg(long)]
+        task_id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct WritingGenerationArgs {
+    #[command(subcommand)]
+    command: WritingGenerationCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WritingGenerationCommand {
+    Begin {
+        #[arg(long)]
+        task_id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long, default_value = "markdown")]
+        document_format: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct WritingSkillArgs {
+    #[command(subcommand)]
+    command: WritingSkillCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WritingSkillCommand {
+    Install {
+        #[arg(long)]
+        task_id: String,
+        #[arg(long)]
+        skill_file: String,
+    },
+}
+
+#[derive(Debug, Args)]
 struct TaskArgs {
     #[command(subcommand)]
     command: TaskCommand,
@@ -806,9 +883,64 @@ fn normalize_command(
         RootCommand::Panel(args) => normalize_panel(args.command, flags),
         RootCommand::Canvas(args) => normalize_canvas(args.command, flags),
         RootCommand::Wiki(args) => normalize_wiki(args.command, flags),
+        RootCommand::Writing(args) => normalize_writing(args.command, flags),
         RootCommand::Task(args) => normalize_task(args.command, flags),
         RootCommand::Operation(args) => normalize_operation(args.command, flags),
         RootCommand::Agent(args) => normalize_agent(args.command, flags),
+    }
+}
+
+fn normalize_writing(
+    command: WritingCommand,
+    flags: &mut BTreeMap<String, FlagValue>,
+) -> (Vec<String>, &'static str) {
+    match command {
+        WritingCommand::Request(args) => match args.command {
+            WritingRequestCommand::Read { task_id } => {
+                put(flags, "task-id", Some(task_id));
+                (
+                    vec!["writing".into(), "request".into(), "read".into()],
+                    "writing.request.read",
+                )
+            }
+        },
+        WritingCommand::Refinement(args) => match args.command {
+            WritingRefinementCommand::Read { task_id } => {
+                put(flags, "task-id", Some(task_id));
+                (
+                    vec!["writing".into(), "refinement".into(), "read".into()],
+                    "writing.refinement.read",
+                )
+            }
+        },
+        WritingCommand::Generation(args) => match args.command {
+            WritingGenerationCommand::Begin {
+                task_id,
+                title,
+                document_format,
+            } => {
+                put(flags, "task-id", Some(task_id));
+                put(flags, "title", Some(title));
+                put(flags, "document-format", Some(document_format));
+                (
+                    vec!["writing".into(), "generation".into(), "begin".into()],
+                    "writing.generation.begin",
+                )
+            }
+        },
+        WritingCommand::Skill(args) => match args.command {
+            WritingSkillCommand::Install {
+                task_id,
+                skill_file,
+            } => {
+                put(flags, "task-id", Some(task_id));
+                put(flags, "skill-file", Some(skill_file));
+                (
+                    vec!["writing".into(), "skill".into(), "install".into()],
+                    "writing.skill.install",
+                )
+            }
+        },
     }
 }
 
@@ -1501,6 +1633,6 @@ fn put_many(flags: &mut BTreeMap<String, FlagValue>, name: &str, values: Vec<Str
     }
 }
 
-fn panel_kind_values() -> [&'static str; 2] {
-    ["wiki", "canvas"]
+fn panel_kind_values() -> [&'static str; 5] {
+    ["wiki", "writing", "canvas", "typesetting", "publishing"]
 }

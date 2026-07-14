@@ -281,6 +281,7 @@ fn run_parsed_cli(
         CommandGroup::Panel => run_panel_command(parsed, stdout),
         CommandGroup::Canvas => run_canvas_command(parsed, stdout),
         CommandGroup::Wiki => run_wiki_command(parsed, stdout),
+        CommandGroup::Writing => run_writing_command(parsed, stdout),
         CommandGroup::Operation => run_operation_command(parsed, stdout),
         CommandGroup::Task => run_tasks_command(parsed, stdout),
         CommandGroup::InternalStudioServe => {
@@ -1008,6 +1009,7 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
         }
         Some("skill") if parsed.positionals.get(2).map(String::as_str) == Some("list") => {
             let skills = list_agent_skill_summaries(
+                &parsed_current_paths(parsed)?,
                 string_flag(parsed, "panel-kind"),
                 string_flag(parsed, "task-type"),
             )?;
@@ -1512,6 +1514,52 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
             write_result(parsed, stdout, &result, &format!("{count} page(s)"))
         }
         _ => Err(CliError::new("Unknown wiki command.")),
+    }
+}
+
+fn run_writing_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
+    let paths = parsed_paths(parsed)?;
+    match parsed.intent() {
+        "writing.request.read" => {
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = crate::writing::read_request(&paths, task_id)?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("Writing request {task_id}"),
+            )
+        }
+        "writing.generation.begin" => {
+            let task_id = required_flag(parsed, "task-id")?;
+            let title = required_flag(parsed, "title")?;
+            let document_format = string_flag(parsed, "document-format").unwrap_or("markdown");
+            if !matches!(document_format, "markdown" | "text") {
+                return Err(CliError::with_code(
+                    "invalid_argument",
+                    "Writing document format must be markdown or text.",
+                ));
+            }
+            let result = operations::begin_writing(&paths, task_id, title, document_format)?;
+            write_result(parsed, stdout, &result, "Started writing generation")
+        }
+        "writing.refinement.read" => {
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = crate::writing::read_refinement(&paths, task_id)?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("Writing Skill refinement {task_id}"),
+            )
+        }
+        "writing.skill.install" => {
+            let task_id = required_flag(parsed, "task-id")?;
+            let skill_file = required_flag(parsed, "skill-file")?;
+            let result = crate::writing::install_project_skill(&paths, task_id, skill_file)?;
+            write_result(parsed, stdout, &result, "Installed project Writing Skill")
+        }
+        _ => Err(CliError::new("Unknown writing command.")),
     }
 }
 

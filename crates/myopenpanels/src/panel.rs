@@ -24,10 +24,28 @@ static PANEL_MODULES: &[PanelModule] = &[
         selection: Some(wiki_selection),
     },
     PanelModule {
+        kind: PanelKind::Writing,
+        skill_id: Some(crate::writing::WRITING_PANEL_SKILL_ID),
+        context: crate::writing::panel_context,
+        selection: Some(writing_selection),
+    },
+    PanelModule {
         kind: PanelKind::Canvas,
         skill_id: Some(crate::agent::CANVAS_PANEL_SKILL_ID),
         context: canvas_context,
         selection: Some(canvas_selection),
+    },
+    PanelModule {
+        kind: PanelKind::Typesetting,
+        skill_id: None,
+        context: typesetting_context,
+        selection: None,
+    },
+    PanelModule {
+        kind: PanelKind::Publishing,
+        skill_id: None,
+        context: publishing_context,
+        selection: None,
     },
 ];
 
@@ -229,6 +247,49 @@ fn wiki_selection(
     })
 }
 
+fn writing_selection(
+    paths: &MyOpenPanelsPaths,
+    bootstrap: &ProjectBootstrap,
+    focus: Value,
+) -> Result<PanelSelectionEnvelope, CliError> {
+    let value = crate::writing::panel_selection(paths, bootstrap)?;
+    let raw_count = value
+        .get("selectedRawDocumentIds")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let generated_count = value
+        .get("selectedGeneratedDocumentIds")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let wiki_selected = value
+        .get("isWikiSelected")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(PanelSelectionEnvelope {
+        focus,
+        supported: true,
+        selection_kind: Some("writing.context".to_owned()),
+        is_explicit: wiki_selected || raw_count > 0 || generated_count > 0,
+        updated_at: value.get("updatedAt").cloned(),
+        summary: json!({
+            "rawDocumentCount": raw_count,
+            "generatedDocumentCount": generated_count,
+            "wikiSelected": wiki_selected,
+        }),
+        value,
+        next_actions: panel_skill_actions(
+            crate::writing::WRITING_PANEL_SKILL_ID,
+            "The user request targets Writing context or document generation.",
+        ),
+        next_required_action: json!({
+            "intent": "apply-selection",
+            "instruction": "Use submitted Writing Tasks as immutable instructions. Use the current selection only for a new user request.",
+        }),
+    })
+}
+
 fn panel_skill_actions(skill_id: &str, load_when: &str) -> Vec<Value> {
     let mut action = crate::cli::registry::command_action(
         crate::cli::registry::CommandId::registered("agent.skill.read"),
@@ -272,6 +333,23 @@ fn canvas_context(bootstrap: &ProjectBootstrap) -> Value {
     })
 }
 
+fn typesetting_context(bootstrap: &ProjectBootstrap) -> Value {
+    json!({
+        "panelKind": "typesetting",
+        "revision": bootstrap.revision,
+        "publicationCount": array_len(&bootstrap.state, "publications"),
+        "selectionSupported": false,
+    })
+}
+
+fn publishing_context(bootstrap: &ProjectBootstrap) -> Value {
+    json!({
+        "panelKind": "publishing",
+        "revision": bootstrap.revision,
+        "selectionSupported": false,
+    })
+}
+
 fn wiki_context(bootstrap: &ProjectBootstrap) -> Value {
     let active_space_id = bootstrap
         .state
@@ -308,4 +386,66 @@ fn array_len(value: &Value, key: &str) -> usize {
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::{create_project, BootstrapRequest};
+    use crate::paths::resolve_myopenpanels_paths;
+
+    #[test]
+    fn scaffold_panels_expose_basic_context_without_skill_or_selection() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join("storage");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let created = create_project(&paths, Some("Project")).expect("project");
+        let project_id = created.project.id;
+        let bootstrap = read_project_bootstrap(
+            &paths,
+            BootstrapRequest {
+                requested_project_id: Some(project_id.clone()),
+                requested_panel_id: None,
+                requested_panel_kind: Some(PanelKind::Typesetting),
+            },
+        )
+        .expect("typesetting bootstrap");
+
+        assert_eq!(
+            context_for_bootstrap(&bootstrap)["panelKind"],
+            "typesetting"
+        );
+        assert_eq!(context_for_bootstrap(&bootstrap)["publicationCount"], 0);
+        assert_eq!(skill_id(PanelKind::Typesetting), None);
+        let selection =
+            selection_for_bootstrap(&paths, &bootstrap, json!({})).expect("selection envelope");
+        assert!(!selection.supported);
+        assert!(!selection.is_explicit);
+
+        let publishing = read_project_bootstrap(
+            &paths,
+            BootstrapRequest {
+                requested_project_id: Some(project_id),
+                requested_panel_id: None,
+                requested_panel_kind: Some(PanelKind::Publishing),
+            },
+        )
+        .expect("publishing bootstrap");
+        assert_eq!(
+            context_for_bootstrap(&publishing)["panelKind"],
+            "publishing"
+        );
+        assert_eq!(skill_id(PanelKind::Publishing), None);
+        let selection =
+            selection_for_bootstrap(&paths, &publishing, json!({})).expect("selection envelope");
+        assert!(!selection.supported);
+        assert!(!selection.is_explicit);
+    }
 }

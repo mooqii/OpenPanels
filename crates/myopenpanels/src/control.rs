@@ -8,10 +8,17 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
 
-const DEFAULT_PANEL_KINDS: &[PanelKind] = &[PanelKind::Wiki, PanelKind::Canvas];
+const DEFAULT_PANEL_KINDS: &[PanelKind] = &[
+    PanelKind::Wiki,
+    PanelKind::Writing,
+    PanelKind::Canvas,
+    PanelKind::Typesetting,
+    PanelKind::Publishing,
+];
 const DEFAULT_ACTIVE_PANEL_KIND: PanelKind = PanelKind::Wiki;
 const DEFAULT_WIKI_RULE_SET_ID: &str = "rule-set:default";
 const DEFAULT_WIKI_SPACE_ID: &str = "wiki:default";
+const DEFAULT_WRITING_SKILL_ID: &str = "writing-default";
 
 pub struct BootstrapRequest {
     pub requested_panel_id: Option<String>,
@@ -515,6 +522,281 @@ fn migrate_panel_state(
     match panel.kind {
         PanelKind::Canvas => migrate_canvas_state(state),
         PanelKind::Wiki => migrate_wiki_state(storage, project, panel, state),
+        PanelKind::Writing => migrate_writing_state(state),
+        PanelKind::Typesetting => migrate_typesetting_state(state),
+        PanelKind::Publishing => migrate_publishing_state(state),
+    }
+}
+
+fn migrate_publishing_state(state: Option<Value>) -> Result<PanelStateMigrationResult, CliError> {
+    let Some(state) = state else {
+        return Ok(PanelStateMigrationResult {
+            state: empty_publishing_state(),
+            changed: true,
+        });
+    };
+    match state.get("schemaVersion").and_then(Value::as_i64) {
+        Some(1) if state.as_object().is_some() => Ok(PanelStateMigrationResult {
+            state,
+            changed: false,
+        }),
+        Some(1) => Err(CliError::new("Malformed publishing panel state.")),
+        Some(version) => Err(CliError::new(format!(
+            "Unsupported future publishing panel state schemaVersion: {version}"
+        ))),
+        None => Err(CliError::new(
+            "Malformed publishing panel state: missing schemaVersion.",
+        )),
+    }
+}
+
+fn migrate_typesetting_state(state: Option<Value>) -> Result<PanelStateMigrationResult, CliError> {
+    let Some(state) = state else {
+        return Ok(PanelStateMigrationResult {
+            state: empty_typesetting_state(),
+            changed: true,
+        });
+    };
+    match state.get("schemaVersion").and_then(Value::as_i64) {
+        Some(1) if is_typesetting_state_v1(&state) => Ok(PanelStateMigrationResult {
+            state,
+            changed: false,
+        }),
+        Some(1) => Err(CliError::new("Malformed typesetting panel state.")),
+        Some(version) => Err(CliError::new(format!(
+            "Unsupported future typesetting panel state schemaVersion: {version}"
+        ))),
+        None => Err(CliError::new(
+            "Malformed typesetting panel state: missing schemaVersion.",
+        )),
+    }
+}
+
+pub(crate) fn validate_typesetting_state(state: &Value) -> Result<(), CliError> {
+    migrate_typesetting_state(Some(state.clone()))
+        .map(|_| ())
+        .map_err(|error| CliError::with_code("invalid_target", error.message()))
+}
+
+fn is_typesetting_state_v1(state: &Value) -> bool {
+    state
+        .get("publications")
+        .and_then(Value::as_array)
+        .is_some_and(|publications| publications.iter().all(is_typesetting_publication_v1))
+}
+
+fn is_typesetting_publication_v1(publication: &Value) -> bool {
+    publication.get("id").is_some_and(Value::is_string)
+        && publication.get("title").is_some_and(Value::is_string)
+        && publication.get("createdAt").is_some_and(Value::is_string)
+        && publication.get("updatedAt").is_some_and(Value::is_string)
+        && publication
+            .get("content")
+            .is_some_and(is_typesetting_document_v1)
+        && publication
+            .get("covers")
+            .and_then(Value::as_array)
+            .is_some_and(|covers| covers.iter().all(is_typesetting_image_v1))
+}
+
+fn is_typesetting_document_v1(content: &Value) -> bool {
+    content.get("type").and_then(Value::as_str) == Some("doc")
+        && is_typesetting_document_node_v1(content)
+}
+
+fn is_typesetting_document_node_v1(node: &Value) -> bool {
+    node.as_object().is_some()
+        && node.get("type").is_some_and(Value::is_string)
+        && node.get("text").map_or(true, Value::is_string)
+        && node.get("attrs").map_or(true, Value::is_object)
+        && node.get("content").map_or(true, |content| {
+            content
+                .as_array()
+                .is_some_and(|children| children.iter().all(is_typesetting_document_node_v1))
+        })
+        && node.get("marks").map_or(true, |marks| {
+            marks.as_array().is_some_and(|marks| {
+                marks.iter().all(|mark| {
+                    mark.as_object().is_some()
+                        && mark.get("type").is_some_and(Value::is_string)
+                        && mark.get("attrs").map_or(true, Value::is_object)
+                })
+            })
+        })
+}
+
+fn is_typesetting_image_v1(image: &Value) -> bool {
+    [
+        "assetRef",
+        "src",
+        "fileName",
+        "mimeType",
+        "sourceAssetRef",
+        "sourceProjectId",
+        "sourceCanvasPanelId",
+    ]
+    .iter()
+    .all(|key| image.get(key).is_some_and(Value::is_string))
+        && image
+            .get("src")
+            .and_then(Value::as_str)
+            .is_some_and(|src| src.starts_with('/'))
+        && ["width", "height"].iter().all(|key| {
+            image
+                .get(key)
+                .map_or(true, |value| value.as_f64().is_some())
+        })
+}
+
+fn migrate_writing_state(state: Option<Value>) -> Result<PanelStateMigrationResult, CliError> {
+    let Some(state) = state else {
+        return Ok(PanelStateMigrationResult {
+            state: empty_writing_state(),
+            changed: true,
+        });
+    };
+    match state.get("schemaVersion").and_then(Value::as_i64) {
+        Some(1)
+            if state.get("draft").is_some_and(Value::is_string)
+                && matches!(
+                    state.get("mode").and_then(Value::as_str),
+                    Some("create" | "revise")
+                ) =>
+        {
+            let mut migrated = state;
+            migrated["schemaVersion"] = json!(5);
+            migrated["refinementName"] = json!("");
+            migrated["selectedCreateWritingSkillIds"] = json!([DEFAULT_WRITING_SKILL_ID]);
+            migrated["selectedRevisionWritingSkillId"] = json!(DEFAULT_WRITING_SKILL_ID);
+            Ok(PanelStateMigrationResult {
+                state: migrated,
+                changed: true,
+            })
+        }
+        Some(2)
+            if state.get("draft").is_some_and(Value::is_string)
+                && matches!(
+                    state.get("mode").and_then(Value::as_str),
+                    Some("create" | "revise")
+                )
+                && state
+                    .get("selectedWritingSkillIds")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ids| ids.iter().all(Value::is_string)) =>
+        {
+            let mut migrated = state;
+            let mut selected = migrated["selectedWritingSkillIds"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if selected.is_empty() {
+                selected.push(json!(DEFAULT_WRITING_SKILL_ID));
+            }
+            let revision = selected
+                .first()
+                .filter(|_| selected.len() == 1)
+                .cloned()
+                .unwrap_or_else(|| json!(DEFAULT_WRITING_SKILL_ID));
+            migrated["schemaVersion"] = json!(5);
+            migrated["refinementName"] = json!("");
+            migrated["selectedCreateWritingSkillIds"] = Value::Array(selected);
+            migrated["selectedRevisionWritingSkillId"] = revision;
+            migrated
+                .as_object_mut()
+                .expect("writing state object")
+                .remove("selectedWritingSkillIds");
+            Ok(PanelStateMigrationResult {
+                state: migrated,
+                changed: true,
+            })
+        }
+        Some(3)
+            if state.get("draft").is_some_and(Value::is_string)
+                && matches!(
+                    state.get("mode").and_then(Value::as_str),
+                    Some("create" | "revise")
+                )
+                && state
+                    .get("selectedWritingSkillIds")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ids| ids.iter().all(Value::is_string)) =>
+        {
+            let selected = state["selectedWritingSkillIds"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let revision = selected
+                .first()
+                .filter(|_| selected.len() == 1)
+                .cloned()
+                .unwrap_or_else(|| json!(DEFAULT_WRITING_SKILL_ID));
+            let mut migrated = state;
+            migrated["schemaVersion"] = json!(5);
+            migrated["refinementName"] = json!("");
+            migrated["selectedCreateWritingSkillIds"] = Value::Array(selected);
+            migrated["selectedRevisionWritingSkillId"] = revision;
+            migrated
+                .as_object_mut()
+                .expect("writing state object")
+                .remove("selectedWritingSkillIds");
+            Ok(PanelStateMigrationResult {
+                state: migrated,
+                changed: true,
+            })
+        }
+        Some(4)
+            if state.get("draft").is_some_and(Value::is_string)
+                && matches!(
+                    state.get("mode").and_then(Value::as_str),
+                    Some("create" | "revise")
+                )
+                && state
+                    .get("selectedCreateWritingSkillIds")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ids| ids.iter().all(Value::is_string))
+                && state
+                    .get("selectedRevisionWritingSkillId")
+                    .is_some_and(|id| id.is_null() || id.is_string()) =>
+        {
+            let mut migrated = state;
+            migrated["schemaVersion"] = json!(5);
+            migrated["refinementName"] = json!("");
+            Ok(PanelStateMigrationResult {
+                state: migrated,
+                changed: true,
+            })
+        }
+        Some(5)
+            if state.get("draft").is_some_and(Value::is_string)
+                && state.get("refinementName").is_some_and(Value::is_string)
+                && matches!(
+                    state.get("mode").and_then(Value::as_str),
+                    Some("create" | "revise" | "refine")
+                )
+                && state
+                    .get("selectedCreateWritingSkillIds")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ids| ids.iter().all(Value::is_string))
+                && state
+                    .get("selectedRevisionWritingSkillId")
+                    .is_some_and(|id| id.is_null() || id.is_string()) =>
+        {
+            Ok(PanelStateMigrationResult {
+                state,
+                changed: false,
+            })
+        }
+        Some(1) => Err(CliError::new("Malformed writing panel state.")),
+        Some(2) => Err(CliError::new("Malformed writing panel state.")),
+        Some(3) => Err(CliError::new("Malformed writing panel state.")),
+        Some(4) => Err(CliError::new("Malformed writing panel state.")),
+        Some(5) => Err(CliError::new("Malformed writing panel state.")),
+        Some(version) => Err(CliError::new(format!(
+            "Unsupported future writing panel state schemaVersion: {version}"
+        ))),
+        None => Err(CliError::new(
+            "Malformed writing panel state: missing schemaVersion.",
+        )),
     }
 }
 
@@ -818,7 +1100,33 @@ fn initial_panel_state(kind: PanelKind) -> Value {
     match kind {
         PanelKind::Canvas => empty_canvas_snapshot(),
         PanelKind::Wiki => empty_wiki_state(),
+        PanelKind::Writing => empty_writing_state(),
+        PanelKind::Typesetting => empty_typesetting_state(),
+        PanelKind::Publishing => empty_publishing_state(),
     }
+}
+
+fn empty_publishing_state() -> Value {
+    json!({ "schemaVersion": 1 })
+}
+
+fn empty_typesetting_state() -> Value {
+    json!({
+        "schemaVersion": 1,
+        "publications": [],
+    })
+}
+
+fn empty_writing_state() -> Value {
+    json!({
+        "schemaVersion": 5,
+        "draft": "",
+        "mode": "create",
+        "refinementName": "",
+        "targetGeneratedDocumentId": null,
+        "selectedCreateWritingSkillIds": [DEFAULT_WRITING_SKILL_ID],
+        "selectedRevisionWritingSkillId": DEFAULT_WRITING_SKILL_ID,
+    })
 }
 
 fn empty_canvas_snapshot() -> Value {
@@ -879,7 +1187,10 @@ fn empty_wiki_state() -> Value {
 fn initial_panel_title(kind: PanelKind) -> &'static str {
     match kind {
         PanelKind::Wiki => "文档库",
+        PanelKind::Writing => "写作",
         PanelKind::Canvas => "Design canvas",
+        PanelKind::Typesetting => "排版",
+        PanelKind::Publishing => "发布",
     }
 }
 
@@ -1012,7 +1323,7 @@ mod tests {
     use crate::paths::resolve_myopenpanels_paths;
 
     #[test]
-    fn bootstrap_creates_project_with_wiki_and_canvas_panels() {
+    fn bootstrap_creates_project_with_all_default_panels() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -1035,15 +1346,220 @@ mod tests {
                 .iter()
                 .map(|snapshot| snapshot.panel.kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["wiki", "canvas"]
+            vec!["wiki", "writing", "canvas", "typesetting", "publishing"]
         );
         assert_eq!(bootstrap.state["schemaVersion"], json!(4));
         assert_eq!(bootstrap.state["wikiSpaces"][0]["title"], json!("Wiki"));
+        let writing = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Writing)
+            .expect("writing panel");
+        assert_eq!(writing.state["schemaVersion"], json!(5));
+        assert_eq!(
+            writing.state["selectedCreateWritingSkillIds"],
+            json!(["writing-default"])
+        );
+        assert_eq!(
+            writing.state["selectedRevisionWritingSkillId"],
+            json!("writing-default")
+        );
+        let typesetting = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Typesetting)
+            .expect("typesetting panel");
+        assert_eq!(typesetting.panel.title, "排版");
+        assert_eq!(
+            typesetting.state,
+            json!({ "schemaVersion": 1, "publications": [] })
+        );
+        let publishing = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Publishing)
+            .expect("publishing panel");
+        assert_eq!(publishing.panel.title, "发布");
+        assert_eq!(publishing.state, json!({ "schemaVersion": 1 }));
         assert!(paths.focus_dir.join("active-project.json").exists());
         assert!(paths.focus_dir.join("active-panel.json").exists());
         assert!(storage_dir
             .join(crate::storage::DATABASE_FILE_NAME)
             .exists());
+    }
+
+    #[test]
+    fn bootstrap_backfills_new_default_panels_for_an_existing_project() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let storage = Storage::open(&paths).expect("storage");
+        let mut project =
+            create_project_record(&storage, "Existing".to_owned()).expect("existing project");
+        for kind in [PanelKind::Wiki, PanelKind::Writing, PanelKind::Canvas] {
+            project = ensure_panel_for_project(&storage, &project, kind).expect("default panel");
+        }
+        drop(storage);
+
+        let first = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let second = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        assert_eq!(
+            first
+                .panels
+                .iter()
+                .filter(|snapshot| snapshot.panel.kind == PanelKind::Typesetting)
+                .count(),
+            1
+        );
+        assert_eq!(
+            first
+                .panels
+                .iter()
+                .filter(|snapshot| snapshot.panel.kind == PanelKind::Publishing)
+                .count(),
+            1
+        );
+        assert_eq!(
+            second
+                .panels
+                .iter()
+                .map(|snapshot| snapshot.panel.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wiki", "writing", "canvas", "typesetting", "publishing"]
+        );
+    }
+
+    #[test]
+    fn publishing_state_rejects_future_schema_versions() {
+        let future = match migrate_publishing_state(Some(json!({
+            "schemaVersion": 2
+        }))) {
+            Ok(_) => panic!("future state"),
+            Err(error) => error,
+        };
+        assert!(future.message().contains("Unsupported future publishing"));
+    }
+
+    #[test]
+    fn typesetting_state_rejects_future_and_malformed_documents() {
+        let future = match migrate_typesetting_state(Some(json!({
+            "schemaVersion": 2,
+            "publications": []
+        }))) {
+            Ok(_) => panic!("future state"),
+            Err(error) => error,
+        };
+        assert!(future.message().contains("Unsupported future typesetting"));
+
+        let malformed = match migrate_typesetting_state(Some(json!({
+            "schemaVersion": 1,
+            "publications": [{
+                "id": "publication:1",
+                "title": "Broken",
+                "covers": [],
+                "content": null,
+                "createdAt": "2026-07-14T00:00:00Z",
+                "updatedAt": "2026-07-14T00:00:00Z"
+            }]
+        }))) {
+            Ok(_) => panic!("malformed state"),
+            Err(error) => error,
+        };
+        assert!(malformed.message().contains("Malformed typesetting"));
+    }
+
+    #[test]
+    fn writing_v1_state_migrates_with_the_default_skill_selected() {
+        let migrated = migrate_writing_state(Some(json!({
+            "schemaVersion": 1,
+            "draft": "Keep this draft",
+            "mode": "create",
+            "targetGeneratedDocumentId": null,
+        })))
+        .expect("writing migration");
+
+        assert!(migrated.changed);
+        assert_eq!(migrated.state["schemaVersion"], json!(5));
+        assert_eq!(migrated.state["draft"], json!("Keep this draft"));
+        assert_eq!(
+            migrated.state["selectedCreateWritingSkillIds"],
+            json!(["writing-default"])
+        );
+        assert_eq!(
+            migrated.state["selectedRevisionWritingSkillId"],
+            json!("writing-default")
+        );
+    }
+
+    #[test]
+    fn writing_v2_empty_selection_migrates_once_but_v3_empty_is_preserved() {
+        let migrated = migrate_writing_state(Some(json!({
+            "schemaVersion": 2,
+            "draft": "",
+            "mode": "create",
+            "targetGeneratedDocumentId": null,
+            "selectedWritingSkillIds": [],
+        })))
+        .expect("writing v2 migration");
+        assert!(migrated.changed);
+        assert_eq!(migrated.state["schemaVersion"], json!(5));
+        assert_eq!(
+            migrated.state["selectedCreateWritingSkillIds"],
+            json!(["writing-default"])
+        );
+        assert_eq!(
+            migrated.state["selectedRevisionWritingSkillId"],
+            json!("writing-default")
+        );
+
+        let explicit_empty = migrate_writing_state(Some(json!({
+            "schemaVersion": 3,
+            "draft": "",
+            "mode": "create",
+            "targetGeneratedDocumentId": null,
+            "selectedWritingSkillIds": [],
+        })))
+        .expect("writing v3 state");
+        assert!(explicit_empty.changed);
+        assert_eq!(
+            explicit_empty.state["selectedCreateWritingSkillIds"],
+            json!([])
+        );
+        assert_eq!(
+            explicit_empty.state["selectedRevisionWritingSkillId"],
+            json!("writing-default")
+        );
+
+        let independent = migrate_writing_state(Some(json!({
+            "schemaVersion": 4,
+            "draft": "",
+            "mode": "revise",
+            "targetGeneratedDocumentId": null,
+            "selectedCreateWritingSkillIds": [
+                "writing-xiaohongshu-note",
+                "writing-long-article"
+            ],
+            "selectedRevisionWritingSkillId": "writing-default",
+        })))
+        .expect("writing v4 state");
+        assert!(independent.changed);
+        assert_eq!(independent.state["schemaVersion"], json!(5));
+        assert_eq!(independent.state["refinementName"], json!(""));
+        assert_eq!(
+            independent.state["selectedCreateWritingSkillIds"],
+            json!(["writing-xiaohongshu-note", "writing-long-article"])
+        );
+        assert_eq!(
+            independent.state["selectedRevisionWritingSkillId"],
+            json!("writing-default")
+        );
     }
 
     #[test]

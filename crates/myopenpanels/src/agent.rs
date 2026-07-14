@@ -71,7 +71,7 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         ));
     }
     sync_builtin_agent_skills(paths)?;
-    let skills = load_agent_skills()?;
+    let skills = load_agent_skills(paths, &bootstrap.project.id)?;
     let operations = storage.list_agent_operations(Some(&paths.context_id), Some("active"))?;
     let focus_revision = crate::control::read_focus_revision(paths)?;
     let focus = json!({
@@ -91,8 +91,6 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
         .panels
         .iter()
         .map(|snapshot| snapshot.panel.kind.as_str())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .collect::<Vec<_>>();
     let selection_summary = selection
         .as_ref()
@@ -113,16 +111,7 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
                 "summary": { "itemCount": 0 },
             })
         });
-    let recommended_scopes = [
-        "panel",
-        bootstrap.active_panel_kind.as_str(),
-        "task",
-        "operation",
-    ]
-    .into_iter()
-    .collect::<BTreeSet<_>>()
-    .into_iter()
-    .collect::<Vec<_>>();
+    let recommended_scopes = recommended_capability_scopes(bootstrap.active_panel_kind);
     let detailed_selection = read_selection(paths, None, false).ok();
     let wiki_selection = read_agent_selection(paths).ok();
     let mut required_skills = Vec::new();
@@ -139,7 +128,9 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
             None,
         )?);
     }
-    if let Some((task_id, skill_id)) = next_wiki_task_authoring_skill(&bootstrap) {
+    if let Some((task_id, skill_id)) = next_wiki_task_authoring_skill(&bootstrap)
+        .or_else(|| next_writing_task_authoring_skill(&bootstrap))
+    {
         let skill = required_agent_skill(&skills, skill_id)?;
         required_capabilities.extend(skill.metadata.requires_capabilities.iter().cloned());
         required_skills.push(write_required_skill_loader(
@@ -354,10 +345,7 @@ fn next_wiki_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str,
     if bootstrap.active_panel_kind != PanelKind::Wiki {
         return None;
     }
-    let task = next_project_task(bootstrap)?;
-    if task.get("queue").and_then(Value::as_str) != Some("wiki") {
-        return None;
-    }
+    let task = next_project_task_for_queue(bootstrap, "wiki")?;
     let task_id = task.get("id").and_then(Value::as_str)?;
     let skill_id = task
         .get("agentSkillId")
@@ -378,6 +366,19 @@ fn next_wiki_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str,
                 .map(|snapshot| selected_agent_skill_id(&snapshot.state))
         })?;
     (skill_id != WIKI_PANEL_SKILL_ID).then_some((task_id, skill_id))
+}
+
+fn next_writing_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str, &str)> {
+    if bootstrap.active_panel_kind != PanelKind::Writing {
+        return None;
+    }
+    let task = next_project_task_for_queue(bootstrap, "writing")?;
+    let skill_id = match task.get("type").and_then(Value::as_str) {
+        Some("refine_writing_skill") => task.pointer("/input/refinerSkillId"),
+        _ => task.pointer("/input/writingSkillId"),
+    }
+    .and_then(Value::as_str)?;
+    Some((task.get("id").and_then(Value::as_str)?, skill_id))
 }
 
 fn required_agent_skill<'a>(
@@ -403,7 +404,8 @@ fn write_required_skill_loader(
     wiki_selection: Option<&Value>,
     task_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    let (local_dir, local_path) = agent_skill_local_paths(paths, &skill.metadata.id);
+    let (local_dir, local_path) =
+        agent_skill_local_paths(paths, &bootstrap.project.id, &skill.metadata);
     let task = task_id.and_then(|id| find_wiki_task(bootstrap, id));
     let selected_wiki_skill_id = task
         .as_ref()
@@ -587,17 +589,77 @@ pub fn sync_builtin_agent_skills(paths: &MyOpenPanelsPaths) -> Result<(), CliErr
 
 pub fn list_agent_skills(paths: &MyOpenPanelsPaths) -> Result<Vec<AgentSkillListing>, CliError> {
     sync_builtin_agent_skills(paths)?;
-    Ok(load_agent_skills()?
+    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    list_agent_skills_for_project(paths, &bootstrap.project.id)
+}
+
+pub(crate) fn list_agent_skills_for_project(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+) -> Result<Vec<AgentSkillListing>, CliError> {
+    sync_builtin_agent_skills(paths)?;
+    Ok(load_agent_skills(paths, project_id)?
         .into_iter()
-        .map(|skill| agent_skill_listing(paths, skill.metadata))
+        .map(|skill| agent_skill_listing(paths, project_id, skill.metadata))
         .collect())
 }
 
+pub fn list_writing_agent_skills(
+    paths: &MyOpenPanelsPaths,
+) -> Result<Vec<AgentSkillListing>, CliError> {
+    Ok(list_agent_skills(paths)?
+        .into_iter()
+        .filter(|item| {
+            metadata_matches(
+                &item.skill.applies_to,
+                &item.skill.task_types,
+                Some("writing"),
+                Some("generate_document"),
+            )
+        })
+        .collect())
+}
+
+pub fn writing_agent_skill(
+    paths: &MyOpenPanelsPaths,
+    skill_id: &str,
+) -> Result<AgentSkillListing, CliError> {
+    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    writing_agent_skill_for_project(paths, &bootstrap.project.id, skill_id)
+}
+
+pub(crate) fn writing_agent_skill_for_project(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    skill_id: &str,
+) -> Result<AgentSkillListing, CliError> {
+    load_agent_skills(paths, project_id)?
+        .into_iter()
+        .filter(|item| {
+            metadata_matches(
+                &item.metadata.applies_to,
+                &item.metadata.task_types,
+                Some("writing"),
+                Some("generate_document"),
+            )
+        })
+        .map(|skill| agent_skill_listing(paths, project_id, skill.metadata))
+        .find(|item| item.skill.id == skill_id)
+        .ok_or_else(|| {
+            CliError::with_code(
+                "writing_skill_not_found",
+                format!("Writing Skill not found: {skill_id}"),
+            )
+        })
+}
+
 pub fn list_agent_skill_summaries(
+    paths: &MyOpenPanelsPaths,
     panel_kind: Option<&str>,
     task_type: Option<&str>,
 ) -> Result<Vec<Value>, CliError> {
-    Ok(load_agent_skills()?
+    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    Ok(load_agent_skills(paths, &bootstrap.project.id)?
         .into_iter()
         .filter(|skill| metadata_matches(&skill.metadata.applies_to, &skill.metadata.task_types, panel_kind, task_type))
         .map(|skill| {
@@ -634,14 +696,15 @@ pub fn read_agent_skill(
     task_id: Option<&str>,
 ) -> Result<AgentSkillReadPayload, CliError> {
     sync_builtin_agent_skills(paths)?;
-    let skill = load_agent_skills()?
+    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    let skill = load_agent_skills(paths, &bootstrap.project.id)?
         .into_iter()
         .find(|skill| skill.metadata.id == skill_id)
         .ok_or_else(|| CliError::new(format!("MyOpenPanels agent skill not found: {skill_id}")))?;
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let selection = read_selection(paths, None, false).ok();
     let wiki_selection = read_agent_selection(paths).ok();
-    let (local_dir, local_path) = agent_skill_local_paths(paths, &skill.metadata.id);
+    let (local_dir, local_path) =
+        agent_skill_local_paths(paths, &bootstrap.project.id, &skill.metadata);
     let task = task_id.and_then(|id| find_wiki_task(&bootstrap, id));
     let selected_wiki_skill_id = task
         .as_ref()
@@ -706,6 +769,17 @@ pub fn capabilities() -> Vec<Value> {
     crate::cli::registry::capabilities()
 }
 
+fn recommended_capability_scopes(active_panel_kind: PanelKind) -> Vec<&'static str> {
+    let mut scopes = ["panel", "task", "operation"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let panel_scope = active_panel_kind.as_str();
+    if crate::cli::registry::has_scope(panel_scope) {
+        scopes.insert(panel_scope);
+    }
+    scopes.into_iter().collect()
+}
+
 pub fn render_agent_skills_markdown(skills: &[AgentSkillListing]) -> String {
     format!(
         "# MyOpenPanels Agent Skills\n\n{}\n",
@@ -727,7 +801,7 @@ fn render_agent_skill(
     let task = task_id.and_then(|id| find_wiki_task(bootstrap, id));
     if task_id.is_some() && task.is_none() {
         return Err(CliError::new(format!(
-            "Wiki task not found: {}",
+            "Project task not found: {}",
             task_id.unwrap_or_default()
         )));
     }
@@ -749,12 +823,34 @@ fn render_agent_skill(
     ))
 }
 
-fn load_agent_skills() -> Result<Vec<AgentSkill>, CliError> {
-    let mut skills = load_agent_skill_dirs()?
+fn load_agent_skills(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+) -> Result<Vec<AgentSkill>, CliError> {
+    let builtin = load_agent_skill_dirs()?
         .into_iter()
         .map(|(skill, _dir)| skill)
         .collect::<Vec<_>>();
-    skills.sort_by(|left, right| left.metadata.id.cmp(&right.metadata.id));
+    let project = load_project_agent_skills(paths, project_id)?;
+    merge_agent_skill_providers([builtin, project])
+}
+
+fn merge_agent_skill_providers(
+    providers: impl IntoIterator<Item = Vec<AgentSkill>>,
+) -> Result<Vec<AgentSkill>, CliError> {
+    let mut seen = BTreeSet::new();
+    let mut skills = Vec::new();
+    for provider in providers {
+        for skill in provider {
+            if !seen.insert(skill.metadata.id.clone()) {
+                return Err(CliError::new(format!(
+                    "Duplicate MyOpenPanels agent skill id: {}",
+                    skill.metadata.id
+                )));
+            }
+            skills.push(skill);
+        }
+    }
     Ok(skills)
 }
 
@@ -783,6 +879,91 @@ fn load_agent_skill_dirs() -> Result<Vec<(AgentSkill, &'static Dir<'static>)>, C
     Ok(skills)
 }
 
+fn load_project_agent_skills(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+) -> Result<Vec<AgentSkill>, CliError> {
+    let skills_dir = project_agent_skills_dir(paths, project_id);
+    if !skills_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let completed_tasks = crate::storage::Storage::open(paths)?
+        .list_tasks(project_id)?
+        .into_iter()
+        .filter(|task| {
+            task.get("status").and_then(Value::as_str) == Some("succeeded")
+                && task.get("type").and_then(Value::as_str) == Some("refine_writing_skill")
+        })
+        .filter_map(|task| {
+            Some((
+                task.get("id")?.as_str()?.to_owned(),
+                (
+                    task.pointer("/input/skillId")?.as_str()?.to_owned(),
+                    task.pointer("/input/name")?.as_str()?.to_owned(),
+                ),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut skills = Vec::new();
+    for entry in fs::read_dir(&skills_dir).map_err(to_cli_error)? {
+        let entry = entry.map_err(to_cli_error)?;
+        if !entry.file_type().map_err(to_cli_error)?.is_dir() {
+            continue;
+        }
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let skill_path = entry.path().join("SKILL.md");
+        let manifest_path = entry.path().join("manifest.json");
+        if !skill_path.is_file() || !manifest_path.is_file() {
+            continue;
+        }
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).map_err(to_cli_error)?)
+                .map_err(to_cli_error)?;
+        if manifest.get("projectId").and_then(Value::as_str) != Some(project_id) {
+            return Err(CliError::with_code(
+                "invalid_project_skill",
+                format!("Project Writing Skill manifest does not belong to {project_id}"),
+            ));
+        }
+        let Some((expected_skill_id, expected_title)) = manifest
+            .get("taskId")
+            .and_then(Value::as_str)
+            .and_then(|task_id| completed_tasks.get(task_id))
+        else {
+            continue;
+        };
+        let source = fs::read_to_string(&skill_path).map_err(to_cli_error)?;
+        let skill = parse_skill(&source, &skill_path.display().to_string())?;
+        if skill.metadata.source != "project"
+            || manifest.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+            || manifest.get("source").and_then(Value::as_str) != Some("project")
+            || manifest.get("skillId").and_then(Value::as_str) != Some(skill.metadata.id.as_str())
+            || manifest.get("title").and_then(Value::as_str) != Some(skill.metadata.title.as_str())
+            || expected_skill_id != &skill.metadata.id
+            || expected_title != &skill.metadata.title
+        {
+            return Err(CliError::with_code(
+                "invalid_project_skill",
+                format!(
+                    "Project Writing Skill must use source: project: {}",
+                    skill.metadata.id
+                ),
+            ));
+        }
+        skills.push(skill);
+    }
+    skills.sort_by(|left, right| {
+        left.metadata
+            .title
+            .to_lowercase()
+            .cmp(&right.metadata.title.to_lowercase())
+            .then_with(|| left.metadata.id.cmp(&right.metadata.id))
+    });
+    Ok(skills)
+}
+
 fn extract_embedded_dir_contents(
     dir: &Dir<'_>,
     root: &Path,
@@ -802,7 +983,7 @@ fn extract_embedded_dir_contents(
     Ok(())
 }
 
-fn parse_skill(source: &str, file_name: &str) -> Result<AgentSkill, CliError> {
+pub(crate) fn parse_skill(source: &str, file_name: &str) -> Result<AgentSkill, CliError> {
     let normalized_source;
     let source = if source.contains("\r\n") {
         normalized_source = source.replace("\r\n", "\n");
@@ -898,8 +1079,12 @@ fn render_skill_table(skills: &[AgentSkillListing]) -> String {
     format!("| ID | Source | Applies To | Task Types | Local Path |\n| --- | --- | --- | --- | --- |\n{rows}")
 }
 
-fn agent_skill_listing(paths: &MyOpenPanelsPaths, skill: AgentSkillMetadata) -> AgentSkillListing {
-    let (local_dir, local_path) = agent_skill_local_paths(paths, &skill.id);
+fn agent_skill_listing(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    skill: AgentSkillMetadata,
+) -> AgentSkillListing {
+    let (local_dir, local_path) = agent_skill_local_paths(paths, project_id, &skill);
     AgentSkillListing {
         source: skill.source.clone(),
         skill,
@@ -908,10 +1093,35 @@ fn agent_skill_listing(paths: &MyOpenPanelsPaths, skill: AgentSkillMetadata) -> 
     }
 }
 
-fn agent_skill_local_paths(paths: &MyOpenPanelsPaths, skill_id: &str) -> (PathBuf, PathBuf) {
-    let local_dir = paths.storage_dir.join("skills").join(skill_id);
+pub(crate) fn project_agent_skill_listing(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    skill: AgentSkillMetadata,
+) -> AgentSkillListing {
+    agent_skill_listing(paths, project_id, skill)
+}
+
+fn agent_skill_local_paths(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    skill: &AgentSkillMetadata,
+) -> (PathBuf, PathBuf) {
+    let local_dir = if skill.source == "project" {
+        project_agent_skills_dir(paths, project_id)
+            .join(crate::paths::sanitize_path_part(&skill.id))
+    } else {
+        paths.storage_dir.join("skills").join(&skill.id)
+    };
     let local_path = local_dir.join("SKILL.md");
     (local_dir, local_path)
+}
+
+pub(crate) fn project_agent_skills_dir(paths: &MyOpenPanelsPaths, project_id: &str) -> PathBuf {
+    paths
+        .storage_dir
+        .join("projects")
+        .join(crate::paths::sanitize_path_part(project_id))
+        .join("skills")
 }
 
 fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Value {
@@ -1046,6 +1256,26 @@ fn next_project_task(bootstrap: &ProjectBootstrap) -> Option<&Value> {
         })
 }
 
+fn next_project_task_for_queue<'a>(
+    bootstrap: &'a ProjectBootstrap,
+    queue: &str,
+) -> Option<&'a Value> {
+    bootstrap
+        .tasks
+        .iter()
+        .filter(|task| task.get("ready").and_then(Value::as_bool).unwrap_or(false))
+        .filter(|task| task.get("queue").and_then(Value::as_str) == Some(queue))
+        .find(|task| task.get("status").and_then(Value::as_str) == Some("queued"))
+        .or_else(|| {
+            bootstrap
+                .tasks
+                .iter()
+                .filter(|task| task.get("ready").and_then(Value::as_bool).unwrap_or(false))
+                .filter(|task| task.get("queue").and_then(Value::as_str) == Some(queue))
+                .find(|task| task.get("status").and_then(Value::as_str) == Some("failed"))
+        })
+}
+
 fn shell_quote(value: &str) -> String {
     if value
         .chars()
@@ -1111,6 +1341,9 @@ fn render_current_context(
             "- wiki space id: {}",
             task["wikiSpaceId"].as_str().unwrap_or("none")
         ));
+        if let Some(skill_id) = task.get("writingSkillId").and_then(Value::as_str) {
+            lines.push(format!("- writing skill: {skill_id}"));
+        }
     }
     lines.join("\n")
 }
@@ -1133,6 +1366,28 @@ fn render_skill_commands(
     }
     if skill.metadata.id == CANVAS_PANEL_SKILL_ID {
         return "```bash\nmyopenpanels panel selection read --format json\nmyopenpanels canvas generation begin --display-width <w> --display-height <h> [--use-selection] --expect-focus-revision <focus-revision> --format json\nmyopenpanels operation complete --operation-id <operation-id> --artifact-file <generated-path> --metadata-file <metadata.json> --format json\n```".to_owned();
+    }
+    if skill.metadata.id == crate::writing::WRITING_PANEL_SKILL_ID {
+        if let Some(task) = task {
+            let task_id = task["id"].as_str().unwrap_or("<task-id>");
+            if task["type"].as_str() == Some("refine_writing_skill") {
+                return format!(
+                    "```bash\nmyopenpanels writing refinement read --task-id {task_id} --format json\nmyopenpanels writing skill install --task-id {task_id} --skill-file <SKILL.md> --format json\nmyopenpanels task complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+                );
+            }
+            return format!(
+                "```bash\nmyopenpanels writing request read --task-id {task_id} --format json\nmyopenpanels writing generation begin --task-id {task_id} --title <title> --document-format markdown --format json\nmyopenpanels operation complete --operation-id <operation-id> --artifact-file <document.md> --format json\nmyopenpanels task complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+            );
+        }
+        return "```bash\nmyopenpanels panel selection read --format json\nmyopenpanels task list --queue writing --format json\n```".to_owned();
+    }
+    if skill.metadata.id == crate::writing::WRITING_SKILL_REFINER_ID {
+        if let Some(task) = task {
+            let task_id = task["id"].as_str().unwrap_or("<task-id>");
+            return format!(
+                "```bash\nmyopenpanels writing refinement read --task-id {task_id} --format json\nmyopenpanels wiki raw-document markdown read --raw-document-id <selected-id> --format json\nmyopenpanels wiki generated-document read --generated-document-id <selected-id> --format json\nmyopenpanels writing skill install --task-id {task_id} --skill-file <SKILL.md> --format json\nmyopenpanels task complete --task-id {task_id} --lease-token \"$MYOPENPANELS_TASK_LEASE_TOKEN\" --format json\n```"
+            );
+        }
     }
     if skill.metadata.id == WIKI_PANEL_SKILL_ID {
         if let Some(task) = task {
@@ -1238,5 +1493,17 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("myopenpanels operation read"));
+    }
+
+    #[test]
+    fn recommended_scopes_skip_panel_kinds_without_agent_capabilities() {
+        assert_eq!(
+            recommended_capability_scopes(PanelKind::Typesetting),
+            vec!["operation", "panel", "task"]
+        );
+        assert_eq!(
+            recommended_capability_scopes(PanelKind::Wiki),
+            vec!["operation", "panel", "task", "wiki"]
+        );
     }
 }

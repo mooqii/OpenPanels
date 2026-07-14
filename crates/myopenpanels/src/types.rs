@@ -5,21 +5,30 @@ use serde_json::Value;
 #[serde(rename_all = "lowercase")]
 pub enum PanelKind {
     Wiki,
+    Writing,
     Canvas,
+    Typesetting,
+    Publishing,
 }
 
 impl PanelKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Wiki => "wiki",
+            Self::Writing => "writing",
             Self::Canvas => "canvas",
+            Self::Typesetting => "typesetting",
+            Self::Publishing => "publishing",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "wiki" => Some(Self::Wiki),
+            "writing" => Some(Self::Writing),
             "canvas" => Some(Self::Canvas),
+            "typesetting" => Some(Self::Typesetting),
+            "publishing" => Some(Self::Publishing),
             _ => None,
         }
     }

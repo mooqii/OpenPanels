@@ -376,6 +376,129 @@ pub fn begin_wiki(
     )
 }
 
+pub fn begin_writing(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+    title: &str,
+    format: &str,
+) -> Result<Value, CliError> {
+    let request = crate::writing::read_request(paths, task_id)?;
+    let task = &request["task"];
+    if !matches!(
+        task.get("status").and_then(Value::as_str),
+        Some("reserved" | "running" | "claimed")
+    ) {
+        return Err(CliError::with_code(
+            "task_not_claimed",
+            "Claim the writing task before beginning generation.",
+        ));
+    }
+    let project_id = task["projectId"].as_str().unwrap_or_default();
+    let wiki_panel_id = task["source"]["wikiPanelId"].as_str().unwrap_or_default();
+    if project_id.is_empty() || wiki_panel_id.is_empty() {
+        return Err(CliError::with_code(
+            "writing_target_not_found",
+            "The writing task has no captured Wiki target.",
+        ));
+    }
+    let mode = task["input"]["mode"].as_str().unwrap_or("create");
+    let document_id = if mode == "revise" {
+        task["input"]["targetGeneratedDocumentId"].as_str()
+    } else {
+        None
+    };
+    let storage = Storage::open(paths)?;
+    let project = storage.read_project(project_id)?.ok_or_else(|| {
+        CliError::with_code(
+            "target_not_found",
+            format!("Project not found: {project_id}"),
+        )
+    })?;
+    let panel = storage
+        .read_panel(project_id, wiki_panel_id)?
+        .ok_or_else(|| CliError::with_code("target_not_found", "Wiki panel not found."))?;
+    if let Some(document_id) = document_id {
+        let expected_version = task["input"]["targetContentVersion"]
+            .as_u64()
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "writing_target_version_missing",
+                    "The writing task has no captured target content version.",
+                )
+            })?;
+        let wiki_state = storage
+            .read_panel_state(project_id, wiki_panel_id)?
+            .ok_or_else(|| CliError::with_code("target_not_found", "Wiki state not found."))?;
+        let current_version = wiki_state
+            .get("generatedDocuments")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|document| document.get("id").and_then(Value::as_str) == Some(document_id))
+            .and_then(|document| document.get("contentVersion"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "writing_target_not_found",
+                    format!("Generated document not found: {document_id}"),
+                )
+            })?;
+        if current_version != expected_version {
+            return Err(CliError::with_code(
+                "content_conflict",
+                format!(
+                    "Generated document changed from version {expected_version} to {current_version}"
+                ),
+            ));
+        }
+    }
+    let id = operation_id();
+    let started = wiki::begin_generated_document_for_target(
+        paths,
+        project_id,
+        wiki_panel_id,
+        &id,
+        title,
+        format,
+        document_id,
+    )?;
+    let generated_id = started["document"]["id"].as_str().unwrap_or_default();
+    let now = now_iso();
+    let panel_skill = read_agent_skill(paths, crate::writing::WRITING_PANEL_SKILL_ID, None)?;
+    let operation = json!({
+        "id": id,
+        "ownerContextId": paths.context_id,
+        "intent": "wiki.document.generate",
+        "status": "active",
+        "projectId": project.id,
+        "projectTitle": project.title,
+        "panelId": panel.id,
+        "panelTitle": panel.title,
+        "panelKind": "wiki",
+        "skillId": crate::writing::WRITING_PANEL_SKILL_ID,
+        "guideId": null,
+        "protocolVersion": OPERATION_PROTOCOL_VERSION,
+        "target": {
+            "documentId": generated_id,
+            "baseContentVersion": started["baseContentVersion"],
+            "writingTaskId": task_id,
+        },
+        "input": { "title": title, "format": format, "mode": mode, "taskId": task_id },
+        "result": null,
+        "error": null,
+        "createdAt": now,
+        "updatedAt": now,
+        "completedAt": null,
+    });
+    save(paths, &operation)?;
+    Ok(json!({
+        "operation": operation,
+        "panelSkill": panel_skill,
+        "document": started["document"],
+        "nextAction": "Write the requested document, complete this Operation, then complete the writing Task.",
+    }))
+}
+
 pub fn complete_wiki(paths: &MyOpenPanelsPaths, id: &str, file: &str) -> Result<Value, CliError> {
     let mut operation = active_operation(paths, id, "wiki.document.generate")?;
     let content = fs::read(file).map_err(to_cli_error)?;

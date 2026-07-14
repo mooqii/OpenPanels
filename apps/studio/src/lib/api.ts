@@ -8,8 +8,10 @@ import type {
   MyOpenPanelsUpdateInstallRestartResponse,
   MyOpenPanelsUpdateStatus,
   OriginalPreviewKind,
+  PublishingState,
   TraceEvent,
   TraceSnapshotResponse,
+  TypesettingState,
   WikiRawDocument,
   WikiState,
 } from "../types"
@@ -72,6 +74,15 @@ export function normalizePanelState(
   if (kind === "wiki") {
     return isWikiState(state) ? state : emptyWikiState()
   }
+  if (kind === "writing") {
+    return isWritingState(state) ? state : emptyWritingState()
+  }
+  if (kind === "typesetting") {
+    return isTypesettingState(state) ? state : emptyTypesettingState()
+  }
+  if (kind === "publishing") {
+    return isPublishingState(state) ? state : emptyPublishingState()
+  }
   return state ?? {}
 }
 
@@ -97,6 +108,165 @@ export function wikiStateFromAppState(appState: AppState): WikiState {
     ({ panel }) => panel.kind === "wiki"
   )?.state
   return isWikiState(state) ? state : emptyWikiState()
+}
+
+export function writingStateFromAppState(
+  appState: AppState
+): import("../types").WritingState {
+  const state = appState.panels.find(
+    ({ panel }) => panel.kind === "writing"
+  )?.state
+  return isWritingState(state) ? state : emptyWritingState()
+}
+
+export function typesettingStateFromAppState(
+  appState: AppState
+): TypesettingState {
+  const state = appState.panels.find(
+    ({ panel }) => panel.kind === "typesetting"
+  )?.state
+  return isTypesettingState(state) ? state : emptyTypesettingState()
+}
+
+export function typesettingRevisionFromAppState(appState: AppState): number {
+  return (
+    appState.panels.find(({ panel }) => panel.kind === "typesetting")
+      ?.revision ?? 0
+  )
+}
+
+export function emptyTypesettingState(): TypesettingState {
+  return {
+    schemaVersion: 1,
+    publications: [],
+  }
+}
+
+export function emptyPublishingState(): PublishingState {
+  return { schemaVersion: 1 }
+}
+
+export function isPublishingState(state: unknown): state is PublishingState {
+  return (
+    typeof state === "object" &&
+    state !== null &&
+    (state as { schemaVersion?: unknown }).schemaVersion === 1
+  )
+}
+
+export function isTypesettingState(state: unknown): state is TypesettingState {
+  return (
+    typeof state === "object" &&
+    state !== null &&
+    (state as { schemaVersion?: unknown }).schemaVersion === 1 &&
+    Array.isArray((state as { publications?: unknown }).publications) &&
+    (state as { publications: unknown[] }).publications.every(
+      isTypesettingPublication
+    )
+  )
+}
+
+function isTypesettingPublication(value: unknown): boolean {
+  if (!(typeof value === "object" && value !== null)) return false
+  const publication = value as Record<string, unknown>
+  return (
+    typeof publication.id === "string" &&
+    typeof publication.title === "string" &&
+    typeof publication.createdAt === "string" &&
+    typeof publication.updatedAt === "string" &&
+    isTypesettingJsonContent(publication.content) &&
+    Array.isArray(publication.covers) &&
+    publication.covers.every(isTypesettingPublicationImage)
+  )
+}
+
+function isTypesettingJsonContent(value: unknown): boolean {
+  if (!isTypesettingJsonNode(value)) return false
+  const content = value as Record<string, unknown>
+  return content.type === "doc"
+}
+
+function isTypesettingJsonNode(value: unknown): boolean {
+  if (!(typeof value === "object" && value !== null && !Array.isArray(value))) {
+    return false
+  }
+  const node = value as Record<string, unknown>
+  return (
+    typeof node.type === "string" &&
+    (node.text === undefined || typeof node.text === "string") &&
+    (node.attrs === undefined || isPlainObject(node.attrs)) &&
+    (node.content === undefined ||
+      (Array.isArray(node.content) &&
+        node.content.every(isTypesettingJsonNode))) &&
+    (node.marks === undefined ||
+      (Array.isArray(node.marks) &&
+        node.marks.every(
+          (mark) =>
+            isPlainObject(mark) &&
+            typeof mark.type === "string" &&
+            (mark.attrs === undefined || isPlainObject(mark.attrs))
+        )))
+  )
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isTypesettingPublicationImage(value: unknown): boolean {
+  if (!(typeof value === "object" && value !== null)) return false
+  const image = value as Record<string, unknown>
+  return (
+    typeof image.assetRef === "string" &&
+    typeof image.src === "string" &&
+    image.src.startsWith("/") &&
+    typeof image.fileName === "string" &&
+    typeof image.mimeType === "string" &&
+    typeof image.sourceAssetRef === "string" &&
+    typeof image.sourceProjectId === "string" &&
+    typeof image.sourceCanvasPanelId === "string" &&
+    (image.width === undefined || typeof image.width === "number") &&
+    (image.height === undefined || typeof image.height === "number")
+  )
+}
+
+export function emptyWritingState(): import("../types").WritingState {
+  return {
+    schemaVersion: 5,
+    draft: "",
+    mode: "create",
+    refinementName: "",
+    selectedCreateWritingSkillIds: ["writing-default"],
+    selectedRevisionWritingSkillId: "writing-default",
+    targetGeneratedDocumentId: null,
+  }
+}
+
+export function isWritingState(
+  state: unknown
+): state is import("../types").WritingState {
+  return (
+    typeof state === "object" &&
+    state !== null &&
+    (state as { schemaVersion?: unknown }).schemaVersion === 5 &&
+    typeof (state as { draft?: unknown }).draft === "string" &&
+    typeof (state as { refinementName?: unknown }).refinementName ===
+      "string" &&
+    Array.isArray(
+      (state as { selectedCreateWritingSkillIds?: unknown })
+        .selectedCreateWritingSkillIds
+    ) &&
+    (
+      state as { selectedCreateWritingSkillIds: unknown[] }
+    ).selectedCreateWritingSkillIds.every((id) => typeof id === "string") &&
+    ((state as { selectedRevisionWritingSkillId?: unknown })
+      .selectedRevisionWritingSkillId === null ||
+      typeof (state as { selectedRevisionWritingSkillId?: unknown })
+        .selectedRevisionWritingSkillId === "string") &&
+    ((state as { mode?: unknown }).mode === "create" ||
+      (state as { mode?: unknown }).mode === "revise" ||
+      (state as { mode?: unknown }).mode === "refine")
+  )
 }
 
 export function emptyWikiState(): WikiState {
@@ -399,11 +569,27 @@ export function requestUpdateInstallRestart(
   )
 }
 
-export async function savePanelState(
+export async function saveCanvasPanelState(
   transport: MyOpenPanelsTransport,
   projectId: string,
   panelId: string,
   snapshot: StoreSnapshot,
+  baseRevision: number
+): Promise<{ revision: number }> {
+  return savePanelState(
+    transport,
+    projectId,
+    panelId,
+    serializeSnapshot(snapshot),
+    baseRevision
+  )
+}
+
+export async function savePanelState(
+  transport: MyOpenPanelsTransport,
+  projectId: string,
+  panelId: string,
+  state: unknown,
   baseRevision: number
 ): Promise<{ revision: number }> {
   const response = await apiFetch(
@@ -414,7 +600,7 @@ export async function savePanelState(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         baseRevision,
-        state: serializeSnapshot(snapshot),
+        state,
       }),
     }
   )

@@ -2,8 +2,8 @@ use crate::agent as agent_resources;
 use crate::bridge;
 use crate::control::{
     create_project, delete_project, ensure_project_bootstrap, now_iso, open_runtime_panel,
-    read_active_panel_value, read_focus_revision, rename_project, write_active_project_id,
-    BootstrapRequest,
+    read_active_panel_value, read_focus_revision, rename_project, validate_typesetting_state,
+    write_active_project_id, BootstrapRequest,
 };
 use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
@@ -15,6 +15,7 @@ use crate::studio::{
 use crate::tasks;
 use crate::trace::{self, TraceEventInput};
 use crate::types::PanelKind;
+use crate::typesetting;
 use crate::update::{check_for_update, download_update, install_update};
 use crate::wiki;
 use axum::body::Body;
@@ -188,6 +189,24 @@ fn build_router(
         )
         .route("/api/panels", post(api_open_panel))
         .route("/api/artifacts", post(api_insert_artifact))
+        .route(
+            "/api/typesetting/canvas-assets",
+            get(api_typesetting_canvas_assets),
+        )
+        .route(
+            "/api/writing/selection",
+            get(api_writing_selection).put(api_writing_set_selection),
+        )
+        .route(
+            "/api/writing/draft",
+            axum::routing::put(api_writing_save_draft),
+        )
+        .route("/api/writing/skills", get(api_writing_skills))
+        .route("/api/writing/requests", post(api_writing_create_request))
+        .route(
+            "/api/writing/refinement-requests",
+            post(api_writing_create_refinement_request),
+        )
         .route("/api/wiki/context", get(api_wiki_context))
         .route(
             "/api/wiki/selection",
@@ -287,6 +306,10 @@ fn build_router(
         .route(
             "/api/projects/{project_id}/panels/{panel_id}/assets",
             post(api_write_panel_asset),
+        )
+        .route(
+            "/api/projects/{project_id}/panels/{panel_id}/assets/import",
+            post(api_import_typesetting_asset),
         )
         .route(
             "/api/projects/{project_id}/panels/{panel_id}/assets/{*asset_name}",
@@ -694,6 +717,116 @@ async fn api_agent_skills(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WritingSelectionBody {
+    is_wiki_selected: bool,
+    #[serde(default)]
+    selected_raw_document_ids: Vec<String>,
+    #[serde(default)]
+    selected_generated_document_ids: Vec<String>,
+}
+
+async fn api_writing_selection(State(state): State<Arc<AppState>>) -> Response {
+    match crate::writing::read_selection(&state.paths) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_writing_set_selection(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<WritingSelectionBody>,
+) -> Response {
+    match crate::writing::write_selection(
+        &state.paths,
+        body.is_wiki_selected,
+        &body.selected_raw_document_ids,
+        &body.selected_generated_document_ids,
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WritingDraftBody {
+    draft: String,
+    mode: String,
+    #[serde(default)]
+    refinement_name: String,
+    target_generated_document_id: Option<String>,
+    #[serde(default)]
+    selected_create_writing_skill_ids: Vec<String>,
+    selected_revision_writing_skill_id: Option<String>,
+}
+
+async fn api_writing_save_draft(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<WritingDraftBody>,
+) -> Response {
+    match crate::writing::save_draft(
+        &state.paths,
+        &body.draft,
+        &body.mode,
+        &body.refinement_name,
+        body.target_generated_document_id.as_deref(),
+        &body.selected_create_writing_skill_ids,
+        body.selected_revision_writing_skill_id.as_deref(),
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WritingRequestBody {
+    instruction: String,
+    mode: String,
+    target_generated_document_id: Option<String>,
+    writing_skill_ids: Vec<String>,
+}
+
+async fn api_writing_skills(State(state): State<Arc<AppState>>) -> Response {
+    match crate::agent::list_writing_agent_skills(&state.paths) {
+        Ok(skills) => json_response(StatusCode::OK, &json!({ "skills": skills })),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    }
+}
+
+async fn api_writing_create_request(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<WritingRequestBody>,
+) -> Response {
+    match crate::writing::create_requests(
+        &state.paths,
+        &body.instruction,
+        &body.mode,
+        body.target_generated_document_id.as_deref(),
+        &body.writing_skill_ids,
+    ) {
+        Ok(payload) => json_response(StatusCode::CREATED, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct WritingRefinementRequestBody {
+    name: String,
+}
+
+async fn api_writing_create_refinement_request(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<WritingRefinementRequestBody>,
+) -> Response {
+    match crate::writing::create_refinement_request(&state.paths, &body.name) {
+        Ok(payload) => json_response(StatusCode::CREATED, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
 async fn api_next_task(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TasksQuery>,
@@ -862,7 +995,7 @@ async fn api_open_panel(
     let Some(kind) = PanelKind::parse(&body.kind) else {
         return json_error(
             StatusCode::BAD_REQUEST,
-            "Expected kind to be one of: wiki, canvas, image, diff, preview, files.",
+            "Expected kind to be one of: wiki, writing, canvas, typesetting, publishing.",
         );
     };
     match open_runtime_panel(
@@ -1121,6 +1254,12 @@ async fn api_save_panel_state(
     let base_revision = body.get("baseRevision").and_then(Value::as_i64);
     let panel_state = body.get("state").cloned().unwrap_or_else(|| body.clone());
     let result = Storage::open(&state.paths).and_then(|storage| {
+        let panel = storage.read_panel(&project_id, &panel_id)?.ok_or_else(|| {
+            CliError::with_code("panel_not_found", format!("Panel not found: {panel_id}"))
+        })?;
+        if panel.kind == PanelKind::Typesetting {
+            validate_typesetting_state(&panel_state)?;
+        }
         storage
             .write_panel_state_if_current(&project_id, &panel_id, &panel_state, base_revision)
             .map(|result| {
@@ -1145,14 +1284,14 @@ async fn api_save_panel_state(
             StatusCode::CONFLICT,
             &json!({
                 "saved": false,
-                "error": "Canvas state is stale.",
+                "error": "Panel state is stale.",
                 "baseRevision": conflict.base_revision,
                 "currentRevision": conflict.current_revision,
                 "projectId": project_id,
                 "panelId": panel_id,
             }),
         ),
-        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
     }
 }
 
@@ -1295,6 +1434,49 @@ struct AssetBody {
     data_url: String,
     file_name: Option<String>,
     mime_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TypesettingAssetsQuery {
+    project_id: String,
+    scope: Option<String>,
+}
+
+async fn api_typesetting_canvas_assets(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TypesettingAssetsQuery>,
+) -> Response {
+    match typesetting::list_canvas_assets(
+        &state.paths,
+        &query.project_id,
+        query.scope.as_deref().unwrap_or("current"),
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportTypesettingAssetBody {
+    source_asset_ref: String,
+}
+
+async fn api_import_typesetting_asset(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, panel_id)): Path<(String, String)>,
+    Json(body): Json<ImportTypesettingAssetBody>,
+) -> Response {
+    match typesetting::import_canvas_asset(
+        &state.paths,
+        &project_id,
+        &panel_id,
+        &body.source_asset_ref,
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
 }
 
 async fn api_write_panel_asset(
@@ -1531,11 +1713,19 @@ fn json_error(status: StatusCode, message: &str) -> Response {
 fn status_for_cli_error(error: &CliError) -> StatusCode {
     match error.code() {
         Some(
-            "no_current_project" | "project_not_found" | "task_not_found" | "target_not_found",
+            "no_current_project" | "panel_not_found" | "project_not_found" | "task_not_found"
+            | "target_not_found",
         ) => StatusCode::NOT_FOUND,
         Some("unauthorized_target" | "invalid_lease" | "lease_expired") => StatusCode::UNAUTHORIZED,
-        Some("task_not_claimable") => StatusCode::CONFLICT,
-        Some("invalid_target" | "invalid_retry_after") => StatusCode::BAD_REQUEST,
+        Some("task_not_claimable" | "writing_skill_name_conflict") => StatusCode::CONFLICT,
+        Some(
+            "invalid_target"
+            | "invalid_retry_after"
+            | "writing_refinement_source_required"
+            | "writing_refinement_source_not_ready"
+            | "writing_skill_name_required"
+            | "writing_skill_name_too_long",
+        ) => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

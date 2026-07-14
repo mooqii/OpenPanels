@@ -24,6 +24,16 @@ pub struct PanelStateWriteConflict {
     pub current_revision: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct TaskInsert {
+    pub queue: String,
+    pub task_type: String,
+    pub capability: String,
+    pub target_ref: String,
+    pub input: Value,
+    pub source: Value,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangeScope {
@@ -505,6 +515,112 @@ impl Storage {
         tx.commit().map_err(to_cli_error)
     }
 
+    pub fn insert_task(
+        &self,
+        project_id: &str,
+        panel_id: &str,
+        queue: &str,
+        task_type: &str,
+        capability: &str,
+        target_ref: &str,
+        input: &Value,
+        source: &Value,
+    ) -> Result<Value, CliError> {
+        let id = format!("task:{:032x}", rand::random::<u128>());
+        let now = crate::control::now_iso();
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+            .map_err(to_cli_error)?;
+        tx.execute(
+            r#"
+            INSERT INTO tasks (
+              id, project_id, panel_id, queue, type, capability, status, target_ref,
+              input_json, source_json, attempts, max_attempts, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, 3, ?, ?)
+            "#,
+            params![
+                id,
+                project_id,
+                panel_id,
+                queue,
+                task_type,
+                capability,
+                target_ref,
+                serde_json::to_string(input).map_err(to_cli_error)?,
+                serde_json::to_string(source).map_err(to_cli_error)?,
+                now,
+                now,
+            ],
+        )
+        .map_err(to_cli_error)?;
+        record_scope(&tx, "tasks", Some(project_id), None)?;
+        tx.commit().map_err(to_cli_error)?;
+        self.list_tasks(project_id)?
+            .into_iter()
+            .find(|task| task.get("id").and_then(Value::as_str) == Some(id.as_str()))
+            .ok_or_else(|| CliError::new(format!("Created task was not found: {id}")))
+    }
+
+    pub fn insert_tasks(
+        &self,
+        project_id: &str,
+        panel_id: &str,
+        tasks: &[TaskInsert],
+    ) -> Result<Vec<Value>, CliError> {
+        if tasks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let now = crate::control::now_iso();
+        let task_ids = tasks
+            .iter()
+            .map(|_| format!("task:{:032x}", rand::random::<u128>()))
+            .collect::<Vec<_>>();
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+            .map_err(to_cli_error)?;
+        for (task, id) in tasks.iter().zip(&task_ids) {
+            tx.execute(
+                r#"
+                INSERT INTO tasks (
+                  id, project_id, panel_id, queue, type, capability, status, target_ref,
+                  input_json, source_json, attempts, max_attempts, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, 3, ?, ?)
+                "#,
+                params![
+                    id,
+                    project_id,
+                    panel_id,
+                    &task.queue,
+                    &task.task_type,
+                    &task.capability,
+                    &task.target_ref,
+                    serde_json::to_string(&task.input).map_err(to_cli_error)?,
+                    serde_json::to_string(&task.source).map_err(to_cli_error)?,
+                    now,
+                    now,
+                ],
+            )
+            .map_err(to_cli_error)?;
+        }
+        record_scope(&tx, "tasks", Some(project_id), None)?;
+        tx.commit().map_err(to_cli_error)?;
+
+        let mut created = self
+            .list_tasks(project_id)?
+            .into_iter()
+            .filter_map(|task| {
+                let id = task.get("id").and_then(Value::as_str)?.to_owned();
+                Some((id, task))
+            })
+            .collect::<HashMap<_, _>>();
+        task_ids
+            .into_iter()
+            .map(|id| {
+                created
+                    .remove(&id)
+                    .ok_or_else(|| CliError::new(format!("Created task was not found: {id}")))
+            })
+            .collect()
+    }
+
     pub fn list_tasks(&self, project_id: &str) -> Result<Vec<Value>, CliError> {
         let mut statement = self
             .connection
@@ -820,11 +936,15 @@ impl Storage {
     }
 
     pub fn panel_dir(&self, project_id: &str, panel_id: &str) -> PathBuf {
+        self.project_dir(project_id)
+            .join("panels")
+            .join(sanitize_path_part(panel_id))
+    }
+
+    pub fn project_dir(&self, project_id: &str) -> PathBuf {
         self.root_dir
             .join("projects")
             .join(sanitize_path_part(project_id))
-            .join("panels")
-            .join(sanitize_path_part(panel_id))
     }
 
     pub fn read_change_seq(&self) -> Result<i64, CliError> {
@@ -911,7 +1031,7 @@ impl Storage {
     fn panel_ids(&self, project_id: &str) -> Result<Vec<String>, CliError> {
         let mut statement = self
             .connection
-            .prepare("SELECT id FROM panels WHERE project_id = ? ORDER BY CASE kind WHEN 'wiki' THEN 0 ELSE 1 END, id ASC")
+            .prepare("SELECT id FROM panels WHERE project_id = ? ORDER BY CASE kind WHEN 'wiki' THEN 0 WHEN 'writing' THEN 1 WHEN 'canvas' THEN 2 WHEN 'typesetting' THEN 3 WHEN 'publishing' THEN 4 ELSE 5 END, id ASC")
             .map_err(to_cli_error)?;
         let rows = statement
             .query_map(params![project_id], |row| row.get::<_, String>(0))
@@ -943,7 +1063,7 @@ fn backup_unsupported_panels(
                 FROM panels p
                 LEFT JOIN panel_states ps
                   ON ps.session_id = p.session_id AND ps.panel_id = p.id
-                WHERE p.kind NOT IN ('wiki', 'canvas')
+                WHERE p.kind NOT IN ('wiki', 'writing', 'canvas', 'typesetting', 'publishing')
                 ORDER BY p.session_id, p.id
                 "#,
             )
@@ -1336,6 +1456,7 @@ fn project_task_capability(queue: &str, task_type: &str) -> String {
         ("wiki", "convert_document_to_markdown") => "wiki.convertDocument".to_owned(),
         ("wiki", "ingest_markdown_into_wiki") => "wiki.ingestMarkdown".to_owned(),
         ("wiki", "rebuild_wiki_index") => "wiki.rebuildIndex".to_owned(),
+        ("writing", "refine_writing_skill") => "writing.refineSkill".to_owned(),
         _ => format!("{}.{}", queue, task_type.replace('_', ".")),
     }
 }
@@ -1385,6 +1506,9 @@ fn extract_panel_state_schema_version(kind: PanelKind, state: &Value) -> Option<
             .and_then(|schema| schema.get("schemaVersion"))
             .and_then(Value::as_i64),
         PanelKind::Wiki => state.get("schemaVersion").and_then(Value::as_i64),
+        PanelKind::Writing => state.get("schemaVersion").and_then(Value::as_i64),
+        PanelKind::Typesetting => state.get("schemaVersion").and_then(Value::as_i64),
+        PanelKind::Publishing => state.get("schemaVersion").and_then(Value::as_i64),
     }
 }
 
@@ -1654,6 +1778,9 @@ CREATE UNIQUE INDEX panels_session_kind_unique_idx
 const MIGRATION_0005_SQL: &str = include_str!("../migrations/0005_storage_v2.sql");
 const MIGRATION_0006_SQL: &str = include_str!("../migrations/0006_asset_url_repair.sql");
 const MIGRATION_0007_SQL: &str = include_str!("../migrations/0007_project_json_repair.sql");
+const MIGRATION_0008_SQL: &str = "Allow the writing Panel kind in panels.kind.";
+const MIGRATION_0009_SQL: &str = "Allow the typesetting Panel kind in panels.kind.";
+const MIGRATION_0010_SQL: &str = "Allow the publishing Panel kind in panels.kind.";
 
 struct Migration {
     id: &'static str,
@@ -1710,6 +1837,24 @@ fn migrations() -> &'static [Migration] {
             description: "Rewrite legacy Session keys and paths in normalized JSON",
             checksum_material: MIGRATION_0007_SQL,
             up: migration_0007,
+        },
+        Migration {
+            id: "0008_writing_panel",
+            description: "Allow the Writing panel kind",
+            checksum_material: MIGRATION_0008_SQL,
+            up: migration_0008,
+        },
+        Migration {
+            id: "0009_typesetting_panel",
+            description: "Allow the Typesetting panel kind",
+            checksum_material: MIGRATION_0009_SQL,
+            up: migration_0009,
+        },
+        Migration {
+            id: "0010_publishing_panel",
+            description: "Allow the Publishing panel kind",
+            checksum_material: MIGRATION_0010_SQL,
+            up: migration_0010,
         },
     ]
 }
@@ -1928,6 +2073,129 @@ fn migration_0007(tx: &Transaction<'_>) -> Result<(), CliError> {
         rewrite_json_column(tx, table, column, hash_column, rewrite_legacy_project_json)?;
     }
     Ok(())
+}
+
+fn migration_0008(tx: &Transaction<'_>) -> Result<(), CliError> {
+    let schema: String = tx
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'panels'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(to_cli_error)?;
+    if schema.contains("'writing'") {
+        return Ok(());
+    }
+    let next_schema = schema.replace(
+        "kind IN ('wiki', 'canvas')",
+        "kind IN ('wiki', 'writing', 'canvas')",
+    );
+    if next_schema == schema {
+        return Err(CliError::new(
+            "Could not locate the panels.kind constraint for Writing migration.",
+        ));
+    }
+    tx.execute_batch("PRAGMA writable_schema = ON;")
+        .map_err(to_cli_error)?;
+    let result = (|| {
+        tx.execute(
+            "UPDATE sqlite_schema SET sql = ? WHERE type = 'table' AND name = 'panels'",
+            [next_schema],
+        )
+        .map_err(to_cli_error)?;
+        let schema_version: i64 = tx
+            .query_row("PRAGMA schema_version", [], |row| row.get(0))
+            .map_err(to_cli_error)?;
+        tx.execute_batch(&format!("PRAGMA schema_version = {};", schema_version + 1))
+            .map_err(to_cli_error)
+    })();
+    let disable_result = tx
+        .execute_batch("PRAGMA writable_schema = OFF;")
+        .map_err(to_cli_error);
+    result?;
+    disable_result
+}
+
+fn migration_0009(tx: &Transaction<'_>) -> Result<(), CliError> {
+    let schema: String = tx
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'panels'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(to_cli_error)?;
+    if schema.contains("'typesetting'") {
+        return Ok(());
+    }
+    let next_schema = schema.replace(
+        "kind IN ('wiki', 'writing', 'canvas')",
+        "kind IN ('wiki', 'writing', 'canvas', 'typesetting')",
+    );
+    if next_schema == schema {
+        return Err(CliError::new(
+            "Could not locate the panels.kind constraint for Typesetting migration.",
+        ));
+    }
+    tx.execute_batch("PRAGMA writable_schema = ON;")
+        .map_err(to_cli_error)?;
+    let result = (|| {
+        tx.execute(
+            "UPDATE sqlite_schema SET sql = ? WHERE type = 'table' AND name = 'panels'",
+            [next_schema],
+        )
+        .map_err(to_cli_error)?;
+        let schema_version: i64 = tx
+            .query_row("PRAGMA schema_version", [], |row| row.get(0))
+            .map_err(to_cli_error)?;
+        tx.execute_batch(&format!("PRAGMA schema_version = {};", schema_version + 1))
+            .map_err(to_cli_error)
+    })();
+    let disable_result = tx
+        .execute_batch("PRAGMA writable_schema = OFF;")
+        .map_err(to_cli_error);
+    result?;
+    disable_result
+}
+
+fn migration_0010(tx: &Transaction<'_>) -> Result<(), CliError> {
+    let schema: String = tx
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'panels'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(to_cli_error)?;
+    if schema.contains("'publishing'") {
+        return Ok(());
+    }
+    let next_schema = schema.replace(
+        "kind IN ('wiki', 'writing', 'canvas', 'typesetting')",
+        "kind IN ('wiki', 'writing', 'canvas', 'typesetting', 'publishing')",
+    );
+    if next_schema == schema {
+        return Err(CliError::new(
+            "Could not locate the panels.kind constraint for Publishing migration.",
+        ));
+    }
+    tx.execute_batch("PRAGMA writable_schema = ON;")
+        .map_err(to_cli_error)?;
+    let result = (|| {
+        tx.execute(
+            "UPDATE sqlite_schema SET sql = ? WHERE type = 'table' AND name = 'panels'",
+            [next_schema],
+        )
+        .map_err(to_cli_error)?;
+        let schema_version: i64 = tx
+            .query_row("PRAGMA schema_version", [], |row| row.get(0))
+            .map_err(to_cli_error)?;
+        tx.execute_batch(&format!("PRAGMA schema_version = {};", schema_version + 1))
+            .map_err(to_cli_error)
+    })();
+    let disable_result = tx
+        .execute_batch("PRAGMA writable_schema = OFF;")
+        .map_err(to_cli_error);
+    result?;
+    disable_result
 }
 
 fn rewrite_json_column(
@@ -2266,6 +2534,36 @@ mod tests {
             )
             .expect("operations migration count");
         assert_eq!(operations_migration_count, 1);
+
+        let typesetting_migration_count: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE id = '0009_typesetting_panel'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("typesetting migration count");
+        assert_eq!(typesetting_migration_count, 1);
+        let panels_schema: String = storage
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'panels'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("panels schema");
+        assert!(panels_schema.contains("'typesetting'"));
+
+        let publishing_migration_count: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE id = '0010_publishing_panel'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("publishing migration count");
+        assert_eq!(publishing_migration_count, 1);
+        assert!(panels_schema.contains("'publishing'"));
 
         let table_count: i64 = storage
             .connection

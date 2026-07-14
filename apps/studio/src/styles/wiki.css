@@ -47,7 +47,7 @@
 .op-wiki-panel__surface {
   width: min(1280px, calc(100vw - 40px));
   min-height: 100vh;
-  padding: 88px 0 96px;
+  padding: 20px 0 64px;
   margin: 0 auto;
   background: transparent;
 }
@@ -112,10 +112,295 @@
 
 .op-wiki-workbench {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-areas:
+    "raw structured"
+    "generated structured";
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 360px minmax(0, 1fr);
   gap: 16px;
-  height: calc(100vh - 184px);
+  height: calc(100vh - 84px);
   min-height: 280px;
+}
+
+.op-wiki-workbench > .op-wiki-column--raw {
+  grid-area: raw;
+}
+
+.op-wiki-workbench > .op-wiki-column--structured {
+  grid-area: structured;
+}
+
+.op-wiki-workbench > .op-wiki-column--generated {
+  grid-area: generated;
+}
+
+.op-wiki-workbench:not(.op-writing-workbench) > .op-wiki-column--raw,
+.op-wiki-workbench:not(.op-writing-workbench) > .op-wiki-column--generated {
+  min-height: 0;
+}
+
+.design-shell__workspace .op-writing-panel .op-wiki-panel__surface {
+  width: min(1440px, calc(100vw - 40px));
+}
+
+.op-writing-workbench {
+  grid-template-areas:
+    "structured composer generated"
+    "raw composer generated";
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.op-writing-workbench .op-wiki-column--structured {
+  grid-area: structured;
+}
+
+.op-writing-workbench .op-wiki-column--raw {
+  grid-area: raw;
+}
+
+.op-writing-workbench .op-writing-composer {
+  grid-area: composer;
+}
+
+.op-writing-workbench .op-wiki-column--generated {
+  grid-area: generated;
+}
+
+.op-writing-workbench .op-wiki-column--raw,
+.op-writing-workbench .op-wiki-column--structured {
+  min-height: 0;
+}
+
+.op-writing-composer__content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding-top: 14px;
+  overflow-y: auto;
+}
+
+.op-writing-mode {
+  flex: 0 0 auto;
+}
+
+.op-writing-target {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--op-text-secondary);
+}
+
+.op-writing-target select,
+.op-writing-target input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--op-text-primary);
+  background: var(--field-background);
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+}
+
+.op-writing-refinement {
+  display: grid;
+  gap: 12px;
+}
+
+.op-writing-refinement__intro {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px;
+  background: var(--op-bg-muted);
+  border: 1px solid var(--op-border-subtle);
+  border-radius: 8px;
+}
+
+.op-writing-refinement__intro > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.op-writing-refinement__intro div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.op-writing-refinement__intro strong {
+  font-size: 13px;
+}
+
+.op-writing-refinement__intro p,
+.op-writing-refinement__note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--op-text-secondary);
+}
+
+.op-writing-refinement__sources {
+  display: grid;
+  gap: 3px;
+  padding: 9px 0;
+  border-block: 1px solid var(--op-border-subtle);
+}
+
+.op-writing-refinement__sources strong {
+  font-size: 12px;
+}
+
+.op-writing-refinement__sources span {
+  font-size: 11px;
+  color: var(--op-text-tertiary);
+}
+
+.op-writing-skills {
+  display: grid;
+  gap: 8px;
+}
+
+.op-writing-skills__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.op-writing-skills__header > span {
+  color: var(--op-text-tertiary);
+}
+
+.op-writing-skills__list {
+  display: grid;
+  gap: 6px;
+}
+
+.op-writing-skill {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 9px;
+  background: var(--op-bg-muted);
+  border: 1px solid var(--op-border-subtle);
+  border-radius: 8px;
+}
+
+.op-writing-skill:has([data-selected="true"]) {
+  background: color-mix(in oklab, var(--accent) 8%, var(--op-bg-muted));
+  border-color: color-mix(in oklab, var(--accent) 42%, var(--op-border-subtle));
+}
+
+.op-writing-skill__body {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+}
+
+.op-writing-skill__title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.op-writing-skill__title > span {
+  flex: none;
+  padding: 2px 5px;
+  font-size: 10px;
+  color: var(--op-text-tertiary);
+  border: 1px solid var(--op-border-subtle);
+  border-radius: 6px;
+}
+
+.op-writing-skill__description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--op-text-secondary);
+}
+
+.op-writing-instructions {
+  width: 100%;
+  min-height: 170px;
+  max-height: 36vh;
+  padding: 12px;
+  color: var(--op-text-primary);
+  resize: vertical;
+  outline: none;
+  background: var(--field-background);
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+}
+
+.op-writing-instructions:focus {
+  border-color: var(--accent);
+}
+
+.op-writing-submit {
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 40px;
+}
+
+.op-writing-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.op-writing-requests {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 80px;
+  padding-top: 10px;
+  overflow-y: auto;
+  border-top: 1px solid var(--op-border-subtle);
+}
+
+.op-writing-request {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 48px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--op-border-subtle);
+}
+
+.op-writing-request__body {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+
+.op-writing-request__body strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.op-writing-request__body span {
+  font-size: 11px;
+  color: var(--op-text-tertiary);
+}
+
+.op-writing-request__body .op-writing-request__instruction {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .op-generated-document-status {
@@ -522,7 +807,82 @@
   letter-spacing: 0;
 }
 
+@container (max-width: 1100px) and (min-width: 761px) {
+  .op-wiki-workbench:not(.op-writing-workbench) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @container (max-width: 960px) {
+  .op-writing-workbench {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+  }
+
+  .op-writing-workbench .op-wiki-column {
+    height: max(280px, calc((100vh - 216px) / 3));
+    min-height: 280px;
+  }
+
+  .op-writing-workbench .op-wiki-column--structured {
+    order: 1;
+  }
+
+  .op-writing-workbench .op-wiki-column--raw {
+    order: 2;
+  }
+
+  .op-writing-workbench .op-writing-composer {
+    order: 3;
+  }
+
+  .op-writing-workbench .op-wiki-column--generated {
+    order: 4;
+  }
+
+  .op-writing-workbench .op-wiki-column__header-toggle {
+    position: absolute;
+    inset: -16px -16px -15px;
+    z-index: 0;
+    display: block;
+    padding: 0;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    border-radius: 7px 7px 0 0;
+  }
+
+  .op-writing-workbench .op-wiki-column__header-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  .op-writing-workbench .op-wiki-column--collapsed {
+    height: auto;
+    min-height: 0;
+  }
+
+  .op-writing-workbench .op-wiki-column--collapsed .op-wiki-column__header {
+    min-height: 32px;
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .op-writing-workbench
+    .op-wiki-column--collapsed
+    .op-wiki-column__header-toggle {
+    bottom: -16px;
+    border-radius: 7px;
+  }
+
+  .op-writing-workbench .op-wiki-column--collapsed .op-wiki-column__content,
+  .op-writing-workbench .op-wiki-column--collapsed .op-wiki-drop-hint {
+    display: none;
+  }
+}
+
+@container (max-width: 760px) {
   .op-wiki-workbench {
     display: flex;
     flex-direction: column;
@@ -532,6 +892,34 @@
   .op-wiki-column {
     height: max(280px, calc((100vh - 216px) / 3));
     min-height: 280px;
+  }
+
+  .op-wiki-workbench:not(.op-writing-workbench) .op-wiki-column--structured {
+    order: 1;
+  }
+
+  .op-wiki-workbench:not(.op-writing-workbench) .op-wiki-column--raw {
+    order: 2;
+  }
+
+  .op-wiki-workbench:not(.op-writing-workbench) .op-wiki-column--generated {
+    order: 3;
+  }
+
+  .op-writing-workbench .op-wiki-column--structured {
+    order: 1;
+  }
+
+  .op-writing-workbench .op-wiki-column--raw {
+    order: 2;
+  }
+
+  .op-writing-workbench .op-writing-composer {
+    order: 3;
+  }
+
+  .op-writing-workbench .op-wiki-column--generated {
+    order: 4;
   }
 
   .op-wiki-column__header-toggle {

@@ -19,6 +19,17 @@ pub(super) fn get_wiki_bootstrap(
     paths: &MyOpenPanelsPaths,
 ) -> Result<WikiBootstrapValue, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    if matches!(
+        bootstrap.active_panel_kind,
+        PanelKind::Writing | PanelKind::Typesetting
+    ) {
+        let wiki_panel = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
+            .ok_or_else(|| CliError::new("The current Project has no Wiki panel."))?;
+        return get_wiki_target(paths, &bootstrap.project.id, &wiki_panel.panel.id);
+    }
     if bootstrap.active_panel_kind != PanelKind::Wiki {
         return Err(CliError::with_recovery(
             "panel_kind_mismatch",
@@ -154,6 +165,75 @@ fn read_tasks(storage: &Storage, project_id: &str, panel_id: &str) -> Result<Vec
         })
         .collect::<Vec<_>>();
     Ok(tasks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::{create_project, ensure_project_bootstrap};
+    use crate::paths::resolve_myopenpanels_paths;
+
+    #[test]
+    fn typesetting_reads_wiki_documents_without_changing_focus() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join("storage");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let created = create_project(&paths, Some("Project")).expect("project");
+        let raw = crate::wiki::add_raw_document(
+            &paths,
+            "raw.md",
+            Some("Raw"),
+            Some("text/markdown"),
+            "user",
+            None,
+            b"# Raw content",
+        )
+        .expect("raw document");
+        let generated = crate::wiki::create_generated_document(
+            &paths,
+            "generated.md",
+            Some("Generated"),
+            Some("text/markdown"),
+            None,
+            None,
+            b"# Generated content",
+        )
+        .expect("generated document");
+        ensure_project_bootstrap(
+            &paths,
+            BootstrapRequest {
+                requested_project_id: Some(created.project.id.clone()),
+                requested_panel_id: None,
+                requested_panel_kind: Some(PanelKind::Typesetting),
+            },
+        )
+        .expect("typesetting focus");
+
+        let raw_id = raw["document"]["id"].as_str().expect("raw id");
+        let generated_id = generated["document"]["id"].as_str().expect("generated id");
+        assert_eq!(
+            crate::wiki::read_markdown(&paths, raw_id).expect("read raw")["markdown"],
+            "# Raw content"
+        );
+        assert_eq!(
+            crate::wiki::read_generated_document(&paths, generated_id).expect("read generated")
+                ["content"],
+            "# Generated content"
+        );
+        assert_eq!(
+            read_project_bootstrap(&paths, BootstrapRequest::new())
+                .expect("focused bootstrap")
+                .active_panel_kind,
+            PanelKind::Typesetting
+        );
+    }
 }
 
 pub(super) fn ensure_default_wiki_files(

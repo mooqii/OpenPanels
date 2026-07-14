@@ -697,7 +697,7 @@ fn project_read_commands_bootstrap_project() {
             .iter()
             .map(|panel| panel["kind"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["wiki", "canvas"]
+        vec!["wiki", "writing", "canvas", "typesetting", "publishing"]
     );
     assert_eq!(stderr, "");
 
@@ -736,7 +736,7 @@ fn project_read_commands_bootstrap_project() {
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(bootstrap["protocolVersion"], 5);
-    assert_eq!(bootstrap["commandCatalogVersion"], 4);
+    assert_eq!(bootstrap["commandCatalogVersion"], 5);
     assert_eq!(bootstrap["panel"]["context"]["panelKind"], "canvas");
     assert_eq!(bootstrap["panel"]["selection"]["supported"], true);
     assert!(bootstrap.get("capabilities").is_none());
@@ -748,6 +748,46 @@ fn project_read_commands_bootstrap_project() {
     assert_eq!(required_skill["id"], "canvas-panel");
     assert!(Path::new(required_skill["contextPath"].as_str().unwrap()).is_file());
     assert!(Path::new(required_skill["localPath"].as_str().unwrap()).is_file());
+
+    let (code, stdout, stderr) = run(&[
+        "panel",
+        "activate",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--panel-kind",
+        "writing",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bootstrap",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(bootstrap["panel"]["context"]["panelKind"], "writing");
+    assert_eq!(
+        bootstrap["focus"]["availablePanelKinds"],
+        json!(["wiki", "writing", "canvas", "typesetting", "publishing"])
+    );
+    assert_eq!(
+        bootstrap["nextRequiredAction"]["steps"][0]["skills"][0]["id"],
+        "writing-panel"
+    );
 }
 
 #[test]
@@ -898,7 +938,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert_eq!(payload["protocolVersion"], 5);
     assert!(payload.get("supportedProtocolVersions").is_none());
     assert_eq!(payload["cliVersion"], VERSION);
-    assert_eq!(payload["commandCatalogVersion"], 4);
+    assert_eq!(payload["commandCatalogVersion"], 5);
     assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
     assert!(payload.get("entrySkill").is_none());
     assert!(payload.get("entrySkillUpdate").is_none());
@@ -949,7 +989,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     let (code, stdout, stderr) = run(&["agent", "capability", "list", "--format", "json"]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let index = serde_json::from_str::<Value>(&stdout).expect("scope index");
-    assert_eq!(index["catalogVersion"], 4);
+    assert_eq!(index["catalogVersion"], 5);
     for action in index["nextActions"].as_array().unwrap() {
         assert_action_parses(action);
     }
@@ -970,7 +1010,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     ]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let wiki_capabilities = serde_json::from_str::<Value>(&stdout).expect("wiki capabilities");
-    assert_eq!(wiki_capabilities["catalogVersion"], 4);
+    assert_eq!(wiki_capabilities["catalogVersion"], 5);
     assert_eq!(wiki_capabilities["scope"], "wiki");
     let page_search = wiki_capabilities["capabilities"]
         .as_array()
@@ -979,7 +1019,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
         .find(|capability| capability["intent"] == "wiki.page.search")
         .expect("page search summary");
     assert!(page_search.get("args").is_none());
-    assert_eq!(page_search["requiredPanelKind"], "wiki");
+    assert!(page_search["requiredPanelKind"].is_null());
     assert_eq!(page_search["command"], "myopenpanels wiki page search");
     assert_eq!(
         page_search["readCommand"],
@@ -1008,7 +1048,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     ]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let page_search = serde_json::from_str::<Value>(&stdout).expect("page search descriptor");
-    assert_eq!(page_search["catalogVersion"], 4);
+    assert_eq!(page_search["catalogVersion"], 5);
     assert_eq!(page_search["capability"]["intent"], "wiki.page.search");
     assert!(page_search["capability"]["args"].as_array().is_some());
     assert!(page_search["capability"].get("argv").is_none());
@@ -1047,7 +1087,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
         "ctx",
     ]);
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout.trim(), "5 skills");
+    assert_eq!(stdout.trim(), "10 skills");
     assert!(!stdout.contains(".myopenpanels"));
     assert!(!stdout.contains("SKILL.md"));
 
@@ -1066,7 +1106,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let skills_payload = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(skills_payload["skills"].as_array().unwrap().len(), 5);
+    assert_eq!(skills_payload["skills"].as_array().unwrap().len(), 10);
     assert_eq!(skills_payload["skills"][0]["id"], "canvas-panel");
     assert!(skills_payload["skills"][0].get("localPath").is_none());
     assert!(skills_payload["skills"][0]
@@ -1076,6 +1116,14 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert_eq!(skills_payload["skills"][2]["id"], "karpathy-llm-wiki-zh");
     assert_eq!(skills_payload["skills"][3]["id"], "task-queue");
     assert_eq!(skills_payload["skills"][4]["id"], "wiki-panel");
+    assert_eq!(skills_payload["skills"][5]["id"], "writing-default");
+    assert_eq!(skills_payload["skills"][6]["id"], "writing-long-article");
+    assert_eq!(skills_payload["skills"][7]["id"], "writing-panel");
+    assert_eq!(skills_payload["skills"][8]["id"], "writing-skill-refiner");
+    assert_eq!(
+        skills_payload["skills"][9]["id"],
+        "writing-xiaohongshu-note"
+    );
     assert!(skills_payload["skills"][0]["taskTypes"]
         .as_array()
         .unwrap()
@@ -3847,8 +3895,8 @@ fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing()
 fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
     let install = include_str!("../../../../skills/myopenpanels/references/install.md");
-    assert!(skill.contains("version: \"4.2\""));
-    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "4.2");
+    assert!(skill.contains("version: \"4.3\""));
+    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "4.3");
     assert!(skill.lines().count() <= 60);
     assert!(skill.contains("references/install.md"));
     assert!(!skill.contains("curl -fsSL"));

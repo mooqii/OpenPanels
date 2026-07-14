@@ -16,7 +16,9 @@ pub mod studio;
 pub mod tasks;
 pub mod trace;
 pub mod types;
+pub mod typesetting;
 pub mod update;
 pub mod wiki;
+pub mod writing;
 
 pub use cli::run_cli;

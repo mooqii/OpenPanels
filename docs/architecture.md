@@ -2,7 +2,7 @@
 
 ## Runtime boundaries
 
-MyOpenPanels has two supported panels: Wiki and Canvas. Every Project exposes
+MyOpenPanels has five supported panels: Wiki, Writing, Canvas, Typesetting, and Publishing. Every Project exposes
 them in that fixed order. Panel state and structured runtime data live in
 SQLite; large assets and Wiki Markdown remain on disk below the Project panel
 directory.
@@ -19,6 +19,13 @@ and its `change_scopes` revision must commit in the same transaction.
   lifecycle, leases, retries, assignment, results, and errors.
 - Wiki panel state owns documents, spaces, rules, page indexes, and ingestion
   projections. It does not persist Agent process records.
+- Project Writing Skills live below the Project storage directory and are
+  loaded only for that Project; each generated Skill has a task-bound manifest
+  and a self-contained `SKILL.md`.
+- Typesetting panel state owns publication projects, ordered cover references,
+  and Tiptap JSON content. Imported images are copied into the Typesetting
+  panel so they do not depend on the source Canvas asset lifecycle.
+- Publishing panel state is reserved for the publishing workflow scaffold.
 - `agent_operations` owns persistent Canvas and Wiki generation operations.
 - `studio/instance.json` owns the storage-wide Studio process binding, while
   `studio/focus/` owns the single user-visible Project and Panel focus.
@@ -43,7 +50,7 @@ back up unsupported historical Panel records before removing them.
 | Task lifecycle | Stable | `tasks` and `/api/tasks/*` |
 | Agent targets | Stable | `agent_targets` and `/api/agent/targets/*` |
 | Agent guidance | Skill-only | `agent skill list/read` |
-| Panel kinds | Wiki and Canvas only | `panels.kind` constraint |
+| Panel kinds | Wiki, Writing, Canvas, Typesetting, and Publishing | `panels.kind` constraint |
 | CLI self-update | Release-critical | Previously installed CLI updater |
 | Wiki Task/target routes | Removed | No compatibility handler |
 

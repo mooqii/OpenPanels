@@ -1,4 +1,9 @@
-export type MyOpenPanelsPanelKind = "wiki" | "canvas"
+export type MyOpenPanelsPanelKind =
+  | "wiki"
+  | "writing"
+  | "canvas"
+  | "typesetting"
+  | "publishing"
 
 export interface MyOpenPanelsProject {
   createdAt: string

@@ -9,7 +9,9 @@ import type {
   BootstrapResponse,
   PanelStateSnapshot,
   ProjectTask,
+  TypesettingState,
   WikiState,
+  WritingState,
 } from "../types"
 import {
   canvasAssetStoreKey,
@@ -61,6 +63,64 @@ describe("mergeLiveProjectBootstrap", () => {
     expect(result.canvasSnapshot).toBe(localCanvas)
     expect(result.appState.pendingTaskCount).toBe(1)
     expect(result.appState.tasks).toEqual([task])
+  })
+
+  it("updates Writing state without reloading the canvas", () => {
+    const localCanvas = canvasSnapshot("Local edits", 120)
+    const current = appState({ canvasRevision: 7, canvasSnapshot: localCanvas })
+    const remote = appState({ canvasRevision: 7, canvasSnapshot: localCanvas })
+    const writing = remote.panels.find(
+      ({ panel: candidate }) => candidate.kind === "writing"
+    )
+    if (!writing) throw new Error("Missing Writing panel")
+    writing.revision += 1
+    writing.state = { ...writingState(), draft: "New prompt" }
+
+    const result = mergeLiveProjectBootstrap({
+      current,
+      currentCanvasRevision: 7,
+      currentCanvasSnapshot: localCanvas,
+      remote,
+    })
+
+    expect(result.changed).toBe(true)
+    expect(result.shouldReloadCanvas).toBe(false)
+    expect(result.canvasSnapshot).toBe(localCanvas)
+  })
+
+  it("updates Typesetting state without reloading the canvas", () => {
+    const localCanvas = canvasSnapshot("Local edits", 120)
+    const current = appState({ canvasRevision: 7, canvasSnapshot: localCanvas })
+    const remote = appState({ canvasRevision: 7, canvasSnapshot: localCanvas })
+    const typesetting = remote.panels.find(
+      ({ panel: candidate }) => candidate.kind === "typesetting"
+    )
+    if (!typesetting) throw new Error("Missing Typesetting panel")
+    typesetting.revision += 1
+    typesetting.state = {
+      ...typesettingState(),
+      publications: [
+        {
+          content: { type: "doc", content: [{ type: "paragraph" }] },
+          covers: [],
+          createdAt: "2026-07-09T00:00:00.000Z",
+          id: "publication:1",
+          title: "New publication",
+          updatedAt: "2026-07-09T00:00:00.000Z",
+        },
+      ],
+    }
+
+    const result = mergeLiveProjectBootstrap({
+      current,
+      currentCanvasRevision: 7,
+      currentCanvasSnapshot: localCanvas,
+      remote,
+    })
+
+    expect(result.changed).toBe(true)
+    expect(result.shouldReloadCanvas).toBe(false)
+    expect(result.canvasSnapshot).toBe(localCanvas)
   })
 
   it("updates operation status without reloading or clearing the canvas", () => {
@@ -182,12 +242,21 @@ function appState({
   const project = {
     createdAt: "2026-07-09T00:00:00.000Z",
     id: "project:1",
-    panelIds: ["panel:wiki", "panel:canvas"],
+    panelIds: [
+      "panel:wiki",
+      "panel:writing",
+      "panel:canvas",
+      "panel:typesetting",
+      "panel:publishing",
+    ],
     title: "Project",
     updatedAt: "2026-07-09T00:00:00.000Z",
   }
   const wikiPanel = panel("wiki", "panel:wiki")
   const canvasPanel = panel("canvas", "panel:canvas")
+  const writingPanel = panel("writing", "panel:writing")
+  const typesettingPanel = panel("typesetting", "panel:typesetting")
+  const publishingPanel = panel("publishing", "panel:publishing")
   const wikiSnapshot: PanelStateSnapshot = {
     panel: wikiPanel,
     revision: 3,
@@ -198,17 +267,57 @@ function appState({
     revision: canvasRevision,
     state: canvasSnapshot,
   }
+  const writingSnapshot: PanelStateSnapshot = {
+    panel: writingPanel,
+    revision: 1,
+    state: writingState(),
+  }
+  const typesettingSnapshot: PanelStateSnapshot = {
+    panel: typesettingPanel,
+    revision: 1,
+    state: typesettingState(),
+  }
+  const publishingSnapshot: PanelStateSnapshot = {
+    panel: publishingPanel,
+    revision: 1,
+    state: { schemaVersion: 1 },
+  }
   return {
     activePanelId: canvasPanel.id,
     activePanelKind: "canvas",
     agentOperations,
     panel: canvasPanel,
-    panels: [wikiSnapshot, canvasPanelSnapshot],
+    panels: [
+      wikiSnapshot,
+      writingSnapshot,
+      canvasPanelSnapshot,
+      typesettingSnapshot,
+      publishingSnapshot,
+    ],
     pendingTaskCount,
     revision: canvasRevision,
     project,
     state: canvasSnapshot,
     tasks,
+  }
+}
+
+function writingState(): WritingState {
+  return {
+    draft: "",
+    mode: "create",
+    refinementName: "",
+    schemaVersion: 5,
+    selectedCreateWritingSkillIds: ["writing-default"],
+    selectedRevisionWritingSkillId: "writing-default",
+    targetGeneratedDocumentId: null,
+  }
+}
+
+function typesettingState(): TypesettingState {
+  return {
+    publications: [],
+    schemaVersion: 1,
   }
 }
 

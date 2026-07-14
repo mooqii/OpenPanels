@@ -403,7 +403,10 @@ pub fn claim_next_filtered(
 }
 
 fn is_database_locked(error: &CliError) -> bool {
-    error.message().to_ascii_lowercase().contains("database is locked")
+    error
+        .message()
+        .to_ascii_lowercase()
+        .contains("database is locked")
 }
 
 pub fn claim_task(
@@ -452,6 +455,7 @@ fn claim_once(
 
     let claim_result = match reserved.queue.as_str() {
         "wiki" => crate::wiki::claim_task(paths, &reserved.id),
+        "writing" => crate::writing::claim_task(paths, &reserved.id),
         queue => Err(CliError::with_code(
             "queue_adapter_missing",
             format!("No task lifecycle adapter is available for queue: {queue}"),
@@ -518,6 +522,7 @@ pub fn heartbeat_task(
     let expires_at = lease_expires_at();
     match lease["queue"].as_str().unwrap_or("") {
         "wiki" => crate::wiki::heartbeat_task(paths, task_id, &expires_at)?,
+        "writing" => crate::writing::heartbeat_task(paths, task_id)?,
         queue => {
             return Err(CliError::with_code(
                 "queue_adapter_missing",
@@ -551,6 +556,7 @@ pub fn complete_task(
     let lease = verify_lease(paths, task_id, lease_token)?;
     match lease["queue"].as_str().unwrap_or("") {
         "wiki" => crate::wiki::complete_task(paths, task_id, result.clone())?,
+        "writing" => crate::writing::complete_task(paths, task_id)?,
         queue => {
             return Err(CliError::with_code(
                 "queue_adapter_missing",
@@ -582,6 +588,7 @@ pub fn fail_task(
         .unwrap_or_else(|| execution_retry_after(lease["attempt"].as_i64().unwrap_or(1)));
     match lease["queue"].as_str().unwrap_or("") {
         "wiki" => crate::wiki::fail_task_with_retry(paths, task_id, message, Some(&retry_after))?,
+        "writing" => crate::writing::fail_task(paths, task_id, message)?,
         queue => {
             return Err(CliError::with_code(
                 "queue_adapter_missing",
@@ -620,6 +627,7 @@ pub fn release_task(
     let lease = verify_lease(paths, task_id, lease_token)?;
     match lease["queue"].as_str().unwrap_or("") {
         "wiki" => crate::wiki::release_task(paths, task_id)?,
+        "writing" => crate::writing::release_task(paths, task_id)?,
         queue => {
             return Err(CliError::with_code(
                 "queue_adapter_missing",
@@ -658,6 +666,7 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
         .to_owned();
     match task["task"]["queue"].as_str().unwrap_or("") {
         "wiki" => crate::wiki::retry_task(paths, task_id)?,
+        "writing" => crate::writing::retry_task(paths, task_id)?,
         queue => {
             return Err(CliError::with_code(
                 "queue_adapter_missing",
@@ -678,6 +687,7 @@ pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cl
         .to_owned();
     match task["task"]["queue"].as_str().unwrap_or("") {
         "wiki" => crate::wiki::cancel_task(paths, task_id)?,
+        "writing" => crate::writing::cancel_task(paths, task_id)?,
         queue => {
             return Err(CliError::with_code(
                 "queue_adapter_missing",

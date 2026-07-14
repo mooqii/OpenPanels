@@ -409,7 +409,17 @@ fn local_agent_task_prompt(paths: &MyOpenPanelsPaths, task: &Value) -> Result<St
     } else {
         String::new()
     };
+    let writing_skill = task
+        .pointer("/input/writingSkillId")
+        .and_then(Value::as_str)
+        .unwrap_or("<writing-skill-id>");
     let wiki_steps = match task_type {
+        "generate_document" if task.get("queue").and_then(Value::as_str) == Some("writing") => format!(
+            "Load `{cli} agent skill read --skill-id writing-panel --task-id {task_id} --format json` and read the returned SKILL.md. Read the immutable request with `{cli} writing request read --task-id {task_id} --format json`, then load `{cli} agent skill read --skill-id {writing_skill} --task-id {task_id} --format json` and follow that Writing Skill. Load only the captured sources, begin with `{cli} writing generation begin --task-id {task_id} --title <title> --document-format markdown --format json`, then complete the returned Operation with the generated UTF-8 document."
+        ),
+        "refine_writing_skill" if task.get("queue").and_then(Value::as_str) == Some("writing") => format!(
+            "Load `{cli} agent skill read --skill-id writing-panel --task-id {task_id} --format json` and `{cli} agent skill read --skill-id writing-skill-refiner --task-id {task_id} --format json`. Read the immutable request with `{cli} writing refinement read --task-id {task_id} --format json`. Read every captured raw or generated document, never read Wiki pages, produce the required self-contained SKILL.md, then install it with `{cli} writing skill install --task-id {task_id} --skill-file <SKILL.md> --format json`."
+        ),
         "ingest_markdown_into_wiki" => format!(
             "Load the Wiki panel contract with `{cli} agent skill wiki-panel --task-id {task_id} --format json`, then read its authoring routing reference. Read the source with `{cli} wiki markdown read --document-id {document_id} --format json`. Load the selected authoring skill with `{cli} agent skill {wiki_skill} --task-id {task_id} --format json`, read its SKILL.md, then update useful Wiki pages in `{wiki_space_id}` using `wiki pages write --task-id {task_id}`."
         ),
@@ -613,4 +623,38 @@ fn shell_command(command: &str) -> Command {
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {
     CliError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writing_bridge_prompt_loads_the_task_selected_skill() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().join("project");
+        let storage = temp.path().join("storage");
+        fs::create_dir_all(&project).expect("project");
+        let paths = crate::paths::resolve_myopenpanels_paths(
+            Some(project.to_str().unwrap()),
+            Some(storage.to_str().unwrap()),
+            Some("bridge-writing-test"),
+        )
+        .expect("paths");
+        let prompt = local_agent_task_prompt(
+            &paths,
+            &json!({
+                "id": "task:writing",
+                "queue": "writing",
+                "type": "generate_document",
+                "capability": "writing.generateDocument",
+                "input": { "writingSkillId": "writing-xiaohongshu-note" },
+                "source": {},
+            }),
+        )
+        .expect("prompt");
+
+        assert!(prompt.contains("--skill-id writing-xiaohongshu-note"));
+        assert!(prompt.contains("follow that Writing Skill"));
+    }
 }

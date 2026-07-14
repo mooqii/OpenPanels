@@ -1,3 +1,4 @@
+import type { JSONContent } from "@tiptap/core"
 import type {
   MyOpenPanelsPanel,
   MyOpenPanelsPanelKind,
@@ -218,6 +219,60 @@ export interface WikiState {
   wikiAgentSkillConfigured?: boolean
   wikiAgentSkillId?: string | null
   wikiSpaces: WikiSpace[]
+}
+
+export interface WritingState {
+  draft: string
+  mode: "create" | "revise" | "refine"
+  refinementName: string
+  schemaVersion: 5
+  selectedCreateWritingSkillIds: string[]
+  selectedRevisionWritingSkillId: string | null
+  targetGeneratedDocumentId: string | null
+}
+
+export interface TypesettingState {
+  publications: TypesettingPublication[]
+  schemaVersion: 1
+}
+
+export interface PublishingState {
+  schemaVersion: 1
+}
+
+export interface TypesettingPublication {
+  content: JSONContent
+  covers: TypesettingPublicationImage[]
+  createdAt: string
+  id: string
+  title: string
+  updatedAt: string
+}
+
+export interface TypesettingPublicationImage {
+  assetRef: string
+  fileName: string
+  height?: number
+  mimeType: string
+  sourceAssetRef: string
+  sourceCanvasPanelId: string
+  sourceProjectId: string
+  src: string
+  width?: number
+}
+
+export interface TypesettingCanvasAsset {
+  assetId: string
+  assetRef: string
+  canvasPanelId: string
+  height?: number
+  id: string
+  mimeType: string
+  name: string
+  projectId: string
+  projectTitle: string
+  src: string
+  width?: number
 }
 
 export interface WikiGeneratedDocument {

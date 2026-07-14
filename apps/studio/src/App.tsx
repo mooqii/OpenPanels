@@ -13,6 +13,7 @@ import {
   MyOpenPanelsBrowserAssetStore,
   ProjectChrome,
 } from "./components/project/ProjectChrome"
+import { PublishingPanel } from "./components/publishing/PublishingPanel"
 import {
   AgentPanel,
   type AgentPanelTab,
@@ -20,6 +21,7 @@ import {
   BuildVersionBadge,
   type TaskFilter,
 } from "./components/trace/TracePanel"
+import { TypesettingPanel } from "./components/typesetting/TypesettingPanel"
 import {
   type StudioRuntimeState,
   StudioRuntimeStatus,
@@ -46,9 +48,12 @@ import {
   normalizeSnapshot,
   requestUpdateDownload,
   requestUpdateInstallRestart,
-  savePanelState,
+  saveCanvasPanelState,
   saveSelectionState,
+  typesettingRevisionFromAppState,
+  typesettingStateFromAppState,
   wikiStateFromAppState,
+  writingStateFromAppState,
 } from "./lib/api"
 import { mergeLiveProjectBootstrap, sameSelectedShapeIds } from "./lib/app-sync"
 import {
@@ -74,6 +79,7 @@ import type {
   BootstrapResponse,
   MyOpenPanelsTransport,
   MyOpenPanelsUpdateStatus,
+  TypesettingState,
 } from "./types"
 
 type UpdateAction =
@@ -324,7 +330,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       const changedPanel = current.panels.find(
         ({ panel }) => panel.id === change.panelId
       )?.panel
-      if (changedPanel?.kind === "wiki") {
+      if (changedPanel?.kind === "wiki" || changedPanel?.kind === "writing") {
         setWikiSelectionVersion((version) => version + 1)
         return
       }
@@ -669,7 +675,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     if (!(current && snapshot && panel)) return
 
     const generation = canvasSaveGenerationRef.current
-    const payload = await savePanelState(
+    const payload = await saveCanvasPanelState(
       transport,
       current.project.id,
       panel.id,
@@ -681,6 +687,37 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       canvasDirtyRef.current = false
     }
   }, [transport])
+
+  const handleTypesettingStateSaved = useCallback(
+    (savedState: TypesettingState, savedRevision: number) => {
+      setAppState((current) => {
+        if (!current) return current
+        const next = {
+          ...current,
+          panels: current.panels.map((snapshot) =>
+            snapshot.panel.kind === "typesetting"
+              ? {
+                  ...snapshot,
+                  revision: savedRevision,
+                  state: savedState,
+                }
+              : snapshot
+          ),
+          revision:
+            current.activePanelKind === "typesetting"
+              ? savedRevision
+              : current.revision,
+          state:
+            current.activePanelKind === "typesetting"
+              ? savedState
+              : current.state,
+        }
+        appStateRef.current = next
+        return next
+      })
+    },
+    []
+  )
 
   useEffect(() => {
     if (!(appState && canvasPanel && canvasSnapshot)) return
@@ -962,13 +999,39 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             snapshotVersion={snapshotLoadVersion}
             titleChromeContent={projectChrome}
           />
+        ) : appState.activePanelKind === "typesetting" ? (
+          <TypesettingPanel
+            chromeContent={projectChrome}
+            key={`${appState.project.id}:typesetting`}
+            onStateSaved={handleTypesettingStateSaved}
+            panelId={appState.panel.id}
+            projectId={appState.project.id}
+            revision={typesettingRevisionFromAppState(appState)}
+            state={typesettingStateFromAppState(appState)}
+            transport={transport}
+            wiki={wikiStateFromAppState(appState)}
+          />
+        ) : appState.activePanelKind === "publishing" ? (
+          <PublishingPanel
+            chromeContent={projectChrome}
+            key={`${appState.project.id}:publishing`}
+          />
         ) : (
           <WikiPanel
             chromeContent={projectChrome}
+            key={`${appState.project.id}:${appState.activePanelKind}`}
             onReload={reloadCurrentProject}
             selectionVersion={wikiSelectionVersion}
             state={wikiStateFromAppState(appState)}
             transport={transport}
+            writing={
+              appState.activePanelKind === "writing"
+                ? {
+                    state: writingStateFromAppState(appState),
+                    tasks: appState.tasks ?? [],
+                  }
+                : undefined
+            }
           />
         )}
         <BottomPanelTabs

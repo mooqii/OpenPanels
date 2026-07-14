@@ -2,7 +2,7 @@ use clap::{ArgAction, Command};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const COMMAND_CATALOG_VERSION: u32 = 4;
+pub(crate) const COMMAND_CATALOG_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommandId {
@@ -20,6 +20,7 @@ pub(crate) enum CommandGroup {
     Panel,
     Canvas,
     Wiki,
+    Writing,
     Task,
     Operation,
     Agent,
@@ -65,6 +66,7 @@ impl CommandId {
                 "panel" => CommandGroup::Panel,
                 "canvas" => CommandGroup::Canvas,
                 "wiki" => CommandGroup::Wiki,
+                "writing" => CommandGroup::Writing,
                 "task" => CommandGroup::Task,
                 "operation" => CommandGroup::Operation,
                 "agent" => CommandGroup::Agent,
@@ -293,8 +295,7 @@ const SPECS: &[CommandSpec] = &[
         "List Wiki Raw Documents",
         "wiki",
         "current-focus",
-        false,
-        panel = "wiki"
+        false
     ),
     spec!(
         "wiki.raw-document.add",
@@ -320,8 +321,7 @@ const SPECS: &[CommandSpec] = &[
         "Read Raw Document Markdown",
         "wiki",
         "current-focus",
-        false,
-        panel = "wiki"
+        false
     ),
     spec!(
         "wiki.raw-document.markdown.write",
@@ -338,8 +338,7 @@ const SPECS: &[CommandSpec] = &[
         "List Generated Documents",
         "wiki",
         "current-focus",
-        false,
-        panel = "wiki"
+        false
     ),
     spec!(
         "wiki.generated-document.create",
@@ -356,8 +355,7 @@ const SPECS: &[CommandSpec] = &[
         "Read a Generated Document",
         "wiki",
         "current-focus",
-        false,
-        panel = "wiki"
+        false
     ),
     spec!(
         "wiki.generated-document.write",
@@ -401,8 +399,7 @@ const SPECS: &[CommandSpec] = &[
         "List Wiki Spaces",
         "wiki",
         "current-focus",
-        false,
-        panel = "wiki"
+        false
     ),
     spec!(
         "wiki.space.activate",
@@ -419,8 +416,7 @@ const SPECS: &[CommandSpec] = &[
         "List Wiki Pages",
         "wiki",
         "current-focus",
-        false,
-        panel = "wiki"
+        false
     ),
     spec!(
         "wiki.page.search",
@@ -428,8 +424,7 @@ const SPECS: &[CommandSpec] = &[
         "Search Wiki Pages",
         "wiki",
         "current-focus",
-        false,
-        panel = "wiki"
+        false
     ),
     spec!(
         "wiki.page.read",
@@ -437,8 +432,7 @@ const SPECS: &[CommandSpec] = &[
         "Read a Wiki Page",
         "wiki",
         "current-focus",
-        false,
-        panel = "wiki"
+        false
     ),
     spec!(
         "wiki.page.write",
@@ -457,6 +451,38 @@ const SPECS: &[CommandSpec] = &[
         "current-focus",
         true,
         panel = "wiki"
+    ),
+    spec!(
+        "writing.request.read",
+        ["writing", "request", "read"],
+        "Read a submitted Writing request",
+        "writing",
+        "task",
+        false
+    ),
+    spec!(
+        "writing.generation.begin",
+        ["writing", "generation", "begin"],
+        "Begin Writing document generation",
+        "writing",
+        "task",
+        true
+    ),
+    spec!(
+        "writing.refinement.read",
+        ["writing", "refinement", "read"],
+        "Read a submitted Writing Skill refinement",
+        "writing",
+        "task",
+        false
+    ),
+    spec!(
+        "writing.skill.install",
+        ["writing", "skill", "install"],
+        "Install a refined project Writing Skill",
+        "writing",
+        "task",
+        true
     ),
     spec!(
         "task.list",
@@ -699,6 +725,12 @@ pub(crate) fn capabilities() -> Vec<Value> {
         .filter(|spec| spec.agent_exposed)
         .filter_map(descriptor)
         .collect()
+}
+
+pub(crate) fn has_scope(scope: &str) -> bool {
+    SPECS
+        .iter()
+        .any(|spec| spec.agent_exposed && spec.scope == scope)
 }
 
 pub(crate) fn command_action(command_id: CommandId, args: Vec<String>) -> Option<Value> {

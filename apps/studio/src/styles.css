@@ -1,5 +1,7 @@
 @import "./styles/base.css";
 @import "./styles/trace.css";
 @import "./styles/wiki.css";
+@import "./styles/typesetting.css";
+@import "./styles/publishing.css";
 @import "./styles/dialogs.css";
 @import "./styles/chrome.css";

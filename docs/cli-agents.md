@@ -16,7 +16,7 @@ myopenpanels --version
 
 The recommended agent skill uses the installed `myopenpanels` binary as the
 stable entry point. Panel-specific instructions are returned by the CLI through
-`agent bootstrap`, so users do not need to keep separate canvas/wiki skills
+`agent bootstrap`, so users do not need to keep separate canvas/wiki/writing skills
 manually updated.
 
 The bounded context renderer, Command Registry, built-in workflow guides,
@@ -88,11 +88,25 @@ or own a separate Studio process.
   document, and authoring-skill routing rules.
 - `myopenpanels agent skill read --skill-id canvas-panel`: load Canvas selection,
   generation, placement, and workflow-skill routing rules.
+- `myopenpanels agent skill read --skill-id writing-panel`: load Writing request,
+  captured-context, generation Operation, and task lifecycle rules.
+- Typesetting is Studio-managed in its first release. Bootstrap reports basic
+  publication context, but the panel has no Agent Skill or selection API.
 - `myopenpanels panel selection read`: read the active panel's explicit selection
   through its Panel Module. Canvas reads return a directly usable local image
   path when the selection has image pixels; composites are rendered lazily.
 - `myopenpanels wiki page search`: search the selected Wiki space before
   reading relevant pages.
+- `myopenpanels writing request read --task-id <id>`: read a claimed Writing
+  request's complete instruction, selected Writing Skill, required Skill-load
+  action, and immutable context snapshot.
+- `myopenpanels writing generation begin --task-id <id> --title <title>`: begin
+  the request-bound generated-document Operation without allowing the Agent to
+  override the captured Wiki panel or revision target.
+- `myopenpanels writing refinement read --task-id <id>`: read the immutable
+  project Writing Skill name and selected raw/generated source documents.
+- `myopenpanels writing skill install --task-id <id> --skill-file <SKILL.md>`:
+  validate and atomically install the task-bound Writing Skill into its Project.
 - `myopenpanels agent skill read --skill-id task-queue`: load the generic Task
   queue lifecycle contract when the request handles queued work.
 - `myopenpanels panel list`: list panels in the current Project.
@@ -106,7 +120,7 @@ or own a separate Studio process.
   when the user requests a file at a particular path.
 - `myopenpanels canvas image insert`: add a local image file as a Canvas image shape.
 - `myopenpanels task ...`: operate the sole public Task lifecycle.
-- `myopenpanels operation ...`: inspect and finish persistent Canvas or Wiki Operations.
+- `myopenpanels operation ...`: inspect and finish persistent Canvas, Wiki, or Writing Operations.
 
 Wiki selection details report whether the whole Wiki is
   selected and which raw documents the user selected directly.
@@ -136,7 +150,8 @@ context behavior until a stable host session identifier is available.
 
 MyOpenPanels only assigns background work to explicitly registered targets. A
 target declares the capabilities it can execute, such as
-`wiki.convertDocument` or `wiki.ingestMarkdown`.
+`wiki.convertDocument`, `wiki.ingestMarkdown`, `writing.generateDocument`, or
+`writing.refineSkill`.
 
 Register a polling target and claim work atomically:
 

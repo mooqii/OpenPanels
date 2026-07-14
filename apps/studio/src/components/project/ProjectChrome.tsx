@@ -1,5 +1,14 @@
 import { Button, Modal, Tabs } from "@heroui/react"
-import { FileText, Palette, Pencil, Plus, Trash2 } from "lucide-react"
+import {
+  FileText,
+  LayoutTemplate,
+  Palette,
+  Pencil,
+  PenLine,
+  Plus,
+  Send,
+  Trash2,
+} from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   type Asset,
@@ -55,7 +64,12 @@ export function BottomPanelTabs({
 }) {
   const { t } = useMyOpenPanelsI18n()
   const visiblePanels = panels.filter(
-    (panel) => panel.kind === "wiki" || panel.kind === "canvas"
+    (panel) =>
+      panel.kind === "wiki" ||
+      panel.kind === "writing" ||
+      panel.kind === "canvas" ||
+      panel.kind === "typesetting" ||
+      panel.kind === "publishing"
   )
   return (
     <div className="op-panel-tabs">
@@ -71,19 +85,34 @@ export function BottomPanelTabs({
             aria-label={t`Project panels`}
             className="op-panel-tabs__list"
           >
-            {visiblePanels.map((panel, index) => (
+            {visiblePanels.map((panel) => (
               <Tabs.Tab
                 className="op-panel-tabs__tab"
                 id={panel.kind}
                 key={panel.id}
               >
-                {index > 0 ? <Tabs.Separator /> : null}
                 {panel.kind === "wiki" ? (
                   <FileText size={15} strokeWidth={1.8} />
+                ) : panel.kind === "writing" ? (
+                  <PenLine size={15} strokeWidth={1.8} />
+                ) : panel.kind === "typesetting" ? (
+                  <LayoutTemplate size={15} strokeWidth={1.8} />
+                ) : panel.kind === "publishing" ? (
+                  <Send size={15} strokeWidth={1.8} />
                 ) : (
                   <Palette size={15} strokeWidth={1.8} />
                 )}
-                <span>{panel.kind === "wiki" ? t`Wiki` : t`Canvas`}</span>
+                <span>
+                  {panel.kind === "wiki"
+                    ? t`Wiki`
+                    : panel.kind === "writing"
+                      ? t`Writing`
+                      : panel.kind === "typesetting"
+                        ? t`Typesetting`
+                        : panel.kind === "publishing"
+                          ? t`Publishing`
+                          : t`Canvas`}
+                </span>
                 <Tabs.Indicator />
               </Tabs.Tab>
             ))}
@@ -301,7 +330,7 @@ function ProjectTitleControl({
               </Modal.Header>
               <Modal.Body>
                 <p>
-                  {t`Deleting this project removes all content in the current project, including every Wiki page and everything on the canvas. This cannot be undone.`}
+                  {t`Deleting this project removes its Wiki, writing requests, generated documents, canvas content, and publication projects. This cannot be undone.`}
                 </p>
                 <div className="op-project-title__confirm-name">
                   {pendingDeleteProject.title}

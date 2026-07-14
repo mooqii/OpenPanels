@@ -1,0 +1,452 @@
+use crate::error::CliError;
+use crate::paths::MyOpenPanelsPaths;
+use crate::storage::Storage;
+use crate::types::PanelKind;
+use serde::Serialize;
+use serde_json::{json, Value};
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasAssetListing {
+    pub id: String,
+    pub project_id: String,
+    pub project_title: String,
+    pub canvas_panel_id: String,
+    pub asset_id: String,
+    pub asset_ref: String,
+    pub src: String,
+    pub name: String,
+    pub mime_type: String,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+}
+
+pub fn list_canvas_assets(
+    paths: &MyOpenPanelsPaths,
+    current_project_id: &str,
+    scope: &str,
+) -> Result<Value, CliError> {
+    if !matches!(scope, "current" | "all") {
+        return Err(CliError::with_code(
+            "invalid_target",
+            "Typesetting asset scope must be current or all.",
+        ));
+    }
+    let storage = Storage::open(paths)?;
+    let mut projects = storage.list_projects()?;
+    if !projects
+        .iter()
+        .any(|project| project.id == current_project_id)
+    {
+        return Err(CliError::with_code(
+            "project_not_found",
+            format!("MyOpenPanels project not found: {current_project_id}"),
+        ));
+    }
+    if scope == "current" {
+        projects.retain(|project| project.id == current_project_id);
+    } else {
+        projects.sort_by_key(|project| usize::from(project.id != current_project_id));
+    }
+
+    let mut assets = Vec::new();
+    for project in projects {
+        for panel_id in &project.panel_ids {
+            let Some(panel) = storage.read_panel(&project.id, panel_id)? else {
+                continue;
+            };
+            if panel.kind != PanelKind::Canvas {
+                continue;
+            }
+            let Some(state) = storage.read_panel_state(&project.id, &panel.id)? else {
+                continue;
+            };
+            assets.extend(canvas_assets_from_state(
+                &project.id,
+                &project.title,
+                &panel.id,
+                &state,
+            ));
+        }
+    }
+    Ok(json!({ "assets": assets, "scope": scope }))
+}
+
+pub fn import_canvas_asset(
+    paths: &MyOpenPanelsPaths,
+    target_project_id: &str,
+    target_panel_id: &str,
+    source_asset_ref: &str,
+) -> Result<Value, CliError> {
+    let storage = Storage::open(paths)?;
+    let target = storage
+        .read_panel(target_project_id, target_panel_id)?
+        .ok_or_else(|| {
+            CliError::with_code(
+                "target_not_found",
+                format!("Typesetting panel not found: {target_panel_id}"),
+            )
+        })?;
+    if target.kind != PanelKind::Typesetting {
+        return Err(CliError::with_code(
+            "invalid_target",
+            "Canvas assets can only be imported into a Typesetting panel.",
+        ));
+    }
+
+    let source = parse_canvas_asset_ref(source_asset_ref)?;
+    let source_panel = storage
+        .read_panel(&source.project_id, &source.panel_id)?
+        .ok_or_else(|| {
+            CliError::with_code(
+                "target_not_found",
+                format!("Source Canvas panel not found: {}", source.panel_id),
+            )
+        })?;
+    if source_panel.kind != PanelKind::Canvas {
+        return Err(CliError::with_code(
+            "invalid_target",
+            "The source asset must belong to a Canvas panel.",
+        ));
+    }
+    let source_path = storage.asset_path(source_asset_ref)?;
+    if !source_path.is_file() {
+        return Err(CliError::with_code(
+            "target_not_found",
+            format!("Canvas asset not found: {source_asset_ref}"),
+        ));
+    }
+    let bytes = storage.read_asset(source_asset_ref)?;
+    let written = storage.write_asset_from_buffer(
+        target_project_id,
+        target_panel_id,
+        &source.file_name,
+        &bytes,
+        false,
+    )?;
+    let mime_type = mime_guess::from_path(&written.file_name)
+        .first_raw()
+        .unwrap_or("application/octet-stream");
+    Ok(json!({
+        "assetRef": written.asset_ref,
+        "fileName": written.file_name,
+        "mimeType": mime_type,
+        "sourceAssetRef": source_asset_ref,
+        "sourceProjectId": source.project_id,
+        "sourceCanvasPanelId": source.panel_id,
+        "src": format!(
+            "/api/projects/{}/panels/{}/assets/{}",
+            target_project_id, target_panel_id, written.file_name
+        ),
+    }))
+}
+
+fn canvas_assets_from_state(
+    project_id: &str,
+    project_title: &str,
+    panel_id: &str,
+    state: &Value,
+) -> Vec<CanvasAssetListing> {
+    let Some(store) = state.get("store").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut shapes = store
+        .values()
+        .filter(|record| {
+            record.get("typeName").and_then(Value::as_str) == Some("shape")
+                && record.get("type").and_then(Value::as_str) == Some("image")
+        })
+        .collect::<Vec<_>>();
+    shapes.sort_by_key(|shape| {
+        std::cmp::Reverse(
+            shape
+                .get("index")
+                .and_then(Value::as_i64)
+                .unwrap_or_default(),
+        )
+    });
+
+    let mut seen = HashSet::new();
+    shapes
+        .into_iter()
+        .filter_map(|shape| {
+            let asset_id = shape.pointer("/props/assetId").and_then(Value::as_str)?;
+            if !seen.insert(asset_id.to_owned()) {
+                return None;
+            }
+            let asset = store.get(asset_id)?;
+            if asset.get("typeName").and_then(Value::as_str) != Some("asset")
+                || asset.get("type").and_then(Value::as_str) != Some("image")
+            {
+                return None;
+            }
+            let asset_ref = asset
+                .pointer("/meta/assetRef")
+                .and_then(Value::as_str)?
+                .to_owned();
+            let parsed = parse_canvas_asset_ref(&asset_ref).ok()?;
+            if parsed.project_id != project_id || parsed.panel_id != panel_id {
+                return None;
+            }
+            Some(CanvasAssetListing {
+                id: format!("{project_id}:{panel_id}:{asset_id}"),
+                project_id: project_id.to_owned(),
+                project_title: project_title.to_owned(),
+                canvas_panel_id: panel_id.to_owned(),
+                asset_id: asset_id.to_owned(),
+                asset_ref,
+                src: format!(
+                    "/api/projects/{project_id}/panels/{panel_id}/assets/{}",
+                    parsed.file_name
+                ),
+                name: asset
+                    .pointer("/props/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&parsed.file_name)
+                    .to_owned(),
+                mime_type: asset
+                    .pointer("/props/mimeType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("image/*")
+                    .to_owned(),
+                width: asset.pointer("/props/w").and_then(Value::as_f64),
+                height: asset.pointer("/props/h").and_then(Value::as_f64),
+            })
+        })
+        .collect()
+}
+
+struct ParsedCanvasAssetRef {
+    project_id: String,
+    panel_id: String,
+    file_name: String,
+}
+
+fn parse_canvas_asset_ref(asset_ref: &str) -> Result<ParsedCanvasAssetRef, CliError> {
+    let parts = asset_ref.split('/').collect::<Vec<_>>();
+    if parts.len() < 6
+        || parts[0] != "projects"
+        || parts[2] != "panels"
+        || parts[4] != "assets"
+        || parts[1].is_empty()
+        || parts[3].is_empty()
+    {
+        return Err(CliError::with_code(
+            "invalid_target",
+            "Expected a Project Canvas asset reference.",
+        ));
+    }
+    let file_name = parts[5..].join("/");
+    if file_name.is_empty() {
+        return Err(CliError::with_code(
+            "invalid_target",
+            "Canvas asset reference is missing a file name.",
+        ));
+    }
+    Ok(ParsedCanvasAssetRef {
+        project_id: parts[1].to_owned(),
+        panel_id: parts[3].to_owned(),
+        file_name,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::{
+        create_project, ensure_project_bootstrap, read_active_project_id, BootstrapRequest,
+    };
+    use crate::paths::resolve_myopenpanels_paths;
+
+    fn test_paths() -> (tempfile::TempDir, MyOpenPanelsPaths) {
+        let temp = tempfile::tempdir().expect("temp");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join("storage");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        (temp, paths)
+    }
+
+    fn panel_id(bootstrap: &crate::types::ProjectBootstrap, kind: PanelKind) -> String {
+        bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == kind)
+            .expect("panel")
+            .panel
+            .id
+            .clone()
+    }
+
+    fn add_canvas_asset(
+        paths: &MyOpenPanelsPaths,
+        project_id: &str,
+        panel_id: &str,
+        name: &str,
+        duplicate_shape: bool,
+    ) -> String {
+        let storage = Storage::open(paths).expect("storage");
+        let written = storage
+            .write_asset_from_buffer(
+                project_id,
+                panel_id,
+                name,
+                b"independent image bytes",
+                false,
+            )
+            .expect("asset");
+        let mut store = serde_json::Map::new();
+        store.insert(
+            "asset:image".to_owned(),
+            json!({
+                "id": "asset:image",
+                "typeName": "asset",
+                "type": "image",
+                "props": {
+                    "name": name,
+                    "mimeType": "image/png",
+                    "w": 640,
+                    "h": 480
+                },
+                "meta": { "assetRef": written.asset_ref }
+            }),
+        );
+        store.insert(
+            "shape:image:1".to_owned(),
+            json!({
+                "id": "shape:image:1",
+                "typeName": "shape",
+                "type": "image",
+                "index": 2,
+                "props": { "assetId": "asset:image" }
+            }),
+        );
+        if duplicate_shape {
+            store.insert(
+                "shape:image:2".to_owned(),
+                json!({
+                    "id": "shape:image:2",
+                    "typeName": "shape",
+                    "type": "image",
+                    "index": 1,
+                    "props": { "assetId": "asset:image" }
+                }),
+            );
+        }
+        storage
+            .write_panel_state(
+                project_id,
+                panel_id,
+                &json!({
+                    "schema": { "schemaVersion": 1 },
+                    "store": store
+                }),
+            )
+            .expect("canvas state");
+        written.asset_ref
+    }
+
+    #[test]
+    fn canvas_asset_queries_deduplicate_without_changing_active_project() {
+        let (_temp, paths) = test_paths();
+        let source = create_project(&paths, Some("Source")).expect("source");
+        let source_canvas = panel_id(&source, PanelKind::Canvas);
+        add_canvas_asset(
+            &paths,
+            &source.project.id,
+            &source_canvas,
+            "source.png",
+            true,
+        );
+        let current = create_project(&paths, Some("Current")).expect("current");
+        let current_canvas = panel_id(&current, PanelKind::Canvas);
+        add_canvas_asset(
+            &paths,
+            &current.project.id,
+            &current_canvas,
+            "current.png",
+            false,
+        );
+
+        let current_assets =
+            list_canvas_assets(&paths, &current.project.id, "current").expect("current assets");
+        assert_eq!(current_assets["assets"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            current_assets["assets"][0]["projectId"],
+            json!(current.project.id)
+        );
+
+        let all = list_canvas_assets(&paths, &current.project.id, "all").expect("all assets");
+        let assets = all["assets"].as_array().expect("assets");
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets[0]["projectId"], json!(current.project.id));
+        assert_eq!(assets[1]["projectId"], json!(source.project.id));
+        assert_eq!(
+            read_active_project_id(&paths).expect("active project"),
+            Some(current.project.id)
+        );
+    }
+
+    #[test]
+    fn imported_assets_validate_panel_kinds_and_outlive_the_source_project() {
+        let (_temp, paths) = test_paths();
+        let source = create_project(&paths, Some("Source")).expect("source");
+        let source_canvas = panel_id(&source, PanelKind::Canvas);
+        let source_ref = add_canvas_asset(
+            &paths,
+            &source.project.id,
+            &source_canvas,
+            "source.png",
+            false,
+        );
+        let target = create_project(&paths, Some("Target")).expect("target");
+        let target_canvas = panel_id(&target, PanelKind::Canvas);
+        let target_typesetting = panel_id(&target, PanelKind::Typesetting);
+
+        let wrong_target =
+            import_canvas_asset(&paths, &target.project.id, &target_canvas, &source_ref)
+                .expect_err("canvas target must fail");
+        assert_eq!(wrong_target.code(), Some("invalid_target"));
+
+        let imported =
+            import_canvas_asset(&paths, &target.project.id, &target_typesetting, &source_ref)
+                .expect("import");
+        let imported_ref = imported["assetRef"].as_str().expect("asset ref");
+        assert_ne!(imported_ref, source_ref);
+        let wrong_source = import_canvas_asset(
+            &paths,
+            &target.project.id,
+            &target_typesetting,
+            imported_ref,
+        )
+        .expect_err("typesetting source must fail");
+        assert_eq!(wrong_source.code(), Some("invalid_target"));
+
+        Storage::open(&paths)
+            .expect("storage")
+            .delete_project(&source.project.id)
+            .expect("delete source");
+        let copied = Storage::open(&paths)
+            .expect("storage")
+            .read_asset(imported_ref)
+            .expect("copied asset");
+        assert_eq!(copied, b"independent image bytes");
+
+        let refreshed = ensure_project_bootstrap(
+            &paths,
+            BootstrapRequest {
+                requested_project_id: Some(target.project.id),
+                requested_panel_id: None,
+                requested_panel_kind: Some(PanelKind::Typesetting),
+            },
+        )
+        .expect("target remains readable");
+        assert_eq!(refreshed.active_panel_kind, PanelKind::Typesetting);
+    }
+}

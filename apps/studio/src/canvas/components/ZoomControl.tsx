@@ -88,12 +88,7 @@ export function ZoomControl() {
   )
 
   return (
-    <div
-      className="fixed bottom-2 flex items-center gap-0.5 rounded-full bg-canvas-toolbar px-1 py-0.5 shadow backdrop-blur-lg"
-      style={{
-        left: "calc(var(--main-layout-sidebar-offset, var(--home-main-offset, 0px)) + 0.5rem)",
-      }}
-    >
+    <div className="fixed top-2 right-2 z-10 flex items-center gap-0.5 rounded-full bg-canvas-toolbar px-1 py-0.5 shadow backdrop-blur-lg">
       <Button
         aria-label={t`Zoom out`}
         isIconOnly

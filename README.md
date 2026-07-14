@@ -36,7 +36,8 @@ MyOpenPanels Studio, and opens the MyOpenPanels panel URL returned by the CLI.
 
 The entry skill keeps itself small and stable. It uses the Rust-native
 `myopenpanels` CLI from GitHub Releases, then asks the CLI for
-`agent bootstrap`, which is the source of truth for wiki, canvas, and future panel
+`agent bootstrap`, which is the source of truth for wiki, writing, canvas,
+typesetting, publishing, and future panel
 workflows. A normal Bootstrap contains no Entry Skill update fields. After a CLI
 release changes the Entry Skill requirement, Bootstrap delivers a one-time
 Agent-host update check and keeps it pending until that Agent context
@@ -131,6 +132,6 @@ are not hardcoded into the Entry Skill.
 
 - Local workflow for generic shell agents
 - Rust CLI/server/storage with a React Studio frontend
-- Multi-panel project workspace with wiki and canvas panels
+- Multi-panel project workspace with wiki, writing, canvas, typesetting, and publishing panels
 - Image artifacts and editable canvas image shapes
 - Project-local `.myopenpanels/` persistence

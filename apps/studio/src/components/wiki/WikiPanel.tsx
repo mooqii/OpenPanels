@@ -4,6 +4,7 @@ import {
   Dropdown,
   Header,
   Surface,
+  Tabs,
   Tooltip,
 } from "@heroui/react"
 import {
@@ -21,7 +22,11 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
+  Send,
+  Sparkles,
   Trash2,
+  X,
 } from "lucide-react"
 import {
   type DragEvent,
@@ -35,17 +40,25 @@ import {
 import { useMyOpenPanelsI18n } from "../../canvas"
 import {
   apiFetch,
+  apiJson,
   fileToDataUrl,
   originalPreviewKind,
   titleFromFileName,
   wikiRawOriginalUrl,
 } from "../../lib/api"
+import {
+  activeWritingSkillIds,
+  toggleWritingSkillSelection,
+  writingSkillSelectionError,
+} from "../../lib/writing"
 import type {
   AgentSkillListing,
   MyOpenPanelsTransport,
+  ProjectTask,
   WikiGeneratedDocument,
   WikiRawDocument,
   WikiState,
+  WritingState,
 } from "../../types"
 import {
   ConfirmDialog,
@@ -78,14 +91,22 @@ export function WikiPanel({
   selectionVersion,
   state,
   transport,
+  writing,
 }: {
   chromeContent: ReactNode
   onReload: () => Promise<void>
   selectionVersion: number
   state: WikiState
   transport: MyOpenPanelsTransport
+  writing?: {
+    state: WritingState
+    tasks: ProjectTask[]
+  }
 }) {
   const { locale, t } = useMyOpenPanelsI18n()
+  const selectionPath = writing
+    ? "/api/writing/selection"
+    : "/api/wiki/selection"
   const activeSpace =
     state.wikiSpaces.find((space) => space.id === state.activeWikiSpaceId) ??
     state.wikiSpaces[0]
@@ -290,10 +311,7 @@ export function WikiPanel({
   useEffect(() => {
     let isCancelled = false
     setIsSelectionBusy(true)
-    apiFetch(
-      transport.apiBase,
-      `/api/wiki/selection?version=${selectionVersion}`
-    )
+    apiFetch(transport.apiBase, `${selectionPath}?version=${selectionVersion}`)
       .then(async (response) => {
         const data = (await response.json()) as {
           selection?: Partial<WikiAgentSelection>
@@ -319,7 +337,7 @@ export function WikiPanel({
     return () => {
       isCancelled = true
     }
-  }, [selectionVersion, transport.apiBase])
+  }, [selectionPath, selectionVersion, transport.apiBase])
 
   const updateAgentSelection = useCallback(
     async (next: WikiAgentSelection) => {
@@ -327,15 +345,11 @@ export function WikiPanel({
       setAgentSelection(next)
       setIsSelectionBusy(true)
       try {
-        const response = await apiFetch(
-          transport.apiBase,
-          "/api/wiki/selection",
-          {
-            method: "PUT",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(next),
-          }
-        )
+        const response = await apiFetch(transport.apiBase, selectionPath, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(next),
+        })
         const data = (await response.json()) as {
           selection?: Partial<WikiAgentSelection>
         }
@@ -352,7 +366,7 @@ export function WikiPanel({
         setIsSelectionBusy(false)
       }
     },
-    [agentSelection, transport.apiBase]
+    [agentSelection, selectionPath, transport.apiBase]
   )
 
   const openMarkdown = useCallback(
@@ -711,10 +725,18 @@ export function WikiPanel({
   )
 
   return (
-    <section className="op-wiki-panel">
+    <section
+      className={writing ? "op-wiki-panel op-writing-panel" : "op-wiki-panel"}
+    >
       <header className="op-canvas-title">{chromeContent}</header>
       <Surface className="op-wiki-panel__surface" variant="default">
-        <div className="op-wiki-workbench">
+        <div
+          className={
+            writing
+              ? "op-wiki-workbench op-writing-workbench"
+              : "op-wiki-workbench"
+          }
+        >
           <aside
             className={
               collapsedModules.has("raw")
@@ -1034,6 +1056,19 @@ export function WikiPanel({
             </div>
           </section>
 
+          {writing ? (
+            <WritingComposer
+              documents={state.generatedDocuments}
+              isSelectionBusy={isSelectionBusy}
+              onReload={onReload}
+              rawDocuments={state.rawDocuments}
+              selection={agentSelection}
+              state={writing.state}
+              tasks={writing.tasks}
+              transport={transport}
+            />
+          ) : null}
+
           <section
             className={
               collapsedModules.has("generated")
@@ -1333,4 +1368,537 @@ export function WikiPanel({
       ) : null}
     </section>
   )
+}
+
+function WritingComposer({
+  documents,
+  isSelectionBusy,
+  onReload,
+  rawDocuments,
+  selection,
+  state,
+  tasks,
+  transport,
+}: {
+  documents: WikiGeneratedDocument[]
+  isSelectionBusy: boolean
+  onReload: () => Promise<void>
+  rawDocuments: WikiRawDocument[]
+  selection: WikiAgentSelection
+  state: WritingState
+  tasks: ProjectTask[]
+  transport: MyOpenPanelsTransport
+}) {
+  const { t } = useMyOpenPanelsI18n()
+  const [draft, setDraft] = useState(state.draft)
+  const [mode, setMode] = useState<WritingState["mode"]>(state.mode)
+  const [refinementName, setRefinementName] = useState(state.refinementName)
+  const [targetId, setTargetId] = useState<string | null>(
+    state.targetGeneratedDocumentId
+  )
+  const [selectedCreateWritingSkillIds, setSelectedCreateWritingSkillIds] =
+    useState(state.selectedCreateWritingSkillIds)
+  const [selectedRevisionWritingSkillId, setSelectedRevisionWritingSkillId] =
+    useState<string | null>(state.selectedRevisionWritingSkillId)
+  const selectedWritingSkillIds = activeWritingSkillIds(
+    mode,
+    selectedCreateWritingSkillIds,
+    selectedRevisionWritingSkillId
+  )
+  const [writingSkills, setWritingSkills] = useState<AgentSkillListing[]>([])
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const writingTasks = useMemo(() => {
+    const taskType =
+      mode === "refine" ? "refine_writing_skill" : "generate_document"
+    return tasks.filter(
+      (task) => task.queue === "writing" && task.type === taskType
+    )
+  }, [mode, tasks])
+  const refinementTaskVersion = useMemo(
+    () =>
+      tasks
+        .filter(
+          (task) =>
+            task.queue === "writing" && task.type === "refine_writing_skill"
+        )
+        .map((task) => `${task.id}:${task.status}:${task.updatedAt}`)
+        .join("|"),
+    [tasks]
+  )
+
+  useEffect(() => {
+    if (targetId && !documents.some((document) => document.id === targetId)) {
+      setTargetId(null)
+    }
+  }, [documents, targetId])
+
+  useEffect(() => {
+    let isCancelled = false
+    apiJson<{
+      skills?: AgentSkillListing[]
+    }>(
+      transport.apiBase,
+      `/api/writing/skills?taskVersion=${encodeURIComponent(refinementTaskVersion)}`
+    )
+      .then((data) => {
+        if (!isCancelled) setWritingSkills(data.skills ?? [])
+      })
+      .catch((skillError) => {
+        if (!isCancelled) {
+          console.error("Failed to load Writing Skills", skillError)
+        }
+      })
+    return () => {
+      isCancelled = true
+    }
+  }, [refinementTaskVersion, transport.apiBase])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      apiJson(transport.apiBase, "/api/writing/draft", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          draft,
+          mode,
+          refinementName,
+          selectedCreateWritingSkillIds,
+          selectedRevisionWritingSkillId,
+          targetGeneratedDocumentId: mode === "revise" ? targetId : null,
+        }),
+      }).catch((saveError) => {
+        console.error("Failed to save Writing draft", saveError)
+      })
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [
+    draft,
+    mode,
+    refinementName,
+    selectedCreateWritingSkillIds,
+    selectedRevisionWritingSkillId,
+    targetId,
+    transport.apiBase,
+  ])
+
+  const skillSelectionError = writingSkillSelectionError(
+    mode,
+    selectedWritingSkillIds
+  )
+  const hasValidSkillSelection = skillSelectionError === null
+  const selectedRawDocuments = rawDocuments.filter((document) =>
+    selection.selectedRawDocumentIds.includes(document.id)
+  )
+  const selectedGeneratedDocuments = documents.filter((document) =>
+    selection.selectedGeneratedDocumentIds.includes(document.id)
+  )
+  const unreadySourceCount =
+    selectedRawDocuments.filter((document) => !document.markdownRef).length +
+    selectedGeneratedDocuments.filter(
+      (document) =>
+        document.generation !== undefined &&
+        document.generation.status !== "completed"
+    ).length
+  const selectedSourceCount =
+    selectedRawDocuments.length + selectedGeneratedDocuments.length
+
+  const submit = useCallback(async () => {
+    if (
+      !(
+        draft.trim() &&
+        hasValidSkillSelection &&
+        (mode !== "revise" || targetId)
+      )
+    ) {
+      return
+    }
+    setIsSubmitting(true)
+    setError(null)
+    try {
+      await apiJson(transport.apiBase, "/api/writing/requests", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          instruction: draft,
+          mode,
+          targetGeneratedDocumentId: mode === "revise" ? targetId : null,
+          writingSkillIds: selectedWritingSkillIds,
+        }),
+      })
+      setDraft("")
+      setTargetId(null)
+      await onReload()
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : t`Failed to submit writing request`
+      )
+    } finally {
+      setIsSubmitting(false)
+    }
+  }, [
+    draft,
+    hasValidSkillSelection,
+    mode,
+    onReload,
+    selectedWritingSkillIds,
+    t,
+    targetId,
+    transport.apiBase,
+  ])
+
+  const submitRefinement = useCallback(async () => {
+    if (
+      !refinementName.trim() ||
+      refinementName.trim().length > 80 ||
+      selectedSourceCount === 0 ||
+      unreadySourceCount > 0
+    ) {
+      return
+    }
+    setIsSubmitting(true)
+    setError(null)
+    try {
+      await apiJson(transport.apiBase, "/api/writing/refinement-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: refinementName }),
+      })
+      setRefinementName("")
+      await onReload()
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : t`Failed to submit refinement request`
+      )
+    } finally {
+      setIsSubmitting(false)
+    }
+  }, [
+    onReload,
+    refinementName,
+    selectedSourceCount,
+    t,
+    transport.apiBase,
+    unreadySourceCount,
+  ])
+
+  const toggleWritingSkill = useCallback(
+    (skillId: string, isSelected: boolean) => {
+      if (mode === "revise") {
+        setSelectedRevisionWritingSkillId(isSelected ? skillId : null)
+        return
+      }
+      setSelectedCreateWritingSkillIds((current) =>
+        toggleWritingSkillSelection(current, skillId, isSelected, "create")
+      )
+    },
+    [mode]
+  )
+
+  const taskAction = useCallback(
+    async (taskId: string, action: "cancel" | "retry") => {
+      await apiJson(
+        transport.apiBase,
+        `/api/tasks/${encodeURIComponent(taskId)}/${action}`,
+        { method: "POST" }
+      )
+      await onReload()
+    },
+    [onReload, transport.apiBase]
+  )
+
+  return (
+    <section className="op-wiki-column op-writing-composer">
+      <div className="op-wiki-column__header">
+        <div className="op-wiki-column__title">
+          <h2>{t`Writing`}</h2>
+        </div>
+      </div>
+      <div className="op-writing-composer__content op-wiki-column__content">
+        <Tabs
+          className="op-writing-mode"
+          onSelectionChange={(key) =>
+            setMode(String(key) as WritingState["mode"])
+          }
+          selectedKey={mode}
+        >
+          <Tabs.ListContainer>
+            <Tabs.List aria-label={t`Writing mode`}>
+              <Tabs.Tab id="create">
+                {t`New document`}
+                <Tabs.Indicator />
+              </Tabs.Tab>
+              <Tabs.Tab id="revise">
+                {t`Revise`}
+                <Tabs.Indicator />
+              </Tabs.Tab>
+              <Tabs.Tab id="refine">
+                {t`Refine`}
+                <Tabs.Indicator />
+              </Tabs.Tab>
+            </Tabs.List>
+          </Tabs.ListContainer>
+        </Tabs>
+
+        {mode === "refine" ? (
+          <div className="op-writing-refinement">
+            <div className="op-writing-refinement__intro">
+              <Sparkles aria-hidden size={18} />
+              <div>
+                <strong>{t`Turn selected articles into a Writing Skill`}</strong>
+                <p>
+                  {t`The Agent will extract reusable voice, structure, pacing, and techniques from all selected raw and generated documents.`}
+                </p>
+              </div>
+            </div>
+            <p className="op-writing-refinement__note">
+              {t`The selected Wiki is ignored. Raw documents must be converted to Markdown. When complete, the project Skill will be available for new documents and revisions.`}
+            </p>
+            <div className="op-writing-refinement__sources">
+              <strong>
+                {t("Selected articles")}: {selectedSourceCount}
+              </strong>
+              {selectedSourceCount === 0 ? (
+                <span>{t`Select at least one raw or generated document`}</span>
+              ) : unreadySourceCount > 0 ? (
+                <span>
+                  {t`Some selected documents are not ready. Wait for processing or deselect them.`}
+                </span>
+              ) : (
+                <span>{t`All selected articles will be refined together`}</span>
+              )}
+            </div>
+            <label className="op-writing-target">
+              <span>{t`Writing Skill name`}</span>
+              <input
+                aria-label={t`Writing Skill name`}
+                maxLength={80}
+                onChange={(event) => setRefinementName(event.target.value)}
+                placeholder={t`Name this reusable writing method`}
+                value={refinementName}
+              />
+            </label>
+            {error ? <div className="op-writing-error">{error}</div> : null}
+            <Button
+              className="op-writing-submit"
+              isDisabled={
+                isSubmitting ||
+                isSelectionBusy ||
+                !refinementName.trim() ||
+                refinementName.trim().length > 80 ||
+                selectedSourceCount === 0 ||
+                unreadySourceCount > 0
+              }
+              onPress={() => submitRefinement()}
+              variant="primary"
+            >
+              <Sparkles size={15} />
+              <span>{isSubmitting ? t`Submitting` : t`Start refinement`}</span>
+            </Button>
+          </div>
+        ) : (
+          <>
+            {mode === "revise" ? (
+              <label className="op-writing-target">
+                <span>{t`Document to revise`}</span>
+                <select
+                  onChange={(event) => setTargetId(event.target.value || null)}
+                  value={targetId ?? ""}
+                >
+                  <option value="">{t`Select a generated document`}</option>
+                  {documents.map((document) => (
+                    <option key={document.id} value={document.id}>
+                      {document.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            <div className="op-writing-skills">
+              <div className="op-writing-skills__header">
+                <strong>{t`Writing Skills`}</strong>
+                <span>
+                  {mode === "revise" ? t`Select one` : t`Select one or more`}
+                </span>
+              </div>
+              <div className="op-writing-skills__list">
+                {writingSkills.map((item) => (
+                  <label
+                    className="op-writing-skill"
+                    htmlFor={`writing-skill-${item.skill.id}`}
+                    key={item.skill.id}
+                  >
+                    <Checkbox
+                      aria-label={`${t`Select Writing Skill`}: ${item.skill.title}`}
+                      id={`writing-skill-${item.skill.id}`}
+                      isSelected={selectedWritingSkillIds.includes(
+                        item.skill.id
+                      )}
+                      onChange={(isSelected) =>
+                        toggleWritingSkill(item.skill.id, isSelected)
+                      }
+                    />
+                    <span className="op-writing-skill__body">
+                      <span className="op-writing-skill__title">
+                        <strong>{item.skill.title}</strong>
+                        <span>
+                          {item.source === "builtin" ? t`Built-in` : t`Project`}
+                        </span>
+                      </span>
+                      <span className="op-writing-skill__description">
+                        {item.skill.description}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+                {writingSkills.length === 0 ? (
+                  <div className="op-wiki-empty-inline">
+                    {t`No Writing Skills available`}
+                  </div>
+                ) : null}
+              </div>
+              {skillSelectionError === "required" ? (
+                <div className="op-writing-error">
+                  {t`Select at least one Writing Skill`}
+                </div>
+              ) : skillSelectionError === "revision_limit" ? (
+                <div className="op-writing-error">
+                  {t`Revision mode supports one Writing Skill`}
+                </div>
+              ) : null}
+            </div>
+
+            <textarea
+              aria-label={t`Writing instructions`}
+              className="op-writing-instructions"
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder={t`Describe what the agent should write`}
+              value={draft}
+            />
+            {error ? <div className="op-writing-error">{error}</div> : null}
+            <Button
+              className="op-writing-submit"
+              isDisabled={
+                isSubmitting ||
+                !draft.trim() ||
+                !hasValidSkillSelection ||
+                (mode === "revise" && !targetId)
+              }
+              onPress={() => submit()}
+              variant="primary"
+            >
+              <Send size={15} />
+              <span>{isSubmitting ? t`Submitting` : t`Start writing`}</span>
+            </Button>
+          </>
+        )}
+
+        <div className="op-writing-requests">
+          {writingTasks.map((task) => {
+            const instruction = taskInstruction(task)
+            const skillTitle = taskWritingSkillTitle(task)
+            const isRefinement = task.type === "refine_writing_skill"
+            const canCancel = [
+              "queued",
+              "reserved",
+              "running",
+              "claimed",
+            ].includes(task.status)
+            return (
+              <div className="op-writing-request" key={task.id}>
+                <div className="op-writing-request__body">
+                  <strong>
+                    {skillTitle ||
+                      (isRefinement
+                        ? t`Writing Skill refinement`
+                        : t`Writing request`)}
+                  </strong>
+                  {instruction ? (
+                    <span className="op-writing-request__instruction">
+                      {instruction}
+                    </span>
+                  ) : null}
+                  <span>{writingTaskStatus(task, t)}</span>
+                </div>
+                {canCancel ? (
+                  <Button
+                    aria-label={
+                      isRefinement
+                        ? t`Cancel refinement request`
+                        : t`Cancel writing request`
+                    }
+                    isIconOnly
+                    onPress={() => taskAction(task.id, "cancel")}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    <X size={14} />
+                  </Button>
+                ) : task.status === "failed" ? (
+                  <Button
+                    aria-label={
+                      isRefinement
+                        ? t`Retry refinement request`
+                        : t`Retry writing request`
+                    }
+                    isIconOnly
+                    onPress={() => taskAction(task.id, "retry")}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    <RotateCcw size={14} />
+                  </Button>
+                ) : null}
+              </div>
+            )
+          })}
+          {writingTasks.length === 0 ? (
+            <div className="op-wiki-empty-inline">
+              {mode === "refine"
+                ? t`No refinement requests yet`
+                : t`No writing requests yet`}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function taskInstruction(task: ProjectTask): string {
+  if (!task.input || typeof task.input !== "object") return ""
+  const instruction = (task.input as { instruction?: unknown }).instruction
+  return typeof instruction === "string" ? instruction : ""
+}
+
+function taskWritingSkillTitle(task: ProjectTask): string {
+  if (!task.input || typeof task.input !== "object") return ""
+  const refinementName = (task.input as { name?: unknown }).name
+  if (typeof refinementName === "string") return refinementName
+  const writingSkill = (task.input as { writingSkill?: unknown }).writingSkill
+  if (!(writingSkill && typeof writingSkill === "object")) return ""
+  const title = (writingSkill as { title?: unknown }).title
+  return typeof title === "string" ? title : ""
+}
+
+function writingTaskStatus(
+  task: ProjectTask,
+  t: (value: string) => string
+): string {
+  if (task.dispatchState === "noTarget" && task.status === "queued") {
+    return t("Waiting for Agent")
+  }
+  if (task.status === "queued" || task.status === "reserved") return t("Queued")
+  if (["running", "claimed"].includes(task.status)) {
+    return task.type === "refine_writing_skill" ? t("Refining") : t("Writing")
+  }
+  if (task.status === "succeeded") return t("Completed")
+  if (task.status === "failed") return t("Failed")
+  if (task.status === "cancelled") return t("Cancelled")
+  return task.status
 }

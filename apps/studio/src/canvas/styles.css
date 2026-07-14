@@ -7,20 +7,29 @@
 
 .op-canvas-title {
   position: absolute;
-  top: 22px;
+  top: auto;
+  bottom: 8px;
   left: calc(
     var(--main-layout-sidebar-offset, var(--home-main-offset, 0px)) +
     1rem
   );
-  z-index: 40;
+  z-index: 62;
   display: inline-flex;
   gap: 8px;
   align-items: center;
-  height: 24px;
+  width: min(420px, calc(50% - 228px));
+  min-width: 0;
+  height: 40px;
   font-size: 14px;
   font-weight: 500;
   color: var(--op-title);
   letter-spacing: 0;
+}
+
+@media (max-width: 900px) {
+  .op-canvas-title {
+    width: calc(50% - 110px);
+  }
 }
 
 .op-canvas-menu-button {
