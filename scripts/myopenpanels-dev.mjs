@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url"
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const args = process.argv.slice(2)
 const rustBin = join(repoRoot, "target", "debug", exeName("myopenpanels"))
+const configuredStorageDir = process.env.MYOPENPANELS_STORAGE_DIR?.trim()
+const devStorageDir = configuredStorageDir || join(repoRoot, ".myopenpanels")
 ensureRustCli()
 run(rustBin, args)
 
@@ -99,6 +101,7 @@ function run(command, commandArgs) {
     env: {
       ...process.env,
       MYOPENPANELS_CLI: join(repoRoot, "scripts", "myopenpanels-dev"),
+      MYOPENPANELS_STORAGE_DIR: devStorageDir,
     },
     stdio: "inherit",
   })

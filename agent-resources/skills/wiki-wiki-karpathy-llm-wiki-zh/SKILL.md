@@ -9,17 +9,18 @@ taskTypes:
   - convert_document_to_markdown
   - ingest_markdown_into_wiki
   - rebuild_wiki_index
-requiresCapabilities:
+requiresCommands:
   - task.claim
   - task.heartbeat
   - task.complete
   - task.fail
-  - wiki.raw-document.list
-  - wiki.raw-document.markdown.read
-  - wiki.raw-document.markdown.write
+  - wiki.raw.list
+  - wiki.raw.read
+  - wiki.raw.update
   - wiki.page.list
   - wiki.page.read
-  - wiki.page.write
+  - wiki.page.create
+  - wiki.page.update
 loadWhen:
   - The current wiki task should maintain a Karpathy-style LLM-generated wiki in Chinese.
 tokens: medium

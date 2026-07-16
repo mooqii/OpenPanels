@@ -4,6 +4,7 @@ use crate::paths::{sanitize_path_part, MyOpenPanelsPaths};
 use crate::storage::Storage;
 use crate::trace::{self, TraceEventInput};
 use crate::types::PanelKind;
+use base64::Engine;
 use rand::Rng;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -46,12 +47,13 @@ pub fn wiki_context(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
 
 pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    let wiki_panel = bootstrap
-        .panels
-        .iter()
-        .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
-        .ok_or_else(|| CliError::new("The current Project has no Wiki panel."))?;
-    let wiki = get_wiki_target(paths, &bootstrap.project.id, &wiki_panel.panel.id)?;
+    if bootstrap.active_panel_kind != PanelKind::Wiki {
+        return Err(CliError::with_code(
+            "panel_kind_mismatch",
+            "The current user selection belongs to the active panel, which is not Wiki.",
+        ));
+    }
+    let wiki = get_wiki_target(paths, &bootstrap.project.id, &bootstrap.panel.id)?;
     let storage = Storage::open(paths)?;
     let stored = storage
         .read_panel_selection(&wiki.project.id, &wiki.panel.id)?
@@ -153,7 +155,10 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
         ],
     )
     .expect("registered Wiki Panel Skill action");
-    skill_action["loadWhen"] = json!("The user request requires Wiki query guidance.");
+    skill_action["condition"] = json!({
+        "type": "agent-judgment",
+        "description": "The user request requires Wiki query guidance."
+    });
     Ok(json!({
         "selection": selection,
         "wiki": {
@@ -163,9 +168,8 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
             "title": wiki_space.value.get("title").cloned().unwrap_or_else(|| json!("Wiki")),
             "pageCount": page_count,
             "querySkillId": WIKI_PANEL_SKILL_ID,
-            "loadCommand": format!("myopenpanels agent skill read --skill-id {WIKI_PANEL_SKILL_ID} --format json"),
         },
-        "nextActions": [skill_action],
+        "actions": { "required": [], "suggested": [skill_action] },
         "selectedRawDocuments": selected_documents,
         "selectedGeneratedDocuments": selected_generated_documents,
     }))
@@ -291,6 +295,19 @@ pub fn create_generated_document(
         fs::create_dir_all(parent).map_err(to_cli_error)?;
     }
     fs::write(&content_path, content).map_err(to_cli_error)?;
+    if task_id.is_none() {
+        crate::content::commit_immediate_text(
+            paths,
+            &wiki.project.id,
+            Some(&wiki.panel.id),
+            crate::content::ResourceKind::GeneratedDocument,
+            &document_id,
+            &format!("content.{extension}"),
+            content,
+            &normalized_mime_type,
+            true,
+        )?;
+    }
     let now = now_iso();
     let document = json!({
         "id": document_id,
@@ -320,11 +337,21 @@ pub fn begin_generated_document_for_target(
     title: &str,
     format: &str,
     document_id: Option<&str>,
+    replace_placeholder_title: bool,
 ) -> Result<Value, CliError> {
     let mut wiki = get_wiki_target(paths, project_id, panel_id)?;
     let now = now_iso();
     if let Some(document_id) = document_id {
         let document = find_generated_document_mut(&mut wiki.state, document_id)?;
+        if replace_placeholder_title && document["contentVersion"].as_u64().unwrap_or(0) == 0 {
+            let title = title.trim();
+            if !title.is_empty() {
+                let extension = if format == "text" { "txt" } else { "md" };
+                document["title"] = json!(title);
+                document["originalFileName"] =
+                    json!(format!("{}.{}", sanitize_path_part(title), extension));
+            }
+        }
         document["generation"] = json!({
             "operationId": operation_id,
             "status": "generating",
@@ -411,6 +438,17 @@ pub fn complete_generated_document_for_target(
         fs::create_dir_all(parent).map_err(to_cli_error)?;
     }
     fs::write(&content_path, content).map_err(to_cli_error)?;
+    crate::content::commit_immediate_text(
+        paths,
+        &wiki.project.id,
+        Some(&wiki.panel.id),
+        crate::content::ResourceKind::GeneratedDocument,
+        document_id,
+        &format!("content.{extension}"),
+        content,
+        &mime_type,
+        true,
+    )?;
     if !old_ref.is_empty() && old_ref != content_ref {
         let _ = fs::remove_file(wiki_panel_path(&panel_dir, &old_ref)?);
     }
@@ -443,7 +481,9 @@ pub fn finish_generated_document_operation(
             .iter()
             .position(|d| d["id"].as_str() == Some(document_id))
         {
-            if documents[index]["contentVersion"].as_u64().unwrap_or(0) == 0 {
+            if documents[index]["contentVersion"].as_u64().unwrap_or(0) == 0
+                && !documents[index]["taskId"].is_string()
+            {
                 documents.remove(index);
                 let storage = Storage::open(paths)?;
                 let _ = fs::remove_dir_all(
@@ -473,6 +513,35 @@ pub fn finish_generated_document_operation(
         document["updatedAt"] = json!(now_iso());
     }
     save_wiki_state(paths, &wiki)
+}
+
+pub fn remove_pending_writing_document(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    panel_id: &str,
+    document_id: &str,
+) -> Result<(), CliError> {
+    let mut wiki = get_wiki_target(paths, project_id, panel_id)?;
+    let documents = state_array_mut(&mut wiki.state, "generatedDocuments")?;
+    let Some(index) = documents
+        .iter()
+        .position(|document| document["id"].as_str() == Some(document_id))
+    else {
+        return Ok(());
+    };
+    if documents[index]["contentVersion"].as_u64().unwrap_or(0) > 0 {
+        return Ok(());
+    }
+    documents.remove(index);
+    save_wiki_state(paths, &wiki)?;
+    let storage = Storage::open(paths)?;
+    let _ = fs::remove_dir_all(
+        storage
+            .panel_dir(project_id, panel_id)
+            .join("generated")
+            .join(sanitize_path_part(document_id)),
+    );
+    Ok(())
 }
 
 pub fn recover_generated_document_for_target(
@@ -520,7 +589,19 @@ pub fn read_generated_document(
         &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
         content_ref,
     )?;
-    let content = fs::read_to_string(&content_path).map_err(to_cli_error)?;
+    let logical_path = Path::new(content_ref)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("content.md");
+    let content = crate::content::read_active_text(
+        paths,
+        &wiki.project.id,
+        crate::content::ResourceKind::GeneratedDocument,
+        document_id,
+        logical_path,
+    )?
+    .map(Ok)
+    .unwrap_or_else(|| fs::read_to_string(&content_path).map_err(to_cli_error))?;
     Ok(json!({ "document": document, "content": content, "contentFilePath": content_path }))
 }
 
@@ -556,6 +637,17 @@ pub fn write_generated_document(
         fs::create_dir_all(parent).map_err(to_cli_error)?;
     }
     fs::write(&content_path, content).map_err(to_cli_error)?;
+    crate::content::commit_immediate_text(
+        paths,
+        &wiki.project.id,
+        Some(&wiki.panel.id),
+        crate::content::ResourceKind::GeneratedDocument,
+        document_id,
+        &format!("content.{extension}"),
+        content,
+        &normalized_mime_type,
+        true,
+    )?;
     if old_ref != content_ref {
         let old_path = wiki_panel_path(&panel_dir, &old_ref)?;
         let _ = fs::remove_file(old_path);
@@ -602,6 +694,20 @@ pub fn write_generated_document_for_agent(
     write_generated_document(paths, document_id, file_name, mime_type, content)
 }
 
+pub fn rename_generated_document_file(
+    paths: &MyOpenPanelsPaths,
+    document_id: &str,
+    file_name: &str,
+) -> Result<Value, CliError> {
+    let existing = read_generated_document(paths, document_id)?;
+    let content = existing["content"]
+        .as_str()
+        .ok_or_else(|| CliError::new("Generated document content is invalid."))?;
+    let mime_type = existing["document"]["mimeType"].as_str();
+    write_generated_document(paths, document_id, file_name, mime_type, content.as_bytes())?;
+    rename_generated_document(paths, document_id, &title_from_file_name(file_name))
+}
+
 pub fn rename_generated_document(
     paths: &MyOpenPanelsPaths,
     document_id: &str,
@@ -644,6 +750,19 @@ pub fn delete_generated_document(
         .panel_dir(&wiki.project.id, &wiki.panel.id)
         .join("generated")
         .join(sanitize_path_part(document_id));
+    crate::tasks::cancel_tasks_for_resource(
+        paths,
+        &wiki.project.id,
+        "writing.targetDocument",
+        document_id,
+        "prerequisite_deleted",
+    )?;
+    crate::content::archive_resource(
+        paths,
+        Some(&wiki.project.id),
+        crate::content::ResourceKind::GeneratedDocument,
+        document_id,
+    )?;
     if let Err(error) = fs::remove_dir_all(generated_dir) {
         if error.kind() != std::io::ErrorKind::NotFound {
             return Err(to_cli_error(error));
@@ -751,9 +870,22 @@ pub fn add_raw_document(
             fs::create_dir_all(parent).map_err(to_cli_error)?;
         }
         fs::write(&markdown_path, content).map_err(to_cli_error)?;
+        crate::content::commit_immediate_text(
+            paths,
+            &wiki.project.id,
+            Some(&wiki.panel.id),
+            crate::content::ResourceKind::WikiMarkdown,
+            &document_id,
+            "source.md",
+            content,
+            "text/markdown",
+            true,
+        )?;
     }
 
-    let conversion_task = if is_text {
+    let workflow_id = create_id("workflow");
+    let content_hash = sha256_hex(content);
+    let mut conversion_task = if is_text {
         None
     } else {
         Some(create_wiki_task(
@@ -766,7 +898,19 @@ pub fn add_raw_document(
             Some(wiki_space.id.as_str()),
         )?)
     };
-    let ingest_task = if is_text {
+    if let Some(task) = conversion_task.as_mut() {
+        task["workflowId"] = json!(workflow_id);
+        task["idempotencyKey"] = json!(format!("convert:{document_id}:{content_hash}"));
+        if let Some(stored) = wiki
+            .tasks
+            .iter_mut()
+            .find(|stored| stored["id"] == task["id"])
+        {
+            stored["workflowId"] = task["workflowId"].clone();
+            stored["idempotencyKey"] = task["idempotencyKey"].clone();
+        }
+    }
+    let mut ingest_task = if is_text {
         Some(create_wiki_task(
             &wiki.state,
             &mut wiki.tasks,
@@ -777,14 +921,52 @@ pub fn add_raw_document(
             Some(wiki_space.id.as_str()),
         )?)
     } else {
-        None
+        let mut task = create_wiki_task(
+            &wiki.state,
+            &mut wiki.tasks,
+            "ingest_markdown_into_wiki",
+            &document_id,
+            Some(&document_id),
+            Some(1),
+            Some(wiki_space.id.as_str()),
+        )?;
+        let conversion_id = conversion_task
+            .as_ref()
+            .and_then(|value| value["id"].as_str())
+            .unwrap_or_default();
+        task["status"] = json!("waiting");
+        task["workflowId"] = json!(workflow_id);
+        task["dependsOnTaskIds"] = json!([conversion_id]);
+        task["idempotencyKey"] = json!(format!("ingest:{document_id}:1"));
+        if let Some(stored) = wiki
+            .tasks
+            .iter_mut()
+            .find(|stored| stored["id"] == task["id"])
+        {
+            *stored = task.clone();
+        }
+        Some(task)
     };
+    if let Some(task) = ingest_task.as_mut() {
+        if task.get("workflowId").is_none() {
+            task["workflowId"] = json!(workflow_id);
+            task["idempotencyKey"] = json!(format!("ingest:{document_id}:1"));
+            if let Some(stored) = wiki
+                .tasks
+                .iter_mut()
+                .find(|stored| stored["id"] == task["id"])
+            {
+                stored["workflowId"] = task["workflowId"].clone();
+                stored["idempotencyKey"] = task["idempotencyKey"].clone();
+            }
+        }
+    }
     let mut ingestion = Map::new();
     ingestion.insert(
         wiki_space.id.clone(),
         if let Some(task) = &ingest_task {
             json!({
-                "status": "queued",
+                "status": task.get("status").and_then(Value::as_str).unwrap_or("queued"),
                 "taskId": task["id"],
                 "markdownVersion": 1,
                 "error": null,
@@ -792,9 +974,9 @@ pub fn add_raw_document(
             })
         } else {
             json!({
-                "status": "not_started",
-                "taskId": null,
-                "markdownVersion": 0,
+                "status": "waiting",
+                "taskId": ingest_task.as_ref().map(|task| task["id"].clone()),
+                "markdownVersion": 1,
                 "error": null,
                 "updatedAt": now,
             })
@@ -806,7 +988,7 @@ pub fn add_raw_document(
         "originalFileName": safe_file_name,
         "mimeType": mime_type.unwrap_or_else(|| mime_type_for_file(file_name)),
         "sizeBytes": content.len(),
-        "sha256": sha256_hex(content),
+        "sha256": content_hash,
         "source": if source == "agent" { "agent" } else { "user" },
         "originalRef": original_ref,
         "markdownRef": if is_text { Value::String(markdown_ref.clone()) } else { Value::Null },
@@ -955,8 +1137,9 @@ pub fn delete_raw_document(
         let matches_document = task.get("documentId").and_then(Value::as_str) == Some(document_id)
             || task.get("targetId").and_then(Value::as_str) == Some(document_id);
         if matches_document {
-            task["status"] = json!("stale");
-            task["error"] = json!("Source document deleted");
+            task["status"] = json!("cancelled");
+            task["error"] =
+                json!({ "code": "prerequisite_deleted", "message": "Source document deleted" });
             task["updatedAt"] = json!(now);
         }
     }
@@ -989,6 +1172,19 @@ pub fn delete_raw_document(
         .panel_dir(&wiki.project.id, &wiki.panel.id)
         .join("raw")
         .join(sanitize_path_part(document_id));
+    crate::tasks::cancel_tasks_for_resource(
+        paths,
+        &wiki.project.id,
+        "wiki.rawDocument",
+        document_id,
+        "prerequisite_deleted",
+    )?;
+    crate::content::archive_resource(
+        paths,
+        Some(&wiki.project.id),
+        crate::content::ResourceKind::WikiMarkdown,
+        document_id,
+    )?;
     fs::remove_dir_all(raw_dir)
         .or_else(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -1010,6 +1206,51 @@ pub fn delete_raw_document(
         }
     }
     Ok(json!({ "document": document, "task": task, "state": wiki.state }))
+}
+
+pub fn rename_raw_document(
+    paths: &MyOpenPanelsPaths,
+    document_id: &str,
+    file_name: &str,
+) -> Result<Value, CliError> {
+    let safe_file_name = sanitize_path_part(file_name.trim());
+    if safe_file_name.is_empty() {
+        return Err(CliError::new("Raw document file name cannot be empty."));
+    }
+    let mut wiki = get_wiki_bootstrap(paths)?;
+    let storage = Storage::open(paths)?;
+    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
+    let existing = find_document(&wiki.state, document_id)?.clone();
+    let old_ref = existing["originalRef"]
+        .as_str()
+        .ok_or_else(|| CliError::new("Wiki raw document originalRef is missing."))?;
+    let new_ref = wiki_ref(&["raw", document_id, "original", &safe_file_name]);
+    if old_ref != new_ref {
+        let old_path = wiki_panel_path(&panel_dir, old_ref)?;
+        let new_path = wiki_panel_path(&panel_dir, &new_ref)?;
+        if let Some(parent) = new_path.parent() {
+            fs::create_dir_all(parent).map_err(to_cli_error)?;
+        }
+        fs::rename(old_path, new_path).map_err(to_cli_error)?;
+    }
+    let now = now_iso();
+    let document = find_document_mut(&mut wiki.state, document_id)?;
+    document["originalFileName"] = json!(safe_file_name);
+    document["originalRef"] = json!(new_ref);
+    document["title"] = json!(title_from_file_name(file_name));
+    document["updatedAt"] = json!(now);
+    let document = document.clone();
+    let meta_path = wiki_panel_path(&panel_dir, &wiki_ref(&["raw", document_id, "meta.json"]))?;
+    fs::write(
+        meta_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&document).map_err(to_cli_error)?
+        ),
+    )
+    .map_err(to_cli_error)?;
+    save_wiki_state(paths, &wiki)?;
+    Ok(json!({ "document": document, "state": wiki.state }))
 }
 
 pub fn extract_raw_document_markdown(
@@ -1135,7 +1376,7 @@ pub fn claim_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
     task["error"] = Value::Null;
     task["attempt"] = json!(task.get("attempt").and_then(Value::as_i64).unwrap_or(0) + 1);
     if task.get("maxAttempts").and_then(Value::as_i64).is_none() {
-        task["maxAttempts"] = json!(3);
+        task["maxAttempts"] = json!(8);
     }
     task["leaseOwner"] = Value::Null;
     task["leaseExpiresAt"] = json!(lease_expires_at(15));
@@ -1226,8 +1467,122 @@ pub fn complete_task(
     task_id: &str,
     result: Option<Value>,
 ) -> Result<Value, CliError> {
+    complete_task_internal(paths, task_id, result, true)
+}
+
+pub(crate) fn prepare_task_completion(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+    result: Option<Value>,
+) -> Result<Value, CliError> {
+    complete_task_internal(paths, task_id, result, false)
+}
+
+fn complete_task_internal(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+    result: Option<Value>,
+    persist: bool,
+) -> Result<Value, CliError> {
     let mut wiki = get_wiki_task_target(paths, task_id)?;
     let now = now_iso();
+    let current_task = task_value(&wiki.tasks, task_id)?.clone();
+    let staged_markdown = crate::content::staged_files_for_task(
+        paths,
+        task_id,
+        crate::content::ResourceKind::WikiMarkdown,
+    )?;
+    if let Some((document_id, _, bytes, _)) = staged_markdown.first() {
+        let markdown = std::str::from_utf8(bytes).map_err(|_| {
+            CliError::with_code("invalid_output", "Converted Markdown must be valid UTF-8.")
+        })?;
+        if markdown.trim().is_empty() {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "Converted Markdown cannot be empty.",
+            ));
+        }
+        let document = find_document_mut(&mut wiki.state, document_id)?;
+        let version = document
+            .get("markdownVersion")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            + 1;
+        document["markdownRef"] = json!(wiki_ref(&["raw", document_id, "source.md"]));
+        document["markdownVersion"] = json!(version);
+        document["wordCount"] = json!(character_count(markdown));
+        document["updatedAt"] = json!(now);
+    }
+    let staged_wiki = crate::content::staged_files_for_task(
+        paths,
+        task_id,
+        crate::content::ResourceKind::WikiSpace,
+    )?;
+    for (wiki_space_id, page_path, bytes, metadata) in &staged_wiki {
+        let markdown = std::str::from_utf8(bytes).map_err(|_| {
+            CliError::with_code("invalid_output", "Wiki pages must be valid UTF-8.")
+        })?;
+        if page_path != "log.md" {
+            upsert_page_index(
+                &mut wiki.state,
+                wiki_space_id,
+                page_path,
+                markdown,
+                metadata.get("title").and_then(Value::as_str),
+                &now,
+            )?;
+        }
+        update_wiki_space_timestamp(&mut wiki.state, wiki_space_id, &now)?;
+    }
+    if let Some((wiki_space_id, page_path, _, _)) = staged_wiki
+        .iter()
+        .find(|(_, page_path, _, _)| page_path.as_str() == "index.md")
+        .or_else(|| staged_wiki.first())
+    {
+        state_object_mut(&mut wiki.state)?
+            .insert("activeWikiSpaceId".to_owned(), json!(wiki_space_id));
+        state_object_mut(&mut wiki.state)?
+            .insert("activeWikiPagePath".to_owned(), json!(page_path));
+    }
+    if current_task.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown") {
+        let document_id = current_task
+            .get("documentId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CliError::with_code("invalid_output", "Conversion Task has no source document.")
+            })?;
+        let document = find_document(&wiki.state, document_id)?;
+        let markdown_version = document
+            .get("markdownVersion")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let markdown_ref = document
+            .get("markdownRef")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "invalid_output",
+                    "Conversion completed without a Markdown artifact.",
+                )
+            })?;
+        let storage = Storage::open(paths)?;
+        let markdown_path = wiki_panel_path(
+            &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
+            markdown_ref,
+        )?;
+        if markdown_version
+            <= current_task
+                .get("markdownVersion")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+            || (staged_markdown.is_empty() && !markdown_path.is_file())
+        {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "Conversion completed without advancing a valid Markdown artifact.",
+            ));
+        }
+    }
     let task_snapshot = {
         let task = task_mut(&mut wiki.tasks, task_id)?;
         task["status"] = json!("succeeded");
@@ -1254,15 +1609,31 @@ pub fn complete_task(
                     .and_then(Value::as_i64)
                     .unwrap_or(0)
             };
-            let mut ingest_task = create_wiki_task(
-                &wiki.state,
-                &mut wiki.tasks,
-                "ingest_markdown_into_wiki",
-                document_id,
-                Some(document_id),
-                Some(markdown_version),
-                task_snapshot.get("wikiSpaceId").and_then(Value::as_str),
-            )?;
+            let existing_index = wiki.tasks.iter().position(|candidate| {
+                candidate.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki")
+                    && candidate.get("documentId").and_then(Value::as_str) == Some(document_id)
+                    && candidate.get("status").and_then(Value::as_str) == Some("waiting")
+                    && candidate
+                        .get("dependsOnTaskIds")
+                        .and_then(Value::as_array)
+                        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(task_id)))
+            });
+            let mut ingest_task = if let Some(index) = existing_index {
+                wiki.tasks[index]["status"] = json!("queued");
+                wiki.tasks[index]["markdownVersion"] = json!(markdown_version);
+                wiki.tasks[index]["updatedAt"] = json!(now);
+                wiki.tasks[index].clone()
+            } else {
+                create_wiki_task(
+                    &wiki.state,
+                    &mut wiki.tasks,
+                    "ingest_markdown_into_wiki",
+                    document_id,
+                    Some(document_id),
+                    Some(markdown_version),
+                    task_snapshot.get("wikiSpaceId").and_then(Value::as_str),
+                )?
+            };
             if let Some(agent_skill_id) = task_snapshot.get("agentSkillId").cloned() {
                 ingest_task["agentSkillId"] = agent_skill_id.clone();
                 let ingest_task_id = ingest_task
@@ -1319,29 +1690,31 @@ pub fn complete_task(
             document["updatedAt"] = json!(now);
         }
     }
-    save_wiki_state(paths, &wiki)?;
-    trace_task_event(
-        "completed",
-        &task_snapshot,
-        format!(
-            "Completed {}",
-            task_type_label(
-                task_snapshot
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-            )
-        ),
-        Some(format!(
-            "Completed {}",
-            task_type_label(
-                task_snapshot
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-            )
-        )),
-    );
+    if persist {
+        save_wiki_state(paths, &wiki)?;
+        trace_task_event(
+            "completed",
+            &task_snapshot,
+            format!(
+                "Completed {}",
+                task_type_label(
+                    task_snapshot
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                )
+            ),
+            Some(format!(
+                "Completed {}",
+                task_type_label(
+                    task_snapshot
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                )
+            )),
+        );
+    }
     Ok(json!({ "task": task_snapshot, "state": wiki.state }))
 }
 
@@ -1567,9 +1940,33 @@ fn task_lease_expired(task: &Value) -> bool {
 }
 
 pub fn read_markdown(paths: &MyOpenPanelsPaths, document_id: &str) -> Result<Value, CliError> {
+    if crate::content::broker_execution_available() {
+        let payload = crate::content::broker_read_file(&crate::content::ReadFileRequest {
+            resource_kind: crate::content::ResourceKind::WikiMarkdown
+                .as_str()
+                .to_owned(),
+            resource_key: document_id.to_owned(),
+            logical_path: "source.md".to_owned(),
+        })?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(payload["contentBase64"].as_str().unwrap_or_default())
+            .map_err(to_cli_error)?;
+        return Ok(
+            json!({ "document": { "id": document_id }, "markdown": String::from_utf8(bytes).map_err(to_cli_error)?, "staged": true }),
+        );
+    }
+    crate::content::require_broker_for_task_execution()?;
     let wiki = get_wiki_bootstrap(paths)?;
     let document = find_document(&wiki.state, document_id)?.clone();
-    let markdown = if let Some(markdown_ref) = document.get("markdownRef").and_then(Value::as_str) {
+    let markdown = if let Some(markdown) = crate::content::read_active_text(
+        paths,
+        &wiki.project.id,
+        crate::content::ResourceKind::WikiMarkdown,
+        document_id,
+        "source.md",
+    )? {
+        markdown
+    } else if let Some(markdown_ref) = document.get("markdownRef").and_then(Value::as_str) {
         let storage = Storage::open(paths)?;
         let path = wiki_panel_path(
             &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
@@ -1588,6 +1985,22 @@ pub fn write_markdown(
     content: &str,
     task_id: Option<&str>,
 ) -> Result<Value, CliError> {
+    if task_id.is_some() && crate::content::broker_execution_available() {
+        return crate::content::broker_stage_file(&crate::content::StageFileRequest {
+            resource_kind: crate::content::ResourceKind::WikiMarkdown
+                .as_str()
+                .to_owned(),
+            resource_key: document_id.to_owned(),
+            logical_path: "source.md".to_owned(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(content.as_bytes()),
+            mime_type: "text/markdown".to_owned(),
+            metadata: json!({ "documentId": document_id }),
+        });
+    }
+    crate::content::require_broker_for_task_execution()?;
+    if let Some(task_id) = task_id {
+        crate::tasks::verify_task_write_access(paths, task_id)?;
+    }
     let mut wiki = match task_id {
         Some(task_id) => get_wiki_task_target(paths, task_id)?,
         None => get_wiki_bootstrap(paths)?,
@@ -1622,6 +2035,19 @@ pub fn write_markdown(
         fs::create_dir_all(parent).map_err(to_cli_error)?;
     }
     fs::write(path, content).map_err(to_cli_error)?;
+    if task_id.is_none() {
+        crate::content::commit_immediate_text(
+            paths,
+            &wiki.project.id,
+            Some(&wiki.panel.id),
+            crate::content::ResourceKind::WikiMarkdown,
+            document_id,
+            "source.md",
+            content.as_bytes(),
+            "text/markdown",
+            true,
+        )?;
+    }
     let version = document
         .get("markdownVersion")
         .and_then(Value::as_i64)
@@ -1645,6 +2071,20 @@ pub fn write_markdown(
     document["conversion"]["error"] = Value::Null;
     document["conversion"]["updatedAt"] = json!(now);
     let task = if should_queue_ingest {
+        crate::tasks::supersede_tasks_for_changed_resource(paths, &wiki.project.id, document_id)?;
+        for existing in &mut wiki.tasks {
+            if existing.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki")
+                && existing.get("documentId").and_then(Value::as_str) == Some(document_id)
+                && matches!(
+                    existing.get("status").and_then(Value::as_str),
+                    Some("waiting" | "queued" | "failed" | "running" | "indexing")
+                )
+            {
+                existing["status"] = json!("superseded");
+                existing["error"] = json!({ "code": "content_conflict" });
+                existing["updatedAt"] = json!(now);
+            }
+        }
         let task = create_wiki_task(
             &wiki.state,
             &mut wiki.tasks,
@@ -1670,15 +2110,7 @@ pub fn write_markdown(
     } else {
         None
     };
-    let rebuild_task = if should_queue_ingest {
-        Some(create_wiki_rebuild_index_task(
-            &wiki.state,
-            &mut wiki.tasks,
-            Some(&wiki_space_id),
-        )?)
-    } else {
-        None
-    };
+    let rebuild_task: Option<Value> = None;
     save_wiki_state(paths, &wiki)?;
     let document = find_document(&wiki.state, document_id)?.clone();
     Ok(
@@ -1757,7 +2189,16 @@ pub fn search_pages(
         .filter_map(|page| {
             let page_path = page.get("path").and_then(Value::as_str)?;
             let path = wiki_page_path(&panel_dir, &space.id, page_path).ok()?;
-            let markdown = fs::read_to_string(path).ok()?;
+            let markdown = crate::content::read_active_text(
+                paths,
+                &wiki.project.id,
+                crate::content::ResourceKind::WikiSpace,
+                &space.id,
+                page_path,
+            )
+            .ok()
+            .flatten()
+            .or_else(|| fs::read_to_string(path).ok())?;
             let title = page
                 .get("title")
                 .and_then(Value::as_str)
@@ -1808,6 +2249,20 @@ pub fn read_page(
     wiki_space_id: &str,
     page_path: &str,
 ) -> Result<Value, CliError> {
+    if crate::content::broker_execution_available() {
+        let payload = crate::content::broker_read_file(&crate::content::ReadFileRequest {
+            resource_kind: crate::content::ResourceKind::WikiSpace.as_str().to_owned(),
+            resource_key: wiki_space_id.to_owned(),
+            logical_path: page_path.to_owned(),
+        })?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(payload["contentBase64"].as_str().unwrap_or_default())
+            .map_err(to_cli_error)?;
+        return Ok(
+            json!({ "pagePath": page_path, "markdown": String::from_utf8(bytes).map_err(to_cli_error)?, "staged": true }),
+        );
+    }
+    crate::content::require_broker_for_task_execution()?;
     let wiki = get_wiki_bootstrap(paths)?;
     let storage = Storage::open(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
@@ -1816,7 +2271,15 @@ pub fn read_page(
         &space.id,
         page_path,
     )?;
-    let markdown = fs::read_to_string(path).map_err(to_cli_error)?;
+    let markdown = crate::content::read_active_text(
+        paths,
+        &wiki.project.id,
+        crate::content::ResourceKind::WikiSpace,
+        wiki_space_id,
+        page_path,
+    )?
+    .map(Ok)
+    .unwrap_or_else(|| fs::read_to_string(path).map_err(to_cli_error))?;
     Ok(json!({ "pagePath": page_path, "wikiSpace": space.value, "markdown": markdown }))
 }
 
@@ -1844,6 +2307,20 @@ pub fn write_page(
     title: Option<&str>,
     task_id: Option<&str>,
 ) -> Result<Value, CliError> {
+    if task_id.is_some() && crate::content::broker_execution_available() {
+        return crate::content::broker_stage_file(&crate::content::StageFileRequest {
+            resource_kind: crate::content::ResourceKind::WikiSpace.as_str().to_owned(),
+            resource_key: wiki_space_id.to_owned(),
+            logical_path: page_path.to_owned(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(content.as_bytes()),
+            mime_type: "text/markdown".to_owned(),
+            metadata: json!({ "title": title, "wikiSpaceId": wiki_space_id }),
+        });
+    }
+    crate::content::require_broker_for_task_execution()?;
+    if let Some(task_id) = task_id {
+        crate::tasks::verify_task_write_access(paths, task_id)?;
+    }
     let mut wiki = match task_id {
         Some(task_id) => get_wiki_task_target(paths, task_id)?,
         None => get_wiki_bootstrap(paths)?,
@@ -1859,6 +2336,19 @@ pub fn write_page(
         fs::create_dir_all(parent).map_err(to_cli_error)?;
     }
     fs::write(path, content).map_err(to_cli_error)?;
+    if task_id.is_none() {
+        crate::content::commit_immediate_text(
+            paths,
+            &wiki.project.id,
+            Some(&wiki.panel.id),
+            crate::content::ResourceKind::WikiSpace,
+            &space.id,
+            page_path,
+            content.as_bytes(),
+            "text/markdown",
+            false,
+        )?;
+    }
     let now = now_iso();
     upsert_page_index(&mut wiki.state, &space.id, page_path, content, title, &now)?;
     update_wiki_space_timestamp(&mut wiki.state, &space.id, &now)?;
@@ -1889,6 +2379,61 @@ pub fn write_page(
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
     Ok(
         json!({ "pagePath": page_path, "task": task, "wikiSpace": space.value, "state": wiki.state }),
+    )
+}
+
+pub fn rename_page(
+    paths: &MyOpenPanelsPaths,
+    wiki_space_id: &str,
+    page_path: &str,
+    next_page_path: &str,
+) -> Result<Value, CliError> {
+    let mut wiki = get_wiki_bootstrap(paths)?;
+    let storage = Storage::open(paths)?;
+    let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
+    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
+    let old_path = wiki_page_path(&panel_dir, &space.id, page_path)?;
+    let new_path = wiki_page_path(&panel_dir, &space.id, next_page_path)?;
+    if old_path != new_path {
+        if new_path.exists() {
+            return Err(CliError::new(format!(
+                "Wiki page already exists: {next_page_path}"
+            )));
+        }
+        if let Some(parent) = new_path.parent() {
+            fs::create_dir_all(parent).map_err(to_cli_error)?;
+        }
+        fs::rename(old_path, new_path).map_err(to_cli_error)?;
+    }
+    let now = now_iso();
+    let spaces = state_array_mut(&mut wiki.state, "wikiSpaces")?;
+    let page_index = spaces
+        .iter_mut()
+        .find(|item| item.get("id").and_then(Value::as_str) == Some(space.id.as_str()))
+        .and_then(|item| item.get_mut("pageIndex"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| CliError::new("Wiki page index is invalid."))?;
+    let page = page_index
+        .iter_mut()
+        .find(|item| item.get("path").and_then(Value::as_str) == Some(page_path))
+        .ok_or_else(|| CliError::new(format!("Wiki page not found: {page_path}")))?;
+    page["path"] = json!(next_page_path);
+    page["title"] = json!(title_from_file_name(next_page_path));
+    page["type"] = json!(if next_page_path == "index.md" {
+        "overview"
+    } else {
+        "page"
+    });
+    page["updatedAt"] = json!(now);
+    state_object_mut(&mut wiki.state)?
+        .insert("activeWikiPagePath".to_owned(), json!(next_page_path));
+    update_wiki_space_timestamp(&mut wiki.state, &space.id, &now)?;
+    let task =
+        create_wiki_rebuild_index_task(&wiki.state, &mut wiki.tasks, Some(space.id.as_str()))?;
+    save_wiki_state(paths, &wiki)?;
+    let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
+    Ok(
+        json!({ "pagePath": next_page_path, "task": task, "wikiSpace": space.value, "state": wiki.state }),
     )
 }
 

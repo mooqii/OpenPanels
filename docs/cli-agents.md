@@ -1,181 +1,26 @@
-# CLI Agent Setup
+# MyOpenPanels CLI For Agents
 
-MyOpenPanels can run in any local agent that can execute shell commands. Agents
-use the `myopenpanels` CLI to start the MyOpenPanels Studio, inspect the active
-project and panel, read panel state, and use panel-specific commands such as
-canvas selection and image insertion.
+Resolve one CLI executable and preserve it for the entire request. Start Studio
+with `studio start --local-only --project-dir "$PWD" --format json`. Execute the
+returned top-level `actions.required` in order: try the URL opener first and use
+the conditional CLI fallback only when that opener fails or is unavailable.
 
-## Install
+Before panel work, run `agent bootstrap --format json`. Bootstrap provides the
+current Project, active panel and selection summary, required Skills, and
+structured actions. Execute `actions.required` sequentially, then choose
+`actions.suggested` by their structured conditions. Do not reuse an earlier
+Bootstrap result.
 
-Install the Rust-native `myopenpanels` CLI from GitHub Releases, then verify
-it:
+Use `agent catalog` for the domain index and `agent catalog --domain <domain>`
+for complete command definitions. Execute only returned `argv` arrays. Do not
+reconstruct commands from prose or memory.
 
-```bash
-myopenpanels --version
-```
+All JSON responses use Envelope v3 with `ok`, `schemaVersion`, `intent`, either
+`data` or `error`, `actions`, and `meta`. Error recovery is represented by the
+same top-level action arrays. `actions.required` is ordered; suggested actions
+are optional and conditional.
 
-The recommended agent skill uses the installed `myopenpanels` binary as the
-stable entry point. Panel-specific instructions are returned by the CLI through
-`agent bootstrap`, so users do not need to keep separate canvas/wiki/writing skills
-manually updated.
-
-The bounded context renderer, Command Registry, built-in workflow guides,
-and built-in agent skills now live in the Rust CLI crate under
-`crates/myopenpanels/src/agent.rs`, with markdown resources in
-`agent-resources/`.
-
-For most commands, omitting `--project-dir` uses `MYOPENPANELS_PROJECT_DIR` or
-the current working directory for project metadata. Agent Bootstrap is the
-exception: its parameterless stable entry resolves the user-visible running
-Studio, independent of the Agent's working directory. Canvas data is stored in
-the global MyOpenPanels data directory so agents and projects can share the same
-boards and assets.
-
-The Studio process and user-visible Project/Panel focus are singletons for each
-storage directory. Agent thread/session environment variables such as
-`CODEX_THREAD_ID` or a Hermes conversation id still isolate Agent-owned
-Operations, Entry Skill acknowledgements, and loader files; they do not select
-or own a separate Studio process.
-
-## Agent Workflow
-
-1. Run `myopenpanels studio start --local-only --project-dir <project> --format
-   json`.
-2. Treat CLI success as Studio readiness, not proof that the panel is visible.
-   Follow `data.nextRequiredAction`: open its URL unchanged with a callable in-app
-   URL opener, or execute `data.nextRequiredAction.fallback.argv` with the same
-   resolved CLI executable when that capability is absent, fails, or cannot
-   report success. Stop an open-only task only after an opener succeeds.
-3. Run `myopenpanels agent bootstrap --format json`
-   only before panel-specific
-   work. Read the compact Protocol v5 payload from `data`; the complete envelope
-   is capped at 8192 UTF-8 bytes. It identifies the current focus, bounded Panel
-   context, work counts, and discovery references rather than embedding full
-   commands or documents.
-4. Complete `data.nextRequiredAction.steps` sequentially. For normal panel work,
-   read each prepared Skill's `contextPath` and then `localPath`. A rare
-   `reason: update-entry-skill` response instead updates or verifies the
-   Agent-host Entry Skill, executes its acknowledgement step, and requires a
-   fresh Bootstrap. Only after all required steps may the Agent choose applicable
-   `data.nextActions` according to `loadWhen`.
-5. Repeat the same response-driven loop. Never infer a business command from
-   remembered paths, flags, or display command strings.
-
-## Command Map
-
-- `myopenpanels studio start`: start or reuse the MyOpenPanels Studio.
-- `myopenpanels studio status`: show the storage-wide singleton Studio status.
-- `myopenpanels studio open-system-browser`: explicitly open the studio URL in the system browser.
-- `myopenpanels studio wait`: wait for the studio HTTP server to become ready.
-- `myopenpanels studio stop`: stop the storage-wide singleton Studio process.
-- `myopenpanels agent bootstrap`: print the compact Protocol v5 focus, bounded
-  context, work summaries, prepared required Skill files, and optional
-  progressive-discovery actions. Read every required Skill context and body
-  before evaluating any other action; this includes the active Panel Skill and,
-  when a ready Wiki Task exists, its captured authoring Skill.
-- `myopenpanels agent entry-skill acknowledge`: confirm that the current Agent
-  context has installed or verified the one-time required Entry Skill version.
-- `myopenpanels agent capability list`: list scopes, or compact intents with
-  `--scope <scope>`.
-- `myopenpanels agent capability read --intent <intent>`: read one complete
-  Command Registry descriptor.
-- `myopenpanels agent skill list`: list compact Skill summaries, optionally
-  filtered by `--panel-kind` and `--task-type`.
-- `myopenpanels agent skill read --skill-id <id>`: resolve a panel or authoring
-  skill, print its task-specific loader context, and return the required local
-  `SKILL.md` read action.
-- `myopenpanels agent skill read --skill-id wiki-panel`: load Wiki knowledge, generated
-  document, and authoring-skill routing rules.
-- `myopenpanels agent skill read --skill-id canvas-panel`: load Canvas selection,
-  generation, placement, and workflow-skill routing rules.
-- `myopenpanels agent skill read --skill-id writing-panel`: load Writing request,
-  captured-context, generation Operation, and task lifecycle rules.
-- Typesetting is Studio-managed in its first release. Bootstrap reports basic
-  publication context, but the panel has no Agent Skill or selection API.
-- `myopenpanels panel selection read`: read the active panel's explicit selection
-  through its Panel Module. Canvas reads return a directly usable local image
-  path when the selection has image pixels; composites are rendered lazily.
-- `myopenpanels wiki page search`: search the selected Wiki space before
-  reading relevant pages.
-- `myopenpanels writing request read --task-id <id>`: read a claimed Writing
-  request's complete instruction, selected Writing Skill, required Skill-load
-  action, and immutable context snapshot.
-- `myopenpanels writing generation begin --task-id <id> --title <title>`: begin
-  the request-bound generated-document Operation without allowing the Agent to
-  override the captured Wiki panel or revision target.
-- `myopenpanels writing refinement read --task-id <id>`: read the immutable
-  project Writing Skill name and selected raw/generated source documents.
-- `myopenpanels writing skill install --task-id <id> --skill-file <SKILL.md>`:
-  validate and atomically install the task-bound Writing Skill into its Project.
-- `myopenpanels agent skill read --skill-id task-queue`: load the generic Task
-  queue lifecycle contract when the request handles queued work.
-- `myopenpanels panel list`: list panels in the current Project.
-- `myopenpanels panel current`: read the active Project panel.
-- `myopenpanels panel activate`: activate a Project panel; this is the only panel command that changes focus.
-- `myopenpanels panel context read`: read compact context from the active Panel Module.
-- `myopenpanels panel state read`: read the potentially large raw active-panel state.
-- `myopenpanels canvas selection export`: exceptional, explicitly requested copy
-  operation. It is not a Canvas Panel Skill requirement; Agents normally use the
-  local path returned by selection read and should discover this capability only
-  when the user requests a file at a particular path.
-- `myopenpanels canvas image insert`: add a local image file as a Canvas image shape.
-- `myopenpanels task ...`: operate the sole public Task lifecycle.
-- `myopenpanels operation ...`: inspect and finish persistent Canvas, Wiki, or Writing Operations.
-
-Wiki selection details report whether the whole Wiki is
-  selected and which raw documents the user selected directly.
-
-## WorkBuddy Troubleshooting
-
-WorkBuddy's Results Panel is a UI surface, not by itself a callable URL-open
-capability. Use an exposed URL-open or Preview tool when one is present; no
-separate Agent Browser Skill is required. Otherwise use the system-browser
-fallback returned by `data.nextRequiredAction`.
-
-Troubleshoot the stages independently:
-
-- No successful `studio start` payload, or a bind/timeout error: allow localhost
-  binding in the WorkBuddy sandbox or temporarily use the required permission
-  mode, then retry the local-only start command.
-- A payload with `ok: true` and `data.nextRequiredAction.url`, but no visible panel: the Studio is ready
-  and the host open step is missing or failed; use the fallback command.
-- `browser_open_failed`: the system launcher rejected the open request. Use the
-  recovery URL manually and fix the host's external-program permission.
-
-MyOpenPanels does not guess undocumented WorkBuddy session environment
-variables. WorkBuddy conversations therefore use the CLI's normal default
-context behavior until a stable host session identifier is available.
-
-## Task Targets
-
-MyOpenPanels only assigns background work to explicitly registered targets. A
-target declares the capabilities it can execute, such as
-`wiki.convertDocument`, `wiki.ingestMarkdown`, `writing.generateDocument`, or
-`writing.refineSkill`.
-
-Register a polling target and claim work atomically:
-
-```bash
-myopenpanels agent target register \
-  --name my-agent --transport poll \
-  --capability wiki.ingestMarkdown --format json
-myopenpanels task claim-next \
-  --target-id <target-id> --wait-ms 25000 --format json
-```
-
-The claim response contains a lease token under `data.leaseToken`. Use it with
-`task heartbeat`, `task complete`, `task fail`, or `task release`.
-
-For a local command-based agent, the bridge owns this lifecycle automatically:
-
-```bash
-myopenpanels agent bridge run \
-  --name my-worker \
-  --capability wiki.ingestMarkdown \
-  --command '<agent command>'
-```
-
-Webhook targets register an endpoint and receive signed wake notifications.
-The target must still claim the task before executing it. Use
-`myopenpanels agent bridge status --format json` to inspect dispatcher,
-target, retry, and running-task status.
+Reads and writes can target any Project panel without changing focus. `panel
+selection read` is deliberately different: it reads only the selection in the
+currently active panel. High-risk writes are labeled in catalog metadata but do
+not require a second confirmation.

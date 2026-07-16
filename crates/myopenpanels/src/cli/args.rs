@@ -34,6 +34,7 @@ enum RootCommand {
     Wiki(WikiArgs),
     Writing(WritingArgs),
     Task(TaskArgs),
+    Workflow(WorkflowArgs),
     Operation(OperationArgs),
     Agent(AgentArgs),
     Version,
@@ -118,7 +119,7 @@ struct ProjectArgs {
 
 #[derive(Debug, Subcommand)]
 enum ProjectCommand {
-    Current,
+    Read,
     List,
     Create {
         #[arg(long)]
@@ -138,14 +139,17 @@ struct PanelArgs {
 
 #[derive(Debug, Subcommand)]
 enum PanelCommand {
-    Current,
     List,
     Activate {
         #[arg(long, value_parser = panel_kind_values())]
         panel_kind: String,
     },
-    Context(ReadArgs),
-    State(ReadArgs),
+    Read {
+        #[arg(long, value_parser = panel_kind_values())]
+        panel_kind: Option<String>,
+        #[arg(long, default_value = "summary", value_parser = ["summary", "full"])]
+        detail: String,
+    },
     Selection(ReadArgs),
 }
 
@@ -170,7 +174,6 @@ struct CanvasArgs {
 enum CanvasCommand {
     Selection(CanvasSelectionArgs),
     Image(CanvasImageArgs),
-    Generation(CanvasGenerationArgs),
 }
 
 #[derive(Debug, Args)]
@@ -195,11 +198,12 @@ struct CanvasImageArgs {
 
 #[derive(Debug, Subcommand)]
 enum CanvasImageCommand {
-    Insert(CanvasImageInsertArgs),
+    Create(CanvasImageCreateArgs),
+    Generate(CanvasImageGenerateArgs),
 }
 
 #[derive(Debug, Args)]
-struct CanvasImageInsertArgs {
+struct CanvasImageCreateArgs {
     #[arg(long)]
     image_file: String,
     #[arg(long, default_value = "auto", value_parser = ["auto", "right", "below", "left"])]
@@ -216,30 +220,18 @@ struct CanvasImageInsertArgs {
     display_height: Option<f64>,
     #[arg(long)]
     file_name: Option<String>,
-    #[arg(long)]
-    expect_focus_revision: u64,
 }
 
 #[derive(Debug, Args)]
-struct CanvasGenerationArgs {
-    #[command(subcommand)]
-    command: CanvasGenerationCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum CanvasGenerationCommand {
-    Begin {
-        #[arg(long)]
-        display_width: Option<f64>,
-        #[arg(long)]
-        display_height: Option<f64>,
-        #[arg(long)]
-        use_selection: bool,
-        #[arg(long)]
-        text: Option<String>,
-        #[arg(long)]
-        expect_focus_revision: u64,
-    },
+struct CanvasImageGenerateArgs {
+    #[arg(long)]
+    display_width: Option<f64>,
+    #[arg(long)]
+    display_height: Option<f64>,
+    #[arg(long)]
+    use_selection: bool,
+    #[arg(long)]
+    text: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -250,27 +242,26 @@ struct WikiArgs {
 
 #[derive(Debug, Subcommand)]
 enum WikiCommand {
-    #[command(name = "raw-document")]
-    RawDocument(WikiRawDocumentArgs),
-    #[command(name = "generated-document")]
-    GeneratedDocument(WikiGeneratedDocumentArgs),
+    Raw(WikiRawArgs),
+    Document(WikiDocumentArgs),
     Space(WikiSpaceArgs),
     Page(WikiPageArgs),
-    Generation(WikiGenerationArgs),
 }
 
 #[derive(Debug, Args)]
-struct WikiRawDocumentArgs {
+struct WikiRawArgs {
     #[command(subcommand)]
-    command: WikiRawDocumentCommand,
+    command: WikiRawCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum WikiRawDocumentCommand {
+enum WikiRawCommand {
     List,
-    Add {
-        #[arg(long)]
-        input_file: String,
+    Create {
+        #[arg(long, conflicts_with = "content", required_unless_present = "content")]
+        source_file: Option<String>,
+        #[arg(long, conflicts_with = "source_file")]
+        content: Option<String>,
         #[arg(long)]
         file_name: Option<String>,
         #[arg(long)]
@@ -278,60 +269,30 @@ enum WikiRawDocumentCommand {
         #[arg(long)]
         mime_type: Option<String>,
         #[arg(long)]
-        wiki_space_id: String,
-        #[arg(long)]
-        expect_focus_revision: u64,
+        space_id: String,
     },
-    #[command(name = "create-markdown")]
-    CreateMarkdown {
-        #[arg(long)]
-        title: String,
-        #[arg(long, conflicts_with = "content")]
-        content_file: Option<String>,
-        #[arg(long, conflicts_with = "content_file")]
-        content: Option<String>,
-        #[arg(long)]
-        file_name: Option<String>,
-        #[arg(long)]
-        wiki_space_id: String,
-        #[arg(long)]
-        expect_focus_revision: u64,
-    },
-    Markdown(WikiRawMarkdownArgs),
-}
-
-#[derive(Debug, Args)]
-struct WikiRawMarkdownArgs {
-    #[command(subcommand)]
-    command: WikiRawMarkdownCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum WikiRawMarkdownCommand {
     Read {
         #[arg(long)]
         raw_document_id: String,
     },
-    Write {
+    Update {
         #[arg(long)]
         raw_document_id: String,
         #[arg(long)]
         content_file: String,
         #[arg(long)]
         task_id: Option<String>,
-        #[arg(long, required_unless_present = "task_id")]
-        expect_focus_revision: Option<u64>,
     },
 }
 
 #[derive(Debug, Args)]
-struct WikiGeneratedDocumentArgs {
+struct WikiDocumentArgs {
     #[command(subcommand)]
-    command: WikiGeneratedDocumentCommand,
+    command: WikiDocumentCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum WikiGeneratedDocumentCommand {
+enum WikiDocumentCommand {
     List,
     Create {
         #[arg(long)]
@@ -344,44 +305,38 @@ enum WikiGeneratedDocumentCommand {
         thread_id: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        #[arg(long, required_unless_present = "task_id")]
-        expect_focus_revision: Option<u64>,
     },
     Read {
         #[arg(long)]
-        generated_document_id: String,
+        document_id: String,
     },
-    Write {
+    Update {
         #[arg(long)]
-        generated_document_id: String,
-        #[arg(long)]
-        content_file: String,
+        document_id: String,
+        #[arg(long, required_unless_present = "title")]
+        content_file: Option<String>,
         #[arg(long)]
         mime_type: Option<String>,
         #[arg(long)]
-        expect_focus_revision: u64,
-    },
-    Rename {
-        #[arg(long)]
-        generated_document_id: String,
-        #[arg(long)]
-        title: String,
-        #[arg(long)]
-        expect_focus_revision: u64,
+        title: Option<String>,
     },
     Delete {
         #[arg(long)]
-        generated_document_id: String,
-        #[arg(long)]
-        expect_focus_revision: u64,
+        document_id: String,
     },
     Publish {
         #[arg(long)]
-        generated_document_id: String,
+        document_id: String,
         #[arg(long)]
-        wiki_space_id: String,
+        space_id: String,
+    },
+    Generate {
         #[arg(long)]
-        expect_focus_revision: u64,
+        title: String,
+        #[arg(long, default_value = "markdown")]
+        document_format: String,
+        #[arg(long)]
+        document_id: Option<String>,
     },
 }
 
@@ -396,9 +351,7 @@ enum WikiSpaceCommand {
     List,
     Activate {
         #[arg(long)]
-        wiki_space_id: String,
-        #[arg(long)]
-        expect_focus_revision: u64,
+        space_id: String,
     },
 }
 
@@ -412,11 +365,11 @@ struct WikiPageArgs {
 enum WikiPageCommand {
     List {
         #[arg(long)]
-        wiki_space_id: String,
+        space_id: String,
     },
     Search {
         #[arg(long)]
-        wiki_space_id: String,
+        space_id: String,
         #[arg(long)]
         query: String,
         #[arg(long, default_value_t = 20)]
@@ -424,13 +377,13 @@ enum WikiPageCommand {
     },
     Read {
         #[arg(long)]
-        wiki_space_id: String,
+        space_id: String,
         #[arg(long)]
         path: String,
     },
-    Write {
+    Create {
         #[arg(long)]
-        wiki_space_id: String,
+        space_id: String,
         #[arg(long)]
         path: String,
         #[arg(long)]
@@ -439,28 +392,18 @@ enum WikiPageCommand {
         title: Option<String>,
         #[arg(long)]
         task_id: Option<String>,
-        #[arg(long, required_unless_present = "task_id")]
-        expect_focus_revision: Option<u64>,
     },
-}
-
-#[derive(Debug, Args)]
-struct WikiGenerationArgs {
-    #[command(subcommand)]
-    command: WikiGenerationCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum WikiGenerationCommand {
-    Begin {
+    Update {
         #[arg(long)]
-        title: String,
-        #[arg(long, default_value = "markdown")]
-        document_format: String,
+        space_id: String,
         #[arg(long)]
-        generated_document_id: Option<String>,
+        path: String,
         #[arg(long)]
-        expect_focus_revision: u64,
+        content_file: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        task_id: Option<String>,
     },
 }
 
@@ -474,7 +417,14 @@ struct WritingArgs {
 enum WritingCommand {
     Request(WritingRequestArgs),
     Refinement(WritingRefinementArgs),
-    Generation(WritingGenerationArgs),
+    Generate {
+        #[arg(long)]
+        task_id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long, default_value = "markdown")]
+        document_format: String,
+    },
     Skill(WritingSkillArgs),
 }
 
@@ -503,24 +453,6 @@ enum WritingRefinementCommand {
     Read {
         #[arg(long)]
         task_id: String,
-    },
-}
-
-#[derive(Debug, Args)]
-struct WritingGenerationArgs {
-    #[command(subcommand)]
-    command: WritingGenerationCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum WritingGenerationCommand {
-    Begin {
-        #[arg(long)]
-        task_id: String,
-        #[arg(long)]
-        title: String,
-        #[arg(long, default_value = "markdown")]
-        document_format: String,
     },
 }
 
@@ -580,11 +512,30 @@ enum TaskCommand {
         message: String,
         #[arg(long)]
         retry_after: Option<String>,
+        #[arg(long)]
+        failure_class: Option<String>,
     },
     Release(TaskLeaseArgs),
     Retry(TaskIdArgs),
     Cancel(TaskIdArgs),
-    Delivery(TaskDeliveryArgs),
+    Archive(TaskIdArgs),
+    Events(TaskIdArgs),
+    Attempts(TaskIdArgs),
+}
+
+#[derive(Debug, Args)]
+struct WorkflowArgs {
+    #[command(subcommand)]
+    command: WorkflowCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkflowCommand {
+    List,
+    Read {
+        #[arg(long)]
+        workflow_id: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -609,20 +560,6 @@ struct TaskLeaseArgs {
     task_id: String,
     #[arg(long)]
     lease_token: String,
-}
-
-#[derive(Debug, Args)]
-struct TaskDeliveryArgs {
-    #[command(subcommand)]
-    command: TaskDeliveryCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum TaskDeliveryCommand {
-    List {
-        #[arg(long)]
-        task_id: Option<String>,
-    },
 }
 
 #[derive(Debug, Args)]
@@ -670,11 +607,36 @@ struct AgentArgs {
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
     Bootstrap,
-    Capability(AgentCapabilityArgs),
+    Catalog {
+        #[arg(long)]
+        domain: Option<String>,
+    },
     EntrySkill(AgentEntrySkillArgs),
     Skill(AgentSkillArgs),
     Bridge(AgentBridgeArgs),
     Target(AgentTargetArgs),
+    Route(AgentRouteArgs),
+}
+
+#[derive(Debug, Args)]
+struct AgentRouteArgs {
+    #[command(subcommand)]
+    command: AgentRouteCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentRouteCommand {
+    List,
+    Set {
+        #[arg(long)]
+        capability: String,
+        #[arg(long = "target-id")]
+        target_ids: Vec<String>,
+    },
+    Remove {
+        #[arg(long)]
+        capability: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -690,24 +652,6 @@ enum AgentEntrySkillCommand {
         event_id: String,
         #[arg(long)]
         installed_version: String,
-    },
-}
-
-#[derive(Debug, Args)]
-struct AgentCapabilityArgs {
-    #[command(subcommand)]
-    command: AgentCapabilityCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum AgentCapabilityCommand {
-    List {
-        #[arg(long)]
-        scope: Option<String>,
-    },
-    Read {
-        #[arg(long)]
-        intent: String,
     },
 }
 
@@ -779,14 +723,16 @@ enum AgentTargetCommand {
         name: String,
         #[arg(long)]
         host: Option<String>,
-        #[arg(long, value_parser = ["webhook", "poll", "command"])]
+        #[arg(long, value_parser = ["poll", "command"])]
         transport: String,
-        #[arg(long)]
-        endpoint: Option<String>,
         #[arg(long)]
         capability: Vec<String>,
         #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
         priority: i64,
+        #[arg(long, default_value_t = 2)]
+        protocol_version: i64,
+        #[arg(long, default_value_t = 1)]
+        max_concurrency: i64,
     },
     Heartbeat {
         #[arg(long)]
@@ -885,6 +831,13 @@ fn normalize_command(
         RootCommand::Wiki(args) => normalize_wiki(args.command, flags),
         RootCommand::Writing(args) => normalize_writing(args.command, flags),
         RootCommand::Task(args) => normalize_task(args.command, flags),
+        RootCommand::Workflow(args) => match args.command {
+            WorkflowCommand::List => (vec!["workflow".into(), "list".into()], "workflow.list"),
+            WorkflowCommand::Read { workflow_id } => {
+                put(flags, "workflow-id", Some(workflow_id));
+                (vec!["workflow".into(), "read".into()], "workflow.read")
+            }
+        },
         RootCommand::Operation(args) => normalize_operation(args.command, flags),
         RootCommand::Agent(args) => normalize_agent(args.command, flags),
     }
@@ -913,21 +866,19 @@ fn normalize_writing(
                 )
             }
         },
-        WritingCommand::Generation(args) => match args.command {
-            WritingGenerationCommand::Begin {
-                task_id,
-                title,
-                document_format,
-            } => {
-                put(flags, "task-id", Some(task_id));
-                put(flags, "title", Some(title));
-                put(flags, "document-format", Some(document_format));
-                (
-                    vec!["writing".into(), "generation".into(), "begin".into()],
-                    "writing.generation.begin",
-                )
-            }
-        },
+        WritingCommand::Generate {
+            task_id,
+            title,
+            document_format,
+        } => {
+            put(flags, "task-id", Some(task_id));
+            put(flags, "title", Some(title));
+            put(flags, "document-format", Some(document_format));
+            (
+                vec!["writing".into(), "generate".into()],
+                "writing.generate",
+            )
+        }
         WritingCommand::Skill(args) => match args.command {
             WritingSkillCommand::Install {
                 task_id,
@@ -983,10 +934,7 @@ fn normalize_project(
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
     match command {
-        ProjectCommand::Current => (
-            vec!["project".into(), "current".into()],
-            "project.current.read",
-        ),
+        ProjectCommand::Read => (vec!["project".into(), "read".into()], "project.read"),
         ProjectCommand::List => (vec!["project".into(), "list".into()], "project.list"),
         ProjectCommand::Create { title } => {
             put(flags, "title", title);
@@ -1007,20 +955,16 @@ fn normalize_panel(
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
     match command {
-        PanelCommand::Current => (vec!["panel".into(), "current".into()], "panel.current.read"),
         PanelCommand::List => (vec!["panel".into(), "list".into()], "panel.list"),
         PanelCommand::Activate { panel_kind } => {
             put(flags, "panel-kind", Some(panel_kind));
             (vec!["panel".into(), "activate".into()], "panel.activate")
         }
-        PanelCommand::Context(_) => (
-            vec!["panel".into(), "context".into(), "read".into()],
-            "panel.context.read",
-        ),
-        PanelCommand::State(_) => (
-            vec!["panel".into(), "state".into(), "read".into()],
-            "panel.state.read",
-        ),
+        PanelCommand::Read { panel_kind, detail } => {
+            put(flags, "panel-kind", panel_kind);
+            put(flags, "detail", Some(detail));
+            (vec!["panel".into(), "read".into()], "panel.read")
+        }
         PanelCommand::Selection(_) => (
             vec!["panel".into(), "selection".into(), "read".into()],
             "panel.selection.read",
@@ -1043,7 +987,7 @@ fn normalize_canvas(
             }
         },
         CanvasCommand::Image(args) => match args.command {
-            CanvasImageCommand::Insert(args) => {
+            CanvasImageCommand::Create(args) => {
                 put(flags, "image-file", Some(args.image_file));
                 put(flags, "placement", Some(args.placement));
                 put(flags, "metadata-file", args.metadata_file);
@@ -1052,33 +996,19 @@ fn normalize_canvas(
                 put_num(flags, "display-width", args.display_width);
                 put_num(flags, "display-height", args.display_height);
                 put(flags, "file-name", args.file_name);
-                put_num(
-                    flags,
-                    "expect-focus-revision",
-                    Some(args.expect_focus_revision),
-                );
                 (
-                    vec!["canvas".into(), "image".into(), "insert".into()],
-                    "canvas.image.insert",
+                    vec!["canvas".into(), "image".into(), "create".into()],
+                    "canvas.image.create",
                 )
             }
-        },
-        CanvasCommand::Generation(args) => match args.command {
-            CanvasGenerationCommand::Begin {
-                display_width,
-                display_height,
-                use_selection,
-                text,
-                expect_focus_revision,
-            } => {
-                put_num(flags, "display-width", display_width);
-                put_num(flags, "display-height", display_height);
-                put_bool(flags, "use-selection", use_selection);
-                put(flags, "text", text);
-                put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
+            CanvasImageCommand::Generate(args) => {
+                put_num(flags, "display-width", args.display_width);
+                put_num(flags, "display-height", args.display_height);
+                put_bool(flags, "use-selection", args.use_selection);
+                put(flags, "text", args.text);
                 (
-                    vec!["canvas".into(), "generation".into(), "begin".into()],
-                    "canvas.generation.begin",
+                    vec!["canvas".into(), "image".into(), "generate".into()],
+                    "canvas.image.generate",
                 )
             }
         },
@@ -1090,19 +1020,15 @@ fn normalize_wiki(
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
     match command {
-        WikiCommand::RawDocument(args) => normalize_wiki_raw(args.command, flags),
-        WikiCommand::GeneratedDocument(args) => normalize_wiki_generated(args.command, flags),
+        WikiCommand::Raw(args) => normalize_wiki_raw(args.command, flags),
+        WikiCommand::Document(args) => normalize_wiki_document(args.command, flags),
         WikiCommand::Space(args) => match args.command {
             WikiSpaceCommand::List => (
                 vec!["wiki".into(), "space".into(), "list".into()],
                 "wiki.space.list",
             ),
-            WikiSpaceCommand::Activate {
-                wiki_space_id,
-                expect_focus_revision,
-            } => {
-                put(flags, "wiki-space-id", Some(wiki_space_id));
-                put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
+            WikiSpaceCommand::Activate { space_id } => {
+                put(flags, "space-id", Some(space_id));
                 (
                     vec!["wiki".into(), "space".into(), "activate".into()],
                     "wiki.space.activate",
@@ -1110,196 +1036,118 @@ fn normalize_wiki(
             }
         },
         WikiCommand::Page(args) => normalize_wiki_page(args.command, flags),
-        WikiCommand::Generation(args) => match args.command {
-            WikiGenerationCommand::Begin {
-                title,
-                document_format,
-                generated_document_id,
-                expect_focus_revision,
-            } => {
-                put(flags, "title", Some(title));
-                put(flags, "document-format", Some(document_format));
-                put(flags, "generated-document-id", generated_document_id);
-                put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
-                (
-                    vec!["wiki".into(), "generation".into(), "begin".into()],
-                    "wiki.generation.begin",
-                )
-            }
-        },
     }
 }
 
 fn normalize_wiki_raw(
-    command: WikiRawDocumentCommand,
+    command: WikiRawCommand,
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
     match command {
-        WikiRawDocumentCommand::List => (
-            vec!["wiki".into(), "raw-document".into(), "list".into()],
-            "wiki.raw-document.list",
+        WikiRawCommand::List => (
+            vec!["wiki".into(), "raw".into(), "list".into()],
+            "wiki.raw.list",
         ),
-        WikiRawDocumentCommand::Add {
-            input_file,
+        WikiRawCommand::Create {
+            source_file,
+            content,
             file_name,
             title,
             mime_type,
-            wiki_space_id,
-            expect_focus_revision,
+            space_id,
         } => {
-            put(flags, "input-file", Some(input_file));
+            put(flags, "source-file", source_file);
+            put(flags, "content", content);
             put(flags, "file-name", file_name);
             put(flags, "title", title);
             put(flags, "mime-type", mime_type);
-            put(flags, "wiki-space-id", Some(wiki_space_id));
-            put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
+            put(flags, "space-id", Some(space_id));
             (
-                vec!["wiki".into(), "raw-document".into(), "add".into()],
-                "wiki.raw-document.add",
+                vec!["wiki".into(), "raw".into(), "create".into()],
+                "wiki.raw.create",
             )
         }
-        WikiRawDocumentCommand::CreateMarkdown {
-            title,
+        WikiRawCommand::Read { raw_document_id } => {
+            put(flags, "raw-document-id", Some(raw_document_id));
+            (
+                vec!["wiki".into(), "raw".into(), "read".into()],
+                "wiki.raw.read",
+            )
+        }
+        WikiRawCommand::Update {
+            raw_document_id,
             content_file,
-            content,
-            file_name,
-            wiki_space_id,
-            expect_focus_revision,
+            task_id,
         } => {
-            put(flags, "title", Some(title));
-            put(flags, "content-file", content_file);
-            put(flags, "content", content);
-            put(flags, "file-name", file_name);
-            put(flags, "wiki-space-id", Some(wiki_space_id));
-            put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
+            put(flags, "raw-document-id", Some(raw_document_id));
+            put(flags, "content-file", Some(content_file));
+            put(flags, "task-id", task_id);
             (
-                vec![
-                    "wiki".into(),
-                    "raw-document".into(),
-                    "create-markdown".into(),
-                ],
-                "wiki.raw-document.create-markdown",
+                vec!["wiki".into(), "raw".into(), "update".into()],
+                "wiki.raw.update",
             )
         }
-        WikiRawDocumentCommand::Markdown(args) => match args.command {
-            WikiRawMarkdownCommand::Read { raw_document_id } => {
-                put(flags, "raw-document-id", Some(raw_document_id));
-                (
-                    vec![
-                        "wiki".into(),
-                        "raw-document".into(),
-                        "markdown".into(),
-                        "read".into(),
-                    ],
-                    "wiki.raw-document.markdown.read",
-                )
-            }
-            WikiRawMarkdownCommand::Write {
-                raw_document_id,
-                content_file,
-                task_id,
-                expect_focus_revision,
-            } => {
-                put(flags, "raw-document-id", Some(raw_document_id));
-                put(flags, "content-file", Some(content_file));
-                put(flags, "task-id", task_id);
-                put_num(flags, "expect-focus-revision", expect_focus_revision);
-                (
-                    vec![
-                        "wiki".into(),
-                        "raw-document".into(),
-                        "markdown".into(),
-                        "write".into(),
-                    ],
-                    "wiki.raw-document.markdown.write",
-                )
-            }
-        },
     }
 }
 
-fn normalize_wiki_generated(
-    command: WikiGeneratedDocumentCommand,
+fn normalize_wiki_document(
+    command: WikiDocumentCommand,
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
-    let base = vec!["wiki".to_owned(), "generated-document".to_owned()];
+    let base = vec!["wiki".to_owned(), "document".to_owned()];
     match command {
-        WikiGeneratedDocumentCommand::List => {
-            (with_action(&base, "list"), "wiki.generated-document.list")
-        }
-        WikiGeneratedDocumentCommand::Create {
+        WikiDocumentCommand::List => (with_action(&base, "list"), "wiki.document.list"),
+        WikiDocumentCommand::Create {
             content_file,
             mime_type,
             task_id,
             thread_id,
             title,
-            expect_focus_revision,
         } => {
             put(flags, "content-file", Some(content_file));
             put(flags, "mime-type", mime_type);
             put(flags, "task-id", task_id);
             put(flags, "thread-id", thread_id);
             put(flags, "title", title);
-            put_num(flags, "expect-focus-revision", expect_focus_revision);
-            (
-                with_action(&base, "create"),
-                "wiki.generated-document.create",
-            )
+            (with_action(&base, "create"), "wiki.document.create")
         }
-        WikiGeneratedDocumentCommand::Read {
-            generated_document_id,
-        } => {
-            put(flags, "generated-document-id", Some(generated_document_id));
-            (with_action(&base, "read"), "wiki.generated-document.read")
+        WikiDocumentCommand::Read { document_id } => {
+            put(flags, "document-id", Some(document_id));
+            (with_action(&base, "read"), "wiki.document.read")
         }
-        WikiGeneratedDocumentCommand::Write {
-            generated_document_id,
+        WikiDocumentCommand::Update {
+            document_id,
             content_file,
             mime_type,
-            expect_focus_revision,
-        } => {
-            put(flags, "generated-document-id", Some(generated_document_id));
-            put(flags, "content-file", Some(content_file));
-            put(flags, "mime-type", mime_type);
-            put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
-            (with_action(&base, "write"), "wiki.generated-document.write")
-        }
-        WikiGeneratedDocumentCommand::Rename {
-            generated_document_id,
             title,
-            expect_focus_revision,
         } => {
-            put(flags, "generated-document-id", Some(generated_document_id));
+            put(flags, "document-id", Some(document_id));
+            put(flags, "content-file", content_file);
+            put(flags, "mime-type", mime_type);
+            put(flags, "title", title);
+            (with_action(&base, "update"), "wiki.document.update")
+        }
+        WikiDocumentCommand::Delete { document_id } => {
+            put(flags, "document-id", Some(document_id));
+            (with_action(&base, "delete"), "wiki.document.delete")
+        }
+        WikiDocumentCommand::Publish {
+            document_id,
+            space_id,
+        } => {
+            put(flags, "document-id", Some(document_id));
+            put(flags, "space-id", Some(space_id));
+            (with_action(&base, "publish"), "wiki.document.publish")
+        }
+        WikiDocumentCommand::Generate {
+            title,
+            document_format,
+            document_id,
+        } => {
             put(flags, "title", Some(title));
-            put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
-            (
-                with_action(&base, "rename"),
-                "wiki.generated-document.rename",
-            )
-        }
-        WikiGeneratedDocumentCommand::Delete {
-            generated_document_id,
-            expect_focus_revision,
-        } => {
-            put(flags, "generated-document-id", Some(generated_document_id));
-            put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
-            (
-                with_action(&base, "delete"),
-                "wiki.generated-document.delete",
-            )
-        }
-        WikiGeneratedDocumentCommand::Publish {
-            generated_document_id,
-            wiki_space_id,
-            expect_focus_revision,
-        } => {
-            put(flags, "generated-document-id", Some(generated_document_id));
-            put(flags, "wiki-space-id", Some(wiki_space_id));
-            put_num(flags, "expect-focus-revision", Some(expect_focus_revision));
-            (
-                with_action(&base, "publish"),
-                "wiki.generated-document.publish",
-            )
+            put(flags, "document-format", Some(document_format));
+            put(flags, "document-id", document_id);
+            (with_action(&base, "generate"), "wiki.document.generate")
         }
     }
 }
@@ -1310,43 +1158,52 @@ fn normalize_wiki_page(
 ) -> (Vec<String>, &'static str) {
     let base = vec!["wiki".to_owned(), "page".to_owned()];
     match command {
-        WikiPageCommand::List { wiki_space_id } => {
-            put(flags, "wiki-space-id", Some(wiki_space_id));
+        WikiPageCommand::List { space_id } => {
+            put(flags, "space-id", Some(space_id));
             (with_action(&base, "list"), "wiki.page.list")
         }
         WikiPageCommand::Search {
-            wiki_space_id,
+            space_id,
             query,
             limit,
         } => {
-            put(flags, "wiki-space-id", Some(wiki_space_id));
+            put(flags, "space-id", Some(space_id));
             put(flags, "query", Some(query));
             put_num(flags, "limit", Some(limit));
             (with_action(&base, "search"), "wiki.page.search")
         }
-        WikiPageCommand::Read {
-            wiki_space_id,
-            path,
-        } => {
-            put(flags, "wiki-space-id", Some(wiki_space_id));
+        WikiPageCommand::Read { space_id, path } => {
+            put(flags, "space-id", Some(space_id));
             put(flags, "path", Some(path));
             (with_action(&base, "read"), "wiki.page.read")
         }
-        WikiPageCommand::Write {
-            wiki_space_id,
+        WikiPageCommand::Create {
+            space_id,
             path,
             content_file,
             title,
             task_id,
-            expect_focus_revision,
         } => {
-            put(flags, "wiki-space-id", Some(wiki_space_id));
+            put(flags, "space-id", Some(space_id));
             put(flags, "path", Some(path));
             put(flags, "content-file", Some(content_file));
             put(flags, "title", title);
             put(flags, "task-id", task_id);
-            put_num(flags, "expect-focus-revision", expect_focus_revision);
-            (with_action(&base, "write"), "wiki.page.write")
+            (with_action(&base, "create"), "wiki.page.create")
+        }
+        WikiPageCommand::Update {
+            space_id,
+            path,
+            content_file,
+            title,
+            task_id,
+        } => {
+            put(flags, "space-id", Some(space_id));
+            put(flags, "path", Some(path));
+            put(flags, "content-file", Some(content_file));
+            put(flags, "title", title);
+            put(flags, "task-id", task_id);
+            (with_action(&base, "update"), "wiki.page.update")
         }
     }
 }
@@ -1396,10 +1253,12 @@ fn normalize_task(
             lease,
             message,
             retry_after,
+            failure_class,
         } => {
             task_lease(flags, lease);
             put(flags, "message", Some(message));
             put(flags, "retry-after", retry_after);
+            put(flags, "failure-class", failure_class);
             ("fail", "task.fail")
         }
         TaskCommand::Release(args) => {
@@ -1414,12 +1273,18 @@ fn normalize_task(
             task_id(flags, args);
             ("cancel", "task.cancel")
         }
-        TaskCommand::Delivery(args) => match args.command {
-            TaskDeliveryCommand::List { task_id } => {
-                put(flags, "task-id", task_id);
-                ("delivery", "task.delivery.list")
-            }
-        },
+        TaskCommand::Archive(args) => {
+            task_id(flags, args);
+            ("archive", "task.archive")
+        }
+        TaskCommand::Events(args) => {
+            task_id(flags, args);
+            ("events", "task.events")
+        }
+        TaskCommand::Attempts(args) => {
+            task_id(flags, args);
+            ("attempts", "task.attempts")
+        }
     };
     (vec!["task".into(), action.into()], intent)
 }
@@ -1476,22 +1341,10 @@ fn normalize_agent(
             vec!["agent".into(), "bootstrap".into()],
             "agent.bootstrap.read",
         ),
-        AgentCommand::Capability(args) => match args.command {
-            AgentCapabilityCommand::List { scope } => {
-                put(flags, "scope", scope);
-                (
-                    vec!["agent".into(), "capability".into(), "list".into()],
-                    "agent.capability.list",
-                )
-            }
-            AgentCapabilityCommand::Read { intent } => {
-                put(flags, "intent", Some(intent));
-                (
-                    vec!["agent".into(), "capability".into(), "read".into()],
-                    "agent.capability.read",
-                )
-            }
-        },
+        AgentCommand::Catalog { domain } => {
+            put(flags, "domain", domain);
+            (vec!["agent".into(), "catalog".into()], "agent.catalog")
+        }
         AgentCommand::EntrySkill(args) => match args.command {
             AgentEntrySkillCommand::Acknowledge {
                 event_id,
@@ -1555,16 +1408,18 @@ fn normalize_agent(
                 name,
                 host,
                 transport,
-                endpoint,
                 capability,
                 priority,
+                protocol_version,
+                max_concurrency,
             } => {
                 put(flags, "name", Some(name));
                 put(flags, "host", host);
                 put(flags, "transport", Some(transport));
-                put(flags, "endpoint", endpoint);
                 put_many(flags, "capability", capability);
                 put_num(flags, "priority", Some(priority));
+                put_num(flags, "protocol-version", Some(protocol_version));
+                put_num(flags, "max-concurrency", Some(max_concurrency));
                 (
                     vec!["agent".into(), "target".into(), "register".into()],
                     "agent.target.register",
@@ -1582,6 +1437,30 @@ fn normalize_agent(
                 (
                     vec!["agent".into(), "target".into(), "remove".into()],
                     "agent.target.remove",
+                )
+            }
+        },
+        AgentCommand::Route(args) => match args.command {
+            AgentRouteCommand::List => (
+                vec!["agent".into(), "route".into(), "list".into()],
+                "agent.route.list",
+            ),
+            AgentRouteCommand::Set {
+                capability,
+                target_ids,
+            } => {
+                put(flags, "capability", Some(capability));
+                put_many(flags, "target-id", target_ids);
+                (
+                    vec!["agent".into(), "route".into(), "set".into()],
+                    "agent.route.set",
+                )
+            }
+            AgentRouteCommand::Remove { capability } => {
+                put(flags, "capability", Some(capability));
+                (
+                    vec!["agent".into(), "route".into(), "remove".into()],
+                    "agent.route.remove",
                 )
             }
         },

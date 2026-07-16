@@ -1,3 +1,4 @@
+import { Button, Tooltip } from "@heroui/react"
 import { useCallback, useRef } from "react"
 import { useEditor } from "../../EditorContext"
 import type { Editor } from "../../editor"
@@ -5,26 +6,15 @@ import { useTool } from "../../hooks/use-editor-state"
 import type { ShapeId } from "../../types/ids"
 import { createImageFromFile } from "../../utils/clipboard"
 import { getViewportCenter } from "../../utils/coordinates"
-import { ToolMenuButton } from "./ToolMenuButton"
 import { getToolAction, isToolActive } from "./tool-mapper"
 import type { ToolConfigItem } from "./types"
 import { useLocalizedToolLabel } from "./use-localized-tool-label"
 
 interface ToolButtonProps {
-  isMenuOpen?: boolean
-  onMenuClose?: () => void
-  onMenuOpen?: () => void
   tool: ToolConfigItem
 }
 
-const NOOP = () => undefined
-
-export function ToolButton({
-  isMenuOpen = false,
-  onMenuClose = NOOP,
-  onMenuOpen = NOOP,
-  tool,
-}: ToolButtonProps) {
+export function ToolButton({ tool }: ToolButtonProps) {
   const editor = useEditor()
   const currentTool = useTool(editor)
   const getLocalizedLabel = useLocalizedToolLabel()
@@ -39,47 +29,33 @@ export function ToolButton({
 
   if (tool.id === "image") {
     return (
-      <ImageToolButton
-        editor={editor}
-        isMenuOpen={isMenuOpen}
-        label={localizedLabel}
-        onMenuClose={onMenuClose}
-        onMenuOpen={onMenuOpen}
-        tool={tool}
-      />
+      <ImageToolButton editor={editor} label={localizedLabel} tool={tool} />
     )
   }
 
   return (
-    <ToolMenuButton
-      activeToolId={isActive ? tool.id : null}
-      buttonIcon={tool.icon}
-      buttonLabel={localizedLabel}
-      getToolLabel={() => localizedLabel}
-      isActive={isActive}
-      isMenuOpen={isMenuOpen}
-      onButtonPress={handleClick}
-      onMenuClose={onMenuClose}
-      onMenuOpen={onMenuOpen}
-      onToolSelect={() => handleClick()}
-      tools={[tool]}
-    />
+    <Tooltip>
+      <Button
+        aria-label={localizedLabel}
+        className="cursor-pointer select-none"
+        isIconOnly
+        onPress={handleClick}
+        variant={isActive ? "primary" : "ghost"}
+      >
+        {tool.icon}
+      </Button>
+      <Tooltip.Content placement="right">{localizedLabel}</Tooltip.Content>
+    </Tooltip>
   )
 }
 
 function ImageToolButton({
   editor,
-  isMenuOpen,
   label,
-  onMenuClose,
-  onMenuOpen,
   tool,
 }: {
   editor: Editor
-  isMenuOpen: boolean
   label: string
-  onMenuClose: () => void
-  onMenuOpen: () => void
   tool: ToolConfigItem
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -128,18 +104,18 @@ function ImageToolButton({
         style={{ display: "none" }}
         type="file"
       />
-      <ToolMenuButton
-        buttonIcon={tool.icon}
-        buttonLabel={label}
-        getToolLabel={() => label}
-        isActive={false}
-        isMenuOpen={isMenuOpen}
-        onButtonPress={() => inputRef.current?.click()}
-        onMenuClose={onMenuClose}
-        onMenuOpen={onMenuOpen}
-        onToolSelect={() => inputRef.current?.click()}
-        tools={[tool]}
-      />
+      <Tooltip>
+        <Button
+          aria-label={label}
+          className="cursor-pointer select-none"
+          isIconOnly
+          onPress={() => inputRef.current?.click()}
+          variant="ghost"
+        >
+          {tool.icon}
+        </Button>
+        <Tooltip.Content placement="right">{label}</Tooltip.Content>
+      </Tooltip>
     </>
   )
 }

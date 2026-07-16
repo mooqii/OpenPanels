@@ -93,15 +93,15 @@ export function ShadowItem({ editor, shape }: ShadowItemProps) {
         <Button
           aria-label={t`Shadow settings`}
           className={cn(
-            "flex h-7 w-7 cursor-pointer items-center justify-center overflow-hidden rounded-full border-2 border-white p-0 outline-none",
-            "ring-1 ring-zinc-300 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+            "flex h-7 w-7 cursor-pointer items-center justify-center overflow-hidden rounded-full border-2 border-foreground p-0 outline-none",
+            "ring-1 ring-border focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2"
           )}
           style={{
             background: TRANSPARENT_BG,
           }}
         >
           <div
-            className="h-full w-full rounded-full border border-zinc-200 bg-white"
+            className="h-full w-full rounded-full border border-border bg-white"
             style={{
               boxShadow: previewShadow,
             }}
@@ -109,7 +109,7 @@ export function ShadowItem({ editor, shape }: ShadowItemProps) {
         </Button>
         <Tooltip.Content>{t`Shadow`}</Tooltip.Content>
       </Tooltip>
-      <Popover.Content className="border border-border" offset={12}>
+      <Popover.Content offset={12}>
         <Popover.Dialog className="w-68 p-0">
           <div className="flex items-center justify-between px-4 py-3">
             <Popover.Heading>
@@ -125,9 +125,9 @@ export function ShadowItem({ editor, shape }: ShadowItemProps) {
           <Separator />
           <div className="flex flex-col gap-3 px-4 py-3">
             <div className="flex items-center gap-2">
-              <span className="w-16 text-gray-500 text-xs">{t`Blur`}</span>
+              <span className="w-16 text-muted text-xs">{t`Blur`}</span>
               <NumberInput
-                className="rounded-lg bg-surface-secondary px-2 py-1"
+                className="rounded-lg px-2 py-1"
                 dragVelocity={1}
                 min={0}
                 onChange={handleBlurChange}
@@ -141,9 +141,9 @@ export function ShadowItem({ editor, shape }: ShadowItemProps) {
               </NumberInput>
             </div>
             <div className="flex items-center gap-2">
-              <span className="w-16 text-gray-500 text-xs">{t`Offset X`}</span>
+              <span className="w-16 text-muted text-xs">{t`Offset X`}</span>
               <NumberInput
-                className="rounded-lg bg-surface-secondary px-2 py-1"
+                className="rounded-lg px-2 py-1"
                 dragVelocity={1}
                 min={-100}
                 onChange={handleOffsetXChange}
@@ -157,9 +157,9 @@ export function ShadowItem({ editor, shape }: ShadowItemProps) {
               </NumberInput>
             </div>
             <div className="flex items-center gap-2">
-              <span className="w-16 text-gray-500 text-xs">{t`Offset Y`}</span>
+              <span className="w-16 text-muted text-xs">{t`Offset Y`}</span>
               <NumberInput
-                className="rounded-lg bg-surface-secondary px-2 py-1"
+                className="rounded-lg px-2 py-1"
                 dragVelocity={1}
                 min={-100}
                 onChange={handleOffsetYChange}
@@ -173,9 +173,9 @@ export function ShadowItem({ editor, shape }: ShadowItemProps) {
               </NumberInput>
             </div>
             <div className="flex items-center gap-2">
-              <span className="w-16 text-gray-500 text-xs">{t`Opacity`}</span>
+              <span className="w-16 text-muted text-xs">{t`Opacity`}</span>
               <NumberInput
-                className="rounded-lg bg-surface-secondary px-2 py-1"
+                className="rounded-lg px-2 py-1"
                 dragVelocity={0.1}
                 max={1}
                 min={0}

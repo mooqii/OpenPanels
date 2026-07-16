@@ -1,7 +1,8 @@
+import { Button, Dropdown, Label, Tooltip } from "@heroui/react"
 import { useCallback, useEffect, useRef } from "react"
 import { useEditor } from "../../EditorContext"
 import { useTool } from "../../hooks/use-editor-state"
-import { ToolMenuButton } from "./ToolMenuButton"
+import { Shortcut } from "./ToolShortcut"
 import {
   getActiveToolInGroup,
   getToolAction,
@@ -12,17 +13,9 @@ import { useLocalizedToolLabel } from "./use-localized-tool-label"
 
 interface ToolGroupProps {
   group: ToolGroupConfig
-  isMenuOpen: boolean
-  onMenuClose: () => void
-  onMenuOpen: () => void
 }
 
-export function ToolGroup({
-  group,
-  isMenuOpen,
-  onMenuClose,
-  onMenuOpen,
-}: ToolGroupProps) {
+export function ToolGroup({ group }: ToolGroupProps) {
   const editor = useEditor()
   const currentTool = useTool(editor)
   const getLocalizedLabel = useLocalizedToolLabel()
@@ -46,6 +39,7 @@ export function ToolGroup({
 
   const handleToolSelect = useCallback(
     (toolId: string) => {
+      lastUsedRef.current = toolId
       const toolAction = getToolAction(toolId, editor, currentTool)
       if (toolAction) {
         toolAction()
@@ -54,30 +48,44 @@ export function ToolGroup({
     [editor, currentTool]
   )
 
-  const handleSelect = useCallback(() => {
-    if (displayToolId) {
-      handleToolSelect(displayToolId)
-    }
-  }, [displayToolId, handleToolSelect])
-
   if (!displayTool) {
     return null
   }
   const displayToolLabel = getLocalizedLabel(displayTool.id, displayTool.label)
 
   return (
-    <ToolMenuButton
-      activeToolId={activeToolId}
-      buttonIcon={displayTool.icon}
-      buttonLabel={displayToolLabel}
-      getToolLabel={(tool) => getLocalizedLabel(tool.id, tool.label)}
-      isActive={isActive}
-      isMenuOpen={isMenuOpen}
-      onButtonPress={handleSelect}
-      onMenuClose={onMenuClose}
-      onMenuOpen={onMenuOpen}
-      onToolSelect={handleToolSelect}
-      tools={group.tools}
-    />
+    <Dropdown>
+      <Tooltip>
+        <Button
+          aria-label={displayToolLabel}
+          className="cursor-pointer select-none"
+          isIconOnly
+          variant={isActive ? "primary" : "ghost"}
+        >
+          {displayTool.icon}
+        </Button>
+        <Tooltip.Content placement="right">{displayToolLabel}</Tooltip.Content>
+      </Tooltip>
+      <Dropdown.Popover placement="right">
+        <Dropdown.Menu
+          aria-label={displayToolLabel}
+          onAction={(key) => handleToolSelect(String(key))}
+          selectedKeys={activeToolId ? [activeToolId] : []}
+          selectionMode="single"
+        >
+          {group.tools.map((tool) => {
+            const label = getLocalizedLabel(tool.id, tool.label)
+            return (
+              <Dropdown.Item id={tool.id} key={tool.id} textValue={label}>
+                <Dropdown.ItemIndicator />
+                <span className="shrink-0">{tool.icon}</span>
+                <Label className="flex-1">{label}</Label>
+                {tool.shortcut ? <Shortcut shortcut={tool.shortcut} /> : null}
+              </Dropdown.Item>
+            )
+          })}
+        </Dropdown.Menu>
+      </Dropdown.Popover>
+    </Dropdown>
   )
 }

@@ -62,8 +62,8 @@ export function StrokeItem({ editor, shape }: FillColorItemProps) {
         <Button
           aria-label={t`Pick a color`}
           className={cn(
-            "flex h-7 w-7 cursor-pointer items-center justify-center overflow-hidden rounded-full border-2 border-white p-0 outline-none",
-            "ring-1 ring-zinc-300 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+            "flex h-7 w-7 cursor-pointer items-center justify-center overflow-hidden rounded-full border-2 border-foreground p-0 outline-none",
+            "ring-1 ring-border focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2"
           )}
         >
           <div
@@ -75,7 +75,7 @@ export function StrokeItem({ editor, shape }: FillColorItemProps) {
         </Button>
         <Tooltip.Content>{t`Stroke`}</Tooltip.Content>
       </Tooltip>
-      <Popover.Content className="border border-border" offset={12}>
+      <Popover.Content offset={12}>
         <Popover.Dialog className="w-68 p-0">
           <Popover.Heading className="px-4 py-3">
             <span>{t`Stroke`}</span>
@@ -83,7 +83,7 @@ export function StrokeItem({ editor, shape }: FillColorItemProps) {
           <Separator />
           <div className="flex items-center gap-2 px-4 py-2">
             <NumberInput
-              className="group flex items-center rounded-lg bg-surface-secondary px-2 py-1"
+              className="group flex items-center rounded-lg px-2 py-1"
               dragVelocity={1}
               min={0}
               onChange={handleChangeWidth}
@@ -92,7 +92,7 @@ export function StrokeItem({ editor, shape }: FillColorItemProps) {
               value={strokeWidth}
             >
               <NumberInput.DragHandle />
-              <NumberInput.Input className="group max-w-18 bg-transparent text-right focus:ring-none focus:group:ring-2 focus:group:ring-blue-500 dark:focus:group:ring-blue-400" />
+              <NumberInput.Input className="group max-w-18 text-right" />
               <NumberInput.Unit>px</NumberInput.Unit>
             </NumberInput>
             <Select

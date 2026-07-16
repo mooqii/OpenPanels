@@ -24,9 +24,9 @@
   --field-background: var(--surface-secondary);
   --field-foreground: var(--foreground);
   --field-placeholder: var(--muted);
-  --field-border: var(--border);
-  --accent: oklch(72% 0.16 253);
-  --accent-foreground: oklch(13% 0.006 250);
+  --field-border: oklch(52% 0.014 250);
+  --accent: var(--snow);
+  --accent-foreground: var(--black);
   --success: oklch(72% 0.17 150);
   --success-foreground: oklch(14% 0.02 150);
   --warning: oklch(82% 0.14 76);
@@ -34,61 +34,9 @@
   --danger: oklch(66% 0.2 25);
   --danger-foreground: var(--foreground);
   --focus: var(--accent);
-  --link: var(--accent);
-  --radius: 0.5rem;
-  --field-radius: 0.5rem;
+  --link: var(--foreground);
 
-  /* MyOpenPanels semantic tokens */
-  --op-bg-base: var(--surface);
-  --op-bg: var(--surface);
-  --op-bg-elevated: var(--overlay);
   --op-bg-muted: var(--surface-tertiary);
-  --op-border-default: var(--border);
-  --op-border-subtle: var(--separator);
-  --op-border-strong: color-mix(
-    in oklab,
-    var(--border) 60%,
-    var(--foreground) 40%
-  );
-  --op-hover: color-mix(in oklab, var(--foreground) 7%, transparent);
-  --op-primary-foreground: var(--accent-foreground);
-  --op-text-primary: var(--foreground);
-  --op-text-secondary: color-mix(
-    in oklab,
-    var(--foreground) 82%,
-    var(--muted) 18%
-  );
-  --op-text-subtitle: var(--muted);
-  --op-text-tertiary: var(--muted);
-  --op-title: var(--foreground);
-  --accent-soft: color-mix(in oklab, var(--accent) 16%, transparent);
-  --accent-soft-foreground: color-mix(
-    in oklab,
-    var(--accent) 92%,
-    var(--foreground) 8%
-  );
-  --accent-soft-hover: color-mix(in oklab, var(--accent) 22%, transparent);
-  --danger-soft: color-mix(in oklab, var(--danger) 16%, transparent);
-  --danger-soft-foreground: color-mix(
-    in oklab,
-    var(--danger) 92%,
-    var(--foreground) 8%
-  );
-  --success-soft: color-mix(in oklab, var(--success) 16%, transparent);
-  --success-soft-foreground: color-mix(
-    in oklab,
-    var(--success) 82%,
-    var(--foreground) 18%
-  );
-  --warning-soft: color-mix(in oklab, var(--warning) 18%, transparent);
-  --warning-soft-foreground: color-mix(
-    in oklab,
-    var(--warning) 82%,
-    var(--foreground) 18%
-  );
-
-  /* Canvas chrome tokens */
-  --op-canvas-background: var(--background);
   --op-canvas-toolbar: color-mix(
     in oklab,
     var(--surface-secondary) 92%,
@@ -97,19 +45,12 @@
   --op-toolbar-border: color-mix(in oklab, var(--foreground) 4%, transparent);
   --op-toolbar-shadow: 0 14px 40px
     color-mix(in oklab, var(--black) 34%, transparent);
-  --canvas-placeholder: var(--surface-tertiary);
-  --canvas-placeholder-text: var(--muted);
-  --canvas-drop-outline: var(--accent);
-  --canvas-drop-overlay: color-mix(in oklab, var(--accent) 8%, transparent);
   --canvas-crop-overlay: color-mix(
     in oklab,
     var(--background) 58%,
     transparent
   );
   --canvas-crop-grid: color-mix(in oklab, var(--foreground) 48%, transparent);
-  --canvas-crop-handle: var(--surface);
-  --canvas-crop-handle-stroke: var(--foreground);
-  --canvas-crop-border: var(--foreground);
   font-family:
     Avenir Next,
     ui-sans-serif,
@@ -141,77 +82,75 @@
   --field-background: var(--surface);
   --field-foreground: var(--foreground);
   --field-placeholder: var(--muted);
-  --field-border: var(--border);
-  --accent: oklch(58% 0.19 253);
-  --accent-foreground: oklch(99% 0 0);
+  --field-border: oklch(66% 0.014 250);
+  --accent: var(--black);
+  --accent-foreground: var(--white);
   --success: oklch(65% 0.16 150);
   --success-foreground: oklch(98% 0.01 150);
   --warning: oklch(76% 0.15 76);
   --warning-foreground: oklch(20% 0.03 76);
   --danger: oklch(58% 0.22 25);
   --danger-foreground: oklch(99% 0 0);
+  --focus: var(--accent);
+  --link: var(--foreground);
 
-  --op-bg-base: var(--surface);
-  --op-bg: var(--surface);
-  --op-bg-elevated: var(--overlay);
   --op-bg-muted: var(--surface-secondary);
-  --op-border-default: var(--border);
-  --op-border-subtle: var(--separator);
-  --op-border-strong: color-mix(
-    in oklab,
-    var(--border) 54%,
-    var(--foreground) 46%
-  );
-  --op-hover: color-mix(in oklab, var(--foreground) 7%, transparent);
-  --op-primary-foreground: var(--accent-foreground);
-  --op-text-primary: var(--foreground);
-  --op-text-secondary: color-mix(
-    in oklab,
-    var(--foreground) 76%,
-    var(--muted) 24%
-  );
-  --op-text-subtitle: var(--muted);
-  --op-text-tertiary: var(--muted);
-  --op-title: var(--foreground);
-  --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
-  --accent-soft-foreground: var(--accent);
-  --accent-soft-hover: color-mix(in oklab, var(--accent) 18%, transparent);
-  --danger-soft: color-mix(in oklab, var(--danger) 12%, transparent);
-  --danger-soft-foreground: var(--danger);
-  --success-soft: color-mix(in oklab, var(--success) 12%, transparent);
-  --success-soft-foreground: color-mix(
-    in oklab,
-    var(--success) 82%,
-    var(--foreground) 18%
-  );
-  --warning-soft: color-mix(in oklab, var(--warning) 14%, transparent);
-  --warning-soft-foreground: color-mix(
-    in oklab,
-    var(--warning) 72%,
-    var(--foreground) 28%
-  );
-
-  --op-canvas-background: var(--background);
   --op-canvas-toolbar: color-mix(in oklab, var(--surface) 90%, transparent);
   --op-toolbar-border: color-mix(in oklab, var(--foreground) 8%, transparent);
   --op-toolbar-shadow: 0 14px 34px
     color-mix(in oklab, var(--foreground) 16%, transparent);
-  --canvas-placeholder: var(--surface-tertiary);
-  --canvas-placeholder-text: var(--muted);
-  --canvas-drop-outline: var(--accent);
-  --canvas-drop-overlay: color-mix(in oklab, var(--accent) 8%, transparent);
   --canvas-crop-overlay: color-mix(
     in oklab,
     var(--background) 52%,
     transparent
   );
   --canvas-crop-grid: color-mix(in oklab, var(--foreground) 42%, transparent);
-  --canvas-crop-handle: var(--surface);
-  --canvas-crop-handle-stroke: var(--foreground);
-  --canvas-crop-border: var(--foreground);
   color: var(--foreground);
   color-scheme: light;
   background: var(--background);
+}
+
+:root {
+  /* MyOpenPanels semantic tokens */
+  --op-bg-base: var(--surface);
+  --op-bg-elevated: var(--overlay);
+  --op-border-default: var(--border);
+  --op-border-subtle: var(--separator);
+  --op-border-strong: color-mix(
+    in oklab,
+    var(--border) 60%,
+    var(--foreground) 40%
+  );
+  --op-divider: color-mix(in oklab, var(--op-border-subtle) 60%, transparent);
+  --op-row-hover-bg: color-mix(
+    in oklab,
+    var(--accent) 14%,
+    var(--op-bg-elevated)
+  );
+  --op-row-hover-border: color-mix(
+    in oklab,
+    var(--accent) 42%,
+    var(--op-border-default)
+  );
+  --op-row-hover-shadow: inset 0 0 0 1px
+    color-mix(in oklab, var(--accent) 16%, transparent);
+  --op-text-primary: var(--foreground);
+  --op-text-secondary: color-mix(
+    in oklab,
+    var(--foreground) 80%,
+    var(--muted) 20%
+  );
+  --op-text-tertiary: color-mix(in oklab, var(--muted) 92%, var(--background));
+
+  /* Canvas chrome tokens */
+  --op-canvas-background: var(--background);
+  --canvas-placeholder: var(--surface-tertiary);
+  --canvas-placeholder-text: var(--muted);
+  --canvas-drop-outline: var(--accent);
+  --canvas-drop-overlay: color-mix(in oklab, var(--accent) 8%, transparent);
+  --canvas-crop-handle: var(--surface);
+  --canvas-crop-handle-stroke: var(--foreground);
+  --canvas-crop-border: var(--foreground);
 }
 
 * {
@@ -269,6 +208,6 @@ textarea {
 
 .op-boot-status__detail {
   font-size: 12px;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-tertiary);
   overflow-wrap: anywhere;
 }

@@ -2,7 +2,8 @@ use clap::{ArgAction, Command};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const COMMAND_CATALOG_VERSION: u32 = 5;
+pub(crate) const COMMAND_CATALOG_VERSION: u32 = 1;
+const COMMAND_CATALOG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommandId {
@@ -22,6 +23,7 @@ pub(crate) enum CommandGroup {
     Wiki,
     Writing,
     Task,
+    Workflow,
     Operation,
     Agent,
     InternalStudioServe,
@@ -31,7 +33,7 @@ pub(crate) enum CommandGroup {
 impl CommandId {
     pub(crate) fn from_intent(intent: &str) -> Option<Self> {
         match intent {
-            "internal.studio.serve" => Some(Self::InternalStudioServe),
+            value if value == INTERNAL_STUDIO_DEFINITION.intent => Some(Self::InternalStudioServe),
             "cli.parse" => Some(Self::ParseError),
             _ => SPECS
                 .iter()
@@ -43,7 +45,7 @@ impl CommandId {
     pub(crate) fn intent(self) -> &'static str {
         match self {
             Self::Catalog(index) => SPECS[index].intent,
-            Self::InternalStudioServe => "internal.studio.serve",
+            Self::InternalStudioServe => INTERNAL_STUDIO_DEFINITION.intent,
             Self::ParseError => "cli.parse",
         }
     }
@@ -68,6 +70,7 @@ impl CommandId {
                 "wiki" => CommandGroup::Wiki,
                 "writing" => CommandGroup::Writing,
                 "task" => CommandGroup::Task,
+                "workflow" => CommandGroup::Workflow,
                 "operation" => CommandGroup::Operation,
                 "agent" => CommandGroup::Agent,
                 path => panic!("unsupported registered command group: {path}"),
@@ -77,7 +80,7 @@ impl CommandId {
 }
 
 #[derive(Clone, Copy)]
-struct CommandSpec {
+struct CommandDefinition {
     intent: &'static str,
     path: &'static [&'static str],
     title: &'static str,
@@ -85,20 +88,73 @@ struct CommandSpec {
     target_mode: &'static str,
     mutates: bool,
     required_panel_kind: Option<&'static str>,
-    large_output: bool,
-    agent_exposed: bool,
+    audience: CommandAudience,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandAudience {
+    Agent,
+    Host,
+    Protocol,
+    Operator,
+    #[allow(dead_code)]
+    Internal,
 }
 
 macro_rules! spec {
-    ($intent:literal, [$($path:literal),+], $title:literal, $scope:literal, $target:literal, $mutates:literal) => {
-        CommandSpec { intent: $intent, path: &[$($path),+], title: $title, scope: $scope, target_mode: $target, mutates: $mutates, required_panel_kind: None, large_output: false, agent_exposed: true }
+    ($intent:literal, [$($path:tt),+], $title:literal, $scope:literal, $target:literal, $mutates:literal) => {
+        CommandDefinition { intent: $intent, path: &[$($path),+], title: $title, scope: $scope, target_mode: $target, mutates: $mutates, required_panel_kind: None, audience: command_audience!($($path),+) }
     };
-    ($intent:literal, [$($path:literal),+], $title:literal, $scope:literal, $target:literal, $mutates:literal, panel=$panel:literal) => {
-        CommandSpec { intent: $intent, path: &[$($path),+], title: $title, scope: $scope, target_mode: $target, mutates: $mutates, required_panel_kind: Some($panel), large_output: false, agent_exposed: true }
+    ($intent:literal, [$($path:tt),+], $title:literal, $scope:literal, $target:literal, $mutates:literal, panel=$panel:literal) => {
+        CommandDefinition { intent: $intent, path: &[$($path),+], title: $title, scope: $scope, target_mode: $target, mutates: $mutates, required_panel_kind: Some($panel), audience: command_audience!($($path),+) }
     };
 }
 
-const SPECS: &[CommandSpec] = &[
+macro_rules! command_audience {
+    ("studio", $($rest:literal),*) => {
+        CommandAudience::Host
+    };
+    ("update", $($rest:literal),*) => {
+        CommandAudience::Host
+    };
+    ("version") => {
+        CommandAudience::Host
+    };
+    ("__serve-studio") => {
+        CommandAudience::Internal
+    };
+    ("agent", "bridge", $($rest:literal),*) => {
+        CommandAudience::Operator
+    };
+    ("agent", "target", $($rest:literal),*) => {
+        CommandAudience::Operator
+    };
+    ("agent", "route", $($rest:literal),*) => {
+        CommandAudience::Operator
+    };
+    ("agent", "skill", $($rest:literal),*) => {
+        CommandAudience::Agent
+    };
+    ("agent", $($rest:literal),*) => {
+        CommandAudience::Protocol
+    };
+    ($($rest:literal),*) => {
+        CommandAudience::Agent
+    };
+}
+
+const INTERNAL_STUDIO_DEFINITION: CommandDefinition = CommandDefinition {
+    intent: "internal.studio.serve",
+    path: &["__serve-studio"],
+    title: "Serve Studio internally",
+    scope: "internal",
+    target_mode: "none",
+    mutates: true,
+    required_panel_kind: None,
+    audience: CommandAudience::Internal,
+};
+
+const SPECS: &[CommandDefinition] = &[
     spec!(
         "cli.version.read",
         ["version"],
@@ -180,8 +236,8 @@ const SPECS: &[CommandSpec] = &[
         true
     ),
     spec!(
-        "project.current.read",
-        ["project", "current"],
+        "project.read",
+        ["project", "read"],
         "Read the current Project",
         "project",
         "current-project",
@@ -212,14 +268,6 @@ const SPECS: &[CommandSpec] = &[
         true
     ),
     spec!(
-        "panel.current.read",
-        ["panel", "current"],
-        "Read the active Panel",
-        "panel",
-        "current-focus",
-        false
-    ),
-    spec!(
         "panel.list",
         ["panel", "list"],
         "List Panels",
@@ -236,24 +284,13 @@ const SPECS: &[CommandSpec] = &[
         true
     ),
     spec!(
-        "panel.context.read",
-        ["panel", "context", "read"],
-        "Read compact Panel context",
+        "panel.read",
+        ["panel", "read"],
+        "Read Panel summary or full state",
         "panel",
-        "current-focus",
+        "panel-kind-or-current",
         false
     ),
-    CommandSpec {
-        large_output: true,
-        ..spec!(
-            "panel.state.read",
-            ["panel", "state", "read"],
-            "Read raw Panel state",
-            "panel",
-            "current-focus",
-            false
-        )
-    },
     spec!(
         "panel.selection.read",
         ["panel", "selection", "read"],
@@ -267,129 +304,115 @@ const SPECS: &[CommandSpec] = &[
         ["canvas", "selection", "export"],
         "Export explicit Canvas selection",
         "canvas",
-        "current-focus",
+        "current-selection",
         false,
         panel = "canvas"
     ),
     spec!(
-        "canvas.image.insert",
-        ["canvas", "image", "insert"],
+        "canvas.image.create",
+        ["canvas", "image", "create"],
         "Insert an image into Canvas",
         "canvas",
-        "current-focus",
+        "panel-kind",
         true,
         panel = "canvas"
     ),
     spec!(
-        "canvas.generation.begin",
-        ["canvas", "generation", "begin"],
+        "canvas.image.generate",
+        ["canvas", "image", "generate"],
         "Begin Canvas image generation",
         "canvas",
-        "current-focus",
+        "panel-kind",
         true,
         panel = "canvas"
     ),
     spec!(
-        "wiki.raw-document.list",
-        ["wiki", "raw-document", "list"],
+        "wiki.raw.list",
+        ["wiki", "raw", "list"],
         "List Wiki Raw Documents",
         "wiki",
-        "current-focus",
-        false
+        "panel-kind",
+        false,
+        panel = "wiki"
     ),
     spec!(
-        "wiki.raw-document.add",
-        ["wiki", "raw-document", "add"],
-        "Add a Wiki Raw Document",
+        "wiki.raw.create",
+        ["wiki", "raw", "create"],
+        "Create a Wiki Raw Document",
         "wiki",
-        "current-focus",
+        "panel-kind",
         true,
         panel = "wiki"
     ),
     spec!(
-        "wiki.raw-document.create-markdown",
-        ["wiki", "raw-document", "create-markdown"],
-        "Create a Markdown Raw Document",
-        "wiki",
-        "current-focus",
-        true,
-        panel = "wiki"
-    ),
-    spec!(
-        "wiki.raw-document.markdown.read",
-        ["wiki", "raw-document", "markdown", "read"],
+        "wiki.raw.read",
+        ["wiki", "raw", "read"],
         "Read Raw Document Markdown",
         "wiki",
-        "current-focus",
-        false
+        "panel-kind",
+        false,
+        panel = "wiki"
     ),
     spec!(
-        "wiki.raw-document.markdown.write",
-        ["wiki", "raw-document", "markdown", "write"],
+        "wiki.raw.update",
+        ["wiki", "raw", "update"],
         "Write Raw Document Markdown",
         "wiki",
-        "focus-or-task",
+        "panel-kind-or-task",
         true,
         panel = "wiki"
     ),
     spec!(
-        "wiki.generated-document.list",
-        ["wiki", "generated-document", "list"],
+        "wiki.document.list",
+        ["wiki", "document", "list"],
         "List Generated Documents",
         "wiki",
-        "current-focus",
-        false
+        "panel-kind",
+        false,
+        panel = "wiki"
     ),
     spec!(
-        "wiki.generated-document.create",
-        ["wiki", "generated-document", "create"],
+        "wiki.document.create",
+        ["wiki", "document", "create"],
         "Create a Generated Document",
         "wiki",
-        "focus-or-task",
+        "panel-kind-or-task",
         true,
         panel = "wiki"
     ),
     spec!(
-        "wiki.generated-document.read",
-        ["wiki", "generated-document", "read"],
+        "wiki.document.read",
+        ["wiki", "document", "read"],
         "Read a Generated Document",
         "wiki",
-        "current-focus",
-        false
+        "panel-kind",
+        false,
+        panel = "wiki"
     ),
     spec!(
-        "wiki.generated-document.write",
-        ["wiki", "generated-document", "write"],
-        "Write a Generated Document",
+        "wiki.document.update",
+        ["wiki", "document", "update"],
+        "Update a Generated Document",
         "wiki",
-        "current-focus",
+        "panel-kind",
         true,
         panel = "wiki"
     ),
     spec!(
-        "wiki.generated-document.rename",
-        ["wiki", "generated-document", "rename"],
-        "Rename a Generated Document",
-        "wiki",
-        "current-focus",
-        true,
-        panel = "wiki"
-    ),
-    spec!(
-        "wiki.generated-document.delete",
-        ["wiki", "generated-document", "delete"],
+        "wiki.document.delete",
+        ["wiki", "document", "delete"],
         "Delete a Generated Document",
         "wiki",
-        "current-focus",
+        "panel-kind",
         true,
         panel = "wiki"
     ),
     spec!(
-        "wiki.generated-document.publish",
-        ["wiki", "generated-document", "publish"],
+        "wiki.document.publish",
+        ["wiki", "document", "publish"],
         "Publish a Generated Document",
         "wiki",
-        "current-focus",
+        "panel-kind",
         true,
         panel = "wiki"
     ),
@@ -398,15 +421,16 @@ const SPECS: &[CommandSpec] = &[
         ["wiki", "space", "list"],
         "List Wiki Spaces",
         "wiki",
-        "current-focus",
-        false
+        "panel-kind",
+        false,
+        panel = "wiki"
     ),
     spec!(
         "wiki.space.activate",
         ["wiki", "space", "activate"],
         "Activate a Wiki Space",
         "wiki",
-        "current-focus",
+        "panel-kind",
         true,
         panel = "wiki"
     ),
@@ -415,40 +439,52 @@ const SPECS: &[CommandSpec] = &[
         ["wiki", "page", "list"],
         "List Wiki Pages",
         "wiki",
-        "current-focus",
-        false
+        "panel-kind",
+        false,
+        panel = "wiki"
     ),
     spec!(
         "wiki.page.search",
         ["wiki", "page", "search"],
         "Search Wiki Pages",
         "wiki",
-        "current-focus",
-        false
+        "panel-kind",
+        false,
+        panel = "wiki"
     ),
     spec!(
         "wiki.page.read",
         ["wiki", "page", "read"],
         "Read a Wiki Page",
         "wiki",
-        "current-focus",
-        false
+        "panel-kind",
+        false,
+        panel = "wiki"
     ),
     spec!(
-        "wiki.page.write",
-        ["wiki", "page", "write"],
-        "Write a Wiki Page",
+        "wiki.page.create",
+        ["wiki", "page", "create"],
+        "Create a Wiki Page",
         "wiki",
-        "focus-or-task",
+        "panel-kind-or-task",
         true,
         panel = "wiki"
     ),
     spec!(
-        "wiki.generation.begin",
-        ["wiki", "generation", "begin"],
+        "wiki.page.update",
+        ["wiki", "page", "update"],
+        "Update a Wiki Page",
+        "wiki",
+        "panel-kind-or-task",
+        true,
+        panel = "wiki"
+    ),
+    spec!(
+        "wiki.document.generate",
+        ["wiki", "document", "generate"],
         "Begin Wiki document generation",
         "wiki",
-        "current-focus",
+        "panel-kind",
         true,
         panel = "wiki"
     ),
@@ -461,8 +497,8 @@ const SPECS: &[CommandSpec] = &[
         false
     ),
     spec!(
-        "writing.generation.begin",
-        ["writing", "generation", "begin"],
+        "writing.generate",
+        ["writing", "generate"],
         "Begin Writing document generation",
         "writing",
         "task",
@@ -479,7 +515,7 @@ const SPECS: &[CommandSpec] = &[
     spec!(
         "writing.skill.install",
         ["writing", "skill", "install"],
-        "Install a refined project Writing Skill",
+        "Install a refined shared Writing Skill",
         "writing",
         "task",
         true
@@ -573,10 +609,42 @@ const SPECS: &[CommandSpec] = &[
         true
     ),
     spec!(
-        "task.delivery.list",
-        ["task", "delivery", "list"],
-        "List Task deliveries",
+        "task.archive",
+        ["task", "archive"],
+        "Archive a terminal Task",
         "task",
+        "task",
+        true
+    ),
+    spec!(
+        "task.events",
+        ["task", "events"],
+        "List Task events",
+        "task",
+        "task",
+        false
+    ),
+    spec!(
+        "task.attempts",
+        ["task", "attempts"],
+        "List Task attempts",
+        "task",
+        "task",
+        false
+    ),
+    spec!(
+        "workflow.list",
+        ["workflow", "list"],
+        "List Workflows",
+        "workflow",
+        "current-project",
+        false
+    ),
+    spec!(
+        "workflow.read",
+        ["workflow", "read"],
+        "Read a Workflow DAG",
+        "workflow",
         "current-project",
         false
     ),
@@ -629,17 +697,9 @@ const SPECS: &[CommandSpec] = &[
         false
     ),
     spec!(
-        "agent.capability.list",
-        ["agent", "capability", "list"],
-        "List Agent capabilities",
-        "agent",
-        "none",
-        false
-    ),
-    spec!(
-        "agent.capability.read",
-        ["agent", "capability", "read"],
-        "Read one Agent capability",
+        "agent.catalog",
+        ["agent", "catalog"],
+        "Read the Agent command catalog",
         "agent",
         "none",
         false
@@ -716,22 +776,31 @@ const SPECS: &[CommandSpec] = &[
         "current-project",
         true
     ),
+    spec!(
+        "agent.route.list",
+        ["agent", "route", "list"],
+        "List Agent routes",
+        "agent",
+        "current-project",
+        false
+    ),
+    spec!(
+        "agent.route.set",
+        ["agent", "route", "set"],
+        "Set an Agent route",
+        "agent",
+        "current-project",
+        true
+    ),
+    spec!(
+        "agent.route.remove",
+        ["agent", "route", "remove"],
+        "Remove an Agent route",
+        "agent",
+        "current-project",
+        true
+    ),
 ];
-
-pub(crate) fn capabilities() -> Vec<Value> {
-    debug_assert!(validate().is_ok());
-    SPECS
-        .iter()
-        .filter(|spec| spec.agent_exposed)
-        .filter_map(descriptor)
-        .collect()
-}
-
-pub(crate) fn has_scope(scope: &str) -> bool {
-    SPECS
-        .iter()
-        .any(|spec| spec.agent_exposed && spec.scope == scope)
-}
 
 pub(crate) fn command_action(command_id: CommandId, args: Vec<String>) -> Option<Value> {
     let CommandId::Catalog(index) = command_id else {
@@ -751,105 +820,39 @@ pub(crate) fn command_action(command_id: CommandId, args: Vec<String>) -> Option
     }))
 }
 
-pub(crate) fn scope_index() -> Value {
+pub(crate) fn catalog(domain: Option<&str>) -> Option<Value> {
     debug_assert!(validate().is_ok());
-    let mut counts = BTreeMap::<&str, usize>::new();
-    for spec in SPECS.iter().filter(|spec| spec.agent_exposed) {
-        *counts.entry(spec.scope).or_default() += 1;
-    }
-    let mut next_actions = Vec::new();
-    let scopes = counts
-        .into_iter()
-        .map(|(scope, count)| {
-            let mut action = command_action(
-                CommandId::from_intent("agent.capability.list")
-                    .expect("registered capability list"),
-                vec![
-                    "--scope".to_owned(),
-                    scope.to_owned(),
-                    "--format".to_owned(),
-                    "json".to_owned(),
-                ],
-            )
-            .expect("registered capability list action");
-            action["loadWhen"] = json!(format!("The user request matches the {scope} scope."));
-            next_actions.push(action);
+    if let Some(domain) = domain {
+        let commands = SPECS
+            .iter()
+            .filter(|spec| catalog_domain(spec) == Some(domain))
+            .map(descriptor)
+            .collect::<Vec<_>>();
+        return (!commands.is_empty()).then(|| {
             json!({
-                "scope": scope,
-                "count": count,
-                "listCommand": format!("myopenpanels agent capability list --scope {scope} --format json"),
+                "schemaVersion": COMMAND_CATALOG_SCHEMA_VERSION,
+                "catalogVersion": COMMAND_CATALOG_VERSION,
+                "domain": domain,
+                "commands": commands,
             })
-        })
-        .collect::<Vec<_>>();
-    json!({
-        "catalogVersion": COMMAND_CATALOG_VERSION,
-        "scopes": scopes,
-        "nextActions": next_actions,
-        "nextRequiredAction": {
-            "intent": "select-capability-scope",
-            "instruction": "Choose the nextActions entry whose loadWhen matches the user request.",
-        },
-    })
-}
-
-pub(crate) fn scope_capabilities(scope: &str) -> Option<Value> {
-    let specs = SPECS
-        .iter()
-        .filter(|spec| spec.agent_exposed && spec.scope == scope)
-        .collect::<Vec<_>>();
-    if specs.is_empty() {
-        return None;
+        });
     }
-    let capabilities = specs.iter().map(|spec| summary(spec)).collect::<Vec<_>>();
-    let next_actions = specs
-        .iter()
-        .map(|spec| {
-            let mut action = command_action(
-                CommandId::from_intent("agent.capability.read")
-                    .expect("registered capability read"),
-                vec![
-                    "--intent".to_owned(),
-                    spec.intent.to_owned(),
-                    "--format".to_owned(),
-                    "json".to_owned(),
-                ],
-            )
-            .expect("registered capability read action");
-            action["loadWhen"] = json!(format!("The user request requires {}.", spec.title));
-            action
-        })
-        .collect::<Vec<_>>();
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for spec in SPECS.iter().filter(|spec| catalog_domain(spec).is_some()) {
+        *counts.entry(catalog_domain(spec).unwrap()).or_default() += 1;
+    }
     Some(json!({
+        "schemaVersion": COMMAND_CATALOG_SCHEMA_VERSION,
         "catalogVersion": COMMAND_CATALOG_VERSION,
-        "scope": scope,
-        "capabilities": capabilities,
-        "nextActions": next_actions,
-        "nextRequiredAction": {
-            "intent": "select-capability",
-            "instruction": "Choose the nextActions entry whose loadWhen matches the user request.",
-        },
+        "domains": counts.into_iter().map(|(domain, count)| json!({ "domain": domain, "count": count })).collect::<Vec<_>>(),
     }))
 }
 
-pub(crate) fn capability_payload(intent: &str) -> Option<Value> {
-    capability(intent).map(|capability| {
-        json!({
-            "catalogVersion": COMMAND_CATALOG_VERSION,
-            "capability": capability,
-            "nextActions": [],
-            "nextRequiredAction": {
-                "intent": "execute-capability",
-                "instruction": "Use the capability command path and argument schema in this response. Supply values from the user request and current context, then execute it with the same resolved CLI executable.",
-            },
-        })
-    })
-}
-
-pub(crate) fn capability(intent: &str) -> Option<Value> {
+pub(crate) fn catalog_domain_for_intent(intent: &str) -> Option<&'static str> {
     SPECS
         .iter()
         .find(|spec| spec.intent == intent)
-        .and_then(descriptor)
+        .and_then(catalog_domain)
 }
 
 pub(crate) fn validate() -> Result<(), String> {
@@ -915,57 +918,205 @@ fn collect_public_leaves(command: &Command, path: &mut Vec<String>, leaves: &mut
     }
 }
 
-fn descriptor(spec: &CommandSpec) -> Option<Value> {
+fn catalog_domain(spec: &CommandDefinition) -> Option<&'static str> {
+    match spec.audience {
+        CommandAudience::Agent => Some(spec.scope),
+        CommandAudience::Operator => Some("worker"),
+        CommandAudience::Host | CommandAudience::Protocol | CommandAudience::Internal => None,
+    }
+}
+
+fn descriptor(spec: &CommandDefinition) -> Value {
     let root = super::args::clap_command();
-    let leaf = find_leaf(&root, spec.path)?;
-    let args = leaf
+    let leaf = find_leaf(&root, spec.path).unwrap_or_else(|| {
+        panic!(
+            "registered command path is unavailable: {}",
+            spec.path.join(" ")
+        )
+    });
+    let command_args = leaf
         .get_arguments()
         .filter(|arg| {
             let id = arg.get_id().as_str();
-            !matches!(id, "project_dir" | "storage_dir" | "context_id" | "format" | "help" | "version")
+            !arg.is_hide_set()
+                && !matches!(
+                    id,
+                    "project_dir" | "storage_dir" | "context_id" | "format" | "help" | "version"
+                )
         })
+        .collect::<Vec<_>>();
+    let args = command_args
+        .iter()
         .map(|arg| {
             let values = arg
                 .get_value_parser()
                 .possible_values()
-                .map(|values| values.map(|value| value.get_name().to_owned()).collect::<Vec<_>>())
+                .map(|values| {
+                    values
+                        .map(|value| value.get_name().to_owned())
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
+            let default_values = arg
+                .get_default_values()
+                .iter()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
             json!({
                 "name": arg.get_id().as_str(),
                 "flag": arg.get_long().map(|value| format!("--{value}")),
-                "type": if matches!(arg.get_action(), ArgAction::SetTrue) { "bool" } else if values.is_empty() { "string" } else { "enum" },
+                "description": arg.get_help().map(|value| value.to_string()),
+                "type": argument_type(arg.get_id().as_str(), arg.get_action(), &values),
                 "required": arg.is_required_set(),
+                "repeatable": matches!(arg.get_action(), ArgAction::Append | ArgAction::Count),
                 "values": values,
+                "defaultValues": default_values,
+                "sensitive": is_sensitive_argument(arg.get_id().as_str()),
             })
         })
         .collect::<Vec<_>>();
-    Some(json!({
-        "intent": spec.intent,
-        "title": spec.title,
-        "command": format!("myopenpanels {}", spec.path.join(" ")),
-        "scope": spec.scope,
-        "audience": "agent",
-        "targetMode": spec.target_mode,
-        "mutates": spec.mutates,
-        "requiredPanelKind": spec.required_panel_kind,
-        "largeOutput": spec.large_output,
-        "args": args,
-        "outputSchemaId": format!("myopenpanels.{}.v1", spec.intent),
-        "preconditions": if spec.mutates && spec.target_mode == "current-focus" { json!(["matching-active-panel", "expected-focus-revision"]) } else { json!([]) },
-    }))
-}
-
-fn summary(spec: &CommandSpec) -> Value {
+    let risk = risk_for(spec);
+    let requires_active_panel = requires_active_panel(spec);
+    let target_mode = if requires_active_panel {
+        "active-selection"
+    } else {
+        match spec.target_mode {
+            "task" | "panel-kind-or-task" => "task-bound",
+            "operation" => "operation-bound",
+            mode if mode.starts_with("panel-kind") => "panel-kind",
+            mode => mode,
+        }
+    };
     json!({
         "intent": spec.intent,
-        "title": spec.title,
-        "command": format!("myopenpanels {}", spec.path.join(" ")),
-        "mutates": spec.mutates,
-        "targetMode": spec.target_mode,
-        "requiredPanelKind": spec.required_panel_kind,
-        "largeOutput": spec.large_output,
-        "readCommand": format!("myopenpanels agent capability read --intent {} --format json", spec.intent),
+        "description": spec.title,
+        "argv": example_argv(spec, &command_args),
+        "args": args,
+        "risk": risk,
+        "target": {
+            "mode": target_mode,
+            "panelKind": spec.required_panel_kind,
+            "selection": if requires_active_panel {
+                "active-required"
+            } else if spec.intent == "canvas.image.generate" {
+                "active-when-requested"
+            } else {
+                "none"
+            },
+        },
+        "retry": if risk == "read" { "safe" } else { "revalidate" },
     })
+}
+
+fn argument_type(name: &str, action: &ArgAction, values: &[String]) -> &'static str {
+    if matches!(action, ArgAction::SetTrue | ArgAction::SetFalse) {
+        "bool"
+    } else if matches!(action, ArgAction::Count) {
+        "integer"
+    } else if !values.is_empty() {
+        "enum"
+    } else if is_integer_argument(name) {
+        "integer"
+    } else if is_path_argument(name) && matches!(action, ArgAction::Append) {
+        "path-array"
+    } else if is_path_argument(name) {
+        "path"
+    } else if matches!(action, ArgAction::Append) {
+        "string-array"
+    } else {
+        "string"
+    }
+}
+
+fn is_integer_argument(name: &str) -> bool {
+    name.ends_with("_revision")
+        || name.ends_with("_ms")
+        || matches!(
+            name,
+            "limit"
+                | "max_concurrency"
+                | "port"
+                | "priority"
+                | "protocol_version"
+                | "required_protocol_version"
+                | "timeout"
+        )
+}
+
+fn is_path_argument(name: &str) -> bool {
+    name.ends_with("_dir") || name.ends_with("_file")
+}
+
+fn is_sensitive_argument(name: &str) -> bool {
+    name.contains("token") || name.contains("secret") || name.contains("password")
+}
+
+fn example_argv(spec: &CommandDefinition, args: &[&clap::Arg]) -> Vec<String> {
+    let mut argv = spec
+        .path
+        .iter()
+        .map(|part| (*part).to_owned())
+        .collect::<Vec<_>>();
+    for arg in args.iter().filter(|arg| arg.is_required_set()) {
+        if let Some(flag) = arg.get_long() {
+            argv.push(format!("--{flag}"));
+        }
+        if !matches!(arg.get_action(), ArgAction::SetTrue | ArgAction::SetFalse) {
+            let example_value = arg
+                .get_value_parser()
+                .possible_values()
+                .and_then(|mut values| values.next())
+                .map(|value| value.get_name().to_owned())
+                .unwrap_or_else(|| {
+                    let value_name = arg
+                        .get_value_names()
+                        .and_then(|names| names.first())
+                        .map(|name| name.to_string())
+                        .unwrap_or_else(|| arg.get_id().as_str().to_ascii_uppercase());
+                    format!("<{value_name}>")
+                });
+            argv.push(example_value);
+        }
+    }
+    match spec.intent {
+        "wiki.raw.create" => argv.extend(["--content".to_owned(), "<CONTENT>".to_owned()]),
+        "wiki.document.update" => argv.extend(["--title".to_owned(), "<TITLE>".to_owned()]),
+        _ => {}
+    }
+    argv.extend(["--format".to_owned(), "json".to_owned()]);
+    argv
+}
+
+fn risk_for(spec: &CommandDefinition) -> &'static str {
+    if spec.intent == "canvas.selection.export" {
+        return "write";
+    }
+    if !spec.mutates {
+        return "read";
+    }
+    if matches!(
+        spec.intent,
+        "update.install"
+            | "studio.stop"
+            | "wiki.document.delete"
+            | "wiki.document.publish"
+            | "writing.skill.install"
+            | "task.cancel"
+            | "task.archive"
+            | "agent.target.remove"
+            | "agent.route.remove"
+    ) {
+        "high-risk-write"
+    } else {
+        "write"
+    }
+}
+
+fn requires_active_panel(spec: &CommandDefinition) -> bool {
+    matches!(
+        spec.intent,
+        "panel.selection.read" | "canvas.selection.export"
+    )
 }
 
 fn find_leaf<'a>(root: &'a Command, path: &[&str]) -> Option<&'a Command> {
@@ -985,12 +1136,73 @@ mod tests {
     #[test]
     fn registry_covers_every_public_clap_leaf_once() {
         validate().expect("complete command registry");
-        let capabilities = capabilities();
-        assert_eq!(capabilities.len(), SPECS.len());
-        assert!(capabilities.iter().any(|value| {
-            value["intent"] == "panel.state.read" && value["largeOutput"] == true
-        }));
-        assert!(capability("agent.capability.read").is_some());
+        let index = catalog(None).expect("catalog index");
+        assert!(index["domains"]
+            .as_array()
+            .is_some_and(|domains| !domains.is_empty()));
+        assert!(catalog(Some("studio")).is_none());
+
+        let wiki = catalog(Some("wiki")).expect("wiki catalog");
+        let commands = wiki["commands"].as_array().expect("commands");
+        let delete = commands
+            .iter()
+            .find(|command| command["intent"] == "wiki.document.delete")
+            .expect("document delete");
+        assert_eq!(delete["risk"], "high-risk-write");
+        let allowed = [
+            "intent",
+            "description",
+            "argv",
+            "args",
+            "risk",
+            "target",
+            "retry",
+        ];
+        for command in commands {
+            assert!(command
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|key| allowed.contains(&key.as_str())));
+            assert_eq!(
+                command["argv"].as_array().unwrap().last(),
+                Some(&json!("json"))
+            );
+        }
+
+        for spec in SPECS.iter().filter(|spec| catalog_domain(spec).is_some()) {
+            let descriptor = descriptor(spec);
+            let argv = descriptor["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            assert!(
+                matches!(
+                    super::super::args::parse(&argv),
+                    super::super::args::ParseOutcome::Invocation(_)
+                ),
+                "catalog argv must parse for {}: {argv:?}",
+                spec.intent
+            );
+        }
+
+        let canvas = catalog(Some("canvas")).expect("canvas catalog");
+        let create = canvas["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|command| command["intent"] == "canvas.image.create")
+            .unwrap();
+        assert_eq!(create["target"]["mode"], "panel-kind");
+        let selection = canvas["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|command| command["intent"] == "canvas.selection.export")
+            .unwrap();
+        assert_eq!(selection["target"]["mode"], "active-selection");
         for spec in SPECS {
             let mut argv = spec
                 .path

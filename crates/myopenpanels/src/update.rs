@@ -78,8 +78,7 @@ pub struct UpdateInstallPayload {
     pub manifest_url: String,
     pub installed_path: Option<String>,
     pub entry_skill_update_reminder: EntrySkillUpdateReminder,
-    pub next_actions: Vec<UpdateInstallAction>,
-    pub next_required_action: UpdateInstallNextRequiredAction,
+    pub actions: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,16 +95,9 @@ pub struct EntrySkillUpdateReminder {
 pub struct UpdateInstallAction {
     pub intent: String,
     pub executor: String,
-    pub load_when: String,
+    pub condition: serde_json::Value,
     pub instruction: String,
     pub skill: EntrySkillRelease,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateInstallNextRequiredAction {
-    pub intent: String,
-    pub instruction: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -228,10 +220,12 @@ fn update_install_payload(
     let action = UpdateInstallAction {
         intent: "agent-host.skill.update-recommended".to_owned(),
         executor: "agent-host".to_owned(),
-        load_when: format!(
-            "The currently loaded {} Skill version is missing or lower than {}.",
-            entry_skill.id, entry_skill.version
-        ),
+        condition: serde_json::json!({
+            "type": "version-comparison",
+            "resource": entry_skill.id,
+            "operator": "less-than",
+            "version": entry_skill.version,
+        }),
         instruction: "Compare the loaded Skill metadata version with the release version. If it is lower, consider updating the Skill with the Agent host's Skill installer. This reminder is advisory and does not block CLI update completion.".to_owned(),
         skill: entry_skill,
     };
@@ -244,11 +238,10 @@ fn update_install_payload(
         manifest_url,
         installed_path,
         entry_skill_update_reminder: reminder,
-        next_actions: vec![action],
-        next_required_action: UpdateInstallNextRequiredAction {
-            intent: "review-update-reminders".to_owned(),
-            instruction: "Review the advisory entries in nextActions. Restart Studio when studioRestartRequired is true.".to_owned(),
-        },
+        actions: serde_json::json!({
+            "required": [],
+            "suggested": [action],
+        }),
     }
 }
 
@@ -867,13 +860,13 @@ mod tests {
         assert_eq!(json["studioRestartRequired"], true);
         assert_eq!(json["entrySkillUpdateReminder"]["comparisonRequired"], true);
         assert_eq!(json["entrySkillUpdateReminder"]["version"], "3.1");
-        assert_eq!(json["nextActions"][0]["executor"], "agent-host");
+        assert_eq!(json["actions"]["suggested"][0]["executor"], "agent-host");
         assert_eq!(
-            json["nextActions"][0]["intent"],
+            json["actions"]["suggested"][0]["intent"],
             "agent-host.skill.update-recommended"
         );
-        assert!(json["nextActions"][0].get("argv").is_none());
-        assert!(json["nextActions"][0]["instruction"]
+        assert!(json["actions"]["suggested"][0].get("argv").is_none());
+        assert!(json["actions"]["suggested"][0]["instruction"]
             .as_str()
             .unwrap()
             .contains("advisory"));
@@ -895,7 +888,7 @@ mod tests {
         assert!(!payload.updated);
         assert!(!payload.studio_restart_required);
         assert!(payload.entry_skill_update_reminder.comparison_required);
-        assert_eq!(payload.next_actions.len(), 1);
+        assert_eq!(payload.actions["suggested"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -925,7 +918,7 @@ mod tests {
 
         for payload in [check, download] {
             assert!(payload.get("entrySkillUpdateReminder").is_none());
-            assert!(payload.get("nextActions").is_none());
+            assert!(payload.get("actions").is_none());
         }
     }
 

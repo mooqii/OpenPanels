@@ -7,7 +7,7 @@ appliesTo:
   - writing
 taskTypes:
   - generate_document
-requiresCapabilities:
+requiresCommands:
 loadWhen:
   - The submitted Writing task selected the default writing format.
 tokens: short

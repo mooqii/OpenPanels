@@ -6,12 +6,12 @@ source: builtin
 appliesTo:
   - canvas
 taskTypes:
-requiresCapabilities:
-  - panel.state.read
+requiresCommands:
+  - panel.read
   - panel.selection.read
-  - canvas.generation.begin
+  - canvas.image.generate
   - operation.complete
-  - canvas.image.insert
+  - canvas.image.create
   - agent.skill.read
 loadWhen:
   - Before beginning a new operation that targets an MyOpenPanels Canvas panel.
@@ -33,8 +33,12 @@ Intent routing:
 
 Core rules:
 
+- Canvas reads and writes target the Project's Canvas panel directly; they do
+  not require or change the active panel.
 - CLI state and selection data are authoritative; do not infer selection from a
   screenshot.
+- Selection is the exception to panel-kind targeting: read or use it only when
+  Canvas is the active panel.
 - Use the image `localPath` returned by selection read directly. Do not export
   the selection as a routine preparation step.
 - Treat selection export as an exceptional user-facing copy operation. Discover

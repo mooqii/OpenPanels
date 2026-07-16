@@ -13,6 +13,7 @@ import {
   MyOpenPanelsBrowserAssetStore,
   ProjectChrome,
 } from "./components/project/ProjectChrome"
+import { ModelGatewaySettingsDialog } from "./components/settings/ModelGatewaySettings"
 import { PublishingPanel } from "./components/publishing/PublishingPanel"
 import {
   AgentPanel,
@@ -113,8 +114,12 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   const [runtimeState, setRuntimeState] =
     useState<StudioRuntimeState>("connected")
   const [isTraceOpen, setIsTraceOpen] = useState(false)
+  const [isModelSettingsOpen, setIsModelSettingsOpen] = useState(false)
   const [agentPanelTab, setAgentPanelTab] = useState<AgentPanelTab>("tasks")
   const [agentTaskFilter, setAgentTaskFilter] = useState<TaskFilter>("pending")
+  const [focusedAgentTaskIds, setFocusedAgentTaskIds] = useState<
+    string[] | null
+  >(null)
   const [operationNotice, setOperationNotice] = useState<AgentOperation | null>(
     null
   )
@@ -133,11 +138,15 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     window.navigator.userAgent
   )
 
-  const openAgentTaskList = useCallback((filter: TaskFilter) => {
-    setAgentPanelTab("tasks")
-    setAgentTaskFilter(filter)
-    setIsTraceOpen(true)
-  }, [])
+  const openAgentTaskList = useCallback(
+    (filter: TaskFilter, taskIds?: string[]) => {
+      setAgentPanelTab("tasks")
+      setAgentTaskFilter(filter)
+      setFocusedAgentTaskIds(taskIds?.length ? taskIds : null)
+      setIsTraceOpen(true)
+    },
+    []
+  )
 
   const openInDefaultBrowser = useCallback(async () => {
     await apiFetch(transport.apiBase, "/api/studio/open-browser", {
@@ -961,6 +970,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       currentProject={appState.project}
       onCreateProject={createProject}
       onDeleteProject={deleteProject}
+      onOpenModelSettings={() => setIsModelSettingsOpen(true)}
       onRenameProject={renameProject}
       onSwitchProject={loadProject}
       projects={projects}
@@ -1068,7 +1078,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           </div>
         ) : null}
         <div className="op-status-cluster">
-          {appState.buildInfo ? (
+          {!isTraceOpen && appState.buildInfo ? (
             <BuildVersionBadge
               info={appState.buildInfo}
               isChecking={updateAction === "checking"}
@@ -1083,12 +1093,18 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
               if (!isTraceOpen) {
                 setAgentPanelTab("tasks")
                 setAgentTaskFilter("pending")
+                setFocusedAgentTaskIds(null)
               }
               setIsTraceOpen((value) => !value)
             }}
             pendingCount={appState.pendingTaskCount ?? 0}
           />
         </div>
+        <ModelGatewaySettingsDialog
+          isOpen={isModelSettingsOpen}
+          onOpenChange={setIsModelSettingsOpen}
+          transport={transport}
+        />
         <UpdatePrompt
           action={updateAction}
           errorMessage={updateError}
@@ -1108,10 +1124,21 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       <AgentPanel
         activeTab={agentPanelTab}
         buildInfo={appState.buildInfo}
+        focusedTaskIds={focusedAgentTaskIds}
         isOpen={isTraceOpen}
-        onClose={() => setIsTraceOpen(false)}
+        onClearFocusedTasks={() => {
+          setFocusedAgentTaskIds(null)
+          setAgentTaskFilter("pending")
+        }}
+        onClose={() => {
+          setFocusedAgentTaskIds(null)
+          setIsTraceOpen(false)
+        }}
         onTabChange={setAgentPanelTab}
-        onTaskFilterChange={setAgentTaskFilter}
+        onTaskFilterChange={(filter) => {
+          setFocusedAgentTaskIds(null)
+          setAgentTaskFilter(filter)
+        }}
         taskFilter={agentTaskFilter}
         tasks={appState.tasks ?? []}
         transport={transport}

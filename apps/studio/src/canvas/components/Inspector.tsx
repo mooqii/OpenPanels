@@ -1,4 +1,4 @@
-import { cn } from "@heroui/react"
+import { Button } from "@heroui/react"
 import { useCallback } from "react"
 import { useEditor } from "../EditorContext"
 import {
@@ -49,33 +49,20 @@ export function Inspector() {
   return (
     <div className="flex flex-col">
       <div style={{ marginLeft: "auto", display: "flex", gap: "8px" }}>
-        <button
-          className={cn(
-            "rounded px-4 py-2",
-            selectedShapes.length > 0
-              ? "cursor-pointer bg-red-500 text-white"
-              : "cursor-not-allowed bg-gray-400"
-          )}
-          disabled={selectedShapes.length === 0}
-          onClick={handleDeleteSelected}
-          type="button"
+        <Button
+          isDisabled={selectedShapes.length === 0}
+          onPress={handleDeleteSelected}
+          size="sm"
+          variant="danger"
         >
           Delete ({selectedShapes.length})
-        </button>
-        <button
-          className="rounded bg-gray-400 px-4 py-2"
-          onClick={handleGetSnapshot}
-          type="button"
-        >
+        </Button>
+        <Button onPress={handleGetSnapshot} size="sm" variant="secondary">
           Log Snapshot
-        </button>
-        <button
-          className="rounded bg-gray-400 px-4 py-2"
-          onClick={handleCreatePlaceholder}
-          type="button"
-        >
+        </Button>
+        <Button onPress={handleCreatePlaceholder} size="sm" variant="secondary">
           Add placeholder
-        </button>
+        </Button>
       </div>
       <div
         style={{

@@ -69,12 +69,12 @@ export function NumberInputDragHandle({
       className={cn(
         "flex items-center justify-center",
         "h-4 w-4",
-        "text-gray-400 dark:text-gray-500",
-        "hover:text-gray-600 dark:hover:text-gray-300",
-        "active:text-blue-500 dark:active:text-blue-400",
+        "text-muted",
+        "hover:text-foreground",
+        "active:text-accent-soft-foreground",
         "cursor-ew-resize",
         "transition-colors",
-        isDragging && "scale-110 text-blue-500",
+        isDragging && "scale-110 text-accent-soft-foreground",
         disabled && "cursor-not-allowed opacity-50",
         className
       )}

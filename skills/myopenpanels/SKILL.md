@@ -2,12 +2,12 @@
 name: myopenpanels
 description: "Use MyOpenPanels for persistent visual, knowledge, or writing work in its Canvas, Wiki, or Writing panel, including drawing, image work, diagrams, moodboards, brainstorming, organizing, research, drafting, and writing. Also use when the user asks to open or launch MyOpenPanels (including 打开面板) or refers to its current panel, selection, or content. After Studio is open, run a fresh `myopenpanels agent bootstrap --format json` before every panel-related request. Skip Bootstrap only for an open-only request or work clearly unrelated to MyOpenPanels."
 metadata:
-  version: "4.3"
+  version: "5.0"
 ---
 
 # MyOpenPanels
 
-The installed CLI is the sole authority for current panels, capabilities,
+The installed CLI is the sole authority for current panels, command catalogs,
 Skills, commands, and workflows.
 
 ## Resolve The CLI
@@ -30,28 +30,31 @@ Run with the resolved executable:
 myopenpanels studio start --local-only --project-dir "$PWD" --format json
 ```
 
-Success means Studio is ready, not visible. Open
-`data.nextRequiredAction.url` unchanged with a callable in-app opener. If no
-such opener exists, or it fails or gives no success signal, execute
-`data.nextRequiredAction.fallback.argv` with the resolved executable. Report
-completion only after the opener succeeds or the fallback returns
-`data.opened: true`. For an open-only request, stop here without Bootstrap.
+Success means Studio is ready, not visible. Execute `actions.required` in order.
+Open the URL action unchanged with a callable in-app opener. The CLI fallback
+action is conditional: execute it only when the URL opener is unavailable,
+fails, or gives no success signal. Report completion only after an opener
+succeeds. For an open-only request, stop here without Bootstrap.
 
 ## Work With Panels
 
+When `MYOPENPANELS_TASK_ID`, `MYOPENPANELS_TASK_BROKER_URL`, and
+`MYOPENPANELS_TASK_TOKEN` are present, this is an isolated claimed Task: do not
+start Studio or Bootstrap; follow its prompt and task-id-bound broker commands.
 Before every request that may read, use, or modify a panel, run a fresh:
 
 ```bash
 myopenpanels agent bootstrap --format json
 ```
 
-Complete `data.nextRequiredAction.steps` sequentially: prepend the resolved
-executable to `argv` for `executor: "cli"`, and follow `instruction` for
-`executor: "agent-host"`. When a step contains `skills`, read each
-`contextPath` first and `localPath` second. If the required steps update the
-Entry Skill, Bootstrap again. Only afterward choose applicable
-`data.nextActions` according to `loadWhen`; follow each chosen action's returned
-`data.nextRequiredAction` before continuing.
+Execute `actions.required` sequentially. For `executor: "cli"`, prepend the
+resolved executable to the returned `argv`; for typed file, URL, Skill, or host
+actions, use the matching executor without translating the action into a shell
+command. If a required action updates the Entry Skill, Bootstrap again. Only
+after required actions finish, choose applicable `actions.suggested` entries by
+their structured conditions. Use `agent catalog --domain <domain>` actions to
+load complete command descriptions for the domains needed by the selected
+Skills.
 
-Never reuse an earlier Bootstrap result or reconstruct panel commands from
-memory.
+Never reuse an earlier Bootstrap result, execute display text, or reconstruct
+panel commands from memory.

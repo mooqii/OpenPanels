@@ -1,4 +1,6 @@
-use crate::control::{read_focus_revision, read_project_bootstrap, BootstrapRequest};
+use crate::control::{
+    read_active_panel_value, read_focus_revision, read_project_bootstrap, BootstrapRequest,
+};
 use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
 use crate::selection::read_selection_for_panel;
@@ -74,12 +76,14 @@ pub struct PanelSelectionEnvelope {
     pub updated_at: Option<Value>,
     pub summary: Value,
     pub value: Value,
-    pub next_actions: Vec<Value>,
-    pub next_required_action: Value,
+    pub actions: Value,
 }
 
-pub fn read_context(paths: &MyOpenPanelsPaths) -> Result<PanelContextPayload, CliError> {
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+pub fn read_context(
+    paths: &MyOpenPanelsPaths,
+    panel_kind: Option<PanelKind>,
+) -> Result<PanelContextPayload, CliError> {
+    let bootstrap = read_panel_bootstrap(paths, panel_kind)?;
     let context = context_for_bootstrap(&bootstrap);
     Ok(PanelContextPayload {
         focus: focus(paths, &bootstrap)?,
@@ -98,8 +102,11 @@ pub fn context_for_bootstrap(bootstrap: &ProjectBootstrap) -> Value {
         })
 }
 
-pub fn read_state(paths: &MyOpenPanelsPaths) -> Result<PanelStatePayload, CliError> {
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+pub fn read_state(
+    paths: &MyOpenPanelsPaths,
+    panel_kind: Option<PanelKind>,
+) -> Result<PanelStatePayload, CliError> {
+    let bootstrap = read_panel_bootstrap(paths, panel_kind)?;
     Ok(PanelStatePayload {
         focus: focus(paths, &bootstrap)?,
         revision: bootstrap.revision,
@@ -138,11 +145,7 @@ pub fn selection_for_bootstrap(
         updated_at: None,
         summary: json!({ "itemCount": 0 }),
         value: Value::Null,
-        next_actions: Vec::new(),
-        next_required_action: json!({
-            "intent": "apply-selection",
-            "instruction": "Continue the user request without panel selection guidance.",
-        }),
+        actions: json!({ "required": [], "suggested": [] }),
     })
 }
 
@@ -190,13 +193,12 @@ fn canvas_selection_envelope(
         updated_at: value.get("updatedAt").cloned(),
         summary: json!({ "itemCount": if is_explicit { item_count } else { 0 } }),
         value,
-        next_actions: panel_skill_actions(
-            crate::agent::CANVAS_PANEL_SKILL_ID,
-            "The user request requires Canvas selection or generation guidance.",
-        ),
-        next_required_action: json!({
-            "intent": "apply-selection",
-            "instruction": "Use the explicit selection only when the user request targets it. Load an applicable nextActions entry when panel guidance is required.",
+        actions: json!({
+            "required": [],
+            "suggested": panel_skill_actions(
+                crate::agent::CANVAS_PANEL_SKILL_ID,
+                "The user request requires Canvas selection or generation guidance.",
+            ),
         }),
     })
 }
@@ -207,9 +209,10 @@ fn wiki_selection(
     focus: Value,
 ) -> Result<PanelSelectionEnvelope, CliError> {
     let mut value = crate::wiki::read_agent_selection(paths)?;
-    let next_actions = value
+    let suggested_actions = value
         .as_object_mut()
-        .and_then(|object| object.remove("nextActions"))
+        .and_then(|object| object.remove("actions"))
+        .and_then(|actions| actions.get("suggested").cloned())
         .and_then(|actions| actions.as_array().cloned())
         .unwrap_or_default();
     let selection = value.get("selection").cloned().unwrap_or_else(|| json!({}));
@@ -239,11 +242,7 @@ fn wiki_selection(
             "wikiSelected": selection.get("isWikiSelected").and_then(Value::as_bool).unwrap_or(false),
         }),
         value,
-        next_actions,
-        next_required_action: json!({
-            "intent": "apply-selection",
-            "instruction": "Use the explicit selection only when the user request targets it. Load an applicable nextActions entry when panel guidance is required.",
-        }),
+        actions: json!({ "required": [], "suggested": suggested_actions }),
     })
 }
 
@@ -279,13 +278,12 @@ fn writing_selection(
             "wikiSelected": wiki_selected,
         }),
         value,
-        next_actions: panel_skill_actions(
-            crate::writing::WRITING_PANEL_SKILL_ID,
-            "The user request targets Writing context or document generation.",
-        ),
-        next_required_action: json!({
-            "intent": "apply-selection",
-            "instruction": "Use submitted Writing Tasks as immutable instructions. Use the current selection only for a new user request.",
+        actions: json!({
+            "required": [],
+            "suggested": panel_skill_actions(
+                crate::writing::WRITING_PANEL_SKILL_ID,
+                "The user request targets Writing context or document generation.",
+            ),
         }),
     })
 }
@@ -301,17 +299,35 @@ fn panel_skill_actions(skill_id: &str, load_when: &str) -> Vec<Value> {
         ],
     )
     .expect("registered Panel Skill action");
-    action["loadWhen"] = json!(load_when);
+    action["condition"] = json!({
+        "type": "agent-judgment",
+        "description": load_when,
+    });
     vec![action]
 }
 
 fn focus(paths: &MyOpenPanelsPaths, bootstrap: &ProjectBootstrap) -> Result<Value, CliError> {
+    let active = read_active_panel_value(paths)?;
+    let is_active_panel = active.as_ref().is_some_and(|value| {
+        value.get("projectId").and_then(Value::as_str) == Some(bootstrap.project.id.as_str())
+            && value.get("panelId").and_then(Value::as_str) == Some(bootstrap.panel.id.as_str())
+    });
     Ok(json!({
-        "focusRevision": read_focus_revision(paths)?,
+        "focusRevision": is_active_panel.then(|| read_focus_revision(paths)).transpose()?,
+        "isActivePanel": is_active_panel,
         "projectId": bootstrap.project.id,
         "panelId": bootstrap.panel.id,
         "panelKind": bootstrap.panel.kind,
     }))
+}
+
+fn read_panel_bootstrap(
+    paths: &MyOpenPanelsPaths,
+    panel_kind: Option<PanelKind>,
+) -> Result<ProjectBootstrap, CliError> {
+    let mut request = BootstrapRequest::new();
+    request.requested_panel_kind = panel_kind;
+    read_project_bootstrap(paths, request)
 }
 
 fn canvas_context(bootstrap: &ProjectBootstrap) -> Value {

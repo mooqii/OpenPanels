@@ -146,9 +146,9 @@ export function GradientBar({
             <Popover.Trigger>
               <button
                 className={cn(
-                  "gradient-handle absolute top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-md border-2 border-white shadow-md transition-transform",
-                  "hover:scale-110 focus:outline-none focus:ring-2 focus:ring-blue-500",
-                  selectedIndex === index && "ring-2 ring-blue-500",
+                  "gradient-handle absolute top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-md border-2 border-foreground shadow-md transition-transform",
+                  "hover:scale-110 focus:outline-none focus:ring-2 focus:ring-focus",
+                  selectedIndex === index && "ring-2 ring-focus",
                   draggingIndex === index && "scale-110 cursor-grabbing"
                 )}
                 onDoubleClick={() => handleDeleteStop(index)}
@@ -162,7 +162,7 @@ export function GradientBar({
                 type="button"
               />
             </Popover.Trigger>
-            <Popover.Content className="border border-zinc-300" offset={12}>
+            <Popover.Content offset={12}>
               <Popover.Dialog className="w-68 p-4">
                 <ColorPicker onChange={handleColorChange} value={stop.color} />
               </Popover.Dialog>

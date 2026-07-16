@@ -3,13 +3,14 @@ use crate::canvas::{
     insert_image_for_target, insert_placeholder_for_target, update_placeholder_for_target,
     InsertImageInput, InsertPlaceholderInput,
 };
-use crate::control::{now_iso, read_project_bootstrap, BootstrapRequest};
+use crate::control::{now_iso, read_project_bootstrap, require_active_panel, BootstrapRequest};
 use crate::error::CliError;
 use crate::paths::{sanitize_path_part, MyOpenPanelsPaths};
 use crate::selection::{read_selection, read_selection_asset_to_file};
 use crate::storage::Storage;
 use crate::types::PanelKind;
 use crate::wiki;
+use base64::Engine;
 use rand::Rng;
 use serde_json::{json, Value};
 use std::fs;
@@ -116,14 +117,14 @@ pub fn begin_canvas(
     use_selection: bool,
     text: Option<&str>,
 ) -> Result<Value, CliError> {
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    if bootstrap.active_panel_kind != PanelKind::Canvas {
-        return Err(CliError::with_code("panel_changed", "The current panel is not Canvas. Refresh agent bootstrap or switch to Canvas before starting generation."));
-    }
+    let mut request = BootstrapRequest::new();
+    request.requested_panel_kind = Some(PanelKind::Canvas);
+    let bootstrap = read_project_bootstrap(paths, request)?;
     let id = operation_id();
     let mut selected_ids = Vec::new();
     let mut reference = Value::Null;
     if use_selection {
+        require_active_panel(paths, PanelKind::Canvas, None)?;
         let selection = read_selection(paths, None, false)?;
         if !selection
             .selection
@@ -342,10 +343,9 @@ pub fn begin_wiki(
     format: &str,
     document_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    if bootstrap.active_panel_kind != PanelKind::Wiki {
-        return Err(CliError::with_code("panel_changed", "The current panel is not Wiki. Refresh agent bootstrap or switch to Wiki before starting generation."));
-    }
+    let mut request = BootstrapRequest::new();
+    request.requested_panel_kind = Some(PanelKind::Wiki);
+    let bootstrap = read_project_bootstrap(paths, request)?;
     let id = operation_id();
     let is_update = document_id.is_some();
     let started = wiki::begin_generated_document_for_target(
@@ -356,6 +356,7 @@ pub fn begin_wiki(
         title,
         format,
         document_id,
+        false,
     )?;
     let document_id = started["document"]["id"].as_str().unwrap_or_default();
     let now = now_iso();
@@ -382,6 +383,23 @@ pub fn begin_writing(
     title: &str,
     format: &str,
 ) -> Result<Value, CliError> {
+    if crate::content::broker_execution_available() {
+        return crate::content::broker_begin_operation(&crate::content::BeginOperationRequest {
+            task_id: task_id.to_owned(),
+            title: title.to_owned(),
+            document_format: format.to_owned(),
+        });
+    }
+    crate::tasks::verify_task_write_access(paths, task_id)?;
+    begin_writing_for_broker(paths, task_id, title, format)
+}
+
+pub(crate) fn begin_writing_for_broker(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+    title: &str,
+    format: &str,
+) -> Result<Value, CliError> {
     let request = crate::writing::read_request(paths, task_id)?;
     let task = &request["task"];
     if !matches!(
@@ -402,11 +420,7 @@ pub fn begin_writing(
         ));
     }
     let mode = task["input"]["mode"].as_str().unwrap_or("create");
-    let document_id = if mode == "revise" {
-        task["input"]["targetGeneratedDocumentId"].as_str()
-    } else {
-        None
-    };
+    let document_id = task["input"]["targetGeneratedDocumentId"].as_str();
     let storage = Storage::open(paths)?;
     let project = storage.read_project(project_id)?.ok_or_else(|| {
         CliError::with_code(
@@ -444,6 +458,7 @@ pub fn begin_writing(
                 )
             })?;
         if current_version != expected_version {
+            crate::tasks::supersede_task_for_content_conflict(paths, task_id, document_id)?;
             return Err(CliError::with_code(
                 "content_conflict",
                 format!(
@@ -461,6 +476,7 @@ pub fn begin_writing(
         title,
         format,
         document_id,
+        mode == "create",
     )?;
     let generated_id = started["document"]["id"].as_str().unwrap_or_default();
     let now = now_iso();
@@ -500,6 +516,21 @@ pub fn begin_writing(
 }
 
 pub fn complete_wiki(paths: &MyOpenPanelsPaths, id: &str, file: &str) -> Result<Value, CliError> {
+    if crate::content::broker_execution_available() {
+        let content = fs::read(file).map_err(to_cli_error)?;
+        let file_name = Path::new(file)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("document.md");
+        return crate::content::broker_prepare_operation(
+            &crate::content::PrepareOperationRequest {
+                operation_id: id.to_owned(),
+                file_name: file_name.to_owned(),
+                content_base64: base64::engine::general_purpose::STANDARD.encode(content),
+            },
+        );
+    }
+    crate::content::require_broker_for_task_execution()?;
     let mut operation = active_operation(paths, id, "wiki.document.generate")?;
     let content = fs::read(file).map_err(to_cli_error)?;
     let file_name = Path::new(file)
@@ -675,6 +706,17 @@ pub fn complete(
     artifact_file: &str,
     metadata: Option<Value>,
 ) -> Result<Value, CliError> {
+    // A v3 executor has no database access, so route the task-bound Writing
+    // completion to the Broker before trying to inspect the Operation locally.
+    if crate::content::broker_execution_available() {
+        if metadata.is_some() {
+            return Err(CliError::with_code(
+                "invalid_argument",
+                "Wiki generation completion does not accept --metadata-file.",
+            ));
+        }
+        return complete_wiki(paths, id, artifact_file);
+    }
     let operation = inspect(paths, id)?;
     match operation.get("intent").and_then(Value::as_str) {
         Some("canvas.image.generate") => {
@@ -734,7 +776,9 @@ fn to_cli_error(error: impl std::fmt::Display) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::control::{create_project, ensure_project_bootstrap, read_active_project_id};
+    use crate::control::{
+        activate_project_panel, create_project, ensure_project_bootstrap, read_active_project_id,
+    };
     use crate::paths::resolve_myopenpanels_paths;
     use base64::Engine;
 
@@ -891,9 +935,7 @@ mod tests {
     fn reference_generation_requires_explicit_selection() {
         let (_temp, paths) = test_paths();
         ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let mut request = BootstrapRequest::new();
-        request.requested_panel_kind = Some(PanelKind::Canvas);
-        read_project_bootstrap(&paths, request).expect("canvas");
+        activate_project_panel(&paths, PanelKind::Canvas).expect("activate canvas");
         let error = begin_canvas(&paths, None, None, true, None).expect_err("selection required");
         assert_eq!(error.code(), Some("explicit_selection_required"));
     }

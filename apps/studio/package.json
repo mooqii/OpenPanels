@@ -10,8 +10,8 @@
     "test": "vitest --run --passWithNoTests"
   },
   "dependencies": {
-    "@heroui/react": "3.0.5",
-    "@heroui/styles": "3.0.5",
+    "@heroui/react": "3.2.2",
+    "@heroui/styles": "3.2.2",
     "@react-aria/i18n": "3.12.16",
     "@tailwindcss/vite": "^4.3.2",
     "@tiptap/core": "3.27.4",

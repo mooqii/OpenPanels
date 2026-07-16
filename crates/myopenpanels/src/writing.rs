@@ -1,19 +1,20 @@
 use crate::control::{now_iso, read_project_bootstrap, BootstrapRequest};
 use crate::error::CliError;
-use crate::paths::MyOpenPanelsPaths;
+use crate::paths::{sanitize_path_part, MyOpenPanelsPaths};
 use crate::storage::{Storage, TaskInsert};
 use crate::types::{PanelKind, ProjectBootstrap, ProjectPanelSnapshot};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 pub const WRITING_PANEL_SKILL_ID: &str = "writing-panel";
 pub const WRITING_CAPABILITY: &str = "writing.generateDocument";
 pub const WRITING_REFINEMENT_CAPABILITY: &str = "writing.refineSkill";
 pub const WRITING_SKILL_REFINER_ID: &str = "writing-skill-refiner";
 
-fn active_writing(paths: &MyOpenPanelsPaths) -> Result<ProjectBootstrap, CliError> {
+fn active_writing_selection(paths: &MyOpenPanelsPaths) -> Result<ProjectBootstrap, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     if bootstrap.active_panel_kind != PanelKind::Writing {
         return Err(CliError::with_recovery(
@@ -27,6 +28,12 @@ fn active_writing(paths: &MyOpenPanelsPaths) -> Result<ProjectBootstrap, CliErro
         ));
     }
     Ok(bootstrap)
+}
+
+fn writing_panel(paths: &MyOpenPanelsPaths) -> Result<ProjectBootstrap, CliError> {
+    let mut request = BootstrapRequest::new();
+    request.requested_panel_kind = Some(PanelKind::Writing);
+    read_project_bootstrap(paths, request)
 }
 
 fn wiki_snapshot(bootstrap: &ProjectBootstrap) -> Result<&ProjectPanelSnapshot, CliError> {
@@ -94,7 +101,7 @@ fn known_selected_ids(
 }
 
 pub fn read_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
-    let bootstrap = active_writing(paths)?;
+    let bootstrap = active_writing_selection(paths)?;
     Ok(json!({ "selection": writing_selection_value(paths, &bootstrap)? }))
 }
 
@@ -104,7 +111,7 @@ pub fn write_selection(
     selected_raw_document_ids: &[String],
     selected_generated_document_ids: &[String],
 ) -> Result<Value, CliError> {
-    let bootstrap = active_writing(paths)?;
+    let bootstrap = writing_panel(paths)?;
     let requested = json!({
         "isWikiSelected": is_wiki_selected,
         "selectedRawDocumentIds": selected_raw_document_ids,
@@ -137,7 +144,7 @@ pub fn save_draft(
     selected_create_writing_skill_ids: &[String],
     selected_revision_writing_skill_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    let bootstrap = active_writing(paths)?;
+    let bootstrap = writing_panel(paths)?;
     validate_mode(
         mode,
         target_generated_document_id,
@@ -219,7 +226,7 @@ pub fn create_requests(
             "Writing instruction cannot be empty.",
         ));
     }
-    let bootstrap = active_writing(paths)?;
+    let bootstrap = writing_panel(paths)?;
     let wiki = wiki_snapshot(&bootstrap)?;
     if !matches!(mode, "create" | "revise") {
         return Err(CliError::with_code(
@@ -228,6 +235,7 @@ pub fn create_requests(
         ));
     }
     validate_mode(mode, target_generated_document_id, wiki, true)?;
+    crate::agent::sync_builtin_agent_skills(paths)?;
     let writing_skills = validate_writing_skills(paths, writing_skill_ids, true, mode)?;
     let selection = writing_selection_value(paths, &bootstrap)?;
     let wiki_space_id = wiki
@@ -235,54 +243,128 @@ pub fn create_requests(
         .get("activeWikiSpaceId")
         .and_then(Value::as_str)
         .unwrap_or("wiki:default");
-    let target_version = target_generated_document_id.and_then(|target| {
-        wiki.state
+    let storage = Storage::open(paths)?;
+    let context_snapshot = capture_writing_context_snapshot(paths, wiki, &selection)?;
+    let now = now_iso();
+    let mut wiki_state = wiki.state.clone();
+    let mut created_placeholder_dirs = Vec::new();
+    let mut targets = Vec::with_capacity(writing_skills.len());
+
+    if mode == "create" {
+        if !wiki_state["generatedDocuments"].is_array() {
+            return Err(CliError::new("Wiki generatedDocuments state is invalid."));
+        }
+        let panel_dir = storage.panel_dir(&bootstrap.project.id, &wiki.panel.id);
+        let mut placeholders = Vec::with_capacity(writing_skills.len());
+        for _ in &writing_skills {
+            let task_id = format!("task:{:032x}", rand::random::<u128>());
+            let document_id = format!("generated:{:032x}", rand::random::<u128>());
+            let document_dir = panel_dir
+                .join("generated")
+                .join(sanitize_path_part(&document_id));
+            if let Err(error) = fs::create_dir_all(&document_dir)
+                .and_then(|_| fs::write(document_dir.join("content.md"), b""))
+            {
+                cleanup_placeholder_dirs(&created_placeholder_dirs);
+                return Err(to_cli_error(error));
+            }
+            created_placeholder_dirs.push(document_dir);
+            let content_ref = format!("generated/{}/content.md", sanitize_path_part(&document_id));
+            let document = json!({
+                "id": document_id,
+                "title": "",
+                "originalFileName": "untitled.md",
+                "format": "markdown",
+                "mimeType": "text/markdown",
+                "contentRef": content_ref,
+                "contentVersion": 0,
+                "taskId": task_id,
+                "threadId": null,
+                "publishHistory": [],
+                "wordCount": 0,
+                "createdAt": now,
+                "updatedAt": now,
+            });
+            placeholders.push(document.clone());
+            targets.push((task_id, document_id, 0_u64, document));
+        }
+        let documents = wiki_state
+            .get_mut("generatedDocuments")
+            .and_then(Value::as_array_mut)
+            .expect("generatedDocuments was validated above");
+        for document in placeholders.into_iter().rev() {
+            documents.insert(0, document);
+        }
+    } else {
+        let target_id = target_generated_document_id.unwrap_or_default();
+        let document = wiki
+            .state
             .get("generatedDocuments")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .find(|document| document.get("id").and_then(Value::as_str) == Some(target))
-            .and_then(|document| document.get("contentVersion"))
-            .and_then(Value::as_u64)
-    });
-    let target_ref = target_generated_document_id.unwrap_or("new");
-    let storage = Storage::open(paths)?;
+            .find(|document| document.get("id").and_then(Value::as_str) == Some(target_id))
+            .cloned()
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "writing_target_not_found",
+                    format!("Generated document not found: {target_id}"),
+                )
+            })?;
+        let target_version = document["contentVersion"].as_u64().unwrap_or(0);
+        targets.push((
+            format!("task:{:032x}", rand::random::<u128>()),
+            target_id.to_owned(),
+            target_version,
+            document,
+        ));
+    }
     let task_inserts = writing_skills
         .iter()
-        .map(|listing| TaskInsert {
-            queue: "writing".to_owned(),
-            task_type: "generate_document".to_owned(),
-            capability: WRITING_CAPABILITY.to_owned(),
-            target_ref: target_ref.to_owned(),
-            input: json!({
-                "instruction": instruction,
-                "mode": mode,
-                "targetGeneratedDocumentId": target_generated_document_id,
-                "targetContentVersion": target_version,
-                "writingSkillId": listing.skill.id.clone(),
-                "writingSkill": {
-                    "id": listing.skill.id.clone(),
-                    "title": listing.skill.title.clone(),
-                    "description": listing.skill.description.clone(),
-                    "source": listing.source.clone(),
-                },
-                "context": {
-                    "isWikiSelected": selection["isWikiSelected"],
-                    "selectedRawDocumentIds": selection["selectedRawDocumentIds"],
-                    "selectedGeneratedDocumentIds": selection["selectedGeneratedDocumentIds"],
-                },
-            }),
-            source: json!({
-                "writingPanelId": bootstrap.panel.id,
-                "wikiPanelId": wiki.panel.id,
-                "wikiSpaceId": wiki_space_id,
-                "panelSkillId": WRITING_PANEL_SKILL_ID,
-                "writingSkillId": listing.skill.id.clone(),
-                "writingSkillSource": listing.source.clone(),
-            }),
+        .zip(&targets)
+        .map(|(listing, (task_id, target_id, target_version, _))| {
+            let skill_markdown = fs::read_to_string(&listing.local_path).unwrap_or_default();
+            TaskInsert {
+                id: task_id.clone(),
+                queue: "writing".to_owned(),
+                task_type: "generate_document".to_owned(),
+                capability: WRITING_CAPABILITY.to_owned(),
+                target_ref: target_id.clone(),
+                input: json!({
+                    "instruction": instruction,
+                    "mode": mode,
+                    "targetGeneratedDocumentId": target_id,
+                    "targetContentVersion": target_version,
+                    "writingSkillId": listing.skill.id.clone(),
+                    "writingSkill": {
+                        "id": listing.skill.id.clone(),
+                        "title": listing.skill.title.clone(),
+                        "description": listing.skill.description.clone(),
+                        "source": listing.source.clone(),
+                    },
+                    "writingSkillSnapshot": {
+                        "id": listing.skill.id.clone(),
+                        "markdown": skill_markdown,
+                        "contentHash": format!("{:x}", Sha256::digest(skill_markdown.as_bytes())),
+                    },
+                    "contextSnapshot": context_snapshot,
+                    "context": {
+                        "isWikiSelected": selection["isWikiSelected"],
+                        "selectedRawDocumentIds": selection["selectedRawDocumentIds"],
+                        "selectedGeneratedDocumentIds": selection["selectedGeneratedDocumentIds"],
+                    },
+                }),
+                source: json!({
+                    "writingPanelId": bootstrap.panel.id,
+                    "wikiPanelId": wiki.panel.id,
+                    "wikiSpaceId": wiki_space_id,
+                    "panelSkillId": WRITING_PANEL_SKILL_ID,
+                    "writingSkillId": listing.skill.id.clone(),
+                    "writingSkillSource": listing.source.clone(),
+                }),
+            }
         })
         .collect::<Vec<_>>();
-    let tasks = storage.insert_tasks(&bootstrap.project.id, &bootstrap.panel.id, &task_inserts)?;
     let mut selected_create_writing_skill_ids = bootstrap.state["selectedCreateWritingSkillIds"]
         .as_array()
         .cloned()
@@ -308,8 +390,87 @@ pub fn create_requests(
         "selectedCreateWritingSkillIds": selected_create_writing_skill_ids,
         "selectedRevisionWritingSkillId": selected_revision_writing_skill_id,
     });
-    let revision = storage.write_panel_state(&bootstrap.project.id, &bootstrap.panel.id, &state)?;
-    Ok(json!({ "tasks": tasks, "state": state, "revision": revision }))
+    let mut panel_states = vec![(bootstrap.panel.id.as_str(), &state)];
+    if mode == "create" {
+        panel_states.push((wiki.panel.id.as_str(), &wiki_state));
+    }
+    let inserted = storage.insert_tasks_with_panel_states(
+        &bootstrap.project.id,
+        &bootstrap.panel.id,
+        &task_inserts,
+        &panel_states,
+    );
+    let (tasks, revisions) = match inserted {
+        Ok(value) => value,
+        Err(error) => {
+            cleanup_placeholder_dirs(&created_placeholder_dirs);
+            return Err(error);
+        }
+    };
+    let documents = targets
+        .into_iter()
+        .map(|(_, _, _, document)| document)
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "tasks": tasks,
+        "documents": documents,
+        "state": state,
+        "revision": revisions.first().copied().unwrap_or(bootstrap.revision),
+    }))
+}
+
+fn cleanup_placeholder_dirs(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+fn capture_writing_context_snapshot(
+    paths: &MyOpenPanelsPaths,
+    wiki: &ProjectPanelSnapshot,
+    selection: &Value,
+) -> Result<Value, CliError> {
+    let storage = Storage::open(paths)?;
+    let panel_dir = storage.panel_dir(&wiki.panel.project_id, &wiki.panel.id);
+    let capture = |collection: &str, selected_key: &str, reference_key: &str| {
+        let selected = selection
+            .get(selected_key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>();
+        wiki.state
+            .get(collection)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|document| {
+                document
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| selected.contains(id))
+            })
+            .map(|document| {
+                let mut snapshot = document.clone();
+                let content = document
+                    .get(reference_key)
+                    .and_then(Value::as_str)
+                    .and_then(|reference| fs::read_to_string(panel_dir.join(reference)).ok())
+                    .unwrap_or_default();
+                snapshot["snapshotContent"] = json!(content);
+                snapshot["snapshotHash"] =
+                    json!(format!("{:x}", Sha256::digest(content.as_bytes())));
+                snapshot
+            })
+            .collect::<Vec<_>>()
+    };
+    Ok(json!({
+        "wikiRevision": wiki.revision,
+        "wikiSpaceId": wiki.state.get("activeWikiSpaceId").cloned().unwrap_or(Value::Null),
+        "rawDocuments": capture("rawDocuments", "selectedRawDocumentIds", "markdownRef"),
+        "generatedDocuments": capture("generatedDocuments", "selectedGeneratedDocumentIds", "contentRef"),
+    }))
 }
 
 pub fn create_refinement_request(
@@ -317,7 +478,7 @@ pub fn create_refinement_request(
     requested_name: &str,
 ) -> Result<Value, CliError> {
     let name = normalize_skill_name(requested_name)?;
-    let bootstrap = active_writing(paths)?;
+    let bootstrap = writing_panel(paths)?;
     let wiki = wiki_snapshot(&bootstrap)?;
     let selection = writing_selection_value(paths, &bootstrap)?;
     let raw_ids = selection["selectedRawDocumentIds"]
@@ -337,7 +498,7 @@ pub fn create_refinement_request(
     validate_refinement_sources(wiki, &raw_ids, &generated_ids)?;
     validate_available_skill_name(paths, &bootstrap.project.id, &name, None)?;
 
-    let skill_id = format!("writing-project-{:032x}", rand::random::<u128>());
+    let skill_id = format!("writing-custom-{:032x}", rand::random::<u128>());
     let input = json!({
         "name": name,
         "skillId": skill_id,
@@ -536,6 +697,13 @@ fn validate_writing_skills(
 }
 
 pub fn read_request(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
+    if crate::content::broker_execution_available() {
+        return crate::content::broker_task_context(&crate::content::TaskContextRequest {
+            task_id: task_id.to_owned(),
+            context_kind: "writing_request".to_owned(),
+        });
+    }
+    crate::content::require_broker_for_task_execution()?;
     let mut payload = crate::tasks::inspect_task(paths, task_id)?;
     if payload["task"]["queue"].as_str() != Some("writing") {
         return Err(CliError::with_code(
@@ -564,16 +732,18 @@ pub fn read_request(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, C
     )
     .ok_or_else(|| CliError::new("Agent Skill read capability is unavailable."))?;
     payload["writingSkill"] = payload["task"]["input"]["writingSkill"].clone();
-    payload["nextRequiredAction"] = json!({
-        "intent": "load-writing-skill",
-        "required": true,
-        "steps": [skill_action],
-        "instruction": "Load the task-selected Writing Skill before beginning the generation Operation.",
-    });
+    payload["actions"] = json!({ "required": [skill_action], "suggested": [] });
     Ok(payload)
 }
 
 pub fn read_refinement(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
+    if crate::content::broker_execution_available() {
+        return crate::content::broker_task_context(&crate::content::TaskContextRequest {
+            task_id: task_id.to_owned(),
+            context_kind: "writing_refinement".to_owned(),
+        });
+    }
+    crate::content::require_broker_for_task_execution()?;
     let mut payload = crate::tasks::inspect_task(paths, task_id)?;
     if payload["task"]["queue"].as_str() != Some("writing")
         || payload["task"]["type"].as_str() != Some("refine_writing_skill")
@@ -595,12 +765,7 @@ pub fn read_refinement(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value
         ],
     )
     .ok_or_else(|| CliError::new("Agent Skill read capability is unavailable."))?;
-    payload["nextRequiredAction"] = json!({
-        "intent": "load-writing-refinement-skill",
-        "required": true,
-        "steps": [skill_action],
-        "instruction": "Load the built-in refinement Skill before reading the captured source documents.",
-    });
+    payload["actions"] = json!({ "required": [skill_action], "suggested": [] });
     Ok(payload)
 }
 
@@ -609,6 +774,29 @@ pub fn install_project_skill(
     task_id: &str,
     skill_file: &str,
 ) -> Result<Value, CliError> {
+    if crate::content::broker_execution_available() {
+        let source = fs::read_to_string(skill_file).map_err(|error| {
+            CliError::with_code(
+                "writing_skill_file_invalid",
+                format!("Could not read Writing Skill file: {error}"),
+            )
+        })?;
+        let skill = crate::agent::parse_skill(&source, skill_file)?;
+        return crate::content::broker_prepare_skill(&crate::content::PrepareSkillRequest {
+            skill_id: skill.metadata.id.clone(),
+            source,
+            manifest: json!({
+                "schemaVersion": 1,
+                "source": "custom",
+                "taskId": task_id,
+                "skillId": skill.metadata.id,
+                "title": skill.metadata.title,
+                "createdAt": now_iso(),
+            }),
+        });
+    }
+    crate::content::require_broker_for_task_execution()?;
+    crate::tasks::verify_task_write_access(paths, task_id)?;
     let payload = read_refinement(paths, task_id)?;
     let task = &payload["task"];
     if !matches!(
@@ -639,13 +827,13 @@ pub fn install_project_skill(
     validate_generated_project_skill(&skill, skill_id, name)?;
     validate_available_skill_name(paths, project_id, name, Some(skill_id))?;
 
-    let skills_dir = crate::agent::project_agent_skills_dir(paths, project_id);
+    let skills_dir = crate::agent::custom_writing_skills_dir(paths);
     fs::create_dir_all(&skills_dir).map_err(to_cli_error)?;
     let final_dir = skills_dir.join(crate::paths::sanitize_path_part(skill_id));
     let manifest = json!({
         "schemaVersion": 1,
-        "source": "project",
-        "projectId": project_id,
+        "source": "custom",
+        "originProjectId": project_id,
         "taskId": task_id,
         "skillId": skill_id,
         "title": name,
@@ -699,10 +887,10 @@ fn validate_generated_project_skill(
     let metadata = &skill.metadata;
     let valid = metadata.id == expected_id
         && metadata.title == expected_title
-        && metadata.source == "project"
+        && metadata.source == "custom"
         && metadata.applies_to == ["writing"]
         && metadata.task_types == ["generate_document"]
-        && metadata.requires_capabilities.is_empty()
+        && metadata.requires_commands.is_empty()
         && !metadata.description.trim().is_empty()
         && !skill.body.trim().is_empty();
     if !valid {
@@ -719,16 +907,168 @@ fn read_skill_manifest(skill_dir: &Path) -> Result<Value, CliError> {
     serde_json::from_str(&source).map_err(to_cli_error)
 }
 
+pub fn read_skill_files(paths: &MyOpenPanelsPaths, skill_id: &str) -> Result<Value, CliError> {
+    let listing = crate::agent::writing_agent_skill(paths, skill_id)?;
+    let root = PathBuf::from(&listing.local_dir);
+    let mut files = Vec::new();
+    collect_skill_files(&root, &root, &mut files)?;
+    files.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
+    Ok(json!({ "skill": listing, "files": files }))
+}
+
+fn collect_skill_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut Vec<Value>,
+) -> Result<(), CliError> {
+    for entry in fs::read_dir(directory).map_err(to_cli_error)? {
+        let entry = entry.map_err(to_cli_error)?;
+        let file_type = entry.file_type().map_err(to_cli_error)?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_skill_files(root, &entry.path(), files)?;
+            continue;
+        }
+        if !file_type.is_file() || entry.file_name() == "manifest.json" {
+            continue;
+        }
+        let path = entry.path();
+        let relative = path.strip_prefix(root).map_err(to_cli_error)?;
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        files.push(json!({
+            "path": relative.to_string_lossy().replace('\\', "/"),
+            "content": content,
+        }));
+    }
+    Ok(())
+}
+
+pub fn write_custom_skill_file(
+    paths: &MyOpenPanelsPaths,
+    skill_id: &str,
+    relative_path: &str,
+    content: &str,
+) -> Result<Value, CliError> {
+    let listing = crate::agent::writing_agent_skill(paths, skill_id)?;
+    if listing.source != "custom" {
+        return Err(CliError::with_code(
+            "writing_skill_read_only",
+            "Built-in Writing Skills cannot be edited.",
+        ));
+    }
+    let relative = safe_skill_relative_path(relative_path)?;
+    let target = PathBuf::from(&listing.local_dir).join(&relative);
+    if !target.is_file()
+        || target
+            .file_name()
+            .is_some_and(|name| name == "manifest.json")
+    {
+        return Err(CliError::with_code(
+            "writing_skill_file_not_found",
+            format!("Writing Skill file not found: {relative_path}"),
+        ));
+    }
+    if relative == Path::new("SKILL.md") {
+        let skill = crate::agent::parse_skill(content, "SKILL.md")?;
+        validate_generated_project_skill(&skill, skill_id, &skill.metadata.title)?;
+        let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+        validate_available_skill_name(
+            paths,
+            &bootstrap.project.id,
+            &skill.metadata.title,
+            Some(skill_id),
+        )?;
+        let mut manifest = read_skill_manifest(Path::new(&listing.local_dir))?;
+        manifest["title"] = json!(skill.metadata.title);
+        let manifest_content = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&manifest).map_err(to_cli_error)?
+        );
+        if let Some(project_id) = crate::content::writing_skill_project_id(paths, skill_id)? {
+            crate::content::commit_immediate_text(
+                paths,
+                &project_id,
+                None,
+                crate::content::ResourceKind::WritingSkill,
+                skill_id,
+                "manifest.json",
+                manifest_content.as_bytes(),
+                "application/json",
+                false,
+            )?;
+            crate::content::commit_immediate_text(
+                paths,
+                &project_id,
+                None,
+                crate::content::ResourceKind::WritingSkill,
+                skill_id,
+                "SKILL.md",
+                content.as_bytes(),
+                "text/markdown",
+                false,
+            )?;
+            return Ok(json!({ "path": relative_path, "content": content }));
+        }
+        fs::write(
+            Path::new(&listing.local_dir).join("manifest.json"),
+            manifest_content,
+        )
+        .map_err(to_cli_error)?;
+    }
+    fs::write(&target, content.as_bytes()).map_err(to_cli_error)?;
+    Ok(json!({ "path": relative_path, "content": content }))
+}
+
+pub fn delete_custom_skill(paths: &MyOpenPanelsPaths, skill_id: &str) -> Result<Value, CliError> {
+    let listing = crate::agent::writing_agent_skill(paths, skill_id)?;
+    if listing.source != "custom" {
+        return Err(CliError::with_code(
+            "writing_skill_read_only",
+            "Built-in Writing Skills cannot be deleted.",
+        ));
+    }
+    crate::content::archive_resource(
+        paths,
+        None,
+        crate::content::ResourceKind::WritingSkill,
+        skill_id,
+    )?;
+    let _ = fs::remove_dir_all(&listing.local_dir);
+    let legacy_dir = crate::agent::custom_writing_skills_dir(paths)
+        .join(crate::paths::sanitize_path_part(skill_id));
+    let _ = fs::remove_dir_all(legacy_dir);
+    Ok(json!({ "deleted": true, "skillId": skill_id }))
+}
+
+fn safe_skill_relative_path(value: &str) -> Result<PathBuf, CliError> {
+    let path = Path::new(value);
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(CliError::with_code(
+            "writing_skill_file_invalid",
+            "Writing Skill file path is invalid.",
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
 fn installed_project_skill_for_task(
     paths: &MyOpenPanelsPaths,
     task: &Value,
 ) -> Result<bool, CliError> {
-    let project_id = task["projectId"].as_str().unwrap_or_default();
     let skill_id = task["input"]["skillId"].as_str().unwrap_or_default();
-    if project_id.is_empty() || skill_id.is_empty() {
+    if skill_id.is_empty() {
         return Ok(false);
     }
-    let skill_dir = crate::agent::project_agent_skills_dir(paths, project_id)
+    let skill_dir = crate::agent::custom_writing_skills_dir(paths)
         .join(crate::paths::sanitize_path_part(skill_id));
     if !skill_dir.join("SKILL.md").is_file() || !skill_dir.join("manifest.json").is_file() {
         return Ok(false);
@@ -791,22 +1131,151 @@ pub fn heartbeat_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value,
 pub fn complete_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     let payload = read_writing_task(paths, task_id)?;
     if payload["task"]["type"].as_str() == Some("refine_writing_skill")
+        && !crate::content::task_has_staged_resource(
+            paths,
+            task_id,
+            crate::content::ResourceKind::WritingSkill,
+        )?
         && !installed_project_skill_for_task(paths, &payload["task"])?
     {
         return Err(CliError::with_code(
             "writing_skill_not_installed",
-            "Install the refined project Writing Skill before completing its Task.",
+            "Install the refined custom Writing Skill before completing its Task.",
         ));
     }
-    if payload["task"]["type"].as_str() == Some("generate_document")
-        && active_task_operations(paths, task_id)?.next().is_some()
-    {
-        return Err(CliError::with_code(
-            "writing_operation_active",
-            "Complete the Writing generation Operation before completing its Task.",
-        ));
+    if payload["task"]["type"].as_str() == Some("generate_document") {
+        let operations = task_operations(paths, task_id)?;
+        if operations
+            .iter()
+            .any(|operation| operation.get("status").and_then(Value::as_str) == Some("active"))
+        {
+            return Err(CliError::with_code(
+                "writing_operation_active",
+                "Complete the Writing generation Operation before completing its Task.",
+            ));
+        }
+        let completed = operations.iter().rev().find(|operation| {
+            matches!(
+                operation.get("status").and_then(Value::as_str),
+                Some("prepared" | "completed")
+            ) && operation
+                .pointer("/target/documentId")
+                .and_then(Value::as_str)
+                .is_some_and(|document_id| {
+                    operation.get("status").and_then(Value::as_str) == Some("prepared")
+                        || crate::wiki::read_generated_document(paths, document_id).is_ok()
+                })
+        });
+        if completed.is_none() {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "Writing Task completed without a successful generation Operation and target document.",
+            ));
+        }
     }
     Ok(payload)
+}
+
+pub(crate) fn prepare_task_completion(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+) -> Result<Option<(String, Value)>, CliError> {
+    let payload = complete_task(paths, task_id)?;
+    if payload["task"]["type"].as_str() != Some("generate_document") {
+        return Ok(None);
+    }
+    let staged = crate::content::staged_files_for_task(
+        paths,
+        task_id,
+        crate::content::ResourceKind::GeneratedDocument,
+    )?;
+    if staged.is_empty()
+        && payload["task"]["requiredProtocolVersion"]
+            .as_i64()
+            .unwrap_or(1)
+            < crate::content::EXECUTION_PROTOCOL_VERSION
+    {
+        return Ok(None);
+    }
+    if staged.len() != 1 {
+        return Err(CliError::with_code(
+            "invalid_output",
+            "Writing Task must stage exactly one generated document.",
+        ));
+    }
+    let (document_id, logical_path, bytes, metadata) = &staged[0];
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        CliError::with_code("invalid_output", "Generated document must be valid UTF-8.")
+    })?;
+    if text.trim().is_empty() {
+        return Err(CliError::with_code(
+            "invalid_output",
+            "Generated document cannot be empty.",
+        ));
+    }
+    let project_id = payload["task"]["projectId"].as_str().unwrap_or_default();
+    let wiki_panel_id = payload["task"]["source"]["wikiPanelId"]
+        .as_str()
+        .ok_or_else(|| {
+            CliError::with_code(
+                "writing_target_not_found",
+                "Writing Task has no Wiki target.",
+            )
+        })?;
+    let storage = Storage::open(paths)?;
+    let mut state = storage
+        .read_panel_state(project_id, wiki_panel_id)?
+        .ok_or_else(|| CliError::with_code("target_not_found", "Wiki state not found."))?;
+    let document = state
+        .get_mut("generatedDocuments")
+        .and_then(Value::as_array_mut)
+        .and_then(|documents| {
+            documents
+                .iter_mut()
+                .find(|document| document.get("id").and_then(Value::as_str) == Some(document_id))
+        })
+        .ok_or_else(|| {
+            CliError::with_code("target_not_found", "Generated document target was deleted.")
+        })?;
+    let base_version = metadata
+        .get("baseContentVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let current_version = document
+        .get("contentVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if current_version != base_version {
+        return Err(CliError::with_code(
+            "content_conflict",
+            format!("Generated document changed from version {base_version} to {current_version}"),
+        ));
+    }
+    let format = if logical_path.ends_with(".txt") {
+        "text"
+    } else {
+        "markdown"
+    };
+    let mime_type = if format == "text" {
+        "text/plain"
+    } else {
+        "text/markdown"
+    };
+    document["contentRef"] = json!(format!("generated/{document_id}/{logical_path}"));
+    document["contentVersion"] = json!(current_version + 1);
+    document["format"] = json!(format);
+    document["mimeType"] = json!(mime_type);
+    document["originalFileName"] = metadata
+        .get("fileName")
+        .cloned()
+        .unwrap_or_else(|| json!(logical_path));
+    document["wordCount"] = json!(text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count());
+    document["generation"] = json!({ "status": "completed", "error": null });
+    document["updatedAt"] = json!(now_iso());
+    Ok(Some((wiki_panel_id.to_owned(), state)))
 }
 
 pub fn fail_task(
@@ -837,6 +1306,19 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
 pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     let payload = read_writing_task(paths, task_id)?;
     finish_task_operations(paths, task_id, "cancelled", "Writing task cancelled.")?;
+    let task = &payload["task"];
+    if task.get("type").and_then(Value::as_str) == Some("generate_document")
+        && task.pointer("/input/mode").and_then(Value::as_str) == Some("create")
+    {
+        if let (Some(project_id), Some(panel_id), Some(document_id)) = (
+            task.get("projectId").and_then(Value::as_str),
+            task.pointer("/source/wikiPanelId").and_then(Value::as_str),
+            task.pointer("/input/targetGeneratedDocumentId")
+                .and_then(Value::as_str),
+        ) {
+            crate::wiki::remove_pending_writing_document(paths, project_id, panel_id, document_id)?;
+        }
+    }
     remove_uncommitted_project_skill(paths, &payload["task"])?;
     Ok(payload)
 }
@@ -845,14 +1327,22 @@ fn active_task_operations<'a>(
     paths: &MyOpenPanelsPaths,
     task_id: &'a str,
 ) -> Result<impl Iterator<Item = Value> + 'a, CliError> {
-    let operations = Storage::open(paths)?.list_agent_operations(None, None)?;
-    Ok(operations.into_iter().filter(move |operation| {
-        operation
-            .pointer("/target/writingTaskId")
-            .and_then(Value::as_str)
-            == Some(task_id)
-            && operation.get("status").and_then(Value::as_str) == Some("active")
-    }))
+    Ok(task_operations(paths, task_id)?
+        .into_iter()
+        .filter(|operation| operation.get("status").and_then(Value::as_str) == Some("active")))
+}
+
+fn task_operations(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Vec<Value>, CliError> {
+    Ok(Storage::open(paths)?
+        .list_agent_operations(None, None)?
+        .into_iter()
+        .filter(|operation| {
+            operation
+                .pointer("/target/writingTaskId")
+                .and_then(Value::as_str)
+                == Some(task_id)
+        })
+        .collect())
 }
 
 fn finish_task_operations(
@@ -876,18 +1366,14 @@ fn remove_uncommitted_project_skill(
     if task.get("type").and_then(Value::as_str) != Some("refine_writing_skill") {
         return Ok(());
     }
-    let project_id = task
-        .get("projectId")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     let skill_id = task
         .pointer("/input/skillId")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if project_id.is_empty() || skill_id.is_empty() {
+    if skill_id.is_empty() {
         return Ok(());
     }
-    let skill_dir = crate::agent::project_agent_skills_dir(paths, project_id)
+    let skill_dir = crate::agent::custom_writing_skills_dir(paths)
         .join(crate::paths::sanitize_path_part(skill_id));
     match fs::remove_dir_all(skill_dir) {
         Ok(()) => Ok(()),
@@ -965,6 +1451,17 @@ mod tests {
         let created = create_requests(&paths, "Write a concise report", "create", None, &skill_ids)
             .expect("writing requests");
         assert_eq!(created["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(created["documents"].as_array().unwrap().len(), 2);
+        assert_eq!(created["documents"][0]["title"], json!(""));
+        assert_eq!(created["documents"][0]["contentVersion"], json!(0));
+        assert_eq!(
+            created["tasks"][0]["input"]["targetGeneratedDocumentId"],
+            created["documents"][0]["id"]
+        );
+        assert_eq!(
+            created["tasks"][0]["targetId"],
+            created["documents"][0]["id"]
+        );
         assert_eq!(created["tasks"][0]["queue"], json!("writing"));
         assert_eq!(created["tasks"][0]["capability"], json!(WRITING_CAPABILITY));
         assert_eq!(
@@ -974,6 +1471,15 @@ mod tests {
         assert_eq!(
             created["tasks"][0]["input"]["writingSkillId"],
             json!("writing-xiaohongshu-note")
+        );
+        assert!(
+            created["tasks"][0]["input"]["writingSkillSnapshot"]["markdown"]
+                .as_str()
+                .is_some_and(|markdown| !markdown.is_empty())
+        );
+        assert_eq!(
+            created["tasks"][0]["input"]["contextSnapshot"]["wikiRevision"],
+            wiki_panel.revision
         );
         assert_eq!(
             created["state"]["selectedCreateWritingSkillIds"],
@@ -989,8 +1495,8 @@ mod tests {
             .expect("read request");
         assert_eq!(request["writingSkill"]["title"], json!("小红书笔记"));
         assert_eq!(
-            request["nextRequiredAction"]["intent"],
-            json!("load-writing-skill")
+            request["actions"]["required"][0]["intent"],
+            "agent.skill.read"
         );
         let loaded = crate::agent::read_agent_skill(
             &paths,
@@ -1085,6 +1591,69 @@ mod tests {
     }
 
     #[test]
+    fn request_transaction_failure_removes_placeholder_files_and_state() {
+        let (_temp, paths) = test_paths();
+        let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let writing = ensure_project_bootstrap(
+            &paths,
+            BootstrapRequest {
+                requested_panel_kind: Some(PanelKind::Writing),
+                requested_panel_id: None,
+                requested_project_id: Some(initial.project.id.clone()),
+            },
+        )
+        .expect("writing panel");
+        let wiki_panel = writing
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
+            .expect("wiki panel");
+        let storage = Storage::open(&paths).expect("storage");
+        let generated_dir = storage
+            .panel_dir(&initial.project.id, &wiki_panel.panel.id)
+            .join("generated");
+        storage
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER reject_writing_tasks BEFORE INSERT ON tasks
+                 WHEN NEW.queue = 'writing'
+                 BEGIN SELECT RAISE(ABORT, 'forced writing insert failure'); END;",
+            )
+            .expect("failure trigger");
+        drop(storage);
+
+        create_requests(
+            &paths,
+            "This request must roll back",
+            "create",
+            None,
+            &long_article_skill_ids(),
+        )
+        .expect_err("forced task failure");
+
+        let storage = Storage::open(&paths).expect("storage after failure");
+        assert!(storage
+            .list_tasks(&initial.project.id)
+            .expect("tasks")
+            .is_empty());
+        assert_eq!(
+            storage
+                .read_panel_state(&initial.project.id, &wiki_panel.panel.id)
+                .expect("wiki state")
+                .expect("wiki state exists")["generatedDocuments"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            fs::read_dir(generated_dir)
+                .map(|entries| entries.count())
+                .unwrap_or(0),
+            0
+        );
+    }
+
+    #[test]
     fn revision_requires_a_known_generated_document() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
@@ -1149,23 +1718,36 @@ mod tests {
         let created = create_requests(&paths, "Write the report", "create", None, &skill_ids)
             .expect("writing request");
         let task_id = created["tasks"][0]["id"].as_str().unwrap();
+        let placeholder_id = created["documents"][0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            crate::wiki::read_generated_document(&paths, &placeholder_id)
+                .expect("pending document")["document"]["title"],
+            json!("")
+        );
         let registered = crate::tasks::register_target(
             &paths,
             crate::tasks::TargetRegistration {
                 name: "writer",
                 host: None,
                 transport: "poll",
-                endpoint: None,
                 capabilities: vec![WRITING_CAPABILITY.to_owned()],
                 priority: 0,
+                protocol_version: 2,
+                max_concurrency: 1,
+                model_gateway_connection_id: None,
             },
         )
         .expect("target");
         let target_id = registered["target"]["id"].as_str().unwrap();
         let claimed = crate::tasks::claim_task(&paths, task_id, target_id).expect("claim");
         let lease_token = claimed["leaseToken"].as_str().unwrap();
+        let missing_output = crate::tasks::complete_task(&paths, task_id, lease_token, None)
+            .expect_err("missing generation output");
+        assert_eq!(missing_output.code(), Some("invalid_output"));
         let started = crate::operations::begin_writing(&paths, task_id, "Report", "markdown")
             .expect("generation");
+        assert_eq!(started["document"]["id"], json!(placeholder_id));
+        assert_eq!(started["document"]["title"], json!("Report"));
         let operation_id = started["operation"]["id"].as_str().unwrap();
         let early = crate::tasks::complete_task(&paths, task_id, lease_token, None)
             .expect_err("active operation");
@@ -1205,6 +1787,45 @@ mod tests {
                 .expect("cancelled operation")["status"],
             json!("cancelled")
         );
+        assert!(crate::wiki::read_generated_document(
+            &paths,
+            cancelled["documents"][0]["id"].as_str().unwrap()
+        )
+        .is_err());
+
+        let released = create_requests(&paths, "Write after release", "create", None, &skill_ids)
+            .expect("released request");
+        let released_task_id = released["tasks"][0]["id"].as_str().unwrap();
+        let released_document_id = released["documents"][0]["id"].as_str().unwrap();
+        let released_claim =
+            crate::tasks::claim_task(&paths, released_task_id, target_id).expect("release claim");
+        crate::operations::begin_writing(&paths, released_task_id, "Released report", "markdown")
+            .expect("released generation");
+        crate::tasks::release_task(
+            &paths,
+            released_task_id,
+            released_claim["leaseToken"].as_str().unwrap(),
+        )
+        .expect("release task");
+        assert!(crate::wiki::read_generated_document(&paths, released_document_id).is_ok());
+        crate::tasks::retry_task(&paths, released_task_id).expect("retry queued task");
+        assert!(crate::wiki::read_generated_document(&paths, released_document_id).is_ok());
+        let failed_claim =
+            crate::tasks::claim_task(&paths, released_task_id, target_id).expect("failed claim");
+        crate::operations::begin_writing(&paths, released_task_id, "Failed report", "markdown")
+            .expect("failed generation");
+        let failed_task = crate::tasks::fail_task(
+            &paths,
+            released_task_id,
+            failed_claim["leaseToken"].as_str().unwrap(),
+            "Model failed",
+            None,
+        )
+        .expect("fail task");
+        assert_eq!(failed_task["task"]["status"], json!("failed"));
+        assert!(crate::wiki::read_generated_document(&paths, released_document_id).is_ok());
+        crate::tasks::retry_task(&paths, released_task_id).expect("retry failed task");
+        assert!(crate::wiki::read_generated_document(&paths, released_document_id).is_ok());
     }
 
     #[test]
@@ -1239,6 +1860,12 @@ mod tests {
             &long_article_skill_ids(),
         )
         .expect("writing request");
+        assert_eq!(created["documents"].as_array().unwrap().len(), 1);
+        assert_eq!(created["documents"][0]["id"], json!(document_id));
+        assert_eq!(
+            created["tasks"][0]["input"]["targetGeneratedDocumentId"],
+            created["documents"][0]["id"]
+        );
         let task_id = created["tasks"][0]["id"].as_str().unwrap();
 
         ensure_project_bootstrap(
@@ -1264,13 +1891,15 @@ mod tests {
                 name: "writer",
                 host: None,
                 transport: "poll",
-                endpoint: None,
                 capabilities: vec![WRITING_CAPABILITY.to_owned()],
                 priority: 0,
+                protocol_version: 2,
+                max_concurrency: 1,
+                model_gateway_connection_id: None,
             },
         )
         .expect("target");
-        crate::tasks::claim_task(
+        let claimed = crate::tasks::claim_task(
             &paths,
             task_id,
             registered["target"]["id"].as_str().unwrap(),
@@ -1279,6 +1908,20 @@ mod tests {
         let error = crate::operations::begin_writing(&paths, task_id, "Draft", "markdown")
             .expect_err("content conflict");
         assert_eq!(error.code(), Some("content_conflict"));
+        let superseded = crate::tasks::inspect_task(&paths, task_id).expect("superseded task");
+        assert_eq!(superseded["task"]["status"], json!("superseded"));
+        assert_eq!(
+            superseded["task"]["terminalReason"]["code"],
+            json!("content_conflict")
+        );
+        let fenced = crate::tasks::complete_task(
+            &paths,
+            task_id,
+            claimed["leaseToken"].as_str().unwrap(),
+            None,
+        )
+        .expect_err("old execution fenced");
+        assert_eq!(fenced.code(), Some("execution_fenced"));
     }
 
     #[test]
@@ -1355,7 +1998,7 @@ mod tests {
     }
 
     #[test]
-    fn refinement_installs_a_project_scoped_writing_skill() {
+    fn refinement_installs_a_shared_custom_writing_skill() {
         let (temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
         let generated = crate::wiki::create_generated_document(
@@ -1422,9 +2065,11 @@ mod tests {
                 name: "refiner",
                 host: None,
                 transport: "poll",
-                endpoint: None,
                 capabilities: vec![WRITING_REFINEMENT_CAPABILITY.to_owned()],
                 priority: 0,
+                protocol_version: 2,
+                max_concurrency: 1,
+                model_gateway_connection_id: None,
             },
         )
         .expect("target");
@@ -1443,23 +2088,22 @@ mod tests {
         fs::write(
             &skill_file,
             format!(
-                "---\nid: {skill_id}\ntitle: Concise House Style\ndescription: Write with concise, direct paragraphs.\nsource: project\nappliesTo:\n  - writing\ntaskTypes:\n  - generate_document\nrequiresCapabilities:\nloadWhen:\n  - The task requests the project house style.\ntokens: short\n---\n\nUse short, direct paragraphs and remove redundant setup.\n"
+                "---\nid: {skill_id}\ntitle: Concise House Style\ndescription: Write with concise, direct paragraphs.\nsource: custom\nappliesTo:\n  - writing\ntaskTypes:\n  - generate_document\nrequiresCommands:\nloadWhen:\n  - The task requests the shared house style.\ntokens: short\n---\n\nUse short, direct paragraphs and remove redundant setup.\n"
             ),
         )
         .expect("skill file");
         let installed =
             install_project_skill(&paths, task_id, skill_file.to_str().unwrap()).expect("install");
-        assert_eq!(installed["skill"]["source"], json!("project"));
+        assert_eq!(installed["skill"]["source"], json!("custom"));
         install_project_skill(&paths, task_id, skill_file.to_str().unwrap())
             .expect("idempotent install");
-        assert!(crate::agent::writing_agent_skill(&paths, skill_id).is_err());
         crate::tasks::complete_task(&paths, task_id, lease, None).expect("complete task");
 
-        let project_skill =
-            crate::agent::writing_agent_skill(&paths, skill_id).expect("project Writing Skill");
-        assert!(Path::new(&project_skill.local_path)
+        let custom_skill =
+            crate::agent::writing_agent_skill(&paths, skill_id).expect("custom Writing Skill");
+        assert!(Path::new(&custom_skill.local_path)
             .components()
-            .any(|component| component.as_os_str() == "projects"));
+            .any(|component| component.as_os_str() == "writing-skills"));
         create_requests(
             &paths,
             "Write with the extracted method",
@@ -1467,16 +2111,18 @@ mod tests {
             None,
             &[skill_id.to_owned()],
         )
-        .expect("use project skill");
+        .expect("use custom skill");
         crate::tasks::register_target(
             &paths,
             crate::tasks::TargetRegistration {
                 name: "writer",
                 host: None,
                 transport: "poll",
-                endpoint: None,
                 capabilities: vec![WRITING_CAPABILITY.to_owned()],
                 priority: 0,
+                protocol_version: 2,
+                max_concurrency: 1,
+                model_gateway_connection_id: None,
             },
         )
         .expect("writer target");
@@ -1492,16 +2138,14 @@ mod tests {
         .expect("acknowledge entry skill");
         let agent_bootstrap = crate::agent::agent_bootstrap(&paths, env!("CARGO_PKG_VERSION"))
             .expect("agent bootstrap");
-        let bootstrap_loads_project_skill = agent_bootstrap["nextRequiredAction"]["steps"]
+        let bootstrap_loads_custom_skill = agent_bootstrap["skills"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|step| step["skills"].as_array())
-            .flatten()
             .any(|skill| skill["id"].as_str() == Some(skill_id));
         assert!(
-            bootstrap_loads_project_skill,
-            "bootstrap did not load the project skill: {agent_bootstrap:#}"
+            bootstrap_loads_custom_skill,
+            "bootstrap did not load the custom skill: {agent_bootstrap:#}"
         );
 
         let other = crate::control::create_project(&paths, Some("Other")).expect("other project");
@@ -1517,6 +2161,34 @@ mod tests {
         assert!(crate::agent::list_writing_agent_skills(&paths)
             .expect("other skills")
             .iter()
-            .all(|item| item.skill.id != skill_id));
+            .any(|item| item.skill.id == skill_id));
+
+        let files = read_skill_files(&paths, skill_id).expect("read custom skill files");
+        let source = files["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == "SKILL.md")
+            .and_then(|file| file["content"].as_str())
+            .unwrap();
+        let edited = source.replace(
+            "Use short, direct paragraphs",
+            "Use crisp, direct paragraphs",
+        );
+        write_custom_skill_file(&paths, skill_id, "SKILL.md", &edited).expect("edit custom skill");
+        assert!(
+            read_skill_files(&paths, skill_id).expect("read edited skill")["files"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("crisp, direct")
+        );
+        assert_eq!(
+            delete_custom_skill(&paths, "writing-default")
+                .expect_err("built-in delete must fail")
+                .code(),
+            Some("writing_skill_read_only")
+        );
+        delete_custom_skill(&paths, skill_id).expect("delete custom skill");
+        assert!(crate::agent::writing_agent_skill(&paths, skill_id).is_err());
     }
 }

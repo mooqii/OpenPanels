@@ -4,10 +4,10 @@ use crate::agent::{
 use crate::bridge::{read_bridge_status, run_bridge, BridgeOptions};
 use crate::canvas::{insert_image, InsertImageInput};
 use crate::control::{
-    create_project, ensure_project_bootstrap, read_active_project_id, read_focus_revision,
-    read_project_bootstrap, require_active_panel, BootstrapRequest,
+    activate_project_panel, create_project, ensure_project_bootstrap, read_active_project_id,
+    read_focus_revision, read_project_bootstrap, require_active_panel, BootstrapRequest,
 };
-use crate::error::CliError;
+use crate::error::{CliError, CliErrorCategory, CliRecoveryAction};
 use crate::operations;
 use crate::paths::{resolve_myopenpanels_paths, resolve_studio_service_paths};
 use crate::selection::read_selection_asset_for_panel;
@@ -42,6 +42,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+const CLI_ENVELOPE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct Invocation {
@@ -86,6 +87,7 @@ struct SuccessPayload<'a, T: Serialize> {
     schema_version: u32,
     intent: &'a str,
     data: &'a T,
+    actions: &'a ResponseActions,
     meta: ResponseMeta<'a>,
 }
 
@@ -96,21 +98,27 @@ struct ErrorPayload<'a> {
     schema_version: u32,
     intent: &'a str,
     error: ErrorDetail<'a>,
+    actions: ResponseActions,
     meta: ResponseMeta<'a>,
 }
 
 #[derive(Debug, Serialize)]
 struct ErrorDetail<'a> {
-    code: &'a str,
+    #[serde(rename = "type")]
+    category: CliErrorCategory,
+    subtype: &'a str,
     message: &'a str,
     retryable: bool,
-    recovery: RecoveryDetail<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    param: Option<&'a str>,
+    hint: &'a str,
 }
 
-#[derive(Debug, Serialize)]
-struct RecoveryDetail<'a> {
-    instruction: &'a str,
-    command: Option<&'a str>,
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResponseActions {
+    required: Vec<Value>,
+    suggested: Vec<Value>,
 }
 
 pub fn run_cli(argv: &[String]) -> i32 {
@@ -241,12 +249,16 @@ fn run_cli_with_io(argv: &[String], mut stdout: impl Write, mut stderr: impl Wri
         }
         args::ParseOutcome::Error(message) => {
             let parsed = parse_error_args(argv);
-            let error = CliError::with_recovery(
+            let mut error = CliError::with_recovery(
                 "invalid_argument",
-                message.trim().to_owned(),
+                concise_parse_error_message(&message),
                 false,
                 "Review the generated command help and retry with valid arguments.",
-            );
+            )
+            .with_recovery_action(CliRecoveryAction::cli(["--help"]));
+            if let Some(param) = parse_error_param(&message) {
+                error = error.with_param(param);
+            }
             write_error(&parsed, &mut stdout, &mut stderr, &error);
             return error.exit_code();
         }
@@ -284,6 +296,7 @@ fn run_parsed_cli(
         CommandGroup::Writing => run_writing_command(parsed, stdout),
         CommandGroup::Operation => run_operation_command(parsed, stdout),
         CommandGroup::Task => run_tasks_command(parsed, stdout),
+        CommandGroup::Workflow => run_workflows_command(parsed, stdout),
         CommandGroup::InternalStudioServe => {
             let paths = parsed_paths(parsed)?;
             let service_paths = resolve_studio_service_paths(&paths)?;
@@ -320,7 +333,7 @@ fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
     match subcommand {
         Some("list") => {
             let paths = parsed_current_paths(parsed)?;
-            let result = with_task_next_actions(
+            let result = with_task_actions(
                 tasks::list_tasks(&paths, task_list_filter(parsed))?,
                 true,
             );
@@ -329,7 +342,7 @@ fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
         }
         Some("next") => {
             let paths = parsed_current_paths(parsed)?;
-            let result = with_task_next_actions(
+            let result = with_task_actions(
                 tasks::next_task(&paths, task_list_filter(parsed))?,
                 true,
             );
@@ -339,7 +352,7 @@ fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
         Some("read") => {
             let paths = parsed_current_paths(parsed)?;
             let task_id = required_flag(parsed, "task-id")?;
-            let result = with_task_next_actions(tasks::inspect_task(&paths, task_id)?, false);
+            let result = with_task_actions(tasks::inspect_task(&paths, task_id)?, false);
             write_result(parsed, stdout, &result, task_id)
         }
         Some("claim-next") => {
@@ -397,12 +410,25 @@ fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             let task_id = required_flag(parsed, "task-id")?;
             let lease_token = required_flag(parsed, "lease-token")?;
             let message = required_flag(parsed, "message")?;
-            let result = tasks::fail_task(
+            let failure_class = string_flag(parsed, "failure-class")
+                .map(|value| {
+                    tasks::TaskFailureClass::parse(value).ok_or_else(|| {
+                        CliError::with_code(
+                            "invalid_argument",
+                            "--failure-class must be retryable_channel, retryable_output, or terminal_task.",
+                        )
+                        .with_param("--failure-class")
+                    })
+                })
+                .transpose()?
+                .unwrap_or(tasks::TaskFailureClass::RetryableChannel);
+            let result = tasks::fail_task_with_class(
                 &paths,
                 task_id,
                 lease_token,
                 message,
                 string_flag(parsed, "retry-after"),
+                failure_class,
             )?;
             write_result(parsed, stdout, &result, &format!("Failed {task_id}"))
         }
@@ -425,15 +451,46 @@ fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             let result = tasks::cancel_task(&paths, task_id)?;
             write_result(parsed, stdout, &result, &format!("Cancelled {task_id}"))
         }
-        Some("delivery") => {
+        Some("archive") => {
             let paths = parsed_current_paths(parsed)?;
-            let result = tasks::list_deliveries(&paths, string_flag(parsed, "task-id"))?;
-            let count = result["deliveries"].as_array().map(Vec::len).unwrap_or(0);
-            write_result(parsed, stdout, &result, &format!("{count} delivery record(s)"))
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = tasks::archive_task(&paths, task_id)?;
+            write_result(parsed, stdout, &result, &format!("Archived {task_id}"))
+        }
+        Some("events") => {
+            let paths = parsed_current_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = tasks::list_task_events(&paths, task_id)?;
+            let count = result["events"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(parsed, stdout, &result, &format!("{count} event(s)"))
+        }
+        Some("attempts") => {
+            let paths = parsed_current_paths(parsed)?;
+            let task_id = required_flag(parsed, "task-id")?;
+            let result = tasks::list_task_attempts(&paths, task_id)?;
+            let count = result["attempts"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(parsed, stdout, &result, &format!("{count} attempt(s)"))
         }
         _ => Err(CliError::new(
-            "Expected task subcommand: list, next, read, claim-next, claim, heartbeat, complete, fail, release, retry, cancel, or delivery.",
+            "Expected task subcommand: list, next, read, claim-next, claim, heartbeat, complete, fail, release, retry, cancel, archive, events, or attempts.",
         )),
+    }
+}
+
+fn run_workflows_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
+    let paths = parsed_current_paths(parsed)?;
+    match parsed.positionals.get(1).map(String::as_str) {
+        Some("list") => {
+            let result = tasks::list_workflows(&paths)?;
+            let count = result["workflows"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(parsed, stdout, &result, &format!("{count} workflow(s)"))
+        }
+        Some("read") => {
+            let workflow_id = required_flag(parsed, "workflow-id")?;
+            let result = tasks::read_workflow(&paths, workflow_id)?;
+            write_result(parsed, stdout, &result, workflow_id)
+        }
+        _ => Err(CliError::new("Expected workflow subcommand: list or read.")),
     }
 }
 
@@ -448,7 +505,7 @@ fn task_list_filter(parsed: &Invocation) -> tasks::TaskListFilter<'_> {
 fn run_project_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
-        Some("current") => {
+        Some("read") => {
             let paths = parsed_current_paths(parsed)?;
             let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new())?;
             let payload = serde_json::json!({
@@ -533,7 +590,7 @@ fn run_project_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(
             write_result(parsed, stdout, &payload, project_id)
         }
         _ => Err(CliError::new(
-            "Expected project subcommand: current, list, create, or activate.",
+            "Expected project subcommand: read, list, create, or activate.",
         )),
     }
 }
@@ -541,21 +598,35 @@ fn run_project_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(
 fn run_panel_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     match subcommand {
-        Some("current") => run_project_read_command(parsed, stdout, ProjectReadView::Current),
         Some("list") => run_project_read_command(parsed, stdout, ProjectReadView::List),
         Some("activate") => {
-            let _ = required_flag(parsed, "panel-kind")?;
-            run_project_read_command(parsed, stdout, ProjectReadView::Activate)
-        }
-        Some("context") => {
             let paths = parsed_current_paths(parsed)?;
-            let payload = crate::panel::read_context(&paths)?;
-            write_result(parsed, stdout, &payload, "Current panel context")
+            let kind = parse_panel_kind(required_flag(parsed, "panel-kind")?)?;
+            let bootstrap = activate_project_panel(&paths, kind)?;
+            let payload = serde_json::json!({
+                "project": bootstrap.project,
+                "panel": bootstrap.panel,
+                "focus": {
+                    "focusRevision": read_focus_revision(&paths)?,
+                    "projectId": bootstrap.project.id,
+                    "panelId": bootstrap.panel.id,
+                    "panelKind": bootstrap.panel.kind,
+                }
+            });
+            write_result(parsed, stdout, &payload, "Panel activated.")
         }
-        Some("state") => {
+        Some("read") => {
             let paths = parsed_current_paths(parsed)?;
-            let payload = crate::panel::read_state(&paths)?;
-            write_result(parsed, stdout, &payload, "Current panel state")
+            let kind = string_flag(parsed, "panel-kind")
+                .map(parse_panel_kind)
+                .transpose()?;
+            if string_flag(parsed, "detail") == Some("full") {
+                let payload = crate::panel::read_state(&paths, kind)?;
+                write_result(parsed, stdout, &payload, "Panel state")
+            } else {
+                let payload = crate::panel::read_context(&paths, kind)?;
+                write_result(parsed, stdout, &payload, "Panel summary")
+            }
         }
         Some("selection") => {
             let paths = parsed_current_paths(parsed)?;
@@ -563,7 +634,7 @@ fn run_panel_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             write_result(parsed, stdout, &payload, "Current panel selection")
         }
         _ => Err(CliError::new(
-            "Expected panel subcommand: current, list, or activate.",
+            "Expected panel subcommand: list, read, selection, or activate.",
         )),
     }
 }
@@ -572,9 +643,8 @@ fn run_canvas_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     let action = parsed.positionals.get(2).map(String::as_str);
     match (subcommand, action) {
-        (Some("generation"), Some("begin")) => {
+        (Some("image"), Some("generate")) => {
             let paths = parsed_current_paths(parsed)?;
-            require_focus(parsed, &paths, PanelKind::Canvas)?;
             let result = operations::begin_canvas(
                 &paths,
                 number_flag(parsed, "display-width")?,
@@ -604,9 +674,8 @@ fn run_canvas_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
             let text = format!("Wrote {}", result.output_path);
             write_result(parsed, stdout, &result, &text)
         }
-        (Some("image"), Some("insert")) => {
+        (Some("image"), Some("create")) => {
             let paths = parsed_current_paths(parsed)?;
-            require_focus(parsed, &paths, PanelKind::Canvas)?;
             let image_path = required_flag(parsed, "image-file")?;
             let result = insert_image(
                 &paths,
@@ -625,24 +694,9 @@ fn run_canvas_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
             write_result(parsed, stdout, &result, &text)
         }
         _ => Err(CliError::new(
-            "Expected canvas subcommand: selection export, image insert, or generation begin.",
+            "Expected canvas subcommand: selection export, image create, or image generate.",
         )),
     }
-}
-
-fn require_focus(
-    parsed: &Invocation,
-    paths: &crate::paths::MyOpenPanelsPaths,
-    kind: PanelKind,
-) -> Result<ProjectBootstrap, CliError> {
-    let expected = string_flag(parsed, "expect-focus-revision")
-        .map(|value| {
-            value
-                .parse::<u64>()
-                .map_err(|_| CliError::new("Expected --expect-focus-revision to be an integer."))
-        })
-        .transpose()?;
-    require_active_panel(paths, kind, expected)
 }
 
 fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
@@ -810,7 +864,7 @@ fn run_operation_command(parsed: &Invocation, stdout: &mut impl Write) -> Result
     let paths = parsed_current_paths(parsed)?;
     match parsed.positionals.get(1).map(String::as_str) {
         Some("list") => {
-            let payload = with_operation_next_actions(
+            let payload = with_operation_actions(
                 operations::list(&paths, string_flag(parsed, "status"))?,
                 true,
             );
@@ -818,7 +872,7 @@ fn run_operation_command(parsed: &Invocation, stdout: &mut impl Write) -> Result
         }
         Some("read") => {
             let id = required_flag(parsed, "operation-id")?;
-            let payload = with_operation_next_actions(operations::inspect(&paths, id)?, false);
+            let payload = with_operation_actions(operations::inspect(&paths, id)?, false);
             write_result(
                 parsed,
                 stdout,
@@ -865,7 +919,7 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
         Some("bootstrap") => {
             let paths = parsed_bootstrap_paths(parsed)?;
             let payload = agent_bootstrap(&paths, VERSION)?;
-            write_result(parsed, stdout, &payload, "MyOpenPanels agent protocol v5 bootstrap")
+            write_result(parsed, stdout, &payload, "MyOpenPanels agent protocol v6 bootstrap")
         }
         Some("entry-skill") => match parsed.positionals.get(2).map(String::as_str) {
             Some("acknowledge") => {
@@ -881,35 +935,18 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
                 "Expected agent entry-skill subcommand: acknowledge.",
             )),
         },
-        Some("capability")
-            if parsed.positionals.get(2).map(String::as_str) == Some("list") =>
-        {
-            let payload = match string_flag(parsed, "scope") {
-                Some(scope) => registry::scope_capabilities(scope).ok_or_else(|| {
-                    CliError::with_recovery_command(
-                        "capability_scope_not_found",
-                        format!("MyOpenPanels capability scope not found: {scope}"),
-                        false,
-                        "Run `myopenpanels agent capability list --format json` to list valid scopes.",
-                        "myopenpanels agent capability list --format json",
-                    )
-                })?,
-                None => registry::scope_index(),
-            };
-            let text = render_agent_discovery_summary(&payload);
-            write_result(parsed, stdout, &payload, &text)
-        }
-        Some("capability")
-            if parsed.positionals.get(2).map(String::as_str) == Some("read") =>
-        {
-            let intent = required_flag(parsed, "intent")?;
-            let capability = registry::capability_payload(intent).ok_or_else(|| {
+        Some("catalog") => {
+            let payload = registry::catalog(string_flag(parsed, "domain")).ok_or_else(|| {
                 CliError::with_code(
-                    "capability_not_found",
-                    format!("MyOpenPanels capability not found: {intent}"),
+                    "catalog_domain_not_found",
+                    format!(
+                        "MyOpenPanels command catalog domain not found: {}",
+                        string_flag(parsed, "domain").unwrap_or_default()
+                    ),
                 )
             })?;
-            write_result(parsed, stdout, &capability, intent)
+            let text = render_agent_discovery_summary(&payload);
+            write_result(parsed, stdout, &payload, &text)
         }
         Some("bridge") => {
             let paths = parsed_current_paths(parsed)?;
@@ -974,15 +1011,25 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
                         })
                         .transpose()?
                         .unwrap_or(0);
+                    let protocol_version = string_flag(parsed, "protocol-version")
+                        .map(|value| value.parse::<i64>().map_err(|_| CliError::new("Expected --protocol-version to be an integer.")))
+                        .transpose()?
+                        .unwrap_or(2);
+                    let max_concurrency = string_flag(parsed, "max-concurrency")
+                        .map(|value| value.parse::<i64>().map_err(|_| CliError::new("Expected --max-concurrency to be an integer.")))
+                        .transpose()?
+                        .unwrap_or(1);
                     let result = tasks::register_target(
                         &paths,
                         tasks::TargetRegistration {
                             name: required_flag(parsed, "name")?,
                             host: string_flag(parsed, "host"),
                             transport: required_flag(parsed, "transport")?,
-                            endpoint: string_flag(parsed, "endpoint"),
                             capabilities: string_list_flag(parsed, "capability"),
                             priority,
+                            protocol_version,
+                            max_concurrency,
+                            model_gateway_connection_id: None,
                         },
                     )?;
                     write_result(
@@ -1007,6 +1054,32 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
                 )),
             }
         }
+        Some("route") => {
+            let paths = parsed_current_paths(parsed)?;
+            match parsed.positionals.get(2).map(String::as_str) {
+                Some("list") => {
+                    let result = tasks::list_agent_routes(&paths)?;
+                    let count = result["routes"].as_array().map(Vec::len).unwrap_or(0);
+                    write_result(parsed, stdout, &result, &format!("{count} route(s)"))
+                }
+                Some("set") => {
+                    let result = tasks::set_agent_route(
+                        &paths,
+                        required_flag(parsed, "capability")?,
+                        &string_list_flag(parsed, "target-id"),
+                    )?;
+                    write_result(parsed, stdout, &result, "Agent route updated")
+                }
+                Some("remove") => {
+                    let result = tasks::remove_agent_route(
+                        &paths,
+                        required_flag(parsed, "capability")?,
+                    )?;
+                    write_result(parsed, stdout, &result, "Agent route removed")
+                }
+                _ => Err(CliError::new("Expected agent route subcommand: list, set, or remove.")),
+            }
+        }
         Some("skill") if parsed.positionals.get(2).map(String::as_str) == Some("list") => {
             let skills = list_agent_skill_summaries(
                 &parsed_current_paths(parsed)?,
@@ -1021,11 +1094,7 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             );
             let payload = serde_json::json!({
                 "skills": skills,
-                "nextActions": next_actions,
-                "nextRequiredAction": {
-                    "intent": "select-skill",
-                    "instruction": "Choose the nextActions entry whose loadWhen matches the user request.",
-                },
+                "actions": { "required": [], "suggested": next_actions },
             });
             let text = render_agent_discovery_summary(&payload);
             write_result(parsed, stdout, &payload, &text)
@@ -1038,7 +1107,7 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             write_result(parsed, stdout, &payload, &markdown)
         }
         _ => Err(CliError::new(
-            "Expected agent subcommand: bootstrap, capability, entry-skill, bridge, skill, or target.",
+            "Expected agent subcommand: bootstrap, catalog, entry-skill, bridge, skill, target, or route.",
         )),
     }
 }
@@ -1063,13 +1132,16 @@ fn discovery_read_actions(
                 ],
             )
             .unwrap_or_else(|| panic!("missing Command Registry action for {intent}"));
-            action["loadWhen"] = serde_json::json!(load_when);
+            action["condition"] = serde_json::json!({
+                "type": "agent-judgment",
+                "description": load_when,
+            });
             action
         })
         .collect()
 }
 
-fn with_task_next_actions(mut payload: Value, list_mode: bool) -> Value {
+fn with_task_actions(mut payload: Value, list_mode: bool) -> Value {
     let mut actions = Vec::new();
     if list_mode {
         let tasks = payload
@@ -1097,19 +1169,21 @@ fn with_task_next_actions(mut payload: Value, list_mode: bool) -> Value {
                 ],
             )
             .expect("registered Task read action");
-            action["loadWhen"] =
-                serde_json::json!("The user request should inspect or continue this Task.");
+            action["condition"] = serde_json::json!({
+                "type": "agent-judgment",
+                "description": "The user request should inspect or continue this Task."
+            });
             actions.push(action);
         }
     } else if let Some(task) = payload.get("task") {
-        if let Some(capability) = task
+        if let Some(domain) = task
             .get("capability")
             .and_then(Value::as_str)
-            .filter(|intent| registry::capability(intent).is_some())
+            .and_then(registry::catalog_domain_for_intent)
         {
-            actions.push(capability_read_action(
-                capability,
-                "The Task requires this capability.",
+            actions.push(catalog_domain_action(
+                domain,
+                "The Task requires a command from this domain.",
             ));
         }
         let status = task.get("status").and_then(Value::as_str);
@@ -1124,19 +1198,18 @@ fn with_task_next_actions(mut payload: Value, list_mode: bool) -> Value {
             ][..],
             _ => &[][..],
         };
-        actions.extend(lifecycle.iter().map(|intent| {
-            capability_read_action(intent, "The Task lifecycle requires this action.")
-        }));
+        if !lifecycle.is_empty() {
+            actions.push(catalog_domain_action(
+                "task",
+                "The Task lifecycle requires a task command.",
+            ));
+        }
     }
-    payload["nextActions"] = serde_json::json!(actions);
-    payload["nextRequiredAction"] = serde_json::json!({
-        "intent": "continue-task",
-        "instruction": "Choose an applicable nextActions entry, execute its argv with the same resolved CLI executable, and follow the returned response.",
-    });
+    payload["actions"] = serde_json::json!({ "required": [], "suggested": actions });
     payload
 }
 
-fn with_operation_next_actions(mut payload: Value, list_mode: bool) -> Value {
+fn with_operation_actions(mut payload: Value, list_mode: bool) -> Value {
     let mut actions = Vec::new();
     if list_mode {
         for operation in payload
@@ -1158,8 +1231,10 @@ fn with_operation_next_actions(mut payload: Value, list_mode: bool) -> Value {
                 ],
             )
             .expect("registered Operation read action");
-            action["loadWhen"] =
-                serde_json::json!("The user request should inspect or continue this Operation.");
+            action["condition"] = serde_json::json!({
+                "type": "agent-judgment",
+                "description": "The user request should inspect or continue this Operation."
+            });
             actions.push(action);
         }
     } else {
@@ -1174,74 +1249,56 @@ fn with_operation_next_actions(mut payload: Value, list_mode: bool) -> Value {
                 ],
             )
             .expect("registered Skill read action");
-            action["loadWhen"] = serde_json::json!("The Operation requires this Skill.");
+            action["condition"] = serde_json::json!({
+                "type": "resource-field",
+                "field": "skillId",
+                "operator": "present"
+            });
             actions.push(action);
         }
         if matches!(
             payload.get("status").and_then(Value::as_str),
             Some("active" | "failed")
         ) {
-            actions.extend(
-                ["operation.complete", "operation.fail", "operation.cancel"].map(|intent| {
-                    capability_read_action(intent, "The Operation requires this lifecycle action.")
-                }),
-            );
+            actions.push(catalog_domain_action(
+                "operation",
+                "The Operation requires a lifecycle command.",
+            ));
         }
     }
-    payload["nextActions"] = serde_json::json!(actions);
-    payload["nextRequiredAction"] = serde_json::json!({
-        "intent": "continue-operation",
-        "instruction": "Choose an applicable nextActions entry, execute its argv with the same resolved CLI executable, and follow the returned response.",
-    });
+    payload["actions"] = serde_json::json!({ "required": [], "suggested": actions });
     payload
 }
 
-fn capability_read_action(intent: &str, load_when: &str) -> Value {
+fn catalog_domain_action(domain: &str, load_when: &str) -> Value {
     let mut action = registry::command_action(
-        registry::CommandId::registered("agent.capability.read"),
+        registry::CommandId::registered("agent.catalog"),
         vec![
-            "--intent".to_owned(),
-            intent.to_owned(),
+            "--domain".to_owned(),
+            domain.to_owned(),
             "--format".to_owned(),
             "json".to_owned(),
         ],
     )
-    .expect("registered capability read action");
-    action["loadWhen"] = serde_json::json!(load_when);
+    .expect("registered catalog action");
+    action["condition"] = serde_json::json!({
+        "type": "agent-judgment",
+        "description": load_when,
+    });
     action
 }
 
 fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     let action = parsed.positionals.get(2).map(String::as_str);
-    let nested_action = parsed.positionals.get(3).map(String::as_str);
-    if string_flag(parsed, "task-id").is_none()
-        && matches!(
-            parsed.intent(),
-            "wiki.raw-document.add"
-                | "wiki.raw-document.create-markdown"
-                | "wiki.raw-document.markdown.write"
-                | "wiki.generated-document.create"
-                | "wiki.generated-document.write"
-                | "wiki.generated-document.rename"
-                | "wiki.generated-document.delete"
-                | "wiki.generated-document.publish"
-                | "wiki.space.activate"
-                | "wiki.page.write"
-                | "wiki.generation.begin"
-        )
-    {
-        let paths = parsed_current_paths(parsed)?;
-        require_focus(parsed, &paths, PanelKind::Wiki)?;
-    }
     match (subcommand, action) {
-        (Some("generation"), Some("begin")) => {
+        (Some("document"), Some("generate")) => {
             let paths = parsed_current_paths(parsed)?;
             let result = operations::begin_wiki(
                 &paths,
                 required_flag(parsed, "title")?,
                 string_flag(parsed, "document-format").unwrap_or("markdown"),
-                string_flag(parsed, "generated-document-id"),
+                string_flag(parsed, "document-id"),
             )?;
             write_result(
                 parsed,
@@ -1252,51 +1309,32 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
                     .unwrap_or("Started wiki generation"),
             )
         }
-        (Some("raw-document"), Some("create-markdown")) => {
+        (Some("raw"), Some("create")) => {
             let paths = parsed_current_paths(parsed)?;
-            let title = required_flag(parsed, "title")?;
-            let file_name = string_flag(parsed, "file-name").unwrap_or(title);
-            let content = if let Some(file) = string_flag(parsed, "content-file") {
+            let source_file = string_flag(parsed, "source-file");
+            let content = if let Some(file) = source_file {
                 std::fs::read(file).map_err(|error| CliError::new(error.to_string()))?
             } else {
-                string_flag(parsed, "content")
-                    .unwrap_or("")
-                    .as_bytes()
-                    .to_vec()
+                required_flag(parsed, "content")?.as_bytes().to_vec()
             };
-            let result = wiki::add_raw_document(
-                &paths,
-                file_name,
-                Some(title),
-                Some("text/markdown"),
-                "agent",
-                string_flag(parsed, "wiki-space-id"),
-                &content,
-            )?;
-            let text = format!(
-                "Created markdown {}",
-                result["document"]["id"].as_str().unwrap_or("")
-            );
-            write_result(parsed, stdout, &result, &text)
-        }
-        (Some("raw-document"), Some("add")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let file = required_flag(parsed, "input-file")?;
-            let content = std::fs::read(file).map_err(|error| CliError::new(error.to_string()))?;
             let file_name = string_flag(parsed, "file-name")
                 .or_else(|| {
-                    std::path::Path::new(file)
-                        .file_name()
-                        .and_then(|value| value.to_str())
+                    source_file.and_then(|file| {
+                        std::path::Path::new(file)
+                            .file_name()
+                            .and_then(|value| value.to_str())
+                    })
                 })
-                .unwrap_or("document");
+                .or_else(|| string_flag(parsed, "title"))
+                .unwrap_or("document.md");
             let result = wiki::add_raw_document(
                 &paths,
                 file_name,
                 string_flag(parsed, "title"),
-                string_flag(parsed, "mime-type"),
+                string_flag(parsed, "mime-type")
+                    .or_else(|| source_file.is_none().then_some("text/markdown")),
                 "agent",
-                string_flag(parsed, "wiki-space-id"),
+                string_flag(parsed, "space-id"),
                 &content,
             )?;
             let text = format!(
@@ -1305,7 +1343,7 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
             );
             write_result(parsed, stdout, &result, &text)
         }
-        (Some("raw-document"), Some("list")) => {
+        (Some("raw"), Some("list")) => {
             let paths = parsed_current_paths(parsed)?;
             let result = wiki::wiki_context(&paths)?;
             let documents = result["state"]["rawDocuments"].clone();
@@ -1313,7 +1351,7 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
             let count = payload["documents"].as_array().map(Vec::len).unwrap_or(0);
             write_result(parsed, stdout, &payload, &format!("{count} document(s)"))
         }
-        (Some("generated-document"), Some("list")) => {
+        (Some("document"), Some("list")) => {
             let paths = parsed_current_paths(parsed)?;
             let result = wiki::list_generated_documents(&paths)?;
             let count = result["documents"].as_array().map(Vec::len).unwrap_or(0);
@@ -1324,7 +1362,7 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
                 &format!("{count} generated document(s)"),
             )
         }
-        (Some("generated-document"), Some("create")) => {
+        (Some("document"), Some("create")) => {
             let paths = parsed_current_paths(parsed)?;
             let file = required_flag(parsed, "content-file")?;
             let content = fs::read(file).map_err(|error| CliError::new(error.to_string()))?;
@@ -1349,29 +1387,35 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
                 &format!("Created generated document {id}"),
             )
         }
-        (Some("generated-document"), Some("read")) => {
+        (Some("document"), Some("read")) => {
             let paths = parsed_current_paths(parsed)?;
-            let document_id = required_flag(parsed, "generated-document-id")?;
+            let document_id = required_flag(parsed, "document-id")?;
             let result = wiki::read_generated_document(&paths, document_id)?;
             let text = result["content"].as_str().unwrap_or("");
             write_result(parsed, stdout, &result, text)
         }
-        (Some("generated-document"), Some("write")) => {
+        (Some("document"), Some("update")) => {
             let paths = parsed_current_paths(parsed)?;
-            let document_id = required_flag(parsed, "generated-document-id")?;
-            let file = required_flag(parsed, "content-file")?;
-            let content = fs::read(file).map_err(|error| CliError::new(error.to_string()))?;
-            let file_name = std::path::Path::new(file)
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("document.md");
-            let result = wiki::write_generated_document_for_agent(
-                &paths,
-                document_id,
-                file_name,
-                string_flag(parsed, "mime-type"),
-                &content,
-            )?;
+            let document_id = required_flag(parsed, "document-id")?;
+            let mut result = if let Some(file) = string_flag(parsed, "content-file") {
+                let content = fs::read(file).map_err(|error| CliError::new(error.to_string()))?;
+                let file_name = std::path::Path::new(file)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("document.md");
+                wiki::write_generated_document_for_agent(
+                    &paths,
+                    document_id,
+                    file_name,
+                    string_flag(parsed, "mime-type"),
+                    &content,
+                )?
+            } else {
+                wiki::read_generated_document(&paths, document_id)?
+            };
+            if let Some(title) = string_flag(parsed, "title") {
+                result = wiki::rename_generated_document(&paths, document_id, title)?;
+            }
             write_result(
                 parsed,
                 stdout,
@@ -1379,24 +1423,9 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
                 &format!("Updated generated document {document_id}"),
             )
         }
-        (Some("generated-document"), Some("rename")) => {
+        (Some("document"), Some("delete")) => {
             let paths = parsed_current_paths(parsed)?;
-            let document_id = required_flag(parsed, "generated-document-id")?;
-            let result = wiki::rename_generated_document(
-                &paths,
-                document_id,
-                required_flag(parsed, "title")?,
-            )?;
-            write_result(
-                parsed,
-                stdout,
-                &result,
-                &format!("Renamed generated document {document_id}"),
-            )
-        }
-        (Some("generated-document"), Some("delete")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let document_id = required_flag(parsed, "generated-document-id")?;
+            let document_id = required_flag(parsed, "document-id")?;
             let result = wiki::delete_generated_document(&paths, document_id)?;
             write_result(
                 parsed,
@@ -1405,13 +1434,13 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
                 &format!("Deleted generated document {document_id}"),
             )
         }
-        (Some("generated-document"), Some("publish")) => {
+        (Some("document"), Some("publish")) => {
             let paths = parsed_current_paths(parsed)?;
-            let document_id = required_flag(parsed, "generated-document-id")?;
+            let document_id = required_flag(parsed, "document-id")?;
             let result = wiki::publish_generated_document(
                 &paths,
                 document_id,
-                string_flag(parsed, "wiki-space-id"),
+                string_flag(parsed, "space-id"),
             )?;
             write_result(
                 parsed,
@@ -1420,14 +1449,14 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
                 &format!("Published generated document {document_id}"),
             )
         }
-        (Some("raw-document"), Some("markdown")) if nested_action == Some("read") => {
+        (Some("raw"), Some("read")) => {
             let paths = parsed_current_paths(parsed)?;
             let document_id = required_flag(parsed, "raw-document-id")?;
             let result = wiki::read_markdown(&paths, document_id)?;
             let text = result["markdown"].as_str().unwrap_or("");
             write_result(parsed, stdout, &result, text)
         }
-        (Some("raw-document"), Some("markdown")) if nested_action == Some("write") => {
+        (Some("raw"), Some("update")) => {
             let paths = parsed_current_paths(parsed)?;
             let document_id = required_flag(parsed, "raw-document-id")?;
             let file = required_flag(parsed, "content-file")?;
@@ -1448,7 +1477,7 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
         }
         (Some("space"), Some("activate")) => {
             let paths = parsed_current_paths(parsed)?;
-            let wiki_space_id = required_flag(parsed, "wiki-space-id")?;
+            let wiki_space_id = required_flag(parsed, "space-id")?;
             let result = wiki::set_active_space(&paths, wiki_space_id)?;
             write_result(
                 parsed,
@@ -1467,7 +1496,7 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
             let paths = parsed_current_paths(parsed)?;
             let result = wiki::read_page(
                 &paths,
-                required_flag(parsed, "wiki-space-id")?,
+                required_flag(parsed, "space-id")?,
                 required_flag(parsed, "path")?,
             )?;
             let text = result["markdown"].as_str().unwrap_or("");
@@ -1478,7 +1507,7 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
             let limit = number_flag(parsed, "limit")?.unwrap_or(20.0) as usize;
             let result = wiki::search_pages(
                 &paths,
-                required_flag(parsed, "wiki-space-id")?,
+                required_flag(parsed, "space-id")?,
                 required_flag(parsed, "query")?,
                 limit,
             )?;
@@ -1490,10 +1519,28 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
                 &format!("{count} matching page(s)"),
             )
         }
-        (Some("page"), Some("write")) => {
+        (Some("page"), Some(mode @ ("create" | "update"))) => {
             let paths = parsed_current_paths(parsed)?;
-            let wiki_space_id = required_flag(parsed, "wiki-space-id")?;
+            let wiki_space_id = required_flag(parsed, "space-id")?;
             let page_path = required_flag(parsed, "path")?;
+            let pages = wiki::list_pages(&paths, wiki_space_id)?;
+            let exists = pages["pages"].as_array().is_some_and(|pages| {
+                pages
+                    .iter()
+                    .any(|page| page["path"].as_str() == Some(page_path))
+            });
+            if mode == "create" && exists {
+                return Err(CliError::with_code(
+                    "content_conflict",
+                    format!("Wiki page already exists: {page_path}"),
+                ));
+            }
+            if mode == "update" && !exists {
+                return Err(CliError::with_code(
+                    "wiki_page_not_found",
+                    format!("Wiki page not found: {page_path}"),
+                ));
+            }
             let file = required_flag(parsed, "content-file")?;
             let content =
                 std::fs::read_to_string(file).map_err(|error| CliError::new(error.to_string()))?;
@@ -1505,11 +1552,16 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
                 string_flag(parsed, "title"),
                 string_flag(parsed, "task-id"),
             )?;
-            write_result(parsed, stdout, &result, &format!("Wrote page {page_path}"))
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("{mode}d page {page_path}"),
+            )
         }
         (Some("page"), Some("list")) => {
             let paths = parsed_current_paths(parsed)?;
-            let result = wiki::list_pages(&paths, required_flag(parsed, "wiki-space-id")?)?;
+            let result = wiki::list_pages(&paths, required_flag(parsed, "space-id")?)?;
             let count = result["pages"].as_array().map(Vec::len).unwrap_or(0);
             write_result(parsed, stdout, &result, &format!("{count} page(s)"))
         }
@@ -1530,7 +1582,7 @@ fn run_writing_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(
                 &format!("Writing request {task_id}"),
             )
         }
-        "writing.generation.begin" => {
+        "writing.generate" => {
             let task_id = required_flag(parsed, "task-id")?;
             let title = required_flag(parsed, "title")?;
             let document_format = string_flag(parsed, "document-format").unwrap_or("markdown");
@@ -1557,7 +1609,7 @@ fn run_writing_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(
             let task_id = required_flag(parsed, "task-id")?;
             let skill_file = required_flag(parsed, "skill-file")?;
             let result = crate::writing::install_project_skill(&paths, task_id, skill_file)?;
-            write_result(parsed, stdout, &result, "Installed project Writing Skill")
+            write_result(parsed, stdout, &result, "Installed shared Writing Skill")
         }
         _ => Err(CliError::new("Unknown writing command.")),
     }
@@ -1565,9 +1617,7 @@ fn run_writing_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ProjectReadView {
-    Current,
     List,
-    Activate,
 }
 
 fn run_project_read_command(
@@ -1576,28 +1626,7 @@ fn run_project_read_command(
     view: ProjectReadView,
 ) -> Result<(), CliError> {
     let paths = parsed_current_paths(parsed)?;
-    let mut request = BootstrapRequest::new();
-    request.requested_panel_kind = match view {
-        ProjectReadView::Activate => string_flag(parsed, "panel-kind")
-            .map(parse_panel_kind)
-            .transpose()?,
-        ProjectReadView::Current | ProjectReadView::List => None,
-    };
-    let bootstrap = read_project_bootstrap(&paths, request)?;
-
-    if view == ProjectReadView::Activate {
-        let payload = serde_json::json!({
-            "project": bootstrap.project,
-            "panel": bootstrap.panel,
-            "focus": {
-                "focusRevision": read_focus_revision(&paths)?,
-                "projectId": bootstrap.project.id,
-                "panelId": bootstrap.panel.id,
-                "panelKind": bootstrap.panel.kind,
-            }
-        });
-        return write_result(parsed, stdout, &payload, "Panel activated.");
-    }
+    let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new())?;
 
     match view {
         ProjectReadView::List => {
@@ -1629,21 +1658,6 @@ fn run_project_read_command(
                 .join("\n");
             write_result(parsed, stdout, &payload, &text)
         }
-        ProjectReadView::Current => {
-            let payload = serde_json::json!({
-                "activePanelId": bootstrap.active_panel_id,
-                "activePanelKind": bootstrap.active_panel_kind,
-                "panel": bootstrap.panel,
-                "project": bootstrap.project,
-            });
-            let text = format!(
-                "{}: {}",
-                bootstrap.active_panel_kind.as_str(),
-                bootstrap.panel.title
-            );
-            write_result(parsed, stdout, &payload, &text)
-        }
-        ProjectReadView::Activate => unreachable!(),
     }
 }
 
@@ -1809,25 +1823,27 @@ fn studio_launch_payload(
             ],
         )
         .expect("registered Studio browser fallback action");
-        payload["nextRequiredAction"] = serde_json::json!({
-            "intent": "studio.open",
-            "required": true,
-            "url": system_browser_url,
-            "preferredTarget": "in_app_browser",
-            "fallback": {
-                "intent": "studio.open-system-browser",
-                "executor": fallback_action["executor"],
-                "command": "myopenpanels studio open-system-browser",
-                "argv": fallback_action["argv"],
-                "args": [
-                    "--local-only",
-                    "--project-dir",
-                    paths.project_dir,
-                    "--format",
-                    "json",
-                ],
-            },
-            "completionCriterion": "The Studio URL was accepted by an in-app or system browser opener.",
+        payload["actions"] = serde_json::json!({
+            "required": [
+                {
+                    "id": "studio.open.in-app",
+                    "intent": "studio.open",
+                    "executor": "agent-host",
+                    "kind": "open-url",
+                    "url": system_browser_url,
+                },
+                {
+                    "id": "studio.open.system",
+                    "intent": "studio.open-system-browser",
+                    "executor": fallback_action["executor"],
+                    "argv": fallback_action["argv"],
+                    "condition": {
+                        "actionId": "studio.open.in-app",
+                        "outcomes": ["failed", "unavailable"]
+                    }
+                }
+            ],
+            "suggested": []
         });
     }
     Ok(payload)
@@ -1859,11 +1875,15 @@ fn write_result(
 ) -> Result<(), CliError> {
     match output_format(parsed) {
         OutputFormat::Json => {
+            let mut data =
+                serde_json::to_value(payload).map_err(|error| CliError::new(error.to_string()))?;
+            let actions = take_response_actions(&mut data)?;
             let envelope = SuccessPayload {
                 ok: true,
-                schema_version: 1,
+                schema_version: CLI_ENVELOPE_SCHEMA_VERSION,
                 intent: parsed.intent(),
-                data: payload,
+                data: &data,
+                actions: &actions,
                 meta: ResponseMeta {
                     cli_version: VERSION,
                 },
@@ -1892,7 +1912,7 @@ fn write_result(
 
 fn write_error(
     parsed: &Invocation,
-    stdout: &mut impl Write,
+    _stdout: &mut impl Write,
     stderr: &mut impl Write,
     error: &CliError,
 ) {
@@ -1900,30 +1920,100 @@ fn write_error(
         OutputFormat::Json => {
             let payload = ErrorPayload {
                 ok: false,
-                schema_version: 1,
+                schema_version: CLI_ENVELOPE_SCHEMA_VERSION,
                 intent: parsed.intent(),
                 error: ErrorDetail {
-                    code: error.code().unwrap_or("command_failed"),
+                    category: error.category(),
+                    subtype: error.subtype(),
                     message: error.message(),
                     retryable: error.retryable(),
-                    recovery: RecoveryDetail {
-                        instruction: error
-                            .recovery()
-                            .unwrap_or("Review the command help and retry with valid arguments."),
-                        command: error.recovery_command(),
-                    },
+                    param: error.param(),
+                    hint: error
+                        .recovery()
+                        .unwrap_or("Review the command help and retry with valid arguments."),
+                },
+                actions: ResponseActions {
+                    required: Vec::new(),
+                    suggested: error
+                        .recovery_actions()
+                        .iter()
+                        .map(|action| serde_json::to_value(action).unwrap_or(Value::Null))
+                        .collect(),
                 },
                 meta: ResponseMeta {
                     cli_version: VERSION,
                 },
             };
-            let _ = serde_json::to_writer(&mut *stdout, &payload);
-            let _ = stdout.write_all(b"\n");
+            let _ = serde_json::to_writer(&mut *stderr, &payload);
+            let _ = stderr.write_all(b"\n");
         }
         OutputFormat::Text => {
             let _ = write_text(stderr, &format!("Error: {}\n", error.message()));
         }
     }
+}
+
+fn take_response_actions(data: &mut Value) -> Result<ResponseActions, CliError> {
+    let Some(actions) = data
+        .as_object_mut()
+        .and_then(|object| object.remove("actions"))
+    else {
+        return Ok(ResponseActions::default());
+    };
+    let object = actions.as_object().ok_or_else(|| {
+        CliError::with_code("invalid_output", "Response actions must be a JSON object.")
+    })?;
+    let read = |name: &str| -> Result<Vec<Value>, CliError> {
+        object
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]))
+            .as_array()
+            .cloned()
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "invalid_output",
+                    format!("Response actions.{name} must be an array."),
+                )
+            })
+    };
+    Ok(ResponseActions {
+        required: read("required")?,
+        suggested: read("suggested")?,
+    })
+}
+
+fn concise_parse_error_message(message: &str) -> String {
+    let message = message
+        .trim()
+        .strip_prefix("error: ")
+        .unwrap_or(message.trim());
+    message
+        .split("\n\nUsage:")
+        .next()
+        .unwrap_or(message)
+        .split("\n\nFor more information")
+        .next()
+        .unwrap_or(message)
+        .trim()
+        .to_owned()
+}
+
+fn parse_error_param(message: &str) -> Option<String> {
+    message
+        .lines()
+        .find_map(|line| {
+            let value = line.trim();
+            value
+                .starts_with("--")
+                .then(|| value.split_whitespace().next().unwrap_or(value).to_owned())
+        })
+        .or_else(|| {
+            message
+                .split('\'')
+                .find(|part| part.starts_with("--") && *part != "--help")
+                .map(str::to_owned)
+        })
 }
 
 fn parse_error_args(argv: &[String]) -> Invocation {

@@ -46,31 +46,36 @@ fn assert_action_parses(action: &Value) {
 
 #[track_caller]
 fn run(args: &[&str]) -> (i32, String, String) {
-    let mut current = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
-    maybe_add_focus_revision(&mut current);
+    let current = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     let refs = current.iter().map(String::as_str).collect::<Vec<_>>();
     let (code, stdout, stderr) = run_raw(&refs);
-    let Ok(envelope) = serde_json::from_str::<Value>(&stdout) else {
+    let envelope_source = if stdout.trim().is_empty() {
+        &stderr
+    } else {
+        &stdout
+    };
+    let Ok(envelope) = serde_json::from_str::<Value>(envelope_source) else {
         return (code, stdout, stderr);
     };
     if envelope.get("schemaVersion").is_none() {
         return (code, stdout, stderr);
     }
     if envelope["ok"].as_bool() == Some(true) {
+        let mut data = envelope["data"].clone();
+        if let Some(object) = data.as_object_mut() {
+            object.insert("actions".to_owned(), envelope["actions"].clone());
+        }
         return (
             code,
-            format!(
-                "{}\n",
-                serde_json::to_string_pretty(&envelope["data"]).expect("data")
-            ),
+            format!("{}\n", serde_json::to_string_pretty(&data).expect("data")),
             stderr,
         );
     }
     let legacy_error = json!({
-        "code": envelope["error"]["code"],
+        "code": envelope["error"]["subtype"],
         "error": envelope["error"]["message"],
         "retryable": envelope["error"]["retryable"],
-        "recovery": envelope["error"]["recovery"]["instruction"],
+        "recovery": envelope["error"]["hint"],
     });
     (
         code,
@@ -78,44 +83,8 @@ fn run(args: &[&str]) -> (i32, String, String) {
             "{}\n",
             serde_json::to_string_pretty(&legacy_error).expect("error")
         ),
-        stderr,
+        String::new(),
     )
-}
-
-fn maybe_add_focus_revision(values: &mut Vec<String>) {
-    let mutating = matches!(
-        values.get(0..3),
-        Some([scope, resource, action]) if
-            (scope == "canvas" && matches!((resource.as_str(), action.as_str()), ("image", "insert") | ("generation", "begin")))
-            || (scope == "wiki" && matches!(action.as_str(), "add" | "create-markdown" | "write" | "create" | "rename" | "delete" | "publish" | "activate" | "begin"))
-    );
-    if !mutating
-        || values
-            .iter()
-            .any(|value| value == "--expect-focus-revision")
-        || values.iter().any(|value| value == "--task-id")
-    {
-        return;
-    }
-    let project_dir = flag_value(values, "--project-dir");
-    let storage_dir = flag_value(values, "--storage-dir");
-    let context_id = flag_value(values, "--context-id");
-    let Ok(paths) = resolve_myopenpanels_paths(project_dir, storage_dir, context_id) else {
-        return;
-    };
-    let Ok(revision) = read_focus_revision(&paths) else {
-        return;
-    };
-    values.push("--expect-focus-revision".to_owned());
-    values.push(revision.to_string());
-}
-
-fn flag_value<'a>(values: &'a [String], flag: &str) -> Option<&'a str> {
-    values
-        .iter()
-        .position(|value| value == flag)
-        .and_then(|index| values.get(index + 1))
-        .map(String::as_str)
 }
 
 fn print_myopenpanels_task_id_command() -> &'static str {
@@ -342,33 +311,14 @@ fn studio_start_json_reuses_the_storage_singleton() {
     assert_eq!(payload["lifecycle"], "reused");
     assert_eq!(payload["previousVersion"], Value::Null);
     assert_eq!(payload["browserRefreshRequired"], false);
-    assert_eq!(payload["nextRequiredAction"]["intent"], "studio.open");
-    assert_eq!(payload["nextRequiredAction"]["required"], true);
-    assert_eq!(payload["nextRequiredAction"]["url"], server_url);
+    assert_eq!(payload["actions"]["required"][0]["intent"], "studio.open");
+    assert_eq!(payload["actions"]["required"][0]["url"], server_url);
     assert_eq!(
-        payload["nextRequiredAction"]["preferredTarget"],
-        "in_app_browser"
-    );
-    assert_eq!(
-        payload["nextRequiredAction"]["fallback"]["intent"],
+        payload["actions"]["required"][1]["intent"],
         "studio.open-system-browser"
     );
     assert_eq!(
-        payload["nextRequiredAction"]["fallback"]["command"],
-        "myopenpanels studio open-system-browser"
-    );
-    assert_eq!(
-        payload["nextRequiredAction"]["fallback"]["args"],
-        json!([
-            "--local-only",
-            "--project-dir",
-            project_dir,
-            "--format",
-            "json"
-        ])
-    );
-    assert_eq!(
-        payload["nextRequiredAction"]["fallback"]["argv"],
+        payload["actions"]["required"][1]["argv"],
         json!([
             "studio",
             "open-system-browser",
@@ -379,11 +329,11 @@ fn studio_start_json_reuses_the_storage_singleton() {
             "json"
         ])
     );
-    assert_action_parses(&payload["nextRequiredAction"]["fallback"]);
-    assert!(payload["nextRequiredAction"]["completionCriterion"]
-        .as_str()
-        .unwrap()
-        .contains("accepted"));
+    assert_action_parses(&payload["actions"]["required"][1]);
+    assert_eq!(
+        payload["actions"]["required"][1]["condition"]["actionId"],
+        "studio.open.in-app"
+    );
     assert!(storage_dir.join("studio").join("instance.json").exists());
 
     let (code, stdout, stderr) = run(&[
@@ -460,11 +410,11 @@ fn agent_bootstrap_without_project_dir_uses_user_visible_studio() {
     assert_eq!(code, 0, "{stderr}{stdout}");
     let payload = serde_json::from_str::<Value>(&stdout).expect("bootstrap");
     assert_eq!(payload["focus"]["projectId"].as_str().is_some(), true);
-    assert_eq!(
-        payload["nextRequiredAction"]["intent"],
-        "complete-required-steps"
-    );
-    let loader_path = payload["nextRequiredAction"]["steps"][0]["skills"][0]["contextPath"]
+    assert!(!payload["actions"]["required"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let loader_path = payload["skills"][0]["contextPath"]
         .as_str()
         .expect("loader path");
     assert!(Path::new(loader_path).starts_with(&caller_paths.context_dir));
@@ -605,7 +555,7 @@ fn studio_serve_reuses_existing_studio_without_foreground_server() {
     assert_eq!(payload["embeddedBrowserUrl"], server_url);
     assert_eq!(payload["foreground"], false);
     assert_eq!(payload["reusedExisting"], true);
-    assert_eq!(payload["nextRequiredAction"]["intent"], "studio.open");
+    assert_eq!(payload["actions"]["required"][0]["intent"], "studio.open");
     server.join().expect("server thread");
 }
 
@@ -661,7 +611,7 @@ fn failed_project_prepare_does_not_stop_a_reused_studio() {
         "json",
     ]);
 
-    assert_eq!(code, 1, "{stderr}{stdout}");
+    assert_eq!(code, 5, "{stderr}{stdout}");
     assert!(owner_paths.studio_dir.join("instance.json").exists());
     assert_eq!(session.pid, std::process::id());
     server.join().expect("server thread");
@@ -735,16 +685,12 @@ fn project_read_commands_bootstrap_project() {
     ]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(bootstrap["protocolVersion"], 5);
-    assert_eq!(bootstrap["commandCatalogVersion"], 5);
+    assert_eq!(bootstrap["protocolVersion"], 6);
+    assert_eq!(bootstrap["commandCatalogVersion"], 1);
     assert_eq!(bootstrap["panel"]["context"]["panelKind"], "canvas");
     assert_eq!(bootstrap["panel"]["selection"]["supported"], true);
     assert!(bootstrap.get("capabilities").is_none());
-    assert_eq!(
-        bootstrap["nextRequiredAction"]["intent"],
-        "complete-required-steps"
-    );
-    let required_skill = &bootstrap["nextRequiredAction"]["steps"][0]["skills"][0];
+    let required_skill = &bootstrap["skills"][0];
     assert_eq!(required_skill["id"], "canvas-panel");
     assert!(Path::new(required_skill["contextPath"].as_str().unwrap()).is_file());
     assert!(Path::new(required_skill["localPath"].as_str().unwrap()).is_file());
@@ -784,10 +730,7 @@ fn project_read_commands_bootstrap_project() {
         bootstrap["focus"]["availablePanelKinds"],
         json!(["wiki", "writing", "canvas", "typesetting", "publishing"])
     );
-    assert_eq!(
-        bootstrap["nextRequiredAction"]["steps"][0]["skills"][0]["id"],
-        "writing-panel"
-    );
+    assert_eq!(bootstrap["skills"][0]["id"], "writing-panel");
 }
 
 #[test]
@@ -878,7 +821,7 @@ fn cli_rejects_legacy_unknown_and_inapplicable_project_arguments() {
         vec!["studio", "start", "--project", ".", "--format", "json"],
     ] {
         let (code, stdout, stderr) = run(&args);
-        assert_eq!(code, 1, "unexpected success for {args:?}");
+        assert_eq!(code, 2, "unexpected success for {args:?}");
         assert_eq!(stderr, "");
         let payload = serde_json::from_str::<Value>(&stdout).expect("error");
         assert_eq!(payload["code"], "invalid_argument");
@@ -895,7 +838,7 @@ fn cli_rejects_legacy_unknown_and_inapplicable_project_arguments() {
         "--format",
         "json",
     ]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
     assert_eq!(stderr, "");
     assert_eq!(
         serde_json::from_str::<Value>(&stdout).expect("missing")["code"],
@@ -935,10 +878,11 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     let envelope = serde_json::from_str::<Value>(&raw_stdout).expect("envelope");
     assert_eq!(envelope["intent"], "agent.bootstrap.read");
     let payload = &envelope["data"];
-    assert_eq!(payload["protocolVersion"], 5);
+    let actions = &envelope["actions"];
+    assert_eq!(payload["protocolVersion"], 6);
     assert!(payload.get("supportedProtocolVersions").is_none());
     assert_eq!(payload["cliVersion"], VERSION);
-    assert_eq!(payload["commandCatalogVersion"], 5);
+    assert_eq!(payload["commandCatalogVersion"], 1);
     assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
     assert!(payload.get("entrySkill").is_none());
     assert!(payload.get("entrySkillUpdate").is_none());
@@ -948,21 +892,17 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert_eq!(payload["panel"]["selection"]["supported"], true);
     assert_eq!(payload["operations"]["activeCount"], 0);
     assert_eq!(payload["operations"]["items"], json!([]));
-    assert_eq!(
-        payload["nextRequiredAction"]["intent"],
-        "complete-required-steps"
-    );
-    assert_eq!(payload["nextRequiredAction"]["required"], true);
-    assert!(payload["discovery"]["recommendedScopes"]
+    assert!(actions["required"].as_array().unwrap().len() >= 2);
+    assert!(payload["discovery"]["recommendedDomains"]
         .as_array()
         .unwrap()
         .iter()
         .any(|scope| scope == "wiki"));
-    for action in payload["nextActions"].as_array().unwrap() {
+    for action in actions["suggested"].as_array().unwrap() {
         assert_action_parses(action);
-        assert!(action["loadWhen"].as_str().is_some());
+        assert!(action["condition"].is_object());
     }
-    let required_skill = &payload["nextRequiredAction"]["steps"][0]["skills"][0];
+    let required_skill = &payload["skills"][0];
     assert_eq!(required_skill["id"], "wiki-panel");
     assert!(Path::new(required_skill["contextPath"].as_str().unwrap()).is_file());
     assert!(Path::new(required_skill["localPath"].as_str().unwrap()).is_file());
@@ -986,316 +926,46 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
         );
     }
 
-    let (code, stdout, stderr) = run(&["agent", "capability", "list", "--format", "json"]);
+    let (code, stdout, stderr) = run(&["agent", "catalog", "--format", "json"]);
     assert_eq!(code, 0, "{stderr}{stdout}");
-    let index = serde_json::from_str::<Value>(&stdout).expect("scope index");
-    assert_eq!(index["catalogVersion"], 5);
-    for action in index["nextActions"].as_array().unwrap() {
-        assert_action_parses(action);
-    }
-    assert!(index["scopes"]
-        .as_array()
-        .expect("scopes")
-        .iter()
-        .any(|scope| scope["scope"] == "wiki"));
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "capability",
-        "list",
-        "--scope",
-        "wiki",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}{stdout}");
-    let wiki_capabilities = serde_json::from_str::<Value>(&stdout).expect("wiki capabilities");
-    assert_eq!(wiki_capabilities["catalogVersion"], 5);
-    assert_eq!(wiki_capabilities["scope"], "wiki");
-    let page_search = wiki_capabilities["capabilities"]
+    let index = serde_json::from_str::<Value>(&stdout).expect("catalog index");
+    assert_eq!(index["catalogVersion"], 1);
+    assert!(index["domains"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|capability| capability["intent"] == "wiki.page.search")
-        .expect("page search summary");
-    assert!(page_search.get("args").is_none());
-    assert!(page_search["requiredPanelKind"].is_null());
-    assert_eq!(page_search["command"], "myopenpanels wiki page search");
-    assert_eq!(
-        page_search["readCommand"],
-        "myopenpanels agent capability read --intent wiki.page.search --format json"
-    );
-    assert!(page_search.get("readAction").is_none());
-    for action in wiki_capabilities["nextActions"].as_array().unwrap() {
-        assert_action_parses(action);
-    }
-    assert!(wiki_capabilities["nextActions"]
+        .any(|entry| entry["domain"] == "wiki"));
+
+    let (code, stdout, stderr) = run(&["agent", "catalog", "--domain", "wiki", "--format", "json"]);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let wiki_catalog = serde_json::from_str::<Value>(&stdout).expect("wiki catalog");
+    let page_search = wiki_catalog["commands"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|action| action["argv"]
-            .as_array()
-            .is_some_and(|argv| { argv.iter().any(|value| value == "wiki.page.search") })));
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "capability",
-        "read",
-        "--intent",
-        "wiki.page.search",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}{stdout}");
-    let page_search = serde_json::from_str::<Value>(&stdout).expect("page search descriptor");
-    assert_eq!(page_search["catalogVersion"], 5);
-    assert_eq!(page_search["capability"]["intent"], "wiki.page.search");
-    assert!(page_search["capability"]["args"].as_array().is_some());
-    assert!(page_search["capability"].get("argv").is_none());
-    assert_eq!(page_search["nextActions"], json!([]));
-    assert_eq!(
-        page_search["nextRequiredAction"]["intent"],
-        "execute-capability"
-    );
-
-    let (code, stdout, stderr) = run_raw(&[
-        "agent",
-        "capability",
-        "list",
-        "--scope",
-        "missing",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 1, "{stderr}{stdout}");
-    let error = serde_json::from_str::<Value>(&stdout).unwrap();
-    assert_eq!(error["error"]["code"], "capability_scope_not_found");
-    assert_eq!(
-        error["error"]["recovery"]["command"],
-        "myopenpanels agent capability list --format json"
-    );
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "skill",
-        "list",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout.trim(), "10 skills");
-    assert!(!stdout.contains(".myopenpanels"));
-    assert!(!stdout.contains("SKILL.md"));
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "skill",
-        "list",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let skills_payload = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(skills_payload["skills"].as_array().unwrap().len(), 10);
-    assert_eq!(skills_payload["skills"][0]["id"], "canvas-panel");
-    assert!(skills_payload["skills"][0].get("localPath").is_none());
-    assert!(skills_payload["skills"][0]
-        .get("requiresCapabilities")
-        .is_none());
-    assert_eq!(skills_payload["skills"][1]["id"], "karpathy-llm-wiki");
-    assert_eq!(skills_payload["skills"][2]["id"], "karpathy-llm-wiki-zh");
-    assert_eq!(skills_payload["skills"][3]["id"], "task-queue");
-    assert_eq!(skills_payload["skills"][4]["id"], "wiki-panel");
-    assert_eq!(skills_payload["skills"][5]["id"], "writing-default");
-    assert_eq!(skills_payload["skills"][6]["id"], "writing-long-article");
-    assert_eq!(skills_payload["skills"][7]["id"], "writing-panel");
-    assert_eq!(skills_payload["skills"][8]["id"], "writing-skill-refiner");
-    assert_eq!(
-        skills_payload["skills"][9]["id"],
-        "writing-xiaohongshu-note"
-    );
-    assert!(skills_payload["skills"][0]["taskTypes"]
+        .find(|command| command["intent"] == "wiki.page.search")
+        .unwrap();
+    assert!(page_search["args"]
         .as_array()
         .unwrap()
-        .is_empty());
-    assert!(skills_payload["skills"][4]["taskTypes"]
-        .as_array()
-        .unwrap()
-        .is_empty());
-    for skill in skills_payload["skills"].as_array().unwrap() {
-        assert!(skill.get("readAction").is_none());
-    }
-    for action in skills_payload["nextActions"].as_array().unwrap() {
-        assert_action_parses(action);
-    }
-    assert_action_parses(
-        &registry::command_action(
-            registry::CommandId::registered("operation.read"),
-            vec![
-                "--operation-id".to_owned(),
-                "operation:test".to_owned(),
-                "--format".to_owned(),
-                "json".to_owned(),
-            ],
-        )
-        .unwrap(),
-    );
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "skill",
-        "list",
-        "--panel-kind",
-        "canvas",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}{stdout}");
-    let filtered = serde_json::from_str::<Value>(&stdout).expect("filtered skills");
-    assert_eq!(filtered["skills"].as_array().unwrap().len(), 2);
-    assert_eq!(filtered["skills"][0]["id"], "canvas-panel");
-    assert_eq!(filtered["skills"][1]["id"], "task-queue");
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "skill",
-        "list",
-        "--panel-kind",
-        "canvas",
-        "--task-type",
-        "ingest_markdown_into_wiki",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}{stdout}");
-    assert!(serde_json::from_str::<Value>(&stdout).unwrap()["skills"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+        .iter()
+        .any(|arg| arg["flag"] == "--query"));
 
     let paths = resolve_myopenpanels_paths(
         Some(project_dir.to_str().unwrap()),
         Some(storage_dir.to_str().unwrap()),
         Some("ctx"),
     )
-    .expect("paths");
-    for skill in crate::agent::list_agent_skills(&paths).expect("skills") {
-        let required = skill.skill.requires_capabilities;
-        if skill.skill.id == "canvas-panel" {
-            assert!(!required
-                .iter()
-                .any(|intent| intent == "canvas.selection.export"));
-        }
-        for intent in required {
+    .unwrap();
+    for skill in crate::agent::list_agent_skills(&paths).unwrap() {
+        for intent in skill.skill.requires_commands {
             assert!(
-                crate::cli::registry::capability_payload(&intent).is_some(),
-                "skill {} requires missing capability {intent}",
+                crate::cli::registry::catalog_domain_for_intent(&intent).is_some(),
+                "skill {} requires uncataloged command {intent}",
                 skill.skill.id
             );
         }
     }
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "skill",
-        "read",
-        "--skill-id",
-        "wiki-panel",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    assert!(stdout.contains("# Skill: wiki-panel"));
-    assert!(stdout.contains("Read `SKILL.md` directly"));
-    assert!(stdout.contains("myopenpanels panel selection read"));
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "skill",
-        "read",
-        "--skill-id",
-        "wiki-panel",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let skill_payload = serde_json::from_str::<Value>(&stdout).expect("skill payload");
-    assert_eq!(
-        skill_payload["nextRequiredAction"]["intent"],
-        "read-skill-file"
-    );
-    assert_eq!(skill_payload["nextRequiredAction"]["required"], true);
-    assert_eq!(
-        skill_payload["nextRequiredAction"]["localPath"],
-        skill_payload["localPath"]
-    );
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "skill",
-        "read",
-        "--skill-id",
-        "canvas-panel",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    assert!(stdout.contains("# Skill: canvas-panel"));
-    assert!(stdout.contains("myopenpanels canvas generation begin"));
-
-    let (code, stdout, stderr) = run(&[
-        "panel",
-        "context",
-        "read",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    assert_eq!(
-        serde_json::from_str::<Value>(&stdout).expect("json")["focus"]["panelKind"],
-        "wiki"
-    );
 }
 
 #[test]
@@ -1325,22 +995,14 @@ fn agent_bootstrap_delivers_entry_skill_update_until_the_context_acknowledges_it
         pending["entrySkillUpdate"]["requiredVersion"],
         crate::agent_control::ENTRY_SKILL_VERSION
     );
-    assert_eq!(
-        pending["nextRequiredAction"]["intent"],
-        "complete-required-steps"
-    );
-    assert_eq!(
-        pending["nextRequiredAction"]["reason"],
-        "update-entry-skill"
-    );
-    let required_steps = pending["nextRequiredAction"]["steps"].as_array().unwrap();
+    let required_steps = pending["actions"]["required"].as_array().unwrap();
     assert_eq!(required_steps[0]["executor"], "agent-host");
     assert_eq!(
         required_steps[0]["intent"],
         "agent-host.skill.update-required"
     );
     assert_action_parses(&required_steps[1]);
-    assert_eq!(pending["nextActions"], json!([]));
+    assert_eq!(pending["actions"]["suggested"], json!([]));
 
     let event_id = pending["entrySkillUpdate"]["eventId"]
         .as_str()
@@ -1402,14 +1064,7 @@ fn agent_bootstrap_delivers_entry_skill_update_until_the_context_acknowledges_it
     assert_eq!(code, 0, "{stderr}{stdout}");
     let normal = serde_json::from_str::<Value>(&stdout).expect("normal bootstrap");
     assert!(normal.get("entrySkillUpdate").is_none());
-    assert_eq!(
-        normal["nextRequiredAction"]["intent"],
-        "complete-required-steps"
-    );
-    assert_eq!(
-        normal["nextRequiredAction"]["steps"][0]["skills"][0]["id"],
-        "wiki-panel"
-    );
+    assert_eq!(normal["skills"][0]["id"], "wiki-panel");
 }
 
 #[test]
@@ -1449,9 +1104,7 @@ fn agent_bootstrap_prepares_panel_and_wiki_task_authoring_skills() {
     );
     let envelope = serde_json::from_str::<Value>(&stdout).expect("bootstrap");
     let payload = &envelope["data"];
-    let required_skills = payload["nextRequiredAction"]["steps"][0]["skills"]
-        .as_array()
-        .unwrap();
+    let required_skills = payload["skills"].as_array().unwrap();
     assert_eq!(required_skills.len(), 2);
     assert_eq!(required_skills[0]["id"], "wiki-panel");
     assert_eq!(required_skills[1]["id"], "karpathy-llm-wiki");
@@ -1484,9 +1137,12 @@ fn agent_bootstrap_rejects_protocol_selection_without_target_side_effects() {
         "--format",
         "json",
     ]);
-    assert_eq!(code, 1, "{stderr}{stdout}");
-    let error = serde_json::from_str::<Value>(&stdout).unwrap();
-    assert_eq!(error["error"]["code"], "invalid_argument");
+    assert_eq!(code, 2, "{stderr}{stdout}");
+    assert_eq!(stdout, "");
+    let error = serde_json::from_str::<Value>(&stderr).unwrap();
+    assert_eq!(error["error"]["type"], "validation");
+    assert_eq!(error["error"]["subtype"], "invalid_argument");
+    assert_eq!(error["error"]["subtype"], "invalid_argument");
     assert!(error["error"]["message"]
         .as_str()
         .unwrap()
@@ -1543,7 +1199,7 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     let (code, stdout, stderr) = run(&[
         "canvas",
         "image",
-        "insert",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -1570,8 +1226,8 @@ fn canvas_write_commands_insert_and_replace_shapes() {
 
     let (code, stdout, stderr) = run(&[
         "canvas",
-        "generation",
-        "begin",
+        "image",
+        "generate",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -1599,7 +1255,7 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     let (code, stdout, stderr) = run(&[
         "canvas",
         "image",
-        "insert",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -1620,8 +1276,9 @@ fn canvas_write_commands_insert_and_replace_shapes() {
 
     let (code, stdout, stderr) = run(&[
         "panel",
-        "state",
         "read",
+        "--detail",
+        "full",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -1651,7 +1308,7 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     let (code, stdout, stderr) = run(&[
         "canvas",
         "image",
-        "insert",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -1679,8 +1336,9 @@ fn canvas_write_commands_insert_and_replace_shapes() {
 
     let (code, stdout, stderr) = run(&[
         "panel",
-        "state",
         "read",
+        "--detail",
+        "full",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -1709,8 +1367,8 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
 
     let (code, stdout, stderr) = run(&[
         "wiki",
-        "raw-document",
-        "create-markdown",
+        "raw",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -1723,7 +1381,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "research-note.md",
         "--content",
         "# Research note\n\nA useful source.",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--format",
         "json",
@@ -1769,12 +1427,9 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(code, 0, "{stderr}");
     let context = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(context["tasks"]["next"]["taskId"], task_id);
-    assert!(context["tasks"]["next"]["readCommand"]
-        .as_str()
-        .unwrap_or("")
-        .contains(&format!("task read --task-id {task_id}")));
+    assert!(context["tasks"]["next"].get("readCommand").is_none());
     assert!(context["tasks"]["next"].get("readAction").is_none());
-    let task_action = context["nextActions"]
+    let task_action = context["actions"]["suggested"]
         .as_array()
         .unwrap()
         .iter()
@@ -1803,7 +1458,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let context = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(context["tasks"]["next"]["taskId"], task_id);
     assert!(context.get("state").is_none());
-    let task_queue_action = context["nextActions"]
+    let task_queue_action = context["actions"]["suggested"]
         .as_array()
         .unwrap()
         .iter()
@@ -1852,9 +1507,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert!(panel_skill["markdown"]
         .as_str()
         .unwrap_or("")
-        .contains(&format!(
-            "agent skill read --skill-id karpathy-llm-wiki --task-id {task_id}"
-        )));
+        .contains("`agent.skill.read`"));
 
     let (code, stdout, stderr) = run(&[
         "task",
@@ -1893,7 +1546,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "wiki:default"
     );
     assert_eq!(project_tasks["tasks"][0]["attempt"], 0);
-    assert_eq!(project_tasks["tasks"][0]["maxAttempts"], 3);
+    assert_eq!(project_tasks["tasks"][0]["maxAttempts"], 8);
     assert!(project_tasks["tasks"][0]["lease"]["owner"].is_null());
     assert!(project_tasks["tasks"][0]["retryAfter"].is_null());
     let (code, stdout, stderr) = run(&[
@@ -2224,7 +1877,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.contains(&format!("- task id: {task_id}")));
-    assert!(stdout.contains("myopenpanels task claim"));
+    assert!(stdout.contains("`task.claim`"));
     assert!(stdout.contains("Read `SKILL.md` directly from the local path above"));
     assert!(stdout.contains("# Skill: karpathy-llm-wiki"));
 
@@ -2266,14 +1919,14 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let (code, stdout, stderr) = run(&[
         "wiki",
         "page",
-        "write",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
         "--context-id",
         "ctx",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--path",
         "topics/topic.md",
@@ -2341,19 +1994,19 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     fs::write(&binary_path, [1_u8, 2, 3]).expect("binary");
     let (code, stdout, stderr) = run(&[
         "wiki",
-        "raw-document",
-        "add",
+        "raw",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
         "--context-id",
         "ctx",
-        "--input-file",
+        "--source-file",
         binary_path.to_str().unwrap(),
         "--mime-type",
         "application/octet-stream",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--format",
         "json",
@@ -2416,9 +2069,8 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     fs::write(&converted_file, "# Archive\n\nConverted.").expect("converted");
     let (code, stdout, stderr) = run(&[
         "wiki",
-        "raw-document",
-        "markdown",
-        "write",
+        "raw",
+        "update",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -2460,8 +2112,9 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
 
     let (code, stdout, stderr) = run(&[
         "panel",
-        "state",
         "read",
+        "--detail",
+        "full",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -2494,8 +2147,8 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
 
     let (code, stdout, stderr) = run(&[
         "wiki",
-        "raw-document",
-        "create-markdown",
+        "raw",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -2506,7 +2159,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         "Product brief",
         "--content",
         "# Product brief\n\nMyOpenPanels keeps project knowledge local.",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--format",
         "json",
@@ -2523,14 +2176,14 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     let (code, _stdout, stderr) = run(&[
         "wiki",
         "page",
-        "write",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
         "--context-id",
         "ctx",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--path",
         "concepts/myopenpanels.md",
@@ -2596,8 +2249,8 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
             .is_some_and(|path| Path::new(path).is_file())
     );
     assert!(selection["value"]["wiki"].get("loadAction").is_none());
-    assert_action_parses(&selection["nextActions"][0]);
-    assert!(selection["value"].get("nextActions").is_none());
+    assert_action_parses(&selection["actions"]["suggested"][0]);
+    assert!(selection["value"].get("actions").is_none());
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -2640,7 +2293,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     assert!(skill["markdown"]
         .as_str()
         .unwrap_or("")
-        .contains("wiki page search --wiki-space-id wiki:default"));
+        .contains("`wiki.page.search`"));
 
     let (code, stdout, stderr) = run(&[
         "wiki",
@@ -2652,7 +2305,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         storage_dir.to_str().unwrap(),
         "--context-id",
         "ctx",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--query",
         "local indexed Wiki",
@@ -2768,6 +2421,83 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
 }
 
 #[test]
+fn wiki_document_file_names_can_be_renamed_without_changing_extensions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+
+    let raw = wiki::add_raw_document(
+        &paths,
+        "draft.md",
+        None,
+        Some("text/markdown"),
+        "user",
+        Some("wiki:default"),
+        b"# Draft",
+    )
+    .expect("raw document");
+    let raw_id = raw["document"]["id"].as_str().expect("raw id");
+    let renamed_raw =
+        wiki::rename_raw_document(&paths, raw_id, "final.md").expect("rename raw document");
+    assert_eq!(renamed_raw["document"]["originalFileName"], "final.md");
+    assert_eq!(renamed_raw["document"]["title"], "final");
+    assert!(wiki::raw_document_original(&paths, raw_id)
+        .expect("raw original")
+        .file_path
+        .ends_with("final.md"));
+
+    let generated = wiki::create_generated_document(
+        &paths,
+        "generated.md",
+        None,
+        Some("text/markdown"),
+        None,
+        None,
+        b"# Generated",
+    )
+    .expect("generated document");
+    let generated_id = generated["document"]["id"].as_str().expect("generated id");
+    let renamed_generated =
+        wiki::rename_generated_document_file(&paths, generated_id, "article.md")
+            .expect("rename generated document");
+    assert_eq!(
+        renamed_generated["document"]["originalFileName"],
+        "article.md"
+    );
+    assert_eq!(
+        wiki::read_generated_document(&paths, generated_id).expect("generated content")["content"],
+        "# Generated"
+    );
+
+    wiki::write_page(
+        &paths,
+        "wiki:default",
+        "notes/draft.md",
+        "# Page",
+        None,
+        None,
+    )
+    .expect("write page");
+    let renamed_page =
+        wiki::rename_page(&paths, "wiki:default", "notes/draft.md", "notes/final.md")
+            .expect("rename page");
+    assert_eq!(renamed_page["pagePath"], "notes/final.md");
+    assert_eq!(
+        wiki::read_page(&paths, "wiki:default", "notes/final.md").expect("renamed page")
+            ["markdown"],
+        "# Page"
+    );
+}
+
+#[test]
 fn wiki_mdx_upload_skips_conversion_and_queues_ingest() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
@@ -2785,19 +2515,19 @@ fn wiki_mdx_upload_skips_conversion_and_queues_ingest() {
 
     let (code, stdout, stderr) = run(&[
         "wiki",
-        "raw-document",
-        "add",
+        "raw",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
         "--context-id",
         "ctx",
-        "--input-file",
+        "--source-file",
         mdx_path.to_str().unwrap(),
         "--mime-type",
         "application/octet-stream",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--format",
         "json",
@@ -2850,8 +2580,8 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
 
     let (code, stdout, stderr) = run(&[
         "wiki",
-        "raw-document",
-        "create-markdown",
+        "raw",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -2864,7 +2594,7 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
         "bridge-source.md",
         "--content",
         "# Bridge Source\n\nContent imported by the built-in worker.",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--format",
         "json",
@@ -2889,7 +2619,7 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
         "--format",
         "json",
     ]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
     let bridge = serde_json::from_str::<Value>(&stdout).expect("json");
     assert!(bridge["error"]
         .as_str()
@@ -2929,7 +2659,7 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
     assert_eq!(code, 0, "{stderr}");
     let status = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(status["status"], "noTarget");
-    assert_eq!(status["dispatcher"]["unhandledCount"], 1);
+    assert_eq!(status["queue"]["unhandledCount"], 1);
 }
 
 #[test]
@@ -2942,8 +2672,8 @@ fn generic_targets_claim_and_complete_project_tasks() {
 
     let (code, stdout, stderr) = run(&[
         "wiki",
-        "raw-document",
-        "create-markdown",
+        "raw",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -2954,7 +2684,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
         "Generic Task",
         "--content",
         "# Generic Task\n\nQueue protocol coverage.",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--format",
         "json",
@@ -3061,7 +2791,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
         "--format",
         "json",
     ]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 3);
 
     let result_file = temp.path().join("result.json");
     fs::write(&result_file, r#"{"executor":"test-poller"}"#).expect("result file");
@@ -3125,13 +2855,13 @@ fn claim_next_respects_target_priority() {
     ];
     let (code, _, stderr) = run(&[
         "wiki",
-        "raw-document",
-        "create-markdown",
+        "raw",
+        "create",
         "--title",
         "Priority",
         "--content",
         "# Priority",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         common[0],
         common[1],
@@ -3214,8 +2944,8 @@ fn command_bridge_owns_task_lifecycle_by_default() {
     create_cli_project(&project_dir, &storage_dir);
     let (code, _, stderr) = run(&[
         "wiki",
-        "raw-document",
-        "create-markdown",
+        "raw",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -3226,7 +2956,7 @@ fn command_bridge_owns_task_lifecycle_by_default() {
         "Bridge Lifecycle",
         "--content",
         "# Bridge Lifecycle",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--format",
         "json",
@@ -3264,68 +2994,13 @@ fn command_bridge_owns_task_lifecycle_by_default() {
 }
 
 #[test]
-fn webhook_delivery_is_signed_and_does_not_claim_the_task() {
+fn target_registration_rejects_removed_webhook_transport() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
     fs::create_dir_all(&project_dir).expect("project dir");
     create_cli_project(&project_dir, &storage_dir);
-    let (code, _, stderr) = run(&[
-        "wiki",
-        "raw-document",
-        "create-markdown",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--title",
-        "Webhook Task",
-        "--content",
-        "# Webhook Task",
-        "--wiki-space-id",
-        "wiki:default",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-
-    let listener = TcpListener::bind("127.0.0.1:0").expect("webhook listener");
-    let port = listener.local_addr().expect("webhook addr").port();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("webhook accept");
-        let mut request = Vec::new();
-        loop {
-            let mut buffer = [0_u8; 2048];
-            let read = stream.read(&mut buffer).expect("webhook request");
-            request.extend_from_slice(&buffer[..read]);
-            let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
-                continue;
-            };
-            let header_text = String::from_utf8_lossy(&request[..header_end]);
-            let content_length = header_text
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length:")
-                        .and_then(|value| value.trim().parse::<usize>().ok())
-                })
-                .unwrap_or(0);
-            if request.len() >= header_end + 4 + content_length {
-                break;
-            }
-        }
-        sender
-            .send(String::from_utf8_lossy(&request).to_string())
-            .expect("captured request");
-        stream
-            .write_all(b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n")
-            .expect("webhook response");
-    });
-    let endpoint = format!("http://127.0.0.1:{port}/wake");
-    let (code, _, stderr) = run(&[
+    let (code, _, _stderr) = run(&[
         "agent",
         "target",
         "register",
@@ -3339,47 +3014,63 @@ fn webhook_delivery_is_signed_and_does_not_claim_the_task() {
         "webhook-test",
         "--transport",
         "webhook",
-        "--endpoint",
-        &endpoint,
         "--capability",
         "wiki.ingestMarkdown",
         "--format",
         "json",
     ]);
-    assert_eq!(code, 0, "{stderr}");
+    assert_ne!(code, 0);
+
     let paths = resolve_myopenpanels_paths(
         Some(project_dir.to_str().unwrap()),
         Some(storage_dir.to_str().unwrap()),
         Some("ctx"),
     )
     .expect("paths");
-    let dispatched =
-        crate::tasks::dispatch_webhooks_once(&paths, "http://127.0.0.1:9999").expect("dispatch");
-    assert_eq!(dispatched["delivered"], 1);
-    let request = receiver.recv().expect("webhook request capture");
-    assert!(request
-        .to_ascii_lowercase()
-        .contains("x-myopenpanels-signature: sha256="));
-    assert!(request.contains("wiki.ingestMarkdown"));
-    server.join().expect("webhook server");
+    let error = crate::tasks::register_target(
+        &paths,
+        crate::tasks::TargetRegistration {
+            name: "legacy-webhook",
+            host: None,
+            transport: "webhook",
+            capabilities: vec!["*".to_owned()],
+            priority: 0,
+            protocol_version: 2,
+            max_concurrency: 1,
+            model_gateway_connection_id: None,
+        },
+    )
+    .expect_err("webhook transport must be rejected");
+    assert_eq!(error.code(), Some("invalid_target"));
 
-    let (code, stdout, stderr) = run(&[
-        "task",
-        "list",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--pending",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let tasks = serde_json::from_str::<Value>(&stdout).expect("tasks json");
-    assert_eq!(tasks["tasks"][0]["attempt"], 0);
-    assert_eq!(tasks["tasks"][0]["lastDelivery"]["status"], "sent");
+    let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let now = crate::control::now_iso();
+    Storage::open(&paths)
+        .expect("storage")
+        .connection()
+        .execute(
+            r#"INSERT INTO agent_targets (
+              id, project_id, name, host, transport, endpoint, capabilities_json,
+              priority, status, token_hash, last_error, last_heartbeat_at,
+              created_at, updated_at, protocol_version, max_concurrency
+            ) VALUES (
+              'target:legacy-webhook', ?, 'Legacy Webhook', 'legacy', 'webhook',
+              'http://localhost/wake', '["*"]', 100, 'online', 'hash', NULL,
+              ?, ?, ?, 3, 4
+            )"#,
+            params![bootstrap.project.id, now, now, now],
+        )
+        .expect("seed historical webhook target");
+    assert_eq!(
+        crate::tasks::list_targets(&paths).expect("targets")["targets"]
+            .as_array()
+            .expect("target array")
+            .len(),
+        0
+    );
+    let claim = crate::tasks::claim_next(&paths, "target:legacy-webhook", None, None)
+        .expect_err("historical webhook target cannot claim");
+    assert_eq!(claim.code(), Some("target_not_found"));
 }
 
 #[test]
@@ -3391,8 +3082,8 @@ fn concurrent_claim_next_assigns_a_task_once() {
     create_cli_project(&project_dir, &storage_dir);
     let (code, _, stderr) = run(&[
         "wiki",
-        "raw-document",
-        "create-markdown",
+        "raw",
+        "create",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -3403,7 +3094,7 @@ fn concurrent_claim_next_assigns_a_task_once() {
         "Concurrent Claim",
         "--content",
         "# Concurrent Claim",
-        "--wiki-space-id",
+        "--space-id",
         "wiki:default",
         "--format",
         "json",
@@ -3421,9 +3112,11 @@ fn concurrent_claim_next_assigns_a_task_once() {
             name: "concurrent-poller",
             host: Some("test"),
             transport: "poll",
-            endpoint: None,
             capabilities: vec!["wiki.ingestMarkdown".to_owned()],
             priority: 0,
+            protocol_version: 2,
+            max_concurrency: 1,
+            model_gateway_connection_id: None,
         },
     )
     .expect("target");
@@ -3696,7 +3389,7 @@ fn version_prints_json() {
     assert_eq!(
         stdout,
         format!(
-            "{{\"ok\":true,\"schemaVersion\":1,\"intent\":\"cli.version.read\",\"data\":{{\"version\":\"{VERSION}\"}},\"meta\":{{\"cliVersion\":\"{VERSION}\"}}}}\n"
+            "{{\"ok\":true,\"schemaVersion\":3,\"intent\":\"cli.version.read\",\"data\":{{\"version\":\"{VERSION}\"}},\"actions\":{{\"required\":[],\"suggested\":[]}},\"meta\":{{\"cliVersion\":\"{VERSION}\"}}}}\n"
         )
     );
     assert_eq!(stderr, "");
@@ -3764,19 +3457,50 @@ fn legacy_and_implicit_aliases_are_rejected() {
         &["wiki", "spaces"],
         &["wiki", "pages"],
         &["tasks"],
+        &["project", "current"],
+        &["panel", "current"],
+        &["panel", "context", "read"],
+        &["panel", "state", "read"],
+        &["canvas", "generation", "begin"],
+        &["canvas", "image", "insert"],
+        &["wiki", "raw-document", "list"],
+        &["wiki", "generated-document", "list"],
+        &["wiki", "generation", "begin"],
+        &["wiki", "page", "write"],
+        &["writing", "generation", "begin"],
+        &["task", "event", "list"],
+        &["task", "attempt", "list"],
+        &["task", "delivery", "list"],
+        &["agent", "capability", "list"],
     ];
 
     for command in commands {
         let mut args = command.to_vec();
         args.push("--format=json");
         let (code, stdout, stderr) = run_raw(&args);
-        assert_eq!(code, 1, "command unexpectedly succeeded: {command:?}");
-        assert_eq!(stderr, "", "unexpected stderr for {command:?}");
+        assert_eq!(code, 2, "command unexpectedly succeeded: {command:?}");
+        assert_eq!(stdout, "", "unexpected stdout for {command:?}");
         assert!(
-            serde_json::from_str::<Value>(&stdout).expect("json")["ok"] == false,
-            "missing JSON error for {command:?}: {stdout}"
+            serde_json::from_str::<Value>(&stderr).expect("json")["ok"] == false,
+            "missing JSON error for {command:?}: {stderr}"
         );
     }
+
+    let (code, stdout, stderr) = run_raw(&[
+        "panel",
+        "activate",
+        "--panel-kind",
+        "wiki",
+        "--expect-focus-revision",
+        "1",
+        "--format=json",
+    ]);
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&stderr).unwrap()["error"]["subtype"],
+        "invalid_argument"
+    );
 }
 
 #[test]
@@ -3793,7 +3517,7 @@ fn update_help_prints_manifest_controls() {
 fn unknown_command_prints_text_error() {
     let (code, stdout, stderr) = run_raw(&["nope"]);
 
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
     assert_eq!(stdout, "");
     assert!(stderr.contains("unrecognized subcommand 'nope'"));
 }
@@ -3802,20 +3526,48 @@ fn unknown_command_prints_text_error() {
 fn unknown_command_prints_json_error() {
     let (code, stdout, stderr) = run_raw(&["nope", "--format=json"]);
 
-    assert_eq!(code, 1);
-    let payload = serde_json::from_str::<Value>(&stdout).expect("json error");
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    let payload = serde_json::from_str::<Value>(&stderr).expect("json error");
     assert_eq!(payload["ok"], false);
+    assert_eq!(payload["schemaVersion"], 3);
     assert_eq!(payload["intent"], "cli.parse");
-    assert_eq!(payload["error"]["code"], "invalid_argument");
+    assert_eq!(payload["error"]["type"], "validation");
+    assert_eq!(payload["error"]["subtype"], "invalid_argument");
+    assert_eq!(payload["error"]["subtype"], "invalid_argument");
     assert!(payload["error"]["message"]
         .as_str()
         .unwrap()
         .contains("unrecognized subcommand"));
     assert_eq!(payload["error"]["retryable"], false);
-    assert!(payload["error"]["recovery"]["instruction"]
+    assert!(payload["error"]["hint"].as_str().is_some());
+    assert_eq!(
+        payload["actions"]["suggested"][0]["argv"],
+        json!(["--help"])
+    );
+    assert!(!payload["error"]["message"]
         .as_str()
-        .is_some());
-    assert_eq!(stderr, "");
+        .unwrap()
+        .contains("Usage:"));
+}
+
+#[test]
+fn missing_flag_json_error_identifies_the_parameter() {
+    let (code, stdout, stderr) = run_raw(&[
+        "wiki",
+        "page",
+        "search",
+        "--space-id",
+        "space-1",
+        "--format=json",
+    ]);
+
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    let payload = serde_json::from_str::<Value>(&stderr).expect("json error");
+    assert_eq!(payload["error"]["type"], "validation");
+    assert_eq!(payload["error"]["subtype"], "invalid_argument");
+    assert_eq!(payload["error"]["param"], "--query");
 }
 
 #[test]
@@ -3841,7 +3593,7 @@ fn bootstrap_writer_rejects_an_oversized_success_envelope() {
 }
 
 #[test]
-fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing() {
+fn panel_targeted_commands_do_not_change_focus_and_selection_remains_focus_bound() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -3853,28 +3605,71 @@ fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing()
         Some("ctx"),
     )
     .expect("paths");
-    let initial_revision = read_focus_revision(&paths)
-        .expect("focus revision")
-        .to_string();
+    let initial_revision = read_focus_revision(&paths).expect("focus revision");
+    let initial_focus = crate::control::read_active_panel_value(&paths)
+        .expect("active panel")
+        .expect("focus");
+    assert_eq!(initial_focus["kind"], "wiki");
 
     let (code, stdout, stderr) = run_raw(&[
         "canvas",
-        "generation",
-        "begin",
+        "image",
+        "generate",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
         "--context-id",
         "ctx",
-        "--expect-focus-revision",
-        &initial_revision,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    assert_eq!(read_focus_revision(&paths).unwrap(), initial_revision);
+    assert_eq!(
+        crate::control::read_active_panel_value(&paths)
+            .unwrap()
+            .unwrap()["kind"],
+        "wiki"
+    );
+
+    let output_file = temp.path().join("selection.png");
+    let (code, stdout, stderr) = run_raw(&[
+        "canvas",
+        "selection",
+        "export",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--output-file",
+        output_file.to_str().unwrap(),
         "--format",
         "json",
     ]);
     assert_eq!(code, 1, "{stderr}\n{stdout}");
-    let mismatch = serde_json::from_str::<Value>(&stdout).expect("mismatch error");
-    assert_eq!(mismatch["error"]["code"], "panel_kind_mismatch");
+    let error = serde_json::from_str::<Value>(&stderr).expect("selection error");
+    assert_eq!(error["error"]["subtype"], "panel_kind_mismatch");
+
+    let (code, stdout, stderr) = run_raw(&[
+        "canvas",
+        "image",
+        "generate",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--use-selection",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 1, "{stderr}\n{stdout}");
+    let error = serde_json::from_str::<Value>(&stderr).expect("selection error");
+    assert_eq!(error["error"]["subtype"], "panel_kind_mismatch");
 
     let (code, stdout, stderr) = run_raw(&[
         "panel",
@@ -3891,25 +3686,50 @@ fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing()
         "json",
     ]);
     assert_eq!(code, 0, "{stderr}\n{stdout}");
+    let canvas_revision = read_focus_revision(&paths).expect("canvas focus revision");
 
     let (code, stdout, stderr) = run_raw(&[
-        "canvas",
-        "generation",
-        "begin",
+        "wiki",
+        "space",
+        "list",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
         storage_dir.to_str().unwrap(),
         "--context-id",
         "ctx",
-        "--expect-focus-revision",
-        &initial_revision,
         "--format",
         "json",
     ]);
-    assert_eq!(code, 1, "{stderr}\n{stdout}");
-    let stale = serde_json::from_str::<Value>(&stdout).expect("stale error");
-    assert_eq!(stale["error"]["code"], "focus_changed");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+
+    let (code, stdout, stderr) = run_raw(&[
+        "wiki",
+        "raw",
+        "create",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--title",
+        "Background write",
+        "--content",
+        "# Background write",
+        "--space-id",
+        "wiki:default",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    assert_eq!(read_focus_revision(&paths).unwrap(), canvas_revision);
+    assert_eq!(
+        crate::control::read_active_panel_value(&paths)
+            .unwrap()
+            .unwrap()["kind"],
+        "canvas"
+    );
 
     let connection = Connection::open(storage_dir.join("main.sqlite3")).expect("database");
     let operation_count: i64 = connection
@@ -3917,15 +3737,15 @@ fn focus_bound_mutations_reject_wrong_panel_and_stale_revision_without_writing()
             row.get(0)
         })
         .expect("operation count");
-    assert_eq!(operation_count, 0);
+    assert_eq!(operation_count, 1);
 }
 
 #[test]
 fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     let skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
     let install = include_str!("../../../../skills/myopenpanels/references/install.md");
-    assert!(skill.contains("version: \"4.3\""));
-    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "4.3");
+    assert!(skill.contains("version: \"5.0\""));
+    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "5.0");
     assert!(skill.lines().count() <= 60);
     assert!(skill.contains("references/install.md"));
     assert!(!skill.contains("curl -fsSL"));
@@ -3938,6 +3758,8 @@ fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     assert!(!install.contains("checkout-local"));
     assert!(!skill.contains("minCliVersion"));
     assert!(!skill.contains("protocol-version"));
+    assert!(skill.contains("MYOPENPANELS_TASK_BROKER_URL"));
+    assert!(skill.contains("do not\nstart Studio or Bootstrap"));
     assert!(skill
         .contains("myopenpanels studio start --local-only --project-dir \"$PWD\" --format json"));
     assert!(skill.contains("myopenpanels agent bootstrap --format json"));
@@ -3950,9 +3772,8 @@ fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     assert!(!skill.contains("myopenpanels canvas "));
     assert!(!skill.contains("myopenpanels task "));
     assert!(!skill.contains("myopenpanels operation "));
-    assert!(skill.contains("data.nextRequiredAction.url"));
-    assert!(skill.contains("data.nextRequiredAction.fallback.argv"));
-    assert!(skill.contains("data.nextActions"));
+    assert!(skill.contains("`actions.required` in order"));
+    assert!(skill.contains("`actions.suggested`"));
     assert!(!skill.contains("recommendedScopes"));
     assert!(!skill.contains("capabilityListActions"));
     assert!(!skill.contains("readAction"));
@@ -3963,22 +3784,20 @@ fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     assert!(skill.contains("run a fresh `myopenpanels agent bootstrap"));
     assert!(skill.contains("work clearly unrelated to MyOpenPanels"));
     assert!(skill.contains("Never reuse an earlier Bootstrap result"));
-    assert!(skill.contains("data.nextRequiredAction.steps"));
-    assert!(skill.contains("`contextPath` first and `localPath` second"));
-    assert!(skill.contains("`executor: \"agent-host\"`"));
-    assert!(skill.contains("If the required steps update the"));
-    assert!(skill.contains("data.opened: true"));
+    assert!(skill.contains("`agent catalog --domain <domain>` actions"));
+    assert!(skill.contains("typed file, URL, Skill, or host"));
+    assert!(skill.contains("If a required action updates the"));
     assert!(skill.contains("--local-only"));
     assert!(!skill.contains("--no-open"));
 }
 
 #[test]
-fn task_and_operation_discovery_use_response_level_next_actions() {
-    let task_list = with_task_next_actions(json!({ "tasks": [{ "id": "task:1" }] }), true);
-    assert_eq!(task_list["nextActions"][0]["intent"], "task.read");
-    assert_action_parses(&task_list["nextActions"][0]);
+fn task_and_operation_discovery_use_response_level_actions() {
+    let task_list = with_task_actions(json!({ "tasks": [{ "id": "task:1" }] }), true);
+    assert_eq!(task_list["actions"]["suggested"][0]["intent"], "task.read");
+    assert_action_parses(&task_list["actions"]["suggested"][0]);
 
-    let task = with_task_next_actions(
+    let task = with_task_actions(
         json!({
             "task": {
                 "id": "task:1",
@@ -3988,17 +3807,20 @@ fn task_and_operation_discovery_use_response_level_next_actions() {
         }),
         false,
     );
-    for action in task["nextActions"].as_array().unwrap() {
+    for action in task["actions"]["suggested"].as_array().unwrap() {
         assert_action_parses(action);
-        assert_eq!(action["intent"], "agent.capability.read");
+        assert_eq!(action["intent"], "agent.catalog");
     }
 
     let operation_list =
-        with_operation_next_actions(json!({ "operations": [{ "id": "operation:1" }] }), true);
-    assert_eq!(operation_list["nextActions"][0]["intent"], "operation.read");
-    assert_action_parses(&operation_list["nextActions"][0]);
+        with_operation_actions(json!({ "operations": [{ "id": "operation:1" }] }), true);
+    assert_eq!(
+        operation_list["actions"]["suggested"][0]["intent"],
+        "operation.read"
+    );
+    assert_action_parses(&operation_list["actions"]["suggested"][0]);
 
-    let operation = with_operation_next_actions(
+    let operation = with_operation_actions(
         json!({
             "id": "operation:1",
             "status": "active",
@@ -4006,21 +3828,21 @@ fn task_and_operation_discovery_use_response_level_next_actions() {
         }),
         false,
     );
-    for action in operation["nextActions"].as_array().unwrap() {
+    for action in operation["actions"]["suggested"].as_array().unwrap() {
         assert_action_parses(action);
     }
-    assert!(operation["nextActions"]
+    assert!(operation["actions"]["suggested"]
         .as_array()
         .unwrap()
         .iter()
         .any(|action| action["intent"] == "agent.skill.read"));
-    assert!(operation["nextActions"]
+    assert!(operation["actions"]["suggested"]
         .as_array()
         .unwrap()
         .iter()
         .any(|action| action["argv"]
             .as_array()
-            .is_some_and(|argv| { argv.iter().any(|value| value == "operation.complete") })));
+            .is_some_and(|argv| { argv.iter().any(|value| value == "operation") })));
 }
 
 fn seed_selection_database(
@@ -4074,4 +3896,544 @@ fn tiny_png() -> Vec<u8> {
     base64::engine::general_purpose::STANDARD
             .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
             .expect("tiny png")
+}
+
+#[test]
+fn non_text_upload_creates_a_workflow_dag_and_delete_fences_the_attempt() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+
+    let created = wiki::add_raw_document(
+        &paths,
+        "source.pdf",
+        Some("Source"),
+        Some("application/pdf"),
+        "user",
+        Some("wiki:default"),
+        b"pdf fixture",
+    )
+    .expect("upload");
+    let document_id = created["document"]["id"].as_str().unwrap();
+    let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let stored_tasks = Storage::open(&paths)
+        .expect("storage")
+        .list_tasks(&bootstrap.project.id)
+        .expect("tasks");
+    let conversion = stored_tasks
+        .iter()
+        .find(|task| task["type"] == "convert_document_to_markdown")
+        .cloned()
+        .expect("conversion");
+    let ingest = stored_tasks
+        .iter()
+        .find(|task| task["type"] == "ingest_markdown_into_wiki")
+        .cloned()
+        .expect("ingest");
+    assert_eq!(conversion["status"], "queued");
+    assert_eq!(ingest["status"], "waiting");
+    assert_eq!(conversion["workflowId"], ingest["workflowId"]);
+    let inspected_ingest =
+        tasks::inspect_task(&paths, ingest["id"].as_str().unwrap()).expect("inspect ingest");
+    assert_eq!(
+        inspected_ingest["task"]["dependencies"][0]["prerequisiteTaskId"],
+        conversion["id"]
+    );
+
+    let registered = tasks::register_target(
+        &paths,
+        tasks::TargetRegistration {
+            name: "converter",
+            host: Some("test"),
+            transport: "poll",
+            capabilities: vec!["wiki.convertDocument".to_owned()],
+            priority: 10,
+            protocol_version: 2,
+            max_concurrency: 1,
+            model_gateway_connection_id: None,
+        },
+    )
+    .expect("target");
+    let claimed = tasks::claim_task(
+        &paths,
+        conversion["id"].as_str().unwrap(),
+        registered["target"]["id"].as_str().unwrap(),
+    )
+    .expect("claim");
+    let lease_token = claimed["leaseToken"].as_str().unwrap();
+    assert_eq!(claimed["executionProtocolVersion"], 2);
+    assert!(claimed["attemptId"].is_string());
+
+    wiki::delete_raw_document(&paths, document_id, Some("wiki:default")).expect("delete");
+    for task_id in [
+        conversion["id"].as_str().unwrap(),
+        ingest["id"].as_str().unwrap(),
+    ] {
+        let task = tasks::inspect_task(&paths, task_id).expect("task");
+        assert_eq!(task["task"]["status"], "cancelled");
+        assert_eq!(
+            task["task"]["terminalReason"]["code"],
+            "prerequisite_deleted"
+        );
+    }
+    let fenced = tasks::complete_task(
+        &paths,
+        conversion["id"].as_str().unwrap(),
+        lease_token,
+        None,
+    )
+    .expect_err("cancelled attempt must be fenced");
+    assert_eq!(fenced.code(), Some("execution_fenced"));
+    let attempts =
+        tasks::list_task_attempts(&paths, conversion["id"].as_str().unwrap()).expect("attempts");
+    assert_eq!(attempts["attempts"][0]["status"], "cancelled");
+    tasks::archive_task(&paths, conversion["id"].as_str().unwrap()).expect("archive");
+    let listed = tasks::list_tasks(&paths, tasks::TaskListFilter::default()).expect("list");
+    assert!(!listed["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|task| { task["id"] == conversion["id"] }));
+    assert!(
+        tasks::list_task_events(&paths, conversion["id"].as_str().unwrap()).expect("events")
+            ["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["eventType"] == "archived")
+    );
+    tasks::archive_task(&paths, ingest["id"].as_str().unwrap()).expect("archive dependent");
+    let workflows = tasks::list_workflows(&paths).expect("workflows");
+    assert!(!workflows["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|workflow| workflow["id"] == conversion["workflowId"]));
+    let archived_workflow =
+        tasks::read_workflow(&paths, conversion["workflowId"].as_str().unwrap())
+            .expect("archived workflow history");
+    assert_eq!(archived_workflow["workflow"]["status"], "archived");
+    assert_eq!(archived_workflow["tasks"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn agent_routing_skips_incompatible_and_saturated_targets() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let wiki_panel = bootstrap
+        .panels
+        .iter()
+        .find(|panel| panel.panel.kind == PanelKind::Wiki)
+        .expect("wiki panel");
+    let storage = Storage::open(&paths).expect("storage");
+    let first = storage
+        .insert_task(
+            &bootstrap.project.id,
+            &wiki_panel.panel.id,
+            "wiki",
+            "rebuild_wiki_index",
+            "wiki.rebuildIndex",
+            "index.md",
+            &json!({}),
+            &json!({ "wikiSpaceId": "wiki:default" }),
+        )
+        .expect("first task");
+    let second = storage
+        .insert_task(
+            &bootstrap.project.id,
+            &wiki_panel.panel.id,
+            "wiki",
+            "rebuild_wiki_index",
+            "wiki.rebuildIndex",
+            "index.md",
+            &json!({}),
+            &json!({ "wikiSpaceId": "wiki:default" }),
+        )
+        .expect("second task");
+    let legacy = tasks::register_target(
+        &paths,
+        tasks::TargetRegistration {
+            name: "legacy",
+            host: Some("test"),
+            transport: "poll",
+            capabilities: vec!["wiki.rebuildIndex".to_owned()],
+            priority: 100,
+            protocol_version: 1,
+            max_concurrency: 1,
+            model_gateway_connection_id: None,
+        },
+    )
+    .expect("legacy target");
+    let primary = tasks::register_target(
+        &paths,
+        tasks::TargetRegistration {
+            name: "primary",
+            host: Some("test"),
+            transport: "poll",
+            capabilities: vec!["wiki.rebuildIndex".to_owned()],
+            priority: 50,
+            protocol_version: 2,
+            max_concurrency: 1,
+            model_gateway_connection_id: None,
+        },
+    )
+    .expect("primary target");
+    let fallback = tasks::register_target(
+        &paths,
+        tasks::TargetRegistration {
+            name: "fallback",
+            host: Some("test"),
+            transport: "poll",
+            capabilities: vec!["wiki.rebuildIndex".to_owned()],
+            priority: 10,
+            protocol_version: 2,
+            max_concurrency: 1,
+            model_gateway_connection_id: None,
+        },
+    )
+    .expect("fallback target");
+    tasks::set_agent_route(
+        &paths,
+        "wiki.rebuildIndex",
+        &[
+            legacy["target"]["id"].as_str().unwrap().to_owned(),
+            primary["target"]["id"].as_str().unwrap().to_owned(),
+            fallback["target"]["id"].as_str().unwrap().to_owned(),
+        ],
+    )
+    .expect("route");
+
+    let first_claim = tasks::claim_task(
+        &paths,
+        first["id"].as_str().unwrap(),
+        primary["target"]["id"].as_str().unwrap(),
+    )
+    .expect("primary claim");
+    assert_eq!(first_claim["target"]["name"], "primary");
+    let second_claim = tasks::claim_task(
+        &paths,
+        second["id"].as_str().unwrap(),
+        fallback["target"]["id"].as_str().unwrap(),
+    )
+    .expect("fallback claim");
+    assert_eq!(second_claim["target"]["name"], "fallback");
+
+    tasks::remove_target(&paths, primary["target"]["id"].as_str().unwrap())
+        .expect("remove active executor");
+    let interrupted =
+        tasks::inspect_task(&paths, first["id"].as_str().unwrap()).expect("interrupted task");
+    assert_eq!(interrupted["task"]["status"], "failed");
+    assert_eq!(interrupted["task"]["error"]["code"], "executor_removed");
+    let interrupted_attempts =
+        tasks::list_task_attempts(&paths, first["id"].as_str().unwrap()).expect("attempts");
+    assert_eq!(interrupted_attempts["attempts"][0]["status"], "interrupted");
+    let fenced = tasks::complete_task(
+        &paths,
+        first["id"].as_str().unwrap(),
+        first_claim["leaseToken"].as_str().unwrap(),
+        None,
+    )
+    .expect_err("removed executor is fenced");
+    assert_eq!(fenced.code(), Some("execution_fenced"));
+}
+
+#[test]
+fn retryable_failure_falls_through_ordered_model_channels() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let bootstrap = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let wiki_panel = bootstrap
+        .panels
+        .iter()
+        .find(|panel| panel.panel.kind == PanelKind::Wiki)
+        .expect("wiki panel");
+    let storage = Storage::open(&paths).expect("storage");
+    let task = storage
+        .insert_task(
+            &bootstrap.project.id,
+            &wiki_panel.panel.id,
+            "wiki",
+            "rebuild_wiki_index",
+            "wiki.rebuildIndex",
+            "index.md",
+            &json!({}),
+            &json!({ "wikiSpaceId": "wiki:default" }),
+        )
+        .expect("task");
+    let register = |name: &str, priority: i64, connection_id: &str| {
+        tasks::register_target(
+            &paths,
+            tasks::TargetRegistration {
+                name,
+                host: Some("test"),
+                transport: "poll",
+                capabilities: vec!["wiki.rebuildIndex".to_owned()],
+                priority,
+                protocol_version: 3,
+                max_concurrency: 1,
+                model_gateway_connection_id: Some(connection_id),
+            },
+        )
+        .expect("target")
+    };
+    let primary = register("primary-channel", 100, "local-cli:codex");
+    let fallback = register("fallback-channel", 50, "local-cli:hermes");
+    tasks::set_agent_route(
+        &paths,
+        "wiki.rebuildIndex",
+        &[
+            primary["target"]["id"].as_str().unwrap().to_owned(),
+            fallback["target"]["id"].as_str().unwrap().to_owned(),
+        ],
+    )
+    .expect("route");
+
+    let first = tasks::claim_task(
+        &paths,
+        task["id"].as_str().unwrap(),
+        primary["target"]["id"].as_str().unwrap(),
+    )
+    .expect("primary claim");
+    let failed = tasks::fail_task_with_class(
+        &paths,
+        task["id"].as_str().unwrap(),
+        first["leaseToken"].as_str().unwrap(),
+        "primary unavailable",
+        None,
+        tasks::TaskFailureClass::RetryableChannel,
+    )
+    .expect("retryable failure");
+    assert_eq!(failed["task"]["ready"], true);
+
+    let second = tasks::claim_task(
+        &paths,
+        task["id"].as_str().unwrap(),
+        fallback["target"]["id"].as_str().unwrap(),
+    )
+    .expect("fallback claim");
+    assert_eq!(
+        second["target"]["modelGatewayConnectionId"],
+        "local-cli:hermes"
+    );
+    let attempts =
+        tasks::list_task_attempts(&paths, task["id"].as_str().unwrap()).expect("attempt history");
+    assert_eq!(attempts["attempts"][0]["failureClass"], "retryable_channel");
+    assert_eq!(
+        attempts["attempts"][0]["modelGatewayConnectionId"],
+        "local-cli:codex"
+    );
+    assert_eq!(
+        attempts["attempts"][1]["modelGatewayConnectionId"],
+        "local-cli:hermes"
+    );
+    assert_eq!(
+        attempts["attempts"][0]["executorSnapshot"]["targetName"],
+        "primary-channel"
+    );
+    let round_complete = tasks::fail_task_with_class(
+        &paths,
+        task["id"].as_str().unwrap(),
+        second["leaseToken"].as_str().unwrap(),
+        "fallback unavailable",
+        None,
+        tasks::TaskFailureClass::RetryableChannel,
+    )
+    .expect("fallback failure");
+    assert_eq!(round_complete["task"]["blockedReason"], "retryLater");
+    tasks::retry_task(&paths, task["id"].as_str().unwrap()).expect("start next round");
+    let third = tasks::claim_task(
+        &paths,
+        task["id"].as_str().unwrap(),
+        primary["target"]["id"].as_str().unwrap(),
+    )
+    .expect("next round returns to primary");
+    assert_eq!(
+        third["target"]["modelGatewayConnectionId"],
+        "local-cli:codex"
+    );
+}
+
+#[test]
+fn exclusive_task_dispatch_rejects_other_channels() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let bootstrap = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let wiki_panel = bootstrap
+        .panels
+        .iter()
+        .find(|panel| panel.panel.kind == PanelKind::Wiki)
+        .expect("wiki panel");
+    let task = Storage::open(&paths)
+        .expect("storage")
+        .insert_task(
+            &bootstrap.project.id,
+            &wiki_panel.panel.id,
+            "wiki",
+            "rebuild_wiki_index",
+            "wiki.rebuildIndex",
+            "index.md",
+            &json!({}),
+            &json!({ "wikiSpaceId": "wiki:default" }),
+        )
+        .expect("task");
+    let register = |name: &str, priority: i64, connection_id: &str| {
+        tasks::register_target(
+            &paths,
+            tasks::TargetRegistration {
+                name,
+                host: Some("test"),
+                transport: "poll",
+                capabilities: vec!["wiki.rebuildIndex".to_owned()],
+                priority,
+                protocol_version: 3,
+                max_concurrency: 1,
+                model_gateway_connection_id: Some(connection_id),
+            },
+        )
+        .expect("target")
+    };
+    let primary = register("automatic-primary", 100, "local-cli:codex");
+    let pinned = register("pinned-channel", 50, "local-cli:hermes");
+    let configured = tasks::set_task_dispatch(
+        &paths,
+        task["id"].as_str().unwrap(),
+        "only",
+        Some("local-cli:hermes"),
+    )
+    .expect("dispatch override");
+    assert_eq!(configured["task"]["dispatchMode"], "only");
+    assert_eq!(
+        configured["task"]["requestedGatewayConnectionId"],
+        "local-cli:hermes"
+    );
+    let rejected = tasks::claim_task(
+        &paths,
+        task["id"].as_str().unwrap(),
+        primary["target"]["id"].as_str().unwrap(),
+    )
+    .expect_err("other channel must not claim an exclusive task");
+    assert_eq!(rejected.code(), Some("task_not_claimable"));
+    let claimed = tasks::claim_task(
+        &paths,
+        task["id"].as_str().unwrap(),
+        pinned["target"]["id"].as_str().unwrap(),
+    )
+    .expect("pinned claim");
+    assert_eq!(claimed["target"]["name"], "pinned-channel");
+}
+
+#[test]
+fn zero_exit_without_a_conversion_artifact_is_invalid_output() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    wiki::add_raw_document(
+        &paths,
+        "invalid.pdf",
+        None,
+        Some("application/pdf"),
+        "user",
+        Some("wiki:default"),
+        b"pdf fixture",
+    )
+    .expect("upload");
+    let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let conversion = Storage::open(&paths)
+        .expect("storage")
+        .list_tasks(&bootstrap.project.id)
+        .expect("tasks")
+        .into_iter()
+        .find(|task| task["type"] == "convert_document_to_markdown")
+        .expect("conversion");
+    Storage::open(&paths)
+        .expect("storage")
+        .connection()
+        .execute(
+            "UPDATE tasks SET max_attempts = 1 WHERE id = ?",
+            [conversion["id"].as_str().unwrap()],
+        )
+        .expect("single attempt task");
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bridge",
+        "run",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--once",
+        "--capability",
+        "wiki.convertDocument",
+        "--command",
+        "true",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let result = serde_json::from_str::<Value>(&stdout).expect("bridge result");
+    assert_eq!(result["success"], false);
+    assert_eq!(result["lifecycleError"]["code"], "invalid_output");
+    let task = tasks::inspect_task(&paths, conversion["id"].as_str().unwrap()).expect("task");
+    assert_eq!(task["task"]["status"], "failed");
+    let attempts =
+        tasks::list_task_attempts(&paths, conversion["id"].as_str().unwrap()).expect("attempts");
+    assert_eq!(attempts["attempts"][0]["status"], "invalid_output");
+    let retry = tasks::retry_task(&paths, conversion["id"].as_str().unwrap())
+        .expect_err("terminal failure cannot retry in place");
+    assert_eq!(retry.code(), Some("invalid_task_transition"));
+    let pending_outbox: i64 = Storage::open(&paths)
+        .expect("storage")
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM dispatch_outbox WHERE task_id = ? AND status = 'pending'",
+            [conversion["id"].as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .expect("outbox");
+    assert_eq!(pending_outbox, 0);
 }

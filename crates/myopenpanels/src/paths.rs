@@ -126,40 +126,10 @@ fn default_storage_dir() -> Result<PathBuf, CliError> {
         }
     }
 
-    let home = home_dir()?;
-    if cfg!(target_os = "macos") {
-        return Ok(home
-            .join("Library")
-            .join("Application Support")
-            .join("MyOpenPanels")
-            .join(".myopenpanels"));
-    }
-    if cfg!(target_os = "windows") {
-        if let Ok(appdata) = env::var("APPDATA") {
-            if !appdata.trim().is_empty() {
-                return Ok(PathBuf::from(appdata)
-                    .join("MyOpenPanels")
-                    .join(".myopenpanels"));
-            }
-        }
-        return Ok(home
-            .join("AppData")
-            .join("Roaming")
-            .join("MyOpenPanels")
-            .join(".myopenpanels"));
-    }
-    if let Ok(xdg_data_home) = env::var("XDG_DATA_HOME") {
-        if !xdg_data_home.trim().is_empty() {
-            return Ok(PathBuf::from(xdg_data_home)
-                .join("myopenpanels")
-                .join(".myopenpanels"));
-        }
-    }
-    Ok(home
-        .join(".local")
-        .join("share")
-        .join("myopenpanels")
-        .join(".myopenpanels"))
+    // Keep release data in a stable, visible per-user directory. This is
+    // intentionally a new location; older platform-specific data is not
+    // migrated and remains untouched.
+    Ok(home_dir()?.join(".myopenpanels"))
 }
 
 fn home_dir() -> Result<PathBuf, CliError> {

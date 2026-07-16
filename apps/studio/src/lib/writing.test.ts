@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest"
+import type { ProjectTask, WikiGeneratedDocument } from "../types"
 import { emptyWritingState } from "./api"
 import {
   activeWritingSkillIds,
+  latestWritingTaskForDocument,
+  refinementTaskGroups,
+  sortGeneratedDocumentsByActivity,
   toggleWritingSkillSelection,
+  writingDocumentStatus,
   writingSkillSelectionError,
 } from "./writing"
 
@@ -68,5 +73,119 @@ describe("Writing Skill selection", () => {
     expect(
       toggleWritingSkillSelection(selected, "writing-a", false, "create")
     ).toEqual(["writing-b"])
+  })
+})
+
+function task(
+  id: string,
+  status: string,
+  updatedAt: string,
+  options: { mode?: "create" | "revise"; targetId?: string; type?: string } = {}
+): ProjectTask {
+  return {
+    createdAt: updatedAt,
+    id,
+    input: {
+      mode: options.mode ?? "create",
+      targetGeneratedDocumentId: options.targetId ?? null,
+    },
+    panelId: "panel-writing",
+    panelKind: "writing",
+    projectId: "project-1",
+    queue: "writing",
+    status,
+    targetId: options.targetId ?? id,
+    type: options.type ?? "generate_document",
+    updatedAt,
+  }
+}
+
+function document(id: string, updatedAt: string): WikiGeneratedDocument {
+  return {
+    contentRef: `generated/${id}/content.md`,
+    contentVersion: 0,
+    createdAt: updatedAt,
+    format: "markdown",
+    id,
+    mimeType: "text/markdown",
+    originalFileName: "untitled.md",
+    publishHistory: [],
+    taskId: null,
+    threadId: null,
+    title: "",
+    updatedAt,
+  }
+}
+
+describe("Writing task presentation", () => {
+  it("groups only actionable refinement tasks", () => {
+    const groups = refinementTaskGroups([
+      task("waiting", "queued", "2026-01-01T00:00:00Z", {
+        type: "refine_writing_skill",
+      }),
+      task("active", "running", "2026-01-02T00:00:00Z", {
+        type: "refine_writing_skill",
+      }),
+      task("error", "failed", "2026-01-03T00:00:00Z", {
+        type: "refine_writing_skill",
+      }),
+      task("done", "succeeded", "2026-01-04T00:00:00Z", {
+        type: "refine_writing_skill",
+      }),
+    ])
+    expect(groups.waiting.map(({ id }) => id)).toEqual(["waiting"])
+    expect(groups.active.map(({ id }) => id)).toEqual(["active"])
+    expect(groups.error.map(({ id }) => id)).toEqual(["error"])
+  })
+
+  it("maps document task states and hides terminal states", () => {
+    expect(
+      writingDocumentStatus(task("create", "queued", "2026-01-01T00:00:00Z"))
+    ).toBe("pending_create")
+    expect(
+      writingDocumentStatus(
+        task("revise", "queued", "2026-01-01T00:00:00Z", {
+          mode: "revise",
+        })
+      )
+    ).toBe("pending_revise")
+    expect(
+      writingDocumentStatus(task("active", "running", "2026-01-01T00:00:00Z"))
+    ).toBe("active")
+    expect(
+      writingDocumentStatus(task("failed", "failed", "2026-01-01T00:00:00Z"))
+    ).toBe("failed")
+    expect(
+      writingDocumentStatus(task("done", "succeeded", "2026-01-01T00:00:00Z"))
+    ).toBeNull()
+  })
+
+  it("uses the latest linked task and sorts by effective activity", () => {
+    const documents = [
+      document("old", "2026-01-01T00:00:00Z"),
+      document("new", "2026-01-03T00:00:00Z"),
+    ]
+    const tasks = [
+      task("old-task", "queued", "2026-01-04T00:00:00Z", {
+        targetId: "old",
+      }),
+      task("older-task", "failed", "2026-01-02T00:00:00Z", {
+        targetId: "old",
+      }),
+    ]
+    expect(latestWritingTaskForDocument(tasks, documents[0])?.id).toBe(
+      "old-task"
+    )
+    const taskLinkedDocument = document("placeholder", "2026-01-01T00:00:00Z")
+    taskLinkedDocument.taskId = "placeholder-task"
+    expect(
+      latestWritingTaskForDocument(
+        [task("placeholder-task", "queued", "2026-01-05T00:00:00Z")],
+        taskLinkedDocument
+      )?.id
+    ).toBe("placeholder-task")
+    expect(
+      sortGeneratedDocumentsByActivity(documents, tasks).map(({ id }) => id)
+    ).toEqual(["old", "new"])
   })
 })

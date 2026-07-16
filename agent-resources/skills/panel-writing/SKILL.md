@@ -6,13 +6,13 @@ source: builtin
 appliesTo:
   - writing
 taskTypes:
-requiresCapabilities:
+requiresCommands:
   - writing.request.read
   - writing.refinement.read
   - writing.skill.install
-  - writing.generation.begin
-  - wiki.raw-document.markdown.read
-  - wiki.generated-document.read
+  - writing.generate
+  - wiki.raw.read
+  - wiki.document.read
   - wiki.page.search
   - wiki.page.read
   - operation.complete
@@ -24,6 +24,14 @@ tokens: short
 ---
 
 Use this Skill as the operating contract for the MyOpenPanels Writing panel.
+Writing reads and writes target the Project's Writing panel directly without
+requiring or changing the active panel. Only current-selection reads depend on
+which panel the user has active.
+
+During a claimed v3 Task, Writing commands use Task Broker. Generated documents
+and refined Skills remain staged until Task completion; an Operation marked
+`prepared` is not yet a visible successful result. Never access shared storage
+or SQLite directly.
 
 Route `generate_document` tasks through the document workflow below. Route
 `refine_writing_skill` tasks through the task-selected `提炼写作` Skill; those

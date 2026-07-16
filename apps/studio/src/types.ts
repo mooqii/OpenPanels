@@ -45,19 +45,18 @@ export interface AppState extends BootstrapResponse {}
 
 export interface AgentWorkerStatus {
   currentTask?: ProjectTask | null
-  dispatcher?: AgentDispatcherStatus
   heartbeatAt?: string | null
   lastError?: string | null
   lastTask?: unknown
+  queue?: AgentQueueStatus
   status: "idle" | "running" | "error" | string
   updatedAt?: string | null
 }
 
-export interface AgentDispatcherStatus {
-  lastDelivery?: TaskDelivery | null
+export interface AgentQueueStatus {
+  lifecycleState?: string
   onlineTargetCount?: number
   pendingCount?: number
-  retryCount?: number
   runningCount?: number
   status: string
   targetCount?: number
@@ -66,30 +65,63 @@ export interface AgentDispatcherStatus {
   updatedAt?: string | null
 }
 
+export interface ModelGatewaySettings {
+  byok: {
+    baseUrl: string | null
+    model: string | null
+    providerId: string | null
+  }
+  localCli: {
+    executablePaths: Record<string, string>
+    model: string | null
+    providerId: string | null
+    reasoning: string | null
+  }
+  mode: "localCli" | "byok"
+}
+
+export interface LocalCliModelOption {
+  id: string
+  label: string
+}
+
+export interface LocalCliInfo {
+  authMessage?: string | null
+  authStatus: "ok" | "missing" | "unknown" | string
+  available: boolean
+  bin: string
+  configuredPath?: string | null
+  diagnostic?: string | null
+  id: "codex" | "hermes" | string
+  models: LocalCliModelOption[]
+  modelsSource: "live" | "fallback" | string
+  name: string
+  path?: string | null
+  reasoningOptions: LocalCliModelOption[]
+  version?: string | null
+}
+
+export interface LocalCliConnectionTestResult {
+  detail?: string | null
+  kind: string
+  latencyMs: number
+  ok: boolean
+  providerId: string
+  providerName: string
+  sample?: string
+}
+
 export interface AgentTarget {
   capabilities: string[]
-  endpoint?: string | null
   host: string
   id: string
   lastError?: string | null
   lastHeartbeatAt?: string | null
+  modelGatewayConnectionId?: string | null
   name: string
   priority: number
   status: string
-  transport: "webhook" | "poll" | "command" | string
-}
-
-export interface TaskDelivery {
-  acknowledgedAt?: string | null
-  attempts: number
-  deliveredAt?: string | null
-  id: string
-  lastError?: string | null
-  nextAttemptAt?: string | null
-  status: string
-  targetId: string
-  taskId: string
-  updatedAt: string
+  transport: "poll" | "command"
 }
 
 export interface MyOpenPanelsBuildInfo {
@@ -160,31 +192,34 @@ export interface TraceSnapshotResponse {
 }
 
 export interface ProjectTask {
+  archivedAt?: string | null
   assignedTarget?: AgentTarget | null
   assignedTargetId?: string | null
   attempt?: number
+  availableAt?: string | null
   blockedReason?: "attemptsExceeded" | "leased" | "retryLater" | string | null
   capability?: string
+  compatibleTargetCount?: number
   completedAt?: string | null
   createdAt: string
-  dispatchState?:
-    | "eligible"
-    | "noTarget"
-    | "delivering"
-    | "running"
-    | "retry"
-    | "deliveryFailed"
-    | "done"
-    | string
+  dependencies?: Array<{
+    failurePolicy: string
+    prerequisiteTaskId: string
+    status: string
+    successCondition: string
+  }>
+  dispatchMode?: "auto" | "prefer" | "only"
+  dispatchState?: "eligible" | "noTarget" | "running" | "done" | string
   error?: unknown
+  executionGeneration?: number
   id: string
   input?: unknown
-  lastDelivery?: TaskDelivery | null
   lease?: {
     expiresAt?: string | null
     heartbeatAt?: string | null
     owner?: string | null
   }
+  lifecycleState?: string
   matchedTargetCount?: number
   maxAttempts?: number
   nextRunAt?: string | null
@@ -193,13 +228,17 @@ export interface ProjectTask {
   projectId: string
   queue: string
   ready?: boolean
+  requestedGatewayConnectionId?: string | null
+  requiredProtocolVersion?: number
   result?: unknown
   retryAfter?: string | null
   source?: unknown
   status: string
   targetId: string
+  terminalReason?: unknown
   type: string
   updatedAt: string
+  workflowId?: string
 }
 
 export interface PanelStateSnapshot {
@@ -320,7 +359,13 @@ export interface AgentSkillListing {
 export interface WikiRawDocument {
   conversion: {
     error: string | null
-    status: "failed" | "not_required" | "queued" | "converting" | "ready"
+    status:
+      | "cancelled"
+      | "failed"
+      | "not_required"
+      | "queued"
+      | "converting"
+      | "ready"
     taskId: string | null
     updatedAt: string
   }

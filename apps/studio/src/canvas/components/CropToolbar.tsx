@@ -154,7 +154,7 @@ export function CropToolbar({ crop, position }: CropToolbarProps) {
     <div style={toolbarStyle}>
       <div className="pointer-events-auto flex h-11 items-center gap-2 rounded-full bg-canvas-toolbar px-3 shadow-lg">
         {/* Crop icon and label */}
-        <div className="flex items-center gap-1.5 font-medium text-gray-700 text-sm">
+        <div className="flex items-center gap-1.5 font-medium text-sm text-text-primary">
           <Crop size={16} strokeWidth={1.5} />
           <span>{t`Crop`}</span>
         </div>
@@ -195,7 +195,7 @@ export function CropToolbar({ crop, position }: CropToolbarProps) {
 
         {/* Width input */}
         <NumberInput
-          className="group flex w-20 items-center rounded-lg bg-surface-secondary px-1 py-0.5 focus-within:ring-2 focus-within:ring-blue-500"
+          className="group flex w-20 items-center rounded-lg px-1 py-0.5"
           dragVelocity={1}
           min={1}
           onChange={handleWidthChange}
@@ -208,25 +208,26 @@ export function CropToolbar({ crop, position }: CropToolbarProps) {
         </NumberInput>
 
         {/* Aspect ratio lock button */}
-        <button
+        <Button
           aria-label={
             aspectRatioLock ? t`Unlock aspect ratio` : t`Lock aspect ratio`
           }
           className={cn(
-            "flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+            "h-6 w-6 min-w-6 p-0 transition-colors",
             aspectRatioLock
-              ? "bg-blue-100 text-blue-600"
-              : "text-gray-400 hover:bg-gray-100"
+              ? "bg-accent-soft text-accent-soft-foreground"
+              : "text-muted hover:bg-default-hover hover:text-foreground"
           )}
-          onClick={toggleAspectLock}
-          type="button"
+          isIconOnly
+          onPress={toggleAspectLock}
+          variant="ghost"
         >
           {aspectRatioLock ? <Link size={14} /> : <Unlink size={14} />}
-        </button>
+        </Button>
 
         {/* Height input */}
         <NumberInput
-          className="group flex w-20 items-center rounded-lg bg-surface-secondary px-1 py-0.5 focus-within:ring-2 focus-within:ring-blue-500"
+          className="group flex w-20 items-center rounded-lg px-1 py-0.5"
           dragVelocity={1}
           min={1}
           onChange={handleHeightChange}
@@ -244,7 +245,7 @@ export function CropToolbar({ crop, position }: CropToolbarProps) {
         <Button
           aria-label={t`Cancel crop`}
           isIconOnly
-          onClick={exitCropMode}
+          onPress={exitCropMode}
           size="sm"
           variant="ghost"
         >
@@ -254,10 +255,10 @@ export function CropToolbar({ crop, position }: CropToolbarProps) {
         {/* Apply button */}
         <Button
           aria-label={t`Apply crop`}
-          className="bg-primary text-white"
           isIconOnly
-          onClick={applyCrop}
+          onPress={applyCrop}
           size="sm"
+          variant="primary"
         >
           <Check size={16} strokeWidth={1.5} />
         </Button>

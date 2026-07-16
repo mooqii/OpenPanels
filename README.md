@@ -1,9 +1,8 @@
 # MyOpenPanels
 
 MyOpenPanels is a local panel system for shell-capable AI agents. It lets agents
-open interactive panels, insert artifacts, and persist local panel state under
-the active project's `.myopenpanels/` directory through the `myopenpanels`
-CLI.
+open interactive panels, insert artifacts, and persist local panel state through
+the `myopenpanels` CLI.
 
 ## Skills
 
@@ -42,7 +41,7 @@ workflows. A normal Bootstrap contains no Entry Skill update fields. After a CLI
 release changes the Entry Skill requirement, Bootstrap delivers a one-time
 Agent-host update check and keeps it pending until that Agent context
 acknowledges the installed version. The installed CLI remains authoritative for
-current capabilities and returned actions.
+current command catalogs and returned actions.
 Protocol v5 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes. It
 prepares the required Panel and task-specific Skills locally and returns their
 ordered context and Skill paths in `nextRequiredAction.steps`; optional command
@@ -59,6 +58,12 @@ pnpm dev
 
 The MyOpenPanels Studio runs from `apps/studio`. The publishable agent CLI is the
 Rust binary in `crates/myopenpanels`.
+
+The checkout-local `scripts/myopenpanels-dev` wrapper stores development data in
+the repository's ignored `.myopenpanels/` directory. The installed CLI stores
+release data in `~/.myopenpanels/`; this is intentionally a new, empty storage
+location and does not migrate or delete data from the previous platform-specific
+directory. Set `MYOPENPANELS_STORAGE_DIR` explicitly to override either location.
 
 ## Install
 
@@ -134,4 +139,4 @@ are not hardcoded into the Entry Skill.
 - Rust CLI/server/storage with a React Studio frontend
 - Multi-panel project workspace with wiki, writing, canvas, typesetting, and publishing panels
 - Image artifacts and editable canvas image shapes
-- Project-local `.myopenpanels/` persistence
+- Platform-native persistence with checkout-local development isolation

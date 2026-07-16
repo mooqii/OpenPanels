@@ -124,7 +124,7 @@ export function ImageFillPanel({
       {previewUrl ? (
         <div className="relative">
           <div
-            className="flex h-32 items-center justify-center overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50"
+            className="flex h-32 items-center justify-center overflow-hidden rounded-lg border border-border bg-field"
             style={{
               backgroundImage: `url(${previewUrl})`,
               backgroundSize: "contain",
@@ -152,18 +152,18 @@ export function ImageFillPanel({
           onSelect={handleFileSelect}
         >
           <Button
-            className="flex h-32 w-full flex-col items-center justify-center gap-2 rounded-lg border-2 border-zinc-300 border-dashed bg-zinc-50 transition-colors hover:border-blue-400 hover:bg-blue-50"
+            className="flex h-32 w-full flex-col items-center justify-center gap-2 rounded-lg border-2 border-field-border border-dashed bg-field transition-colors hover:border-field-border-hover hover:bg-field-hover"
             isDisabled={isUploading}
           >
             {isUploading ? (
               <>
-                <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-blue-500" />
-                <span className="text-sm text-zinc-500">{t`Uploading...`}</span>
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-field-border border-t-focus" />
+                <span className="text-muted text-sm">{t`Uploading...`}</span>
               </>
             ) : (
               <>
-                <ImageIcon className="text-zinc-400" size={24} />
-                <span className="text-sm text-zinc-500">
+                <ImageIcon className="text-muted" size={24} />
+                <span className="text-muted text-sm">
                   {t`Click to upload an image`}
                 </span>
               </>
@@ -195,7 +195,7 @@ export function ImageFillPanel({
             </Slider>
 
             {/* <NumberInput */}
-            {/*   className="rounded-lg bg-surface-secondary px-2 py-1" */}
+            {/*   className="rounded-lg px-2 py-1" */}
             {/*   max={3} */}
             {/*   min={0.1} */}
             {/*   onChange={(v) => handleUniformScaleChange(v)} */}
@@ -209,7 +209,7 @@ export function ImageFillPanel({
           {/* Individual X/Y scale */}
           <div className="grid grid-cols-2 gap-2">
             <NumberInput
-              className="rounded-lg bg-surface-secondary px-2 py-1"
+              className="rounded-lg px-2 py-1"
               max={3}
               min={0.1}
               onChange={(v: number) => handleScaleChange("x", v)}
@@ -220,7 +220,7 @@ export function ImageFillPanel({
               <NumberInput.Input className="w-22" />
             </NumberInput>
             <NumberInput
-              className="rounded-lg bg-surface-secondary px-2 py-1"
+              className="rounded-lg px-2 py-1"
               max={3}
               min={0.1}
               onChange={(v: number) => handleScaleChange("y", v)}

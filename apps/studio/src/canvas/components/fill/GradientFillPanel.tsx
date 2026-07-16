@@ -142,7 +142,7 @@ export function GradientFillPanel({ value, onChange }: GradientFillPanelProps) {
       {/* Colors section */}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <span className="text-sm text-zinc-700">{t`Colors`}</span>
+          <span className="text-sm text-text-secondary">{t`Colors`}</span>
           <div className="flex items-center gap-1">
             <Button
               isIconOnly
@@ -174,9 +174,9 @@ export function GradientFillPanel({ value, onChange }: GradientFillPanelProps) {
       {/* Rotation control (linear gradient only) */}
       {value.type === "linear-gradient" && (
         <div className="flex items-center justify-between">
-          <Label className="text-sm text-zinc-700">{t`Rotation`}</Label>
+          <Label className="text-sm text-text-secondary">{t`Rotation`}</Label>
           <NumberInput
-            className="w-28 rounded-lg bg-surface-secondary px-2 py-1"
+            className="w-28 rounded-lg px-2 py-1"
             dragVelocity={1}
             max={360}
             min={0}
@@ -195,7 +195,7 @@ export function GradientFillPanel({ value, onChange }: GradientFillPanelProps) {
       {/* Presets section */}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <span className="text-sm text-zinc-700">{t`Preset`}</span>
+          <span className="text-sm text-text-secondary">{t`Preset`}</span>
         </div>
 
         {/* Preset grid */}
@@ -216,7 +216,7 @@ export function GradientFillPanel({ value, onChange }: GradientFillPanelProps) {
               <button
                 className={cn(
                   "h-9 w-9 rounded-full transition-all",
-                  "hover:scale-110 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  "hover:scale-110 focus:outline-none focus:ring-2 focus:ring-focus"
                 )}
                 key={preset.id}
                 onClick={() => handlePresetSelect(preset)}

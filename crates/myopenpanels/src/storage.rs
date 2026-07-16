@@ -26,6 +26,7 @@ pub struct PanelStateWriteConflict {
 
 #[derive(Debug, Clone)]
 pub struct TaskInsert {
+    pub id: String,
     pub queue: String,
     pub task_type: String,
     pub capability: String,
@@ -45,6 +46,14 @@ pub struct ChangeScope {
 
 impl Storage {
     pub fn open(paths: &MyOpenPanelsPaths) -> Result<Self, CliError> {
+        let storage = Self::open_without_content_migration(paths)?;
+        crate::content::run_legacy_content_migration(paths, &storage)?;
+        Ok(storage)
+    }
+
+    pub(crate) fn open_without_content_migration(
+        paths: &MyOpenPanelsPaths,
+    ) -> Result<Self, CliError> {
         fs::create_dir_all(&paths.storage_dir).map_err(to_cli_error)?;
         let mut connection =
             Connection::open(paths.storage_dir.join(DATABASE_FILE_NAME)).map_err(to_cli_error)?;
@@ -312,6 +321,66 @@ impl Storage {
         Ok(Ok(revision))
     }
 
+    pub(crate) fn write_panel_state_in_transaction(
+        tx: &Transaction<'_>,
+        project_id: &str,
+        panel_id: &str,
+        state: &Value,
+    ) -> Result<i64, CliError> {
+        let state_json = serde_json::to_string(state).map_err(to_cli_error)?;
+        let content_hash = hash_text(&state_json);
+        let current = tx
+            .query_row(
+                "SELECT revision, content_hash FROM panel_states WHERE project_id = ? AND panel_id = ?",
+                params![project_id, panel_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(to_cli_error)?;
+        if current
+            .as_ref()
+            .is_some_and(|value| value.1 == content_hash)
+        {
+            return Ok(current.map(|value| value.0).unwrap_or(0));
+        }
+        let panel_kind = tx
+            .query_row(
+                "SELECT kind FROM panels WHERE project_id = ? AND id = ?",
+                params![project_id, panel_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(to_cli_error)?;
+        let revision = record_scope(tx, "panel_state", Some(project_id), Some(panel_id))?;
+        tx.execute(
+            r#"
+            INSERT INTO panel_states (
+              project_id, panel_id, schema_version, revision, content_hash, state_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id, panel_id) DO UPDATE SET
+              schema_version = excluded.schema_version,
+              revision = excluded.revision,
+              content_hash = excluded.content_hash,
+              state_json = excluded.state_json,
+              updated_at = excluded.updated_at
+            "#,
+            params![
+                project_id,
+                panel_id,
+                panel_kind
+                    .as_deref()
+                    .and_then(PanelKind::parse)
+                    .and_then(|kind| extract_panel_state_schema_version(kind, state)),
+                revision,
+                content_hash,
+                state_json,
+                crate::control::now_iso(),
+            ],
+        )
+        .map_err(to_cli_error)?;
+        Ok(revision)
+    }
+
     pub fn write_agent_operation(&self, operation: &Value) -> Result<(), CliError> {
         let required = |name: &str| {
             operation
@@ -479,14 +548,42 @@ impl Storage {
                 "ruleSetVersion": task.get("ruleSetVersion"),
                 "agentSkillId": task.get("agentSkillId"),
             });
-            inserted += tx
+            let workflow_id = task
+                .get("workflowId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| workflow_id_for_task(id));
+            insert_workflow_if_missing(
+                &tx,
+                &workflow_id,
+                project_id,
+                panel_id,
+                &format!("{queue}.{task_type}"),
+                task.get("sourceWorkflowId").and_then(Value::as_str),
+                &source,
+                &created_at,
+            )?;
+            let was_inserted = tx
                 .execute(
                     r#"
                     INSERT INTO tasks (
                       id, project_id, panel_id, queue, type, capability, status, target_ref,
-                      input_json, source_json, attempts, max_attempts, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO NOTHING
+                      input_json, source_json, attempts, max_attempts, created_at, updated_at,
+                      workflow_id, idempotency_key, available_at, required_protocol_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                      status = CASE
+                        WHEN excluded.status IN ('waiting', 'cancelled', 'stale', 'superseded')
+                             AND tasks.status NOT IN ('succeeded', 'cancelled', 'stale', 'superseded')
+                          THEN excluded.status
+                        ELSE tasks.status
+                      END,
+                      updated_at = MAX(tasks.updated_at, excluded.updated_at),
+                      terminal_reason_json = CASE
+                        WHEN excluded.status IN ('cancelled', 'stale', 'superseded')
+                          THEN COALESCE(tasks.terminal_reason_json, json_object('code', excluded.status))
+                        ELSE tasks.terminal_reason_json
+                      END
                     "#,
                     params![
                         id,
@@ -502,12 +599,47 @@ impl Storage {
                         serde_json::to_string(&input).map_err(to_cli_error)?,
                         serde_json::to_string(&source).map_err(to_cli_error)?,
                         task.get("attempt").and_then(Value::as_i64).unwrap_or(0),
-                        task.get("maxAttempts").and_then(Value::as_i64).unwrap_or(3),
+                        task.get("maxAttempts").and_then(Value::as_i64).unwrap_or(8),
                         created_at,
                         updated_at,
+                        workflow_id,
+                        task.get("idempotencyKey").and_then(Value::as_str),
+                        task.get("availableAt")
+                            .and_then(Value::as_str)
+                            .unwrap_or(&created_at),
+                        content_task_protocol_version(),
                     ],
                 )
                 .map_err(to_cli_error)?;
+            inserted += was_inserted;
+            if was_inserted == 1 {
+                insert_task_created_records(
+                    &tx,
+                    id,
+                    &workflow_id,
+                    project_id,
+                    task.get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("queued"),
+                    &project_task_capability(queue, task_type),
+                    &input,
+                    &created_at,
+                )?;
+            }
+        }
+        for task in tasks {
+            let Some(task_id) = task.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if let Some(dependencies) = task.get("dependsOnTaskIds").and_then(Value::as_array) {
+                for prerequisite_id in dependencies.iter().filter_map(Value::as_str) {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO task_dependencies (task_id, prerequisite_task_id, success_condition, failure_policy, created_at) VALUES (?, ?, 'succeeded', 'cancel', ?)",
+                        params![task_id, prerequisite_id, crate::control::now_iso()],
+                    )
+                    .map_err(to_cli_error)?;
+                }
+            }
         }
         if inserted > 0 {
             record_scope(&tx, "tasks", Some(project_id), None)?;
@@ -527,15 +659,27 @@ impl Storage {
         source: &Value,
     ) -> Result<Value, CliError> {
         let id = format!("task:{:032x}", rand::random::<u128>());
+        let workflow_id = workflow_id_for_task(&id);
         let now = crate::control::now_iso();
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
+        insert_workflow_if_missing(
+            &tx,
+            &workflow_id,
+            project_id,
+            panel_id,
+            &format!("{queue}.{task_type}"),
+            None,
+            source,
+            &now,
+        )?;
         tx.execute(
             r#"
             INSERT INTO tasks (
               id, project_id, panel_id, queue, type, capability, status, target_ref,
-              input_json, source_json, attempts, max_attempts, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, 3, ?, ?)
+              input_json, source_json, attempts, max_attempts, created_at, updated_at,
+              workflow_id, available_at, required_protocol_version
+            ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, 8, ?, ?, ?, ?, ?)
             "#,
             params![
                 id,
@@ -549,9 +693,22 @@ impl Storage {
                 serde_json::to_string(source).map_err(to_cli_error)?,
                 now,
                 now,
+                workflow_id,
+                now,
+                content_task_protocol_version(),
             ],
         )
         .map_err(to_cli_error)?;
+        insert_task_created_records(
+            &tx,
+            &id,
+            &workflow_id,
+            project_id,
+            "queued",
+            capability,
+            input,
+            &now,
+        )?;
         record_scope(&tx, "tasks", Some(project_id), None)?;
         tx.commit().map_err(to_cli_error)?;
         self.list_tasks(project_id)?
@@ -560,29 +717,42 @@ impl Storage {
             .ok_or_else(|| CliError::new(format!("Created task was not found: {id}")))
     }
 
-    pub fn insert_tasks(
+    pub fn insert_tasks_with_panel_states(
         &self,
         project_id: &str,
         panel_id: &str,
         tasks: &[TaskInsert],
-    ) -> Result<Vec<Value>, CliError> {
+        panel_states: &[(&str, &Value)],
+    ) -> Result<(Vec<Value>, Vec<i64>), CliError> {
         if tasks.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         let now = crate::control::now_iso();
-        let task_ids = tasks
-            .iter()
-            .map(|_| format!("task:{:032x}", rand::random::<u128>()))
-            .collect::<Vec<_>>();
+        let task_ids = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
+        let workflow_id = format!("workflow:{:032x}", rand::random::<u128>());
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
+        insert_workflow_if_missing(
+            &tx,
+            &workflow_id,
+            project_id,
+            panel_id,
+            tasks
+                .first()
+                .map(|task| task.queue.as_str())
+                .unwrap_or("task"),
+            None,
+            &json!({ "createdBy": "task.insertMany" }),
+            &now,
+        )?;
         for (task, id) in tasks.iter().zip(&task_ids) {
             tx.execute(
                 r#"
                 INSERT INTO tasks (
                   id, project_id, panel_id, queue, type, capability, status, target_ref,
-                  input_json, source_json, attempts, max_attempts, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, 3, ?, ?)
+                  input_json, source_json, attempts, max_attempts, created_at, updated_at,
+                  workflow_id, available_at, required_protocol_version
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, 8, ?, ?, ?, ?, ?)
                 "#,
                 params![
                     id,
@@ -596,10 +766,29 @@ impl Storage {
                     serde_json::to_string(&task.source).map_err(to_cli_error)?,
                     now,
                     now,
+                    workflow_id,
+                    now,
+                    content_task_protocol_version(),
                 ],
             )
             .map_err(to_cli_error)?;
+            insert_task_created_records(
+                &tx,
+                id,
+                &workflow_id,
+                project_id,
+                "queued",
+                &task.capability,
+                &task.input,
+                &now,
+            )?;
         }
+        let revisions = panel_states
+            .iter()
+            .map(|(state_panel_id, state)| {
+                Self::write_panel_state_in_transaction(&tx, project_id, state_panel_id, state)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         record_scope(&tx, "tasks", Some(project_id), None)?;
         tx.commit().map_err(to_cli_error)?;
 
@@ -611,33 +800,49 @@ impl Storage {
                 Some((id, task))
             })
             .collect::<HashMap<_, _>>();
-        task_ids
+        let tasks = task_ids
             .into_iter()
             .map(|id| {
                 created
                     .remove(&id)
                     .ok_or_else(|| CliError::new(format!("Created task was not found: {id}")))
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((tasks, revisions))
     }
 
     pub fn list_tasks(&self, project_id: &str) -> Result<Vec<Value>, CliError> {
+        let has_channel_dispatch = self
+            .connection
+            .query_row(
+                "SELECT COUNT(*) = 2 FROM pragma_table_info('tasks') WHERE name IN ('dispatch_mode', 'requested_gateway_connection_id')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(to_cli_error)?;
+        let dispatch_columns = if has_channel_dispatch {
+            "t.dispatch_mode, t.requested_gateway_connection_id"
+        } else {
+            "'auto', NULL"
+        };
         let mut statement = self
             .connection
-            .prepare(
+            .prepare(&format!(
                 r#"
                 SELECT
                   t.id, t.queue, t.project_id, t.panel_id, p.kind, t.type, t.status,
                   t.target_ref, t.created_at, t.updated_at, t.attempts, t.max_attempts,
                   lease_owner, lease_expires_at, last_heartbeat_at, retry_after,
                   t.capability, t.assigned_agent_id, t.result_json, t.error_json, t.completed_at,
-                  t.input_json, t.source_json
+                  t.input_json, t.source_json, t.workflow_id, t.execution_generation,
+                  t.available_at, t.archived_at, t.terminal_reason_json,
+                  t.required_protocol_version, {dispatch_columns}
                 FROM tasks t
                 JOIN panels p ON p.project_id = t.project_id AND p.id = t.panel_id
                 WHERE t.project_id = ?
                 ORDER BY t.updated_at DESC, t.id ASC
-                "#,
-            )
+                "#
+            ))
             .map_err(to_cli_error)?;
         let rows = statement
             .query_map(params![project_id], |row| {
@@ -663,6 +868,7 @@ impl Storage {
                 let result_json = row.get::<_, Option<String>>(18)?;
                 let error_json = row.get::<_, Option<String>>(19)?;
                 let completed_at = row.get::<_, Option<String>>(20)?;
+                let terminal_reason_json = row.get::<_, Option<String>>(27)?;
                 let result = result_json
                     .as_deref()
                     .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
@@ -671,8 +877,15 @@ impl Storage {
                     .as_deref()
                     .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
                     .unwrap_or(Value::Null);
+                let terminal_reason = terminal_reason_json
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                    .unwrap_or(Value::Null);
                 Ok(TaskRecord {
                     id: row.get(0)?,
+                    workflow_id: row
+                        .get::<_, Option<String>>(23)?
+                        .unwrap_or_else(|| "workflow:legacy".to_owned()),
                     queue: queue.clone(),
                     project_id: row.get(2)?,
                     panel_id: row.get(3)?,
@@ -694,6 +907,13 @@ impl Storage {
                         .unwrap_or_else(|| project_task_capability(&queue, &task_type)),
                     assigned_target_id: assigned_agent_id,
                     completed_at,
+                    execution_generation: row.get(24)?,
+                    available_at: row.get(25)?,
+                    archived_at: row.get(26)?,
+                    terminal_reason,
+                    required_protocol_version: row.get(28)?,
+                    dispatch_mode: row.get(29)?,
+                    requested_gateway_connection_id: row.get(30)?,
                     input,
                     source,
                     result,
@@ -1461,6 +1681,166 @@ fn project_task_capability(queue: &str, task_type: &str) -> String {
     }
 }
 
+fn workflow_id_for_task(task_id: &str) -> String {
+    format!(
+        "workflow:{}",
+        task_id.strip_prefix("task:").unwrap_or(task_id)
+    )
+}
+
+fn insert_workflow_if_missing(
+    connection: &Connection,
+    workflow_id: &str,
+    project_id: &str,
+    panel_id: &str,
+    workflow_type: &str,
+    source_workflow_id: Option<&str>,
+    source: &Value,
+    now: &str,
+) -> Result<(), CliError> {
+    connection
+        .execute(
+            r#"
+            INSERT OR IGNORE INTO workflows (
+              id, project_id, panel_id, type, status, source_workflow_id,
+              source_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+            "#,
+            params![
+                workflow_id,
+                project_id,
+                panel_id,
+                workflow_type,
+                source_workflow_id,
+                serde_json::to_string(source).map_err(to_cli_error)?,
+                now,
+                now,
+            ],
+        )
+        .map_err(to_cli_error)?;
+    Ok(())
+}
+
+fn insert_task_created_records(
+    connection: &Connection,
+    task_id: &str,
+    workflow_id: &str,
+    project_id: &str,
+    status: &str,
+    _capability: &str,
+    input: &Value,
+    now: &str,
+) -> Result<(), CliError> {
+    connection
+        .execute(
+            "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, created_at) VALUES (?, ?, 'created', NULL, ?, ?)",
+            params![task_id, workflow_id, status, now],
+        )
+        .map_err(to_cli_error)?;
+    if let Some(document_id) = input.get("documentId").and_then(Value::as_str) {
+        connection
+            .execute(
+                r#"
+                INSERT OR IGNORE INTO task_inputs (
+                  id, task_id, resource_kind, resource_id, resource_version,
+                  content_hash, snapshot_ref, missing_policy, changed_policy, created_at
+                ) VALUES (?, ?, 'wiki.rawDocument', ?, ?, ?, ?, 'cancel', 'supersede', ?)
+                "#,
+                params![
+                    format!("task-input:{:032x}", rand::random::<u128>()),
+                    task_id,
+                    document_id,
+                    input
+                        .get("markdownVersion")
+                        .and_then(Value::as_i64)
+                        .map(|value| value.to_string()),
+                    input.get("contentHash").and_then(Value::as_str),
+                    input.get("snapshotRef").and_then(Value::as_str),
+                    now,
+                ],
+            )
+            .map_err(to_cli_error)?;
+    }
+    if let Some(snapshot) = input.get("contextSnapshot") {
+        for (collection, resource_kind) in [
+            ("rawDocuments", "wiki.rawDocument"),
+            ("generatedDocuments", "wiki.generatedDocument"),
+        ] {
+            for document in snapshot
+                .get(collection)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(resource_id) = document.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                connection.execute(
+                    r#"INSERT OR IGNORE INTO task_inputs (
+                       id, task_id, resource_kind, resource_id, resource_version,
+                       content_hash, snapshot_ref, missing_policy, changed_policy, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'continue_snapshot', 'continue_snapshot', ?)"#,
+                    params![
+                        format!("task-input:{:032x}", rand::random::<u128>()),
+                        task_id,
+                        resource_kind,
+                        resource_id,
+                        document.get("contentVersion").or_else(|| document.get("markdownVersion")).and_then(Value::as_i64).map(|value| value.to_string()),
+                        document.get("snapshotHash").and_then(Value::as_str),
+                        format!("inline:input.contextSnapshot.{collection}.{resource_id}"),
+                        now,
+                    ],
+                ).map_err(to_cli_error)?;
+            }
+        }
+    }
+    if let Some(skill) = input.get("writingSkillSnapshot") {
+        if let Some(resource_id) = skill.get("id").and_then(Value::as_str) {
+            connection
+                .execute(
+                    r#"INSERT OR IGNORE INTO task_inputs (
+                   id, task_id, resource_kind, resource_id, content_hash, snapshot_ref,
+                   missing_policy, changed_policy, created_at
+                   ) VALUES (?, ?, 'writing.skill', ?, ?, 'inline:input.writingSkillSnapshot',
+                     'continue_snapshot', 'continue_snapshot', ?)"#,
+                    params![
+                        format!("task-input:{:032x}", rand::random::<u128>()),
+                        task_id,
+                        resource_id,
+                        skill.get("contentHash").and_then(Value::as_str),
+                        now,
+                    ],
+                )
+                .map_err(to_cli_error)?;
+        }
+    }
+    if let Some(target_id) = input
+        .get("targetGeneratedDocumentId")
+        .and_then(Value::as_str)
+    {
+        connection
+            .execute(
+                r#"INSERT OR IGNORE INTO task_inputs (
+               id, task_id, resource_kind, resource_id, resource_version,
+               missing_policy, changed_policy, created_at
+               ) VALUES (?, ?, 'writing.targetDocument', ?, ?, 'cancel', 'supersede', ?)"#,
+                params![
+                    format!("task-input:{:032x}", rand::random::<u128>()),
+                    task_id,
+                    target_id,
+                    input
+                        .get("targetContentVersion")
+                        .and_then(Value::as_i64)
+                        .map(|value| value.to_string()),
+                    now,
+                ],
+            )
+            .map_err(to_cli_error)?;
+    }
+    let _ = project_id;
+    Ok(())
+}
+
 fn sanitize_asset_path(value: &str) -> String {
     let parts = value
         .split('/')
@@ -1781,6 +2161,11 @@ const MIGRATION_0007_SQL: &str = include_str!("../migrations/0007_project_json_r
 const MIGRATION_0008_SQL: &str = "Allow the writing Panel kind in panels.kind.";
 const MIGRATION_0009_SQL: &str = "Allow the typesetting Panel kind in panels.kind.";
 const MIGRATION_0010_SQL: &str = "Allow the publishing Panel kind in panels.kind.";
+const MIGRATION_0011_SQL: &str = include_str!("../migrations/0011_atomic_workflows.sql");
+const MIGRATION_0012_SQL: &str = include_str!("../migrations/0012_content_broker.sql");
+const MIGRATION_0013_SQL: &str = include_str!("../migrations/0013_remove_webhook_transport.sql");
+const MIGRATION_0014_SQL: &str = include_str!("../migrations/0014_model_gateway.sql");
+const MIGRATION_0015_SQL: &str = include_str!("../migrations/0015_task_channel_dispatch.sql");
 
 struct Migration {
     id: &'static str,
@@ -1855,6 +2240,37 @@ fn migrations() -> &'static [Migration] {
             description: "Allow the Publishing panel kind",
             checksum_material: MIGRATION_0010_SQL,
             up: migration_0010,
+        },
+        Migration {
+            id: "0011_atomic_workflows",
+            description:
+                "Add workflows, dependencies, inputs, attempts, events, outbox, and agent routes",
+            checksum_material: MIGRATION_0011_SQL,
+            up: migration_0011,
+        },
+        Migration {
+            id: "0012_content_broker",
+            description: "Add immutable content revisions, CAS staging, and Task Broker fencing",
+            checksum_material: MIGRATION_0012_SQL,
+            up: migration_0012,
+        },
+        Migration {
+            id: "0013_remove_webhook_transport",
+            description: "Disable legacy Webhook targets and requeue their active Tasks",
+            checksum_material: MIGRATION_0013_SQL,
+            up: migration_0013,
+        },
+        Migration {
+            id: "0014_model_gateway",
+            description: "Add first-class model gateway connections and active configuration",
+            checksum_material: MIGRATION_0014_SQL,
+            up: migration_0014,
+        },
+        Migration {
+            id: "0015_task_channel_dispatch",
+            description: "Add channel-aware Task dispatch and immutable Attempt provenance",
+            checksum_material: MIGRATION_0015_SQL,
+            up: migration_0015,
         },
     ]
 }
@@ -1982,6 +2398,14 @@ fn migration_checksum(migration: &Migration) -> String {
         "{:x}",
         Sha256::digest(migration.checksum_material.as_bytes())
     )
+}
+
+fn content_task_protocol_version() -> i64 {
+    if cfg!(test) {
+        2
+    } else {
+        crate::content::EXECUTION_PROTOCOL_VERSION
+    }
 }
 
 fn migration_0001(tx: &Transaction<'_>) -> Result<(), CliError> {
@@ -2196,6 +2620,125 @@ fn migration_0010(tx: &Transaction<'_>) -> Result<(), CliError> {
         .map_err(to_cli_error);
     result?;
     disable_result
+}
+
+fn migration_0011(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0011_SQL).map_err(to_cli_error)
+}
+
+fn migration_0012(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0012_SQL).map_err(to_cli_error)?;
+    for (table, needle, replacement) in [
+        (
+            "tasks",
+            "required_protocol_version IN (1, 2)",
+            "required_protocol_version IN (1, 2, 3)",
+        ),
+        (
+            "agent_targets",
+            "protocol_version IN (1, 2)",
+            "protocol_version IN (1, 2, 3)",
+        ),
+    ] {
+        let schema: String = tx
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(to_cli_error)?;
+        let next_schema = schema.replace(needle, replacement);
+        if next_schema == schema {
+            return Err(CliError::new(format!(
+                "Could not extend {table} execution protocol constraint to v3."
+            )));
+        }
+        tx.execute_batch("PRAGMA writable_schema = ON;")
+            .map_err(to_cli_error)?;
+        tx.execute(
+            "UPDATE sqlite_schema SET sql = ? WHERE type = 'table' AND name = ?",
+            params![next_schema, table],
+        )
+        .map_err(to_cli_error)?;
+        tx.execute_batch("PRAGMA writable_schema = OFF;")
+            .map_err(to_cli_error)?;
+    }
+    let schema_version: i64 = tx
+        .query_row("PRAGMA schema_version", [], |row| row.get(0))
+        .map_err(to_cli_error)?;
+    tx.execute_batch(&format!("PRAGMA schema_version = {};", schema_version + 1))
+        .map_err(to_cli_error)?;
+
+    let now = crate::control::now_iso();
+    let reason = json!({ "code": "upgrade_requires_v3_reexecution" }).to_string();
+    tx.execute(
+        r#"
+        UPDATE task_attempts
+        SET status = 'cancelled', finished_at = ?, error_json = ?
+        WHERE status = 'leased'
+          AND task_id IN (
+            SELECT id FROM tasks
+            WHERE required_protocol_version < 3
+              AND capability IN (
+                'wiki.convertDocument', 'wiki.ingestMarkdown', 'wiki.rebuildIndex',
+                'writing.generateDocument', 'writing.refineSkill'
+              )
+          )
+        "#,
+        params![now, reason],
+    )
+    .map_err(to_cli_error)?;
+    tx.execute(
+        r#"
+        UPDATE tasks
+        SET status = 'cancelled', assigned_agent_id = NULL, lease_owner = NULL,
+            lease_token_hash = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL,
+            terminal_reason_json = ?, error_json = ?, completed_at = ?, updated_at = ?,
+            execution_generation = execution_generation + 1
+        WHERE required_protocol_version < 3
+          AND status NOT IN ('succeeded', 'cancelled', 'stale', 'superseded')
+          AND capability IN (
+            'wiki.convertDocument', 'wiki.ingestMarkdown', 'wiki.rebuildIndex',
+            'writing.generateDocument', 'writing.refineSkill'
+          )
+        "#,
+        params![reason, reason, now, now],
+    )
+    .map_err(to_cli_error)?;
+    tx.execute(
+        "UPDATE dispatch_outbox SET status = 'cancelled', updated_at = ? WHERE task_id IN (SELECT id FROM tasks WHERE terminal_reason_json = ?)",
+        params![now, reason],
+    )
+    .map_err(to_cli_error)?;
+    tx.execute(
+        "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) SELECT id, workflow_id, 'upgrade_cancelled', NULL, 'cancelled', ?, ? FROM tasks WHERE terminal_reason_json = ?",
+        params![reason, now, reason],
+    ).map_err(to_cli_error)?;
+    tx.execute(
+        r#"
+        UPDATE workflows
+        SET status = CASE
+          WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.workflow_id = workflows.id AND t.status NOT IN ('succeeded', 'cancelled', 'stale', 'superseded')) THEN 'active'
+          WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.workflow_id = workflows.id AND t.status IN ('cancelled', 'stale', 'superseded')) THEN 'cancelled'
+          ELSE 'succeeded' END,
+          updated_at = ?
+        WHERE id IN (SELECT workflow_id FROM tasks WHERE terminal_reason_json = ?)
+        "#,
+        params![now, reason],
+    ).map_err(to_cli_error)?;
+    Ok(())
+}
+
+fn migration_0013(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0013_SQL).map_err(to_cli_error)
+}
+
+fn migration_0014(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0014_SQL).map_err(to_cli_error)
+}
+
+fn migration_0015(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0015_SQL).map_err(to_cli_error)
 }
 
 fn rewrite_json_column(
@@ -2652,6 +3195,374 @@ mod tests {
     }
 
     #[test]
+    fn migration_0014_normalizes_legacy_model_gateway_settings() {
+        let temp = tempdir().expect("tempdir");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&storage_dir).expect("storage dir");
+        let mut connection = Connection::open(storage_dir.join(DATABASE_FILE_NAME)).expect("db");
+        connection
+            .execute_batch(SCHEMA_MIGRATIONS_SQL)
+            .expect("migration table");
+        for migration in migrations()
+            .iter()
+            .take_while(|migration| migration.id != "0014_model_gateway")
+        {
+            apply_migration(&mut connection, migration).expect("apply through 0013");
+        }
+        connection
+            .execute(
+                "INSERT INTO settings (namespace, key, value_json, updated_at) VALUES ('model_gateway', 'settings', ?, ?)",
+                params![
+                    json!({
+                        "mode": "localCli",
+                        "localCli": {
+                            "providerId": "hermes",
+                            "model": "anthropic/claude-sonnet-4",
+                            "reasoning": "default",
+                            "executablePaths": {
+                                "codex": "/opt/tools/codex",
+                                "hermes": "/opt/tools/hermes"
+                            }
+                        },
+                        "byok": { "providerId": null, "baseUrl": null, "model": null }
+                    })
+                    .to_string(),
+                    "2026-01-01T00:00:00.000Z"
+                ],
+            )
+            .expect("legacy setting");
+
+        let migration = migrations()
+            .iter()
+            .find(|migration| migration.id == "0014_model_gateway")
+            .expect("0014 migration");
+        apply_migration(&mut connection, migration).expect("apply 0014");
+
+        let config: (String, Option<String>) = connection
+            .query_row(
+                "SELECT mode, active_local_connection_id FROM model_gateway_config WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("gateway config");
+        assert_eq!(
+            config,
+            ("local_cli".to_owned(), Some("local-cli:hermes".to_owned()))
+        );
+        let hermes: (Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT executable_path, model FROM model_gateway_connections WHERE id = 'local-cli:hermes'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("hermes connection");
+        assert_eq!(
+            hermes,
+            (
+                Some("/opt/tools/hermes".to_owned()),
+                Some("anthropic/claude-sonnet-4".to_owned())
+            )
+        );
+        let legacy_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE namespace = 'model_gateway'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row count");
+        assert_eq!(legacy_count, 0);
+    }
+
+    #[test]
+    fn migration_0013_disables_webhooks_and_requeues_active_work() {
+        let temp = tempdir().expect("tempdir");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&storage_dir).expect("storage dir");
+        let mut connection = Connection::open(storage_dir.join(DATABASE_FILE_NAME)).expect("db");
+        connection
+            .execute_batch(SCHEMA_MIGRATIONS_SQL)
+            .expect("migration table");
+        for migration in migrations()
+            .iter()
+            .take_while(|migration| migration.id != "0013_remove_webhook_transport")
+        {
+            apply_migration(&mut connection, migration).expect("apply through 0012");
+        }
+        let legacy = Storage {
+            connection,
+            root_dir: storage_dir,
+        };
+        let now = "2026-01-01T00:00:00.000Z";
+        legacy
+            .write_project(&Project {
+                id: "project-webhook-upgrade".to_owned(),
+                title: "Webhook upgrade".to_owned(),
+                created_at: now.to_owned(),
+                updated_at: now.to_owned(),
+                panel_ids: vec!["panel-wiki".to_owned()],
+            })
+            .expect("project");
+        legacy
+            .write_panel(&Panel {
+                id: "panel-wiki".to_owned(),
+                project_id: "project-webhook-upgrade".to_owned(),
+                kind: PanelKind::Wiki,
+                title: "Wiki".to_owned(),
+                created_at: now.to_owned(),
+                updated_at: now.to_owned(),
+                state_ref: None,
+            })
+            .expect("panel");
+        let task = legacy
+            .insert_task(
+                "project-webhook-upgrade",
+                "panel-wiki",
+                "wiki",
+                "ingest_markdown",
+                "wiki.ingestMarkdown",
+                "wiki:default",
+                &json!({}),
+                &json!({}),
+            )
+            .expect("task");
+        let task_id = task["id"].as_str().expect("task id");
+        legacy
+            .connection
+            .execute(
+                r#"INSERT INTO agent_targets (
+              id, project_id, name, host, transport, endpoint, capabilities_json,
+              priority, status, token_hash, last_error, last_heartbeat_at,
+              created_at, updated_at, protocol_version, max_concurrency
+            ) VALUES (
+              'target:webhook', 'project-webhook-upgrade', 'Legacy Webhook', 'legacy',
+              'webhook', 'http://localhost/wake', '["wiki.ingestMarkdown"]', 10,
+              'online', 'hash', NULL, ?, ?, ?, 3, 1
+            )"#,
+                params![now, now, now],
+            )
+            .expect("legacy target");
+        legacy.connection.execute(
+            "INSERT INTO agent_routes (project_id, capability, agent_target_id, position, created_at, updated_at) VALUES ('project-webhook-upgrade', 'wiki.ingestMarkdown', 'target:webhook', 0, ?, ?)",
+            params![now, now],
+        ).expect("legacy route");
+        legacy.connection.execute(
+            "UPDATE tasks SET status = 'reserved', attempts = 3, max_attempts = 3, assigned_agent_id = 'target:webhook', lease_owner = 'target:webhook', lease_token_hash = 'lease', lease_expires_at = ?, execution_generation = 1 WHERE id = ?",
+            params!["2027-01-01T00:00:00.000Z", task_id],
+        ).expect("active task");
+        legacy.connection.execute(
+            "INSERT INTO task_attempts (id, task_id, attempt_number, execution_generation, agent_target_id, status, started_at) VALUES ('attempt:webhook', ?, 3, 1, 'target:webhook', 'leased', ?)",
+            params![task_id, now],
+        ).expect("active attempt");
+        legacy.connection.execute(
+            "INSERT INTO task_deliveries (id, task_id, agent_target_id, status, attempts, created_at, updated_at) VALUES ('delivery:webhook', ?, 'target:webhook', 'sent', 1, ?, ?)",
+            params![task_id, now, now],
+        ).expect("historical delivery");
+
+        let mut connection = legacy.connection;
+        let migration = migrations()
+            .iter()
+            .find(|migration| migration.id == "0013_remove_webhook_transport")
+            .expect("0013 migration");
+        apply_migration(&mut connection, migration).expect("apply 0013");
+
+        let (task_status, assigned_target, generation, attempts, max_attempts): (
+            String,
+            Option<String>,
+            i64,
+            i64,
+            i64,
+        ) = connection
+            .query_row(
+                "SELECT status, assigned_agent_id, execution_generation, attempts, max_attempts FROM tasks WHERE id = ?",
+                [task_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("migrated task");
+        assert_eq!(task_status, "failed");
+        assert_eq!(assigned_target, None);
+        assert_eq!(generation, 2);
+        assert_eq!(attempts, 3);
+        assert_eq!(max_attempts, 4);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status FROM task_attempts WHERE id = 'attempt:webhook'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("attempt status"),
+            "interrupted"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status FROM agent_targets WHERE id = 'target:webhook'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("target status"),
+            "offline"
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM agent_routes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("routes"),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM task_deliveries", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("deliveries"),
+            1
+        );
+    }
+
+    #[test]
+    fn migration_0012_upgrades_0011_content_and_fences_legacy_writers() {
+        let temp = tempdir().expect("tempdir");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&storage_dir).expect("storage dir");
+        let mut connection = Connection::open(storage_dir.join(DATABASE_FILE_NAME)).expect("db");
+        connection
+            .execute_batch(SCHEMA_MIGRATIONS_SQL)
+            .expect("migration table");
+        for migration in migrations()
+            .iter()
+            .take_while(|migration| migration.id != "0012_content_broker")
+        {
+            apply_migration(&mut connection, migration).expect("apply through 0011");
+        }
+        let legacy = Storage {
+            connection,
+            root_dir: storage_dir.clone(),
+        };
+        let now = "2026-01-01T00:00:00.000Z".to_owned();
+        legacy
+            .write_project(&Project {
+                id: "project-content-upgrade".to_owned(),
+                title: "Content upgrade".to_owned(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                panel_ids: vec!["panel-wiki".to_owned()],
+            })
+            .expect("project");
+        legacy
+            .write_panel(&Panel {
+                id: "panel-wiki".to_owned(),
+                project_id: "project-content-upgrade".to_owned(),
+                kind: PanelKind::Wiki,
+                title: "Wiki".to_owned(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                state_ref: None,
+            })
+            .expect("panel");
+        legacy
+            .write_panel_state(
+                "project-content-upgrade",
+                "panel-wiki",
+                &json!({
+                    "schemaVersion": 4,
+                    "rawDocuments": [{ "id": "raw-upgrade", "markdownRef": "raw/raw-upgrade/source.md" }],
+                    "generatedDocuments": [{ "id": "generated-upgrade", "contentRef": "generated/generated-upgrade/content.md" }],
+                    "wikiSpaces": [{ "id": "wiki:default" }]
+                }),
+            )
+            .expect("wiki state");
+        let task = legacy
+            .insert_task(
+                "project-content-upgrade",
+                "panel-wiki",
+                "writing",
+                "refine_writing_skill",
+                "writing.refineSkill",
+                "writing-custom-upgrade",
+                &json!({ "skillId": "writing-custom-upgrade", "name": "Upgrade Skill" }),
+                &json!({ "wikiPanelId": "panel-wiki" }),
+            )
+            .expect("legacy task");
+        let task_id = task["id"].as_str().expect("task id").to_owned();
+        drop(legacy);
+
+        let panel_dir = storage_dir.join("projects/project-content-upgrade/panels/panel-wiki");
+        for (relative, content) in [
+            ("raw/raw-upgrade/source.md", "# Raw\n"),
+            ("generated/generated-upgrade/content.md", "# Generated\n"),
+            ("wikis/wiki:default/pages/index.md", "# Index\n"),
+            ("wikis/wiki:default/pages/log.md", "# Log\n"),
+        ] {
+            let path = panel_dir.join(relative);
+            fs::create_dir_all(path.parent().expect("parent")).expect("content dir");
+            fs::write(path, content).expect("legacy content");
+        }
+        let skill_dir = storage_dir.join("writing-skills/writing-custom-upgrade");
+        fs::create_dir_all(&skill_dir).expect("skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nid: writing-custom-upgrade\ntitle: Upgrade Skill\nsource: custom\nappliesTo: [writing]\ntaskTypes: [generate_document]\n---\n\nWrite carefully.\n",
+        )
+        .expect("skill");
+        fs::write(
+            skill_dir.join("manifest.json"),
+            r#"{"schemaVersion":1,"originProjectId":"project-content-upgrade","skillId":"writing-custom-upgrade","title":"Upgrade Skill"}"#,
+        )
+        .expect("manifest");
+
+        let paths = paths_for(storage_dir);
+        let upgraded = Storage::open(&paths).expect("0012 upgrade");
+        let migration_status: String = upgraded
+            .connection()
+            .query_row(
+                "SELECT status FROM content_migration_state WHERE id = 'legacy_content_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration status");
+        assert_eq!(migration_status, "completed");
+        let resource_count: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM content_resources WHERE project_id = 'project-content-upgrade' AND active_revision_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("content resources");
+        assert_eq!(resource_count, 4);
+        let revision_one_count: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM content_revisions WHERE revision_number = 1 AND status = 'active'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("revision one");
+        assert_eq!(revision_one_count, 4);
+        let upgraded_task = upgraded
+            .list_tasks("project-content-upgrade")
+            .expect("tasks")
+            .into_iter()
+            .find(|candidate| candidate["id"] == task_id)
+            .expect("upgraded task");
+        assert_eq!(upgraded_task["status"], "cancelled");
+        assert_eq!(
+            upgraded_task["terminalReason"]["code"],
+            "upgrade_requires_v3_reexecution"
+        );
+    }
+
+    #[test]
     fn unique_panel_kind_migration_rejects_duplicates_without_deleting_data() {
         let temp = tempdir().expect("tempdir");
         let mut connection =
@@ -2852,8 +3763,50 @@ mod tests {
             .expect("migrated task")
             .pop()
             .expect("task");
-        assert_eq!(migrated_task["status"], "queued");
+        assert_eq!(migrated_task["status"], "cancelled");
+        assert_eq!(
+            migrated_task["terminalReason"]["code"],
+            "prerequisite_missing"
+        );
         assert_eq!(migrated_task["source"]["wikiSpaceId"], "wiki-default");
+        assert_eq!(migrated_task["workflowId"], "workflow:test");
+        assert_eq!(migrated_task["requiredProtocolVersion"], 1);
+        let workflow_count: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM workflows WHERE id = 'workflow:test'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("workflow");
+        assert_eq!(workflow_count, 1);
+        let event_count: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM task_events WHERE task_id = 'task-test' AND event_type = 'migrated'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event");
+        assert_eq!(event_count, 1);
+        let outbox_count: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM dispatch_outbox WHERE task_id = 'task-test' AND status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("outbox");
+        assert_eq!(outbox_count, 0);
+        let input_count: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM task_inputs WHERE task_id = 'task-test' AND resource_id = 'raw-test'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("task input");
+        assert_eq!(input_count, 1);
         let wiki_state = storage
             .read_panel_state("session-test", "panel-wiki")
             .expect("wiki state")

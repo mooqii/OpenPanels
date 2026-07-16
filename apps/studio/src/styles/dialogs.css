@@ -1,23 +1,89 @@
+.op-markdown-dialog__container {
+  padding: 24px 24px 88px;
+}
+
 .op-markdown-dialog__panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: min(1120px, 100%);
-  height: min(860px, calc(100vh - 36px));
+  height: min(820px, calc(100vh - 112px));
   overflow: hidden;
 }
 
-.op-markdown-dialog__panel h2 {
-  margin: 7px 0 0;
+.op-markdown-dialog__header {
+  display: flex;
+  flex-direction: row;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 58px;
+}
+
+.op-markdown-dialog__filename {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.op-markdown-dialog__filename h2 {
+  margin: 0;
   font-size: 17px;
+  line-height: 1.35;
   letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.op-markdown-dialog__rename {
+  flex: 0 0 auto;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  color: var(--op-text-tertiary);
+}
+
+.op-markdown-dialog__filename-editor {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.op-markdown-dialog__filename-editor span {
+  color: var(--op-text-secondary);
+}
+
+.op-markdown-dialog__actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.op-markdown-dialog__save-status {
+  font-size: 12px;
+  color: var(--op-text-tertiary);
+  white-space: nowrap;
+}
+
+.op-markdown-dialog__save-status[data-status="error"] {
+  color: var(--danger-soft-foreground);
+}
+
+.op-markdown-dialog__close {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
 }
 
 .op-markdown-dialog__editor {
-  width: 100%;
   height: 100%;
   min-height: 0;
-  padding: 18px;
-  margin: 0;
   overflow: auto;
   font:
     13px / 1.6 ui-monospace,
@@ -25,10 +91,81 @@
     Menlo,
     Consolas,
     monospace;
-  color: var(--op-text-primary);
   white-space: pre-wrap;
   resize: none;
-  outline: none;
+}
+
+.op-skill-files-dialog__body {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  padding: 0 16px 16px;
+  overflow: hidden;
+}
+
+.op-skill-files-dialog__tree {
+  padding: 10px 8px;
+  overflow: auto;
+  background: var(--op-bg-muted);
+  border-radius: 8px;
+}
+
+.op-skill-files-dialog__tree-item {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 7px;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--op-text-secondary);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+}
+
+.op-skill-files-dialog__tree-item:hover,
+.op-skill-files-dialog__tree-item[data-selected="true"] {
+  color: var(--op-text-primary);
+  background: var(--op-bg-elevated);
+}
+
+.op-skill-files-dialog__tree-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-skill-files-dialog__tree-children {
+  padding-left: 15px;
+}
+
+.op-skill-files-dialog__editor-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+@media (max-width: 720px) {
+  .op-markdown-dialog__container {
+    padding: 12px 12px 76px;
+  }
+
+  .op-markdown-dialog__panel {
+    height: calc(100vh - 88px);
+  }
+
+  .op-skill-files-dialog__body {
+    grid-template-columns: 140px minmax(0, 1fr);
+    gap: 8px;
+    padding: 0 12px 12px;
+  }
 }
 
 .op-original-preview-dialog__panel {
@@ -42,7 +179,7 @@
 .op-original-preview-dialog__meta {
   margin: 5px 0 0;
   font-size: 12px;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-secondary);
 }
 
 .op-original-preview-dialog__body {
@@ -61,7 +198,7 @@
       transparent 75%,
       color-mix(in oklab, var(--op-border-subtle) 36%, transparent) 75%
     ),
-    var(--op-bg);
+    var(--op-bg-base);
   background-size: 18px 18px;
 }
 
@@ -107,7 +244,7 @@
   display: flex;
   gap: 8px;
   align-items: center;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-secondary);
 }
 
 .op-image-preview {
@@ -134,7 +271,7 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
-  cursor: zoom-in;
+  cursor: default;
 }
 
 .op-image-preview__stage img {
@@ -149,41 +286,47 @@
   transition: transform 120ms ease;
 }
 
+.op-image-preview__close {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 2;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+  color: var(--op-text-primary);
+  background: color-mix(in oklab, var(--overlay) 82%, transparent);
+  border: 1px solid var(--op-toolbar-border);
+  border-radius: 50%;
+  box-shadow: var(--op-toolbar-shadow);
+  backdrop-filter: blur(14px);
+}
+
 .op-image-preview__controls {
   position: fixed;
-  right: 18px;
   bottom: 18px;
+  left: 50%;
   z-index: 1;
   display: inline-flex;
-  gap: 6px;
+  gap: 2px;
+  align-items: center;
   padding: 5px;
   background: color-mix(in oklab, var(--overlay) 82%, transparent);
   border: 1px solid var(--op-toolbar-border);
   border-radius: 999px;
   box-shadow: var(--op-toolbar-shadow);
   backdrop-filter: blur(14px);
+  transform: translateX(-50%);
 }
 
-.op-confirm-dialog__panel {
-  width: min(380px, 100%);
-}
-
-.op-confirm-dialog__panel h2 {
-  margin: 0;
-  font-size: 17px;
-  letter-spacing: 0;
-}
-
-.op-confirm-dialog__panel p {
-  margin: 10px 0 0;
-  font-size: 13px;
-  line-height: 1.5;
+.op-image-preview__zoom-value {
+  display: inline-grid;
+  place-items: center;
+  width: 58px;
+  min-width: 58px;
+  height: 32px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
   color: var(--op-text-secondary);
-}
-
-.op-confirm-dialog__actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  margin-top: 18px;
 }

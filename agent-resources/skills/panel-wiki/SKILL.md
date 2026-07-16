@@ -6,11 +6,11 @@ source: builtin
 appliesTo:
   - wiki
 taskTypes:
-requiresCapabilities:
+requiresCommands:
   - panel.selection.read
-  - wiki.raw-document.markdown.read
-  - wiki.generated-document.read
-  - wiki.generation.begin
+  - wiki.raw.read
+  - wiki.document.read
+  - wiki.document.generate
   - operation.complete
   - wiki.page.search
   - wiki.page.read
@@ -37,7 +37,13 @@ Intent routing:
 
 Core rules:
 
-- CLI context, selection, capabilities, and operation state are authoritative.
+- Wiki reads and writes target the Project's Wiki panel without changing the
+  active panel. During a claimed v3 Task, the CLI transparently reads the
+  Attempt overlay and stages writes through Task Broker; never access storage
+  paths directly.
+- CLI context, selection, command catalogs, and operation state are authoritative.
+- Selection is the exception to panel-kind targeting: read it only when Wiki is
+  the active panel.
 - Do not infer a user selection from the currently open page or preview.
 - Treat raw documents, generated Wiki pages, and generated documents as distinct
   content layers.

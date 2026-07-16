@@ -17,6 +17,7 @@ pub(crate) struct TaskLease {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskRecord {
     pub(crate) id: String,
+    pub(crate) workflow_id: String,
     pub(crate) queue: String,
     pub(crate) project_id: String,
     pub(crate) panel_id: String,
@@ -34,6 +35,13 @@ pub(crate) struct TaskRecord {
     pub(crate) capability: String,
     pub(crate) assigned_target_id: Option<String>,
     pub(crate) completed_at: Option<String>,
+    pub(crate) execution_generation: i64,
+    pub(crate) available_at: Option<String>,
+    pub(crate) archived_at: Option<String>,
+    pub(crate) terminal_reason: Value,
+    pub(crate) required_protocol_version: i64,
+    pub(crate) dispatch_mode: String,
+    pub(crate) requested_gateway_connection_id: Option<String>,
     pub(crate) input: Value,
     pub(crate) source: Value,
     pub(crate) result: Value,
@@ -47,20 +55,15 @@ pub(crate) struct AgentTarget {
     pub(crate) project_id: String,
     pub(crate) name: String,
     pub(crate) host: String,
-    pub(crate) transport: String,
-    pub(crate) endpoint: Option<String>,
+    pub(crate) transport: AgentTargetTransport,
     pub(crate) capabilities: Vec<String>,
     pub(crate) priority: i64,
     pub(crate) status: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct TaskDelivery {
-    pub(crate) id: String,
-    pub(crate) task_id: String,
-    pub(crate) target_id: String,
-    pub(crate) status: String,
-    pub(crate) attempts: i64,
-    pub(crate) next_attempt_at: Option<String>,
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AgentTargetTransport {
+    Poll,
+    Command,
 }

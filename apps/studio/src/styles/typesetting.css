@@ -1,14 +1,4 @@
 .op-typesetting-panel {
-  --op-typesetting-row-hover-bg: color-mix(
-    in oklab,
-    var(--accent) 14%,
-    var(--op-bg-elevated)
-  );
-  --op-typesetting-row-hover-border: color-mix(
-    in oklab,
-    var(--accent) 42%,
-    var(--op-border-default)
-  );
   position: relative;
   height: 100vh;
   min-height: 100vh;
@@ -51,14 +41,15 @@
 }
 
 .op-typesetting-library-module {
+  position: relative;
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
   min-height: 0;
   padding: 16px;
   overflow: hidden;
-  background: transparent;
-  border: 1px solid var(--op-border-default);
+  background: var(--op-bg-base);
+  border: 0;
   border-radius: 8px;
 }
 
@@ -69,7 +60,8 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--op-border-default);
+  background: var(--op-bg-base);
+  border: 0;
   border-radius: 8px;
 }
 
@@ -82,7 +74,19 @@
 .op-typesetting-document-library
   > .op-typesetting-library-module
   + .op-typesetting-library-module {
-  border-top: 1px solid var(--op-border-default);
+  border-top: 0;
+}
+
+.op-typesetting-document-library
+  > .op-typesetting-library-module
+  + .op-typesetting-library-module::before {
+  position: absolute;
+  top: 0;
+  right: 16px;
+  left: 16px;
+  height: 1px;
+  content: "";
+  background: var(--op-divider);
 }
 
 .op-typesetting-library-module__header {
@@ -155,7 +159,7 @@
   color: var(--op-text-primary);
   text-align: left;
   cursor: pointer;
-  background: var(--op-bg);
+  background: var(--op-bg-base);
   border: 1px solid var(--op-border-subtle);
   border-radius: 8px;
   transition:
@@ -171,8 +175,8 @@
 .op-typesetting-document:hover,
 .op-typesetting-document:focus-visible {
   outline: none;
-  background: var(--op-typesetting-row-hover-bg);
-  border-color: var(--op-typesetting-row-hover-border);
+  background: var(--op-row-hover-bg);
+  border-color: var(--op-row-hover-border);
   box-shadow: inset 0 0 0 1px
     color-mix(in oklab, var(--accent) 16%, transparent);
 }
@@ -191,13 +195,13 @@
 .op-typesetting-document .op-raw-document-meta {
   display: flex;
   font-size: 10px;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-secondary);
 }
 
 .op-typesetting-document .op-generated-document-meta {
   display: flex;
   font-size: 10px;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-secondary);
 }
 
 .op-typesetting-document span,
@@ -219,7 +223,7 @@
 .op-typesetting-document small {
   margin-top: 2px;
   font-size: 10px;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-secondary);
 }
 
 .op-typesetting-library-empty {
@@ -296,8 +300,8 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: transparent;
-  border: 1px solid var(--op-border-default);
+  background: var(--op-bg-base);
+  border: 0;
   border-radius: 8px;
 }
 
@@ -336,7 +340,7 @@
 .op-typesetting-view-header p {
   margin: 3px 0 0;
   font-size: 12px;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-secondary);
 }
 
 .op-typesetting-save {
@@ -380,7 +384,7 @@ button.op-typesetting-save {
   align-items: center;
   min-height: 76px;
   padding: 8px 10px;
-  background: var(--op-bg);
+  background: var(--op-bg-base);
   border: 1px solid var(--op-border-subtle);
   border-radius: 8px;
   transition:
@@ -390,8 +394,8 @@ button.op-typesetting-save {
 }
 
 .op-typesetting-publication-row:hover {
-  background: var(--op-typesetting-row-hover-bg);
-  border-color: var(--op-typesetting-row-hover-border);
+  background: var(--op-row-hover-bg);
+  border-color: var(--op-row-hover-border);
   box-shadow: inset 0 0 0 1px
     color-mix(in oklab, var(--accent) 16%, transparent);
 }
@@ -459,21 +463,18 @@ button.op-typesetting-save {
 .op-typesetting-publication-row__text small {
   margin-top: 4px;
   font-size: 11px;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-secondary);
 }
 
 .op-typesetting-list-empty {
   display: grid;
   flex: 1;
-  gap: 12px;
   place-content: center;
-  justify-items: center;
+  padding: 24px 16px;
+  font-size: 12px;
+  line-height: 1.6;
   color: var(--op-text-tertiary);
-}
-
-.op-typesetting-list-empty strong {
-  font-size: 13px;
-  color: var(--op-text-secondary);
+  text-align: center;
 }
 
 .op-typesetting-detail-header {
@@ -496,7 +497,7 @@ button.op-typesetting-save {
 .op-typesetting-detail-header__title small {
   margin-top: 2px;
   font-size: 10px;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-secondary);
 }
 
 .op-typesetting-detail-scroll {
@@ -513,32 +514,13 @@ button.op-typesetting-save {
   margin: 0 auto 24px;
 }
 
-.op-typesetting-field > span,
+.op-typesetting-field > label,
 .op-typesetting-section__heading > div > span {
   display: block;
   margin-bottom: 7px;
   font-size: 12px;
   font-weight: 700;
   color: var(--op-text-secondary);
-}
-
-.op-typesetting-field input {
-  width: 100%;
-  min-height: 42px;
-  padding: 7px 11px;
-  font-size: 16px;
-  font-weight: 650;
-  color: var(--op-text-primary);
-  letter-spacing: 0;
-  outline: none;
-  background: var(--field-background);
-  border: 1px solid var(--field-border);
-  border-radius: 8px;
-}
-
-.op-typesetting-field input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 14%, transparent);
 }
 
 .op-typesetting-section__heading {
@@ -552,7 +534,7 @@ button.op-typesetting-save {
   display: block;
   margin-top: -3px;
   font-size: 10px;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-secondary);
 }
 
 .op-typesetting-cover-zone {
@@ -600,8 +582,8 @@ button.op-typesetting-save {
   place-items: center;
   width: 24px;
   height: 24px;
-  color: white;
-  background: color-mix(in oklab, black 62%, transparent);
+  color: var(--white);
+  background: color-mix(in oklab, var(--black) 62%, transparent);
   border-radius: 5px;
 }
 
@@ -614,7 +596,7 @@ button.op-typesetting-save {
   padding: 2px;
   background: color-mix(in oklab, var(--op-bg-elevated) 92%, transparent);
   border-radius: 6px;
-  box-shadow: 0 4px 14px color-mix(in oklab, black 24%, transparent);
+  box-shadow: 0 4px 14px color-mix(in oklab, var(--black) 24%, transparent);
 }
 
 .op-typesetting-cover__actions button {
@@ -625,7 +607,6 @@ button.op-typesetting-save {
 
 .op-typesetting-drop-empty {
   display: flex;
-  gap: 8px;
   align-items: center;
   justify-content: center;
   min-height: 96px;
@@ -656,68 +637,8 @@ button.op-typesetting-save {
   backdrop-filter: blur(12px);
 }
 
-.op-typesetting-toolbar select {
-  flex: 0 0 94px;
-  height: 30px;
-  padding: 0 8px;
-  font-size: 11px;
-  color: var(--op-text-primary);
-  background: var(--field-background);
-  border: 1px solid var(--field-border);
-  border-radius: 6px;
-}
-
-.op-typesetting-toolbar button {
-  flex: 0 0 30px;
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
-}
-
-.op-typesetting-toolbar button.is-active {
-  color: var(--accent-soft-foreground);
-  background: var(--accent-soft);
-}
-
 .op-typesetting-toolbar__spacer {
   flex: 1 0 8px;
-}
-
-.op-typesetting-link-control {
-  position: relative;
-  display: flex;
-}
-
-.op-typesetting-link-popover {
-  position: absolute;
-  top: 36px;
-  left: 0;
-  z-index: 7;
-  display: flex;
-  gap: 5px;
-  width: min(360px, calc(100vw - 40px));
-  padding: 7px;
-  background: var(--op-bg-elevated);
-  border: 1px solid var(--op-border-default);
-  border-radius: 7px;
-  box-shadow: var(--op-toolbar-shadow);
-}
-
-.op-typesetting-link-popover input {
-  flex: 1;
-  min-width: 120px;
-  height: 30px;
-  padding: 0 8px;
-  color: var(--field-foreground);
-  background: var(--field-background);
-  border: 1px solid var(--field-border);
-  border-radius: 6px;
-}
-
-.op-typesetting-link-popover button {
-  flex-basis: auto;
-  width: auto;
-  padding-inline: 9px;
 }
 
 .op-typesetting-editor__body {
@@ -776,7 +697,6 @@ button.op-typesetting-save {
   right: 24px;
   left: 24px;
   display: grid;
-  gap: 8px;
   justify-items: center;
   font-size: 12px;
   color: var(--op-text-tertiary);
@@ -852,7 +772,7 @@ button.op-typesetting-save {
 .op-typesetting-preview header p {
   margin: 4px 0 0;
   font-size: 11px;
-  color: var(--op-text-subtitle);
+  color: var(--op-text-secondary);
 }
 
 .op-typesetting-preview__body,
@@ -947,7 +867,7 @@ button.op-typesetting-save {
     padding: 8px 12px 16px;
     background: var(--op-canvas-background);
     border-right: 1px solid var(--op-border-default);
-    box-shadow: 18px 0 44px color-mix(in oklab, black 32%, transparent);
+    box-shadow: 18px 0 44px color-mix(in oklab, var(--black) 32%, transparent);
     transform: translateX(-102%);
     transition:
       transform 180ms ease,
@@ -978,7 +898,7 @@ button.op-typesetting-save {
     z-index: 71;
     display: block;
     padding: 0;
-    background: color-mix(in oklab, black 44%, transparent);
+    background: color-mix(in oklab, var(--black) 44%, transparent);
     border: 0;
   }
 

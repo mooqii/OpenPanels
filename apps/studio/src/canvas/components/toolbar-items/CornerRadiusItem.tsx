@@ -254,7 +254,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
         </Button>
         <Tooltip.Content>{t`Corner Radius`}</Tooltip.Content>
       </Tooltip>
-      <Popover.Content className="border border-border" offset={12}>
+      <Popover.Content offset={12}>
         <Popover.Dialog className="w-64 p-0">
           <Popover.Heading className="px-4 py-3">
             <span>{t`Corner radius`}</span>
@@ -264,7 +264,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
             {/* Top row: Uniform input and mode toggle */}
             <div className="mb-3 flex items-center gap-2">
               <NumberInput
-                className="rounded-lg bg-surface-secondary px-2 py-1"
+                className="rounded-lg px-2 py-1"
                 dragVelocity={1}
                 max={maxRadius}
                 min={0}
@@ -275,7 +275,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
               >
                 <NumberInput.DragHandle
                   icon={
-                    <UniformCornerIcon className="h-3.5 w-3.5 text-gray-600" />
+                    <UniformCornerIcon className="h-3.5 w-3.5 text-muted" />
                   }
                 />
                 <NumberInput.Input className="w-18 text-right" />
@@ -288,7 +288,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
                 }
                 className={cn(
                   "h-8 w-8 min-w-8 p-0",
-                  !isUniformMode && "bg-blue-100 text-blue-600"
+                  !isUniformMode && "bg-accent-soft text-accent-soft-foreground"
                 )}
                 isIconOnly
                 onClick={handleToggleMode}
@@ -303,7 +303,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
               <div className="grid grid-cols-2 gap-2">
                 {/* Top-left (index 0) */}
                 <NumberInput
-                  className="rounded-lg bg-surface-secondary px-2 py-1"
+                  className="rounded-lg px-2 py-1"
                   dragVelocity={1}
                   max={maxRadius}
                   min={0}
@@ -314,7 +314,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
                 >
                   <NumberInput.DragHandle
                     icon={
-                      <TopLeftCornerIcon className="h-3.5 w-3.5 text-gray-600" />
+                      <TopLeftCornerIcon className="h-3.5 w-3.5 text-muted" />
                     }
                   />
                   <NumberInput.Input className="w-18 text-right" />
@@ -322,7 +322,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
 
                 {/* Top-right (index 1) */}
                 <NumberInput
-                  className="rounded-lg bg-surface-secondary px-2 py-1"
+                  className="rounded-lg px-2 py-1"
                   dragVelocity={1}
                   max={maxRadius}
                   min={0}
@@ -333,7 +333,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
                 >
                   <NumberInput.DragHandle
                     icon={
-                      <TopRightCornerIcon className="h-3.5 w-3.5 text-gray-600" />
+                      <TopRightCornerIcon className="h-3.5 w-3.5 text-muted" />
                     }
                   />
                   <NumberInput.Input className="w-18 text-right" />
@@ -341,7 +341,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
 
                 {/* Bottom-left (index 3) - visually in bottom-left position */}
                 <NumberInput
-                  className="rounded-lg bg-surface-secondary px-2 py-1"
+                  className="rounded-lg px-2 py-1"
                   dragVelocity={1}
                   max={maxRadius}
                   min={0}
@@ -352,7 +352,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
                 >
                   <NumberInput.DragHandle
                     icon={
-                      <BottomLeftCornerIcon className="h-3.5 w-3.5 text-gray-600" />
+                      <BottomLeftCornerIcon className="h-3.5 w-3.5 text-muted" />
                     }
                   />
                   <NumberInput.Input className="w-18 text-right" />
@@ -360,7 +360,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
 
                 {/* Bottom-right (index 2) - visually in bottom-right position */}
                 <NumberInput
-                  className="rounded-lg bg-surface-secondary px-2 py-1"
+                  className="rounded-lg px-2 py-1"
                   dragVelocity={1}
                   max={maxRadius}
                   min={0}
@@ -371,7 +371,7 @@ export function CornerRadiusItem({ editor, shape }: CornerRadiusItemProps) {
                 >
                   <NumberInput.DragHandle
                     icon={
-                      <BottomRightCornerIcon className="h-3.5 w-3.5 text-gray-600" />
+                      <BottomRightCornerIcon className="h-3.5 w-3.5 text-muted" />
                     }
                   />
                   <NumberInput.Input className="w-18 text-right" />

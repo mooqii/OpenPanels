@@ -121,6 +121,8 @@ pub(super) async fn api_wiki_update_generated_document(
             body.mime_type.as_deref(),
             content.as_bytes(),
         )
+    } else if let Some(file_name) = body.file_name {
+        wiki::rename_generated_document_file(&state.paths, &document_id, &file_name)
     } else if let Some(title) = body.title {
         wiki::rename_generated_document(&state.paths, &document_id, &title)
     } else {
@@ -130,6 +132,23 @@ pub(super) async fn api_wiki_update_generated_document(
         ))
     };
     match result {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => wiki_document_error(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RenameDocumentFileBody {
+    file_name: String,
+}
+
+pub(super) async fn api_wiki_rename_raw_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<String>,
+    Json(body): Json<RenameDocumentFileBody>,
+) -> Response {
+    match wiki::rename_raw_document(&state.paths, &document_id, &body.file_name) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => wiki_document_error(error),
     }
@@ -479,6 +498,20 @@ pub(super) async fn api_wiki_write_page(
     Json(body): Json<WritePageBody>,
 ) -> Response {
     write_page_response(state, &wiki_space_id, &page_path, body)
+}
+
+pub(super) async fn api_wiki_rename_page(
+    State(state): State<Arc<AppState>>,
+    Path((wiki_space_id, page_path)): Path<(String, String)>,
+    Json(body): Json<WritePageBody>,
+) -> Response {
+    let Some(next_page_path) = body.page_path.as_deref() else {
+        return json_error(StatusCode::BAD_REQUEST, "Missing pagePath");
+    };
+    match wiki::rename_page(&state.paths, &wiki_space_id, &page_path, next_page_path) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => wiki_document_error(error),
+    }
 }
 
 pub(super) fn write_page_response(

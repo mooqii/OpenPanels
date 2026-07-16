@@ -2,18 +2,20 @@ import { Chip } from "@heroui/react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import type { WikiRawDocument } from "../../types"
 
-export type WikiTaskListFilter = "active" | "pending"
+export type WikiTaskListFilter = "active" | "done" | "pending"
 
 export function conversionStatusTaskFilter(
   status: WikiRawDocument["conversion"]["status"]
 ): WikiTaskListFilter {
-  return status === "converting" ? "active" : "pending"
+  if (status === "converting") return "active"
+  return status === "cancelled" ? "done" : "pending"
 }
 
 export function indexStatusTaskFilter(
   status: ReturnType<typeof documentIndexStatus>
 ): WikiTaskListFilter {
-  return status.kind === "running" ? "active" : "pending"
+  if (status.kind === "running") return "active"
+  return status.kind === "cancelled" ? "done" : "pending"
 }
 
 function TaskStatusChip({
@@ -56,6 +58,16 @@ export function WikiStatus({
   onOpenTasks: (filter: WikiTaskListFilter) => void
 }) {
   const { t } = useMyOpenPanelsI18n()
+  if (document.conversion.status === "cancelled") {
+    return (
+      <TaskStatusChip
+        color="warning"
+        filter={conversionStatusTaskFilter(document.conversion.status)}
+        label={t`Conversion cancelled`}
+        onOpenTasks={onOpenTasks}
+      />
+    )
+  }
   if (document.conversion.status === "failed") {
     return (
       <TaskStatusChip
@@ -171,7 +183,10 @@ export function formatWikiTaskStatus(
 export function documentIndexStatus(
   document: WikiRawDocument,
   wikiSpaceId: string | null | undefined
-): { kind: "done" | "failed" | "pending" | "running"; label: string } {
+): {
+  kind: "cancelled" | "done" | "failed" | "pending" | "running"
+  label: string
+} {
   const ingestion = wikiSpaceId
     ? document.ingestionByWikiSpace[wikiSpaceId]
     : undefined
@@ -180,6 +195,9 @@ export function documentIndexStatus(
   }
   if (ingestion?.status === "failed") {
     return { kind: "failed", label: "Index failed" }
+  }
+  if (ingestion?.status === "cancelled") {
+    return { kind: "cancelled", label: "Index cancelled" }
   }
   if (ingestion?.status === "ingesting") {
     return { kind: "running", label: "Indexing" }

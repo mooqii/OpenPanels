@@ -1,4 +1,13 @@
-import { Button, Modal, Tabs } from "@heroui/react"
+import {
+  AlertDialog,
+  Button,
+  Dropdown,
+  Header,
+  Input,
+  Label,
+  Separator,
+  Tabs,
+} from "@heroui/react"
 import {
   FileText,
   LayoutTemplate,
@@ -9,7 +18,7 @@ import {
   Send,
   Trash2,
 } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import {
   type Asset,
   type AssetStore,
@@ -28,19 +37,21 @@ export function ProjectChrome({
   projects,
   onCreateProject,
   onDeleteProject,
+  onOpenModelSettings,
   onRenameProject,
   onSwitchProject,
 }: {
   currentProject: MyOpenPanelsProject
   onCreateProject: () => void
   onDeleteProject: (projectId: string) => void
+  onOpenModelSettings: () => void
   onRenameProject: (title: string) => void
   onSwitchProject: (projectId: string) => void
   projects: MyOpenPanelsProject[]
 }) {
   return (
     <>
-      <CanvasMenu />
+      <CanvasMenu onOpenModelSettings={onOpenModelSettings} />
       <ProjectTitleControl
         currentProject={currentProject}
         onCreateProject={onCreateProject}
@@ -81,10 +92,7 @@ export function BottomPanelTabs({
         selectedKey={activePanelKind}
       >
         <Tabs.ListContainer>
-          <Tabs.List
-            aria-label={t`Project panels`}
-            className="op-panel-tabs__list"
-          >
+          <Tabs.List aria-label={t`Project panels`}>
             {visiblePanels.map((panel) => (
               <Tabs.Tab
                 className="op-panel-tabs__tab"
@@ -139,32 +147,10 @@ function ProjectTitleControl({
   projects: MyOpenPanelsProject[]
 }) {
   const { t } = useMyOpenPanelsI18n()
-  const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [pendingDeleteProject, setPendingDeleteProject] =
     useState<MyOpenPanelsProject | null>(null)
   const [draftTitle, setDraftTitle] = useState(currentProject.title)
-  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const clearCloseTimer = useCallback(() => {
-    if (closeTimerRef.current) {
-      clearTimeout(closeTimerRef.current)
-      closeTimerRef.current = null
-    }
-  }, [])
-
-  const openMenu = useCallback(() => {
-    clearCloseTimer()
-    setIsMenuOpen(true)
-  }, [clearCloseTimer])
-
-  const scheduleCloseMenu = useCallback(() => {
-    clearCloseTimer()
-    closeTimerRef.current = setTimeout(() => {
-      setIsMenuOpen(false)
-      closeTimerRef.current = null
-    }, 180)
-  }, [clearCloseTimer])
 
   useEffect(() => {
     if (!isEditing) {
@@ -172,12 +158,9 @@ function ProjectTitleControl({
     }
   }, [currentProject.title, isEditing])
 
-  useEffect(() => clearCloseTimer, [clearCloseTimer])
-
   const commitTitle = useCallback(() => {
     const nextTitle = draftTitle.trim()
     setIsEditing(false)
-    setIsMenuOpen(false)
     if (nextTitle && nextTitle !== currentProject.title) {
       onRenameProject(nextTitle)
     } else {
@@ -187,7 +170,6 @@ function ProjectTitleControl({
 
   const confirmDeleteProject = useCallback(() => {
     if (!pendingDeleteProject) return
-    setIsMenuOpen(false)
     onDeleteProject(pendingDeleteProject.id)
     setPendingDeleteProject(null)
   }, [onDeleteProject, pendingDeleteProject])
@@ -195,10 +177,10 @@ function ProjectTitleControl({
   if (isEditing) {
     return (
       <div className="op-project-title op-project-title--editing">
-        <input
+        <Input
           aria-label={t`Project name`}
           autoFocus
-          className="op-project-title__input"
+          className="min-w-0 max-w-90"
           onBlur={commitTitle}
           onChange={(event) => setDraftTitle(event.target.value)}
           onKeyDown={(event) => {
@@ -210,7 +192,6 @@ function ProjectTitleControl({
               event.preventDefault()
               setDraftTitle(currentProject.title)
               setIsEditing(false)
-              setIsMenuOpen(false)
             }
           }}
           value={draftTitle}
@@ -221,24 +202,69 @@ function ProjectTitleControl({
 
   return (
     <div className="op-project-title">
-      <div
-        className="op-project-title__activation"
-        onMouseEnter={openMenu}
-        onMouseLeave={scheduleCloseMenu}
-      >
-        <Button
-          className="op-project-title__trigger"
-          onPress={() => setIsMenuOpen((open) => !open)}
-          variant="ghost"
-        >
-          <span>{currentProject.title}</span>
-        </Button>
+      <div className="op-project-title__activation">
+        <Dropdown>
+          <Button className="op-project-title__trigger" variant="ghost">
+            <span>{currentProject.title}</span>
+          </Button>
+          <Dropdown.Popover className="min-w-64" placement="top start">
+            <Dropdown.Menu
+              onAction={(key) => {
+                const action = String(key)
+                if (action === "create") {
+                  onCreateProject()
+                  return
+                }
+                if (action === "delete-current") {
+                  setPendingDeleteProject(currentProject)
+                  return
+                }
+                if (action.startsWith("switch:")) {
+                  const projectId = action.slice("switch:".length)
+                  if (projectId !== currentProject.id) {
+                    onSwitchProject(projectId)
+                  }
+                }
+              }}
+            >
+              <Dropdown.Section
+                selectedKeys={[`switch:${currentProject.id}`]}
+                selectionMode="single"
+              >
+                <Header>{t`Projects`}</Header>
+                {projects.map((project) => (
+                  <Dropdown.Item
+                    id={`switch:${project.id}`}
+                    key={project.id}
+                    textValue={project.title}
+                  >
+                    <Dropdown.ItemIndicator />
+                    <Label>{project.title}</Label>
+                  </Dropdown.Item>
+                ))}
+              </Dropdown.Section>
+              <Separator />
+              <Dropdown.Item id="create" textValue={t`New project`}>
+                <Plus size={14} />
+                <Label>{t`New project`}</Label>
+              </Dropdown.Item>
+              <Dropdown.Item
+                id="delete-current"
+                isDisabled={projects.length <= 1}
+                textValue={t`Delete current project`}
+                variant="danger"
+              >
+                <Trash2 size={14} />
+                <Label>{t`Delete current project`}</Label>
+              </Dropdown.Item>
+            </Dropdown.Menu>
+          </Dropdown.Popover>
+        </Dropdown>
         <Button
           aria-label={t`Rename project`}
           className="op-project-title__edit-button"
           isIconOnly
           onPress={() => {
-            setIsMenuOpen(false)
             setIsEditing(true)
           }}
           size="sm"
@@ -246,112 +272,48 @@ function ProjectTitleControl({
         >
           <Pencil size={14} strokeWidth={1.8} />
         </Button>
-
-        {isMenuOpen ? (
-          <div className="op-project-title__menu">
-            <div className="op-project-title__menu-header">{t`Projects`}</div>
-            <div className="op-project-title__menu-list">
-              {projects.map((project) => {
-                const isActive = project.id === currentProject.id
-                const canDelete = projects.length > 1
-                return (
-                  <div
-                    className={
-                      isActive
-                        ? "op-project-title__menu-item op-project-title__menu-item--active"
-                        : "op-project-title__menu-item"
-                    }
-                    key={project.id}
-                  >
-                    <Button
-                      className="op-project-title__switch-button"
-                      onPress={() => {
-                        setIsMenuOpen(false)
-                        if (!isActive) {
-                          onSwitchProject(project.id)
-                        }
-                      }}
-                      variant="ghost"
-                    >
-                      <span>{project.title}</span>
-                    </Button>
-                    <span
-                      className="op-project-title__delete-wrap"
-                      title={
-                        canDelete
-                          ? t`Delete project`
-                          : t`Keep at least one project`
-                      }
-                    >
-                      <Button
-                        aria-disabled={!canDelete}
-                        aria-label={t`Delete project`}
-                        className="op-project-title__delete-button"
-                        isIconOnly
-                        onPress={() => {
-                          if (!canDelete) return
-                          setIsMenuOpen(false)
-                          setPendingDeleteProject(project)
-                        }}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <Trash2 size={14} strokeWidth={1.8} />
-                      </Button>
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-            <Button
-              className="op-project-title__menu-item op-project-title__menu-item--create"
-              onPress={() => {
-                setIsMenuOpen(false)
-                onCreateProject()
-              }}
-              variant="ghost"
-            >
-              <Plus size={14} />
-              <span>{t`New project`}</span>
-            </Button>
-          </div>
-        ) : null}
       </div>
 
       {pendingDeleteProject ? (
-        <Modal.Backdrop
+        <AlertDialog.Backdrop
           isOpen
           onOpenChange={(isOpen) => {
             if (!isOpen) setPendingDeleteProject(null)
           }}
         >
-          <Modal.Container placement="center">
-            <Modal.Dialog className="op-project-delete-dialog">
-              <Modal.Header>
-                <Modal.Heading>{t`Delete project?`}</Modal.Heading>
-              </Modal.Header>
-              <Modal.Body>
+          <AlertDialog.Container placement="center">
+            <AlertDialog.Dialog className="sm:max-w-105">
+              <AlertDialog.Header>
+                <AlertDialog.Icon status="danger" />
+                <AlertDialog.Heading>{t`Delete project?`}</AlertDialog.Heading>
+              </AlertDialog.Header>
+              <AlertDialog.Body>
                 <p>
                   {t`Deleting this project removes its Wiki, writing requests, generated documents, canvas content, and publication projects. This cannot be undone.`}
                 </p>
                 <div className="op-project-title__confirm-name">
                   {pendingDeleteProject.title}
                 </div>
-              </Modal.Body>
-              <Modal.Footer>
+              </AlertDialog.Body>
+              <AlertDialog.Footer>
                 <Button
                   onPress={() => setPendingDeleteProject(null)}
-                  variant="secondary"
+                  slot="close"
+                  variant="tertiary"
                 >
                   {t`Cancel`}
                 </Button>
-                <Button onPress={confirmDeleteProject} variant="danger">
+                <Button
+                  onPress={confirmDeleteProject}
+                  slot="close"
+                  variant="danger"
+                >
                   {t`Delete`}
                 </Button>
-              </Modal.Footer>
-            </Modal.Dialog>
-          </Modal.Container>
-        </Modal.Backdrop>
+              </AlertDialog.Footer>
+            </AlertDialog.Dialog>
+          </AlertDialog.Container>
+        </AlertDialog.Backdrop>
       ) : null}
     </div>
   )

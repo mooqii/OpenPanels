@@ -1,7 +1,8 @@
-import { Button, Chip, Tabs } from "@heroui/react"
+import { Button, Chip, Popover, Tabs } from "@heroui/react"
 import {
   Activity,
   ArrowDown,
+  ArrowLeft,
   CheckCircle2,
   Copy,
   Download,
@@ -74,7 +75,9 @@ export function AgentToggleButton({
 export function AgentPanel({
   activeTab,
   buildInfo,
+  focusedTaskIds,
   isOpen,
+  onClearFocusedTasks,
   onClose,
   onTabChange,
   onTaskFilterChange,
@@ -85,7 +88,9 @@ export function AgentPanel({
 }: {
   activeTab: AgentPanelTab
   buildInfo?: MyOpenPanelsBuildInfo
+  focusedTaskIds: string[] | null
   isOpen: boolean
+  onClearFocusedTasks: () => void
   onClose: () => void
   onTabChange: (tab: AgentPanelTab) => void
   onTaskFilterChange: (filter: TaskFilter) => void
@@ -107,6 +112,10 @@ export function AgentPanel({
   >("connecting")
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (focusedTaskIds?.length) setExpandedTaskId(focusedTaskIds[0])
+  }, [focusedTaskIds])
 
   useEffect(() => {
     if (isPaused) {
@@ -254,8 +263,11 @@ export function AgentPanel({
 
         {activeTab === "tasks" ? (
           <TaskList
+            apiBase={transport.apiBase}
             expandedTaskId={expandedTaskId}
             filter={taskFilter}
+            focusedTaskIds={focusedTaskIds}
+            onClearFocusedTasks={onClearFocusedTasks}
             onExpandTask={setExpandedTaskId}
             onFilterChange={onTaskFilterChange}
             tasks={tasks}
@@ -329,23 +341,42 @@ export function AgentPanel({
 }
 
 function TaskList({
+  apiBase,
   expandedTaskId,
   filter,
+  focusedTaskIds,
+  onClearFocusedTasks,
   onExpandTask,
   onFilterChange,
   tasks,
   workerStatus,
 }: {
+  apiBase: string
   expandedTaskId: string | null
   filter: TaskFilter
+  focusedTaskIds: string[] | null
+  onClearFocusedTasks: () => void
   onExpandTask: (taskId: string | null) => void
   onFilterChange: (filter: TaskFilter) => void
   tasks: ProjectTask[]
   workerStatus?: AgentWorkerStatus
 }) {
+  const focusedTaskIdSet = focusedTaskIds ? new Set(focusedTaskIds) : null
   const filteredTasks = tasks
-    .filter((task) => taskMatchesFilter(task, filter))
+    .filter((task) => !focusedTaskIdSet || focusedTaskIdSet.has(task.id))
+    .filter((task) =>
+      focusedTaskIdSet ? true : taskMatchesFilter(task, filter)
+    )
     .sort(compareTasksForDisplay)
+  const focusedTaskRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    if (!focusedTaskIds?.length) return
+    const frame = window.requestAnimationFrame(() => {
+      focusedTaskRef.current?.scrollIntoView({ block: "nearest" })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [focusedTaskIds])
   const filterItems: Array<{
     count: number
     id: TaskFilter
@@ -353,7 +384,7 @@ function TaskList({
   }> = [
     { id: "pending", label: "Pending", count: pendingTaskCount(tasks) },
     { id: "active", label: "Active", count: tasks.filter(isActiveTask).length },
-    { id: "done", label: "Done", count: tasks.filter(isDoneTask).length },
+    { id: "done", label: "Closed", count: tasks.filter(isDoneTask).length },
     { id: "all", label: "All", count: tasks.length },
   ]
 
@@ -368,33 +399,45 @@ function TaskList({
   return (
     <div className="op-agent-tasks">
       <WorkerStatusCard workerStatus={workerStatus} />
-      <div className="op-agent-task-filters">
-        {filterItems.map((item) => (
-          <button
-            aria-label={`${item.label} tasks (${item.count})`}
-            aria-pressed={filter === item.id}
-            className={
-              filter === item.id
-                ? "op-agent-task-filter op-agent-task-filter--active"
-                : "op-agent-task-filter"
-            }
-            key={item.id}
-            onClick={() => onFilterChange(item.id)}
-            type="button"
-          >
-            <span>{item.label}</span>
-            <strong
+      {focusedTaskIds?.length ? (
+        <div className="op-agent-task-focus">
+          <span>
+            Refinement tasks <strong>{focusedTaskIds.length}</strong>
+          </span>
+          <Button onPress={onClearFocusedTasks} size="sm" variant="ghost">
+            <ArrowLeft size={14} />
+            All tasks
+          </Button>
+        </div>
+      ) : (
+        <div className="op-agent-task-filters">
+          {filterItems.map((item) => (
+            <button
+              aria-label={`${item.label} tasks (${item.count})`}
+              aria-pressed={filter === item.id}
               className={
-                item.id === "pending" && item.count > 0
-                  ? "op-agent-task-filter__count op-agent-task-filter__count--danger"
-                  : "op-agent-task-filter__count"
+                filter === item.id
+                  ? "op-agent-task-filter op-agent-task-filter--active"
+                  : "op-agent-task-filter"
               }
+              key={item.id}
+              onClick={() => onFilterChange(item.id)}
+              type="button"
             >
-              {formatTaskCount(item.count)}
-            </strong>
-          </button>
-        ))}
-      </div>
+              <span>{item.label}</span>
+              <strong
+                className={
+                  item.id === "pending" && item.count > 0
+                    ? "op-agent-task-filter__count op-agent-task-filter__count--danger"
+                    : "op-agent-task-filter__count"
+                }
+              >
+                {formatTaskCount(item.count)}
+              </strong>
+            </button>
+          ))}
+        </div>
+      )}
       {filteredTasks.length ? (
         filteredTasks.map((task) => {
           const isExpanded = expandedTaskId === task.id
@@ -404,6 +447,7 @@ function TaskList({
             <article
               className={`op-agent-task op-agent-task--${taskStatusTone(task.status)}`}
               key={task.id}
+              ref={task.id === focusedTaskIds?.[0] ? focusedTaskRef : undefined}
             >
               <button
                 aria-expanded={isExpanded}
@@ -449,13 +493,15 @@ function TaskList({
                   {task.dispatchState ? (
                     <span>{formatDispatchState(task.dispatchState)}</span>
                   ) : null}
+                  {task.workflowId ? <span>workflow</span> : null}
                   {task.assignedTarget ? (
                     <span>{task.assignedTarget.name}</span>
                   ) : null}
                   <span>{task.panelKind}</span>
                   <span>{task.targetId || task.id}</span>
                 </span>
-                {task.status === "failed" && task.error ? (
+                {task.error &&
+                (task.status === "failed" || task.status === "cancelled") ? (
                   <span className="op-agent-task__note">
                     {formatTaskError(task.error)}
                   </span>
@@ -468,15 +514,41 @@ function TaskList({
                   <span className="op-agent-task__note">
                     Lease until {formatTaskTime(task.lease.expiresAt)}
                   </span>
-                ) : task.lastDelivery?.lastError ? (
-                  <span className="op-agent-task__note">
-                    Delivery: {task.lastDelivery.lastError}
-                  </span>
                 ) : null}
                 <code>{task.id}</code>
               </button>
               {isExpanded ? (
                 <div className="op-agent-task__detail">
+                  {task.workflowId ? (
+                    <div className="op-agent-task__command">
+                      <span>Workflow</span>
+                      <code>{task.workflowId}</code>
+                    </div>
+                  ) : null}
+                  {task.dependencies?.length ? (
+                    <div className="op-agent-task__command">
+                      <span>Prerequisites</span>
+                      <code>
+                        {task.dependencies
+                          .map(
+                            (dependency) =>
+                              `${dependency.prerequisiteTaskId} · ${dependency.status} · ${dependency.failurePolicy}`
+                          )
+                          .join("\n")}
+                      </code>
+                    </div>
+                  ) : null}
+                  {task.requiredProtocolVersion ? (
+                    <div className="op-agent-task__command">
+                      <span>Execution</span>
+                      <code>
+                        protocol v{task.requiredProtocolVersion} · generation{" "}
+                        {task.executionGeneration ?? 0} · compatible targets{" "}
+                        {task.compatibleTargetCount ?? 0}
+                      </code>
+                    </div>
+                  ) : null}
+                  <TaskHistory apiBase={apiBase} task={task} />
                   {command ? (
                     <div className="op-agent-task__command">
                       <span>{command.label}</span>
@@ -520,21 +592,122 @@ function TaskList({
   )
 }
 
+function TaskHistory({
+  apiBase,
+  task,
+}: {
+  apiBase: string
+  task: ProjectTask
+}) {
+  const [attempts, setAttempts] = useState<unknown[]>([])
+  const [events, setEvents] = useState<unknown[]>([])
+  const [isMutating, setIsMutating] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      fetch(
+        `${apiBase}/api/tasks/${encodeURIComponent(task.id)}/attempts`
+      ).then((response) => response.json()),
+      fetch(`${apiBase}/api/tasks/${encodeURIComponent(task.id)}/events`).then(
+        (response) => response.json()
+      ),
+    ])
+      .then(([attemptPayload, eventPayload]) => {
+        if (cancelled) return
+        setAttempts(
+          Array.isArray(attemptPayload.attempts) ? attemptPayload.attempts : []
+        )
+        setEvents(Array.isArray(eventPayload.events) ? eventPayload.events : [])
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAttempts([])
+          setEvents([])
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [apiBase, task.id])
+
+  const mutate = async (action: "archive" | "cancel" | "retry") => {
+    setIsMutating(true)
+    try {
+      await fetch(
+        `${apiBase}/api/tasks/${encodeURIComponent(task.id)}/${action}`,
+        { method: "POST" }
+      )
+    } finally {
+      setIsMutating(false)
+    }
+  }
+  return (
+    <>
+      <div className="op-agent-task__command">
+        <span>History</span>
+        <code>
+          {attempts.length} attempts · {events.length} events
+        </code>
+        {task.status === "failed" ? (
+          <Button
+            aria-label="Retry task"
+            isDisabled={isMutating}
+            isIconOnly
+            onPress={() => mutate("retry")}
+            size="sm"
+            variant="ghost"
+          >
+            <RefreshCw size={14} />
+          </Button>
+        ) : null}
+        {!isDoneTask(task) && task.status !== "failed" ? (
+          <Button
+            aria-label="Cancel task"
+            isDisabled={isMutating}
+            isIconOnly
+            onPress={() => mutate("cancel")}
+            size="sm"
+            variant="ghost"
+          >
+            <X size={14} />
+          </Button>
+        ) : null}
+        {isDoneTask(task) && !task.archivedAt ? (
+          <Button
+            aria-label="Archive task"
+            isDisabled={isMutating}
+            isIconOnly
+            onPress={() => mutate("archive")}
+            size="sm"
+            variant="ghost"
+          >
+            <Trash2 size={14} />
+          </Button>
+        ) : null}
+      </div>
+      {attempts.length || events.length ? (
+        <div className="op-agent-task__json">
+          <pre>{JSON.stringify({ attempts, events }, null, 2)}</pre>
+        </div>
+      ) : null}
+    </>
+  )
+}
+
 function WorkerStatusCard({
   workerStatus,
 }: {
   workerStatus?: AgentWorkerStatus
 }) {
-  const dispatcher = workerStatus?.dispatcher
-  const status = dispatcher?.status ?? workerStatus?.status ?? "idle"
+  const queue = workerStatus?.queue
+  const status = queue?.status ?? workerStatus?.status ?? "idle"
   const tone =
-    status === "running" || status === "delivering"
+    status === "running"
       ? "active"
       : status === "error" || status === "noTarget"
         ? "danger"
-        : status === "retry"
-          ? "warning"
-          : "success"
+        : "success"
   return (
     <div className={`op-agent-worker op-agent-worker--${tone}`}>
       <span>
@@ -542,17 +715,12 @@ function WorkerStatusCard({
         Worker
       </span>
       <strong>{formatWorkerStatus(status)}</strong>
-      {dispatcher ? (
+      {queue ? (
         <small>
-          {dispatcher.onlineTargetCount ?? 0}/{dispatcher.targetCount ?? 0}{" "}
-          targets
+          {queue.onlineTargetCount ?? 0}/{queue.targetCount ?? 0} targets
         </small>
       ) : null}
-      {(workerStatus?.lastError ?? dispatcher?.lastDelivery?.lastError) ? (
-        <em>
-          {workerStatus?.lastError ?? dispatcher?.lastDelivery?.lastError}
-        </em>
-      ) : null}
+      {workerStatus?.lastError ? <em>{workerStatus.lastError}</em> : null}
       {workerStatus?.heartbeatAt ? (
         <small>{formatTaskTime(workerStatus.heartbeatAt)}</small>
       ) : null}
@@ -615,7 +783,7 @@ function shellQuote(value: string): string {
 function taskMatchesFilter(task: ProjectTask, filter: TaskFilter): boolean {
   switch (filter) {
     case "pending":
-      return task.status === "queued" || task.status === "failed"
+      return ["waiting", "queued", "failed"].includes(task.status)
     case "active":
       return isActiveTask(task)
     case "done":
@@ -628,11 +796,18 @@ function taskMatchesFilter(task: ProjectTask, filter: TaskFilter): boolean {
 }
 
 function isActiveTask(task: ProjectTask): boolean {
-  return ["running", "claimed", "converting", "indexing"].includes(task.status)
+  return [
+    "reserved",
+    "running",
+    "claimed",
+    "converting",
+    "indexing",
+    "cancel_requested",
+  ].includes(task.status)
 }
 
 function isDoneTask(task: ProjectTask): boolean {
-  return ["succeeded", "stale"].includes(task.status)
+  return ["succeeded", "cancelled", "stale", "superseded"].includes(task.status)
 }
 
 function TraceEventRow({
@@ -654,24 +829,26 @@ function TraceEventRow({
         onClick={() => setIsExpanded((value) => !value)}
         type="button"
       >
-        <span className="op-trace-event__time">
-          {formatTraceTime(event.timestamp)}
+        <span className="op-trace-event__header">
+          <span className="op-trace-event__time">
+            {formatTraceTime(event.timestamp)}
+          </span>
+          <Chip
+            className="op-trace-event__badge"
+            color={traceCategoryColor(event.category)}
+            size="sm"
+            variant="soft"
+          >
+            {event.category}
+          </Chip>
+          <span className="op-trace-event__meta">
+            <span>{event.source ?? "myopenpanels"}</span>
+            {event.direction ? <span>{event.direction}</span> : null}
+            {event.taskId ? <span>{event.taskId}</span> : null}
+          </span>
         </span>
-        <Chip
-          className="op-trace-event__badge"
-          color={traceCategoryColor(event.category)}
-          size="sm"
-          variant="soft"
-        >
-          {event.category}
-        </Chip>
         <span className="op-trace-event__text">{event.summary}</span>
       </button>
-      <div className="op-trace-event__meta">
-        <span>{event.source ?? "myopenpanels"}</span>
-        {event.direction ? <span>{event.direction}</span> : null}
-        {event.taskId ? <span>{event.taskId}</span> : null}
-      </div>
       {isDevelopment && isExpanded ? (
         <div className="op-trace-event__detail">
           <Button
@@ -703,8 +880,6 @@ export function BuildVersionBadge({
   onUpdate: () => void
   status: MyOpenPanelsUpdateStatus | null
 }) {
-  const [isOpen, setIsOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement | null>(null)
   const localBuildTime = info.buildTime
     ? formatLocalBuildTime(info.buildTime)
     : null
@@ -726,57 +901,30 @@ export function BuildVersionBadge({
     ? `当前 ${currentVersion}${latestVersion ? ` · 最新 ${latestVersion}` : ""}`
     : "会从 GitHub Release 获取最新状态"
 
-  useEffect(() => {
-    if (!isOpen) return
-
-    function handlePointerDown(event: PointerEvent) {
-      if (!menuRef.current?.contains(event.target as Node)) {
-        setIsOpen(false)
-      }
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setIsOpen(false)
-      }
-    }
-
-    document.addEventListener("pointerdown", handlePointerDown)
-    document.addEventListener("keydown", handleKeyDown)
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown)
-      document.removeEventListener("keydown", handleKeyDown)
-    }
-  }, [isOpen])
-
-  const openAndRefresh = useCallback(() => {
-    setIsOpen(true)
-    onCheckUpdate({ refresh: true })
-  }, [onCheckUpdate])
-
   return (
-    <div className="op-build-badge-wrap" ref={menuRef}>
+    <Popover
+      onOpenChange={(isOpen) => {
+        if (isOpen) onCheckUpdate({ refresh: true })
+      }}
+    >
       <Button
-        aria-expanded={isOpen}
-        aria-haspopup="menu"
-        aria-label="打开更新菜单"
+        aria-label="查看版本与更新状态"
         className="op-build-badge"
-        onPress={openAndRefresh}
         size="sm"
         variant="ghost"
       >
         {label}
       </Button>
-      {isOpen ? (
-        <div className="op-build-menu" role="menu">
-          <div className="op-build-menu__status">
+      <Popover.Content placement="top end">
+        <Popover.Dialog className="min-w-72">
+          <div className="op-build-popover__status">
             <span
-              className={`op-build-menu__icon ${
+              className={`op-build-popover__icon ${
                 isChecking
-                  ? "op-build-menu__icon--checking"
+                  ? "op-build-popover__icon--checking"
                   : hasUpdate
-                    ? "op-build-menu__icon--update"
-                    : "op-build-menu__icon--current"
+                    ? "op-build-popover__icon--update"
+                    : "op-build-popover__icon--current"
               }`}
             >
               {isChecking ? (
@@ -793,20 +941,20 @@ export function BuildVersionBadge({
             </div>
           </div>
           {hasUpdate ? (
-            <div className="op-build-menu__actions">
+            <div className="op-build-popover__actions">
               <Button
-                className="op-build-menu__primary"
                 isDisabled={isChecking}
                 onPress={onUpdate}
                 size="sm"
+                variant="primary"
               >
                 立即更新
               </Button>
             </div>
           ) : null}
-        </div>
-      ) : null}
-    </div>
+        </Popover.Dialog>
+      </Popover.Content>
+    </Popover>
   )
 }
 
@@ -836,10 +984,6 @@ function formatWorkerStatus(status: string): string {
       return "Error"
     case "noTarget":
       return "No target"
-    case "delivering":
-      return "Delivering"
-    case "retry":
-      return "Retry"
     default:
       return "Idle"
   }
@@ -849,8 +993,6 @@ function formatDispatchState(status: string): string {
   switch (status) {
     case "noTarget":
       return "no target"
-    case "deliveryFailed":
-      return "delivery failed"
     default:
       return status
   }
@@ -869,8 +1011,17 @@ function formatTaskTime(value: string): string {
 
 function taskStatusTone(status: string): string {
   if (status === "failed") return "danger"
-  if (status === "queued") return "warning"
-  if (["running", "claimed", "converting", "indexing"].includes(status)) {
+  if (["waiting", "queued"].includes(status)) return "warning"
+  if (
+    [
+      "reserved",
+      "running",
+      "claimed",
+      "converting",
+      "indexing",
+      "cancel_requested",
+    ].includes(status)
+  ) {
     return "active"
   }
   if (status === "succeeded") return "success"

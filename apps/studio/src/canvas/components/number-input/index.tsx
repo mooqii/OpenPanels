@@ -34,7 +34,17 @@ export function NumberInput({
 
   return (
     <NumberInputContext.Provider value={contextValue}>
-      <div className={cn("flex items-center gap-1", className)}>{children}</div>
+      <div
+        className={cn(
+          "flex items-center gap-1 border border-field-border bg-field text-field-foreground transition-colors",
+          "focus-within:border-field-border-focus focus-within:ring-2 focus-within:ring-focus",
+          disabled && "cursor-not-allowed opacity-50",
+          className
+        )}
+        data-disabled={disabled || undefined}
+      >
+        {children}
+      </div>
     </NumberInputContext.Provider>
   )
 }

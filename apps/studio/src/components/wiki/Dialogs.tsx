@@ -1,14 +1,19 @@
-import { Button, Input, Modal, TextArea } from "@heroui/react"
+import { AlertDialog, Button, Input, Modal, TextArea } from "@heroui/react"
 import {
   AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Folder,
+  FolderOpen,
   LoaderCircle,
-  Save,
+  Minus,
+  Pencil,
+  Plus,
   Trash2,
   X,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import {
   clampImageScale,
@@ -16,6 +21,274 @@ import {
   originalPreviewKind,
 } from "../../lib/api"
 import type { WikiRawDocument } from "../../types"
+
+export interface SkillTextFile {
+  content: string
+  path: string
+}
+
+interface SkillFileTreeNode {
+  children: SkillFileTreeNode[]
+  path: string
+  type: "file" | "folder"
+}
+
+export function SkillFilesDialog({
+  closeLabel,
+  files,
+  onClose,
+  onSave,
+  readOnly,
+  title,
+}: {
+  closeLabel: string
+  files: SkillTextFile[]
+  onClose: () => void
+  onSave: (path: string, content: string) => Promise<void>
+  readOnly: boolean
+  title: string
+}) {
+  const { t } = useMyOpenPanelsI18n()
+  const [drafts, setDrafts] = useState(() =>
+    Object.fromEntries(files.map((file) => [file.path, file.content]))
+  )
+  const [selectedPath, setSelectedPath] = useState(
+    files.find((file) => file.path === "SKILL.md")?.path ?? files[0]?.path ?? ""
+  )
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
+    () => new Set(files.flatMap((file) => parentPaths(file.path)))
+  )
+  const [saveStatus, setSaveStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle")
+  const latestDraftsRef = useRef(drafts)
+  const savedDraftsRef = useRef({ ...drafts })
+  const timersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+  const savesRef = useRef(new Map<string, Promise<void>>())
+  latestDraftsRef.current = drafts
+
+  const saveFile = useCallback(
+    (path: string, content: string) => {
+      setSaveStatus("saving")
+      const previous = savesRef.current.get(path) ?? Promise.resolve()
+      const request = previous
+        .catch(() => undefined)
+        .then(() => onSave(path, content))
+        .then(() => {
+          savedDraftsRef.current[path] = content
+          setSaveStatus("saved")
+        })
+        .catch(() => setSaveStatus("error"))
+      savesRef.current.set(path, request)
+      return request
+    },
+    [onSave]
+  )
+
+  const updateFile = useCallback(
+    (path: string, content: string) => {
+      setDrafts((current) => ({ ...current, [path]: content }))
+      setSaveStatus("saving")
+      const currentTimer = timersRef.current.get(path)
+      if (currentTimer) clearTimeout(currentTimer)
+      timersRef.current.set(
+        path,
+        setTimeout(() => {
+          timersRef.current.delete(path)
+          saveFile(path, content)
+        }, 600)
+      )
+    },
+    [saveFile]
+  )
+
+  const closeAfterSave = useCallback(async () => {
+    for (const [path, timer] of timersRef.current) {
+      clearTimeout(timer)
+      timersRef.current.delete(path)
+      const content = latestDraftsRef.current[path]
+      if (content !== savedDraftsRef.current[path]) saveFile(path, content)
+    }
+    await Promise.all([...savesRef.current.values()])
+    onClose()
+  }, [onClose, saveFile])
+
+  const tree = buildSkillFileTree(files)
+  return (
+    <Modal.Backdrop
+      isOpen
+      onOpenChange={(isOpen) => !isOpen && closeAfterSave()}
+    >
+      <Modal.Container className="op-markdown-dialog__container" size="cover">
+        <Modal.Dialog className="op-markdown-dialog__panel op-skill-files-dialog">
+          <Modal.Header className="op-markdown-dialog__header">
+            <div className="op-markdown-dialog__filename">
+              <Modal.Heading>{title}</Modal.Heading>
+            </div>
+            <div className="op-markdown-dialog__actions">
+              {!readOnly && saveStatus !== "idle" ? (
+                <span
+                  className="op-markdown-dialog__save-status"
+                  data-status={saveStatus}
+                >
+                  {saveStatus === "saving"
+                    ? t`Saving`
+                    : saveStatus === "saved"
+                      ? t`Saved`
+                      : t`Save failed`}
+                </span>
+              ) : null}
+              <Button
+                aria-label={closeLabel}
+                className="op-markdown-dialog__close"
+                isIconOnly
+                onPress={() => closeAfterSave()}
+                size="md"
+                variant="ghost"
+              >
+                <X size={21} />
+              </Button>
+            </div>
+          </Modal.Header>
+          <Modal.Body className="op-skill-files-dialog__body">
+            <nav
+              aria-label={t`Skill files`}
+              className="op-skill-files-dialog__tree"
+            >
+              {tree.map((node) => (
+                <SkillFileNode
+                  expandedPaths={expandedPaths}
+                  key={node.path}
+                  node={node}
+                  onSelect={setSelectedPath}
+                  onToggle={(path) =>
+                    setExpandedPaths((current) => {
+                      const next = new Set(current)
+                      if (next.has(path)) next.delete(path)
+                      else next.add(path)
+                      return next
+                    })
+                  }
+                  selectedPath={selectedPath}
+                />
+              ))}
+            </nav>
+            <div className="op-skill-files-dialog__editor-pane">
+              <TextArea
+                aria-label={selectedPath || title}
+                className="op-markdown-dialog__editor"
+                fullWidth
+                onChange={(event) =>
+                  updateFile(selectedPath, event.currentTarget.value)
+                }
+                readOnly={readOnly}
+                value={drafts[selectedPath] ?? ""}
+                variant="secondary"
+              />
+            </div>
+          </Modal.Body>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
+  )
+}
+
+function SkillFileNode({
+  expandedPaths,
+  node,
+  onSelect,
+  onToggle,
+  selectedPath,
+}: {
+  expandedPaths: Set<string>
+  node: SkillFileTreeNode
+  onSelect: (path: string) => void
+  onToggle: (path: string) => void
+  selectedPath: string
+}) {
+  const name = node.path.split("/").at(-1)
+  const expanded = expandedPaths.has(node.path)
+  if (node.type === "file") {
+    return (
+      <button
+        className="op-skill-files-dialog__tree-item"
+        data-selected={selectedPath === node.path}
+        onClick={() => onSelect(node.path)}
+        type="button"
+      >
+        <FileText size={14} />
+        <span>{name}</span>
+      </button>
+    )
+  }
+  return (
+    <div className="op-skill-files-dialog__folder">
+      <button
+        className="op-skill-files-dialog__tree-item"
+        onClick={() => onToggle(node.path)}
+        type="button"
+      >
+        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        {expanded ? <FolderOpen size={14} /> : <Folder size={14} />}
+        <span>{name}</span>
+      </button>
+      {expanded ? (
+        <div className="op-skill-files-dialog__tree-children">
+          {node.children.map((child) => (
+            <SkillFileNode
+              expandedPaths={expandedPaths}
+              key={child.path}
+              node={child}
+              onSelect={onSelect}
+              onToggle={onToggle}
+              selectedPath={selectedPath}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function parentPaths(path: string): string[] {
+  const parts = path.split("/")
+  return parts
+    .slice(0, -1)
+    .map((_, index) => parts.slice(0, index + 1).join("/"))
+}
+
+function buildSkillFileTree(files: SkillTextFile[]): SkillFileTreeNode[] {
+  const root: SkillFileTreeNode[] = []
+  for (const file of files) {
+    const parts = file.path.split("/")
+    let children = root
+    for (let index = 0; index < parts.length; index += 1) {
+      const path = parts.slice(0, index + 1).join("/")
+      let node = children.find((candidate) => candidate.path === path)
+      if (!node) {
+        node = {
+          children: [],
+          path,
+          type: index === parts.length - 1 ? "file" : "folder",
+        }
+        children.push(node)
+      }
+      children = node.children
+    }
+  }
+  const sort = (nodes: SkillFileTreeNode[]) => {
+    nodes.sort((left, right) =>
+      left.type === right.type
+        ? left.path.localeCompare(right.path)
+        : left.type === "folder"
+          ? -1
+          : 1
+    )
+    for (const node of nodes) sort(node.children)
+  }
+  sort(root)
+  return root
+}
 
 export function GeneratedDocumentDialog({
   closeLabel,
@@ -78,7 +351,7 @@ export function RenameDocumentDialog({
   return (
     <Modal.Backdrop isOpen onOpenChange={(isOpen) => !isOpen && onCancel()}>
       <Modal.Container>
-        <Modal.Dialog className="op-confirm-dialog__panel">
+        <Modal.Dialog>
           <Modal.Header>
             <Modal.Heading>{title}</Modal.Heading>
           </Modal.Header>
@@ -90,8 +363,8 @@ export function RenameDocumentDialog({
               value={nextTitle}
             />
           </Modal.Body>
-          <Modal.Footer className="op-confirm-dialog__actions">
-            <Button isDisabled={isBusy} onPress={onCancel} variant="secondary">
+          <Modal.Footer>
+            <Button isDisabled={isBusy} onPress={onCancel} variant="tertiary">
               {cancelLabel}
             </Button>
             <Button
@@ -110,54 +383,206 @@ export function RenameDocumentDialog({
 
 export function MarkdownDialog({
   content,
-  isBusy,
+  fileName,
   onChange,
   onClose,
+  onRenameFileName,
   onSave,
   closeLabel,
-  saveLabel,
-  title,
-  titleLabel,
 }: {
   closeLabel: string
   content: string
-  isBusy: boolean
+  fileName: string
   onChange: (content: string) => void
   onClose: () => void
-  onSave: () => void
-  saveLabel: string
-  title: string
-  titleLabel: string
+  onRenameFileName: (fileName: string) => Promise<void>
+  onSave: (content: string) => Promise<void>
 }) {
+  const { t } = useMyOpenPanelsI18n()
+  const [isEditingFileName, setIsEditingFileName] = useState(false)
+  const [fileNameDraft, setFileNameDraft] = useState("")
+  const [saveStatus, setSaveStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle")
+  const latestContentRef = useRef(content)
+  const savedContentRef = useRef(content)
+  const contentRevisionRef = useRef(0)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve())
+  const cancelFileNameEditRef = useRef(false)
+
+  latestContentRef.current = content
+
+  const fileNameParts = (() => {
+    const slashIndex = Math.max(
+      fileName.lastIndexOf("/"),
+      fileName.lastIndexOf("\\")
+    )
+    const directory = slashIndex >= 0 ? fileName.slice(0, slashIndex + 1) : ""
+    const baseName = fileName.slice(slashIndex + 1)
+    const dotIndex = baseName.lastIndexOf(".")
+    return {
+      directory,
+      extension: dotIndex > 0 ? baseName.slice(dotIndex) : "",
+      stem: dotIndex > 0 ? baseName.slice(0, dotIndex) : baseName,
+    }
+  })()
+
+  const queueSave = useCallback(
+    (nextContent: string, revision: number) => {
+      setSaveStatus("saving")
+      const request = saveChainRef.current
+        .catch(() => undefined)
+        .then(() => onSave(nextContent))
+      saveChainRef.current = request
+      return request
+        .then(() => {
+          if (revision !== contentRevisionRef.current) return
+          savedContentRef.current = nextContent
+          setSaveStatus("saved")
+        })
+        .catch(() => {
+          if (revision === contentRevisionRef.current) {
+            setSaveStatus("error")
+          }
+        })
+    },
+    [onSave]
+  )
+
+  useEffect(() => {
+    if (content === savedContentRef.current) return
+    contentRevisionRef.current += 1
+    const revision = contentRevisionRef.current
+    setSaveStatus("saving")
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null
+      queueSave(content, revision)
+    }, 600)
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
+      }
+    }
+  }, [content, queueSave])
+
+  const commitFileName = useCallback(async () => {
+    if (cancelFileNameEditRef.current) {
+      cancelFileNameEditRef.current = false
+      return
+    }
+    const nextStem = fileNameDraft.trim().replaceAll(/[\\/]/g, "")
+    setIsEditingFileName(false)
+    if (!nextStem || nextStem === fileNameParts.stem) return
+    setSaveStatus("saving")
+    try {
+      await onRenameFileName(
+        `${fileNameParts.directory}${nextStem}${fileNameParts.extension}`
+      )
+      setSaveStatus("saved")
+    } catch {
+      setSaveStatus("error")
+    }
+  }, [fileNameDraft, fileNameParts, onRenameFileName])
+
+  const closeAfterSave = useCallback(async () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+    const latestContent = latestContentRef.current
+    if (latestContent !== savedContentRef.current) {
+      await queueSave(latestContent, contentRevisionRef.current)
+    } else {
+      await saveChainRef.current.catch(() => undefined)
+    }
+    onClose()
+  }, [onClose, queueSave])
+
   return (
     <Modal.Backdrop
       isOpen
       onOpenChange={(isOpen) => {
-        if (!isOpen) onClose()
+        if (!isOpen) closeAfterSave()
       }}
     >
-      <Modal.Container size="cover">
+      <Modal.Container className="op-markdown-dialog__container" size="cover">
         <Modal.Dialog className="op-markdown-dialog__panel">
-          <Modal.CloseTrigger aria-label={closeLabel} />
-          <Modal.Header>
-            <div>
-              <div className="op-wiki-panel__label">{titleLabel}</div>
-              <Modal.Heading>{title}</Modal.Heading>
+          <Modal.Header className="op-markdown-dialog__header">
+            <div className="op-markdown-dialog__filename">
+              {isEditingFileName ? (
+                <div className="op-markdown-dialog__filename-editor">
+                  <Input
+                    aria-label={t`File name`}
+                    autoFocus
+                    className="min-w-20 max-w-[55vw] sm:w-105"
+                    onBlur={() => commitFileName()}
+                    onChange={(event) =>
+                      setFileNameDraft(event.currentTarget.value)
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.currentTarget.blur()
+                      } else if (event.key === "Escape") {
+                        event.stopPropagation()
+                        cancelFileNameEditRef.current = true
+                        setIsEditingFileName(false)
+                      }
+                    }}
+                    value={fileNameDraft}
+                  />
+                  <span>{fileNameParts.extension}</span>
+                </div>
+              ) : (
+                <Modal.Heading>{fileName}</Modal.Heading>
+              )}
+              {isEditingFileName ? null : (
+                <Button
+                  aria-label={t`Edit file name`}
+                  className="op-markdown-dialog__rename"
+                  isIconOnly
+                  onPress={() => {
+                    cancelFileNameEditRef.current = false
+                    setFileNameDraft(fileNameParts.stem)
+                    setIsEditingFileName(true)
+                  }}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <Pencil size={14} />
+                </Button>
+              )}
             </div>
-            <Button
-              aria-label={saveLabel}
-              isDisabled={isBusy}
-              isIconOnly
-              onPress={onSave}
-              size="sm"
-              variant="ghost"
-            >
-              <Save size={16} />
-            </Button>
+            <div className="op-markdown-dialog__actions">
+              {saveStatus !== "idle" ? (
+                <span
+                  className="op-markdown-dialog__save-status"
+                  data-status={saveStatus}
+                >
+                  {saveStatus === "saving"
+                    ? t`Saving`
+                    : saveStatus === "saved"
+                      ? t`Saved`
+                      : t`Save failed`}
+                </span>
+              ) : null}
+              <Button
+                aria-label={closeLabel}
+                className="op-markdown-dialog__close"
+                isIconOnly
+                onPress={() => closeAfterSave()}
+                size="md"
+                variant="ghost"
+              >
+                <X size={21} />
+              </Button>
+            </div>
           </Modal.Header>
           <Modal.Body>
             <TextArea
-              aria-label={title}
+              aria-label={fileName}
               className="op-markdown-dialog__editor"
               fullWidth
               onChange={(event) => onChange(event.currentTarget.value)}
@@ -182,7 +607,9 @@ function ImagePreviewDialog({
   onClose: () => void
   previewUrl: string
 }) {
+  const { t } = useMyOpenPanelsI18n()
   const [imageScale, setImageScale] = useState(1)
+  const zoomPercentage = Math.round(imageScale * 100)
 
   return (
     <Modal.Backdrop
@@ -197,6 +624,9 @@ function ImagePreviewDialog({
         <Modal.Dialog className="op-image-preview__dialog">
           <div
             className="op-image-preview__stage"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) onClose()
+            }}
             onWheel={(event) => {
               event.preventDefault()
               setImageScale((current) =>
@@ -210,37 +640,41 @@ function ImagePreviewDialog({
               style={{ transform: `scale(${imageScale})` }}
             />
           </div>
+          <Button
+            aria-label={closeLabel}
+            className="op-image-preview__close"
+            isIconOnly
+            onPress={onClose}
+            size="md"
+            variant="ghost"
+          >
+            <X size={21} />
+          </Button>
           <div className="op-image-preview__controls">
             <Button
-              aria-label="Zoom out"
+              aria-label={t`Zoom out`}
               isIconOnly
               onPress={() =>
                 setImageScale((current) => clampImageScale(current - 0.2))
               }
               size="sm"
-              variant="secondary"
+              variant="ghost"
             >
-              <ZoomOut size={16} />
+              <Minus size={15} />
             </Button>
+            <span className="op-image-preview__zoom-value">
+              {zoomPercentage}%
+            </span>
             <Button
-              aria-label="Zoom in"
+              aria-label={t`Zoom in`}
               isIconOnly
               onPress={() =>
                 setImageScale((current) => clampImageScale(current + 0.2))
               }
               size="sm"
-              variant="secondary"
+              variant="ghost"
             >
-              <ZoomIn size={16} />
-            </Button>
-            <Button
-              aria-label={closeLabel}
-              isIconOnly
-              onPress={onClose}
-              size="sm"
-              variant="secondary"
-            >
-              <X size={16} />
+              <Plus size={15} />
             </Button>
           </div>
         </Modal.Dialog>
@@ -408,31 +842,32 @@ export function ConfirmDialog({
   title: string
 }) {
   return (
-    <Modal.Backdrop
+    <AlertDialog.Backdrop
       isOpen
       onOpenChange={(isOpen) => {
         if (!isOpen) onCancel()
       }}
     >
-      <Modal.Container>
-        <Modal.Dialog className="op-confirm-dialog__panel">
-          <Modal.Header>
-            <Modal.Heading>{title}</Modal.Heading>
-          </Modal.Header>
-          <Modal.Body>
+      <AlertDialog.Container placement="center">
+        <AlertDialog.Dialog>
+          <AlertDialog.Header>
+            <AlertDialog.Icon status="danger" />
+            <AlertDialog.Heading>{title}</AlertDialog.Heading>
+          </AlertDialog.Header>
+          <AlertDialog.Body>
             <p>{message}</p>
-          </Modal.Body>
-          <Modal.Footer className="op-confirm-dialog__actions">
-            <Button isDisabled={isBusy} onPress={onCancel} variant="secondary">
+          </AlertDialog.Body>
+          <AlertDialog.Footer>
+            <Button isDisabled={isBusy} slot="close" variant="tertiary">
               {cancelLabel}
             </Button>
             <Button isDisabled={isBusy} onPress={onConfirm} variant="danger">
               <Trash2 size={15} />
               {confirmLabel}
             </Button>
-          </Modal.Footer>
-        </Modal.Dialog>
-      </Modal.Container>
-    </Modal.Backdrop>
+          </AlertDialog.Footer>
+        </AlertDialog.Dialog>
+      </AlertDialog.Container>
+    </AlertDialog.Backdrop>
   )
 }

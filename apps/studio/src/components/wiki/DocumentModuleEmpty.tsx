@@ -19,3 +19,13 @@ export function GeneratedDocumentsEmpty() {
     </div>
   )
 }
+
+export function WikiPagesEmpty() {
+  const { t } = useMyOpenPanelsI18n()
+  return (
+    <div className="op-wiki-module-empty">
+      <span>{t`Content added to Raw Documents`}</span>
+      <span>{t`will automatically generate structured Wiki documents`}</span>
+    </div>
+  )
+}

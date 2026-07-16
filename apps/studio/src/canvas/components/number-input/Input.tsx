@@ -77,7 +77,7 @@ export function NumberInputInput({ className, id }: NumberInputInputProps) {
   return (
     <input
       className={cn(
-        "px-1 py-1 outline-none",
+        "bg-transparent px-1 py-1 text-field-foreground outline-none placeholder:text-field-placeholder",
         disabled && "cursor-not-allowed opacity-50",
         className
       )}

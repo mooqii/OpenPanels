@@ -1,10 +1,18 @@
 import {
+  Alert,
   Button,
   Checkbox,
+  Chip,
   Dropdown,
   Header,
+  Input,
+  Label,
+  ListBox,
+  Select,
+  Separator,
   Surface,
   Tabs,
+  TextArea,
   Tooltip,
 } from "@heroui/react"
 import {
@@ -13,7 +21,9 @@ import {
   ExternalLink,
   Eye,
   FileOutput,
+  FilePlus2,
   FileText,
+  FileUp,
   Folder,
   FolderOpen,
   Info,
@@ -49,7 +59,11 @@ import {
 } from "../../lib/api"
 import {
   activeWritingSkillIds,
+  latestWritingTaskForDocument,
+  refinementTaskGroups,
+  sortGeneratedDocumentsByActivity,
   toggleWritingSkillSelection,
+  writingDocumentStatus,
   writingSkillSelectionError,
 } from "../../lib/writing"
 import type {
@@ -63,14 +77,16 @@ import type {
 } from "../../types"
 import {
   ConfirmDialog,
-  GeneratedDocumentDialog,
   MarkdownDialog,
   OriginalPreviewDialog,
   RenameDocumentDialog,
+  SkillFilesDialog,
+  type SkillTextFile,
 } from "./Dialogs"
 import {
   GeneratedDocumentsEmpty,
   RawDocumentsEmpty,
+  WikiPagesEmpty,
 } from "./DocumentModuleEmpty"
 import { GeneratedDocumentMeta } from "./GeneratedDocumentMeta"
 import { documentIndexStatus, WikiIndexStatus, WikiStatus } from "./helpers"
@@ -103,7 +119,10 @@ export function WikiPanel({
   writing,
 }: {
   chromeContent: ReactNode
-  onOpenAgentTasks: (filter: "active" | "pending") => void
+  onOpenAgentTasks: (
+    filter: "active" | "pending" | "done" | "all",
+    taskIds?: string[]
+  ) => void
   onReload: () => Promise<void>
   selectionVersion: number
   state: WikiState
@@ -120,6 +139,7 @@ export function WikiPanel({
   const activeSpace =
     state.wikiSpaces.find((space) => space.id === state.activeWikiSpaceId) ??
     state.wikiSpaces[0]
+  const activeSpaceId = activeSpace?.id
   const wikiAgentSkillId = state.wikiAgentSkillId || DEFAULT_WIKI_AGENT_SKILL_ID
   const [agentSkills, setAgentSkills] = useState<AgentSkillListing[]>([])
   const [markdownDialog, setMarkdownDialog] = useState<{
@@ -142,6 +162,7 @@ export function WikiPanel({
   const [generatedDocumentDialog, setGeneratedDocumentDialog] = useState<{
     content: string
     document: WikiGeneratedDocument
+    originalContent: string
   } | null>(null)
   const [originalPreviewDocument, setOriginalPreviewDocument] =
     useState<WikiRawDocument | null>(null)
@@ -178,21 +199,15 @@ export function WikiPanel({
     : wikiCollapsedModules
   const rawDragDepthRef = useRef(0)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const markdownDialogDocumentId = markdownDialog?.document.id
+  const pageDialogPath = pageDialog?.pagePath
+  const pageDialogTitle = pageDialog?.title
+  const generatedDialogDocumentId = generatedDocumentDialog?.document.id
+  const generatedDialogFileName =
+    generatedDocumentDialog?.document.originalFileName
+  const generatedDialogMimeType = generatedDocumentDialog?.document.mimeType
   const wikiPageTree = useMemo(
-    () =>
-      buildWikiPageTree(
-        activeSpace?.pageIndex.length
-          ? activeSpace.pageIndex
-          : [
-              {
-                path: "index.md",
-                summary: "",
-                title: "Index",
-                type: "overview",
-                updatedAt: "",
-              },
-            ]
-      ),
+    () => buildWikiPageTree(activeSpace?.pageIndex ?? []),
     [activeSpace?.pageIndex]
   )
 
@@ -423,32 +438,45 @@ export function WikiPanel({
     [transport]
   )
 
-  const saveMarkdown = useCallback(async () => {
-    if (!markdownDialog) return
-    if (markdownDialog.content === markdownDialog.originalContent) {
-      setMarkdownDialog(null)
-      return
-    }
-    setIsBusy(true)
-    try {
-      await apiFetch(
+  const saveMarkdown = useCallback(
+    async (content: string) => {
+      if (!markdownDialogDocumentId) return
+      await apiJson(
         transport.apiBase,
-        `/api/wiki/raw-documents/${encodeURIComponent(markdownDialog.document.id)}/markdown`,
+        `/api/wiki/raw-documents/${encodeURIComponent(markdownDialogDocumentId)}/markdown`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            content: markdownDialog.content,
-            expectedVersion: markdownDialog.document.markdownVersion,
-          }),
+          body: JSON.stringify({ content }),
         }
       )
-      setMarkdownDialog(null)
+      setMarkdownDialog((current) =>
+        current ? { ...current, originalContent: content } : current
+      )
       await onReload()
-    } finally {
-      setIsBusy(false)
-    }
-  }, [markdownDialog, onReload, transport])
+    },
+    [markdownDialogDocumentId, onReload, transport]
+  )
+
+  const renameRawDocumentFile = useCallback(
+    async (fileName: string) => {
+      if (!markdownDialogDocumentId) return
+      const data = await apiJson<{ document: WikiRawDocument }>(
+        transport.apiBase,
+        `/api/wiki/raw-documents/${encodeURIComponent(markdownDialogDocumentId)}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ fileName }),
+        }
+      )
+      setMarkdownDialog((current) =>
+        current ? { ...current, document: data.document } : current
+      )
+      await onReload()
+    },
+    [markdownDialogDocumentId, onReload, transport.apiBase]
+  )
 
   const extractMarkdown = useCallback(
     async (document: WikiRawDocument) => {
@@ -573,6 +601,36 @@ export function WikiPanel({
     [activeSpace?.id, onReload, transport]
   )
 
+  const createRawMarkdownDocument = useCallback(async () => {
+    setIsBusy(true)
+    try {
+      const data = await apiJson<{ document: WikiRawDocument }>(
+        transport.apiBase,
+        "/api/wiki/raw-documents",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            content: "",
+            fileName: "untitled.md",
+            mimeType: "text/markdown",
+            source: "user",
+            title: t`Untitled`,
+            wikiSpaceId: activeSpace?.id,
+          }),
+        }
+      )
+      await onReload()
+      setMarkdownDialog({
+        content: "",
+        document: data.document,
+        originalContent: "",
+      })
+    } finally {
+      setIsBusy(false)
+    }
+  }, [activeSpace?.id, onReload, t, transport.apiBase])
+
   const handleRawDragEnter = useCallback((event: DragEvent<HTMLElement>) => {
     if (!event.dataTransfer.types.includes("Files")) return
     event.preventDefault()
@@ -626,35 +684,57 @@ export function WikiPanel({
     [activeSpace?.id, transport]
   )
 
-  const saveWikiPage = useCallback(async () => {
-    if (!(pageDialog && activeSpace)) return
-    if (pageDialog.content === pageDialog.originalContent) {
-      setPageDialog(null)
-      return
-    }
-    setIsBusy(true)
-    try {
-      await apiFetch(
+  const saveWikiPage = useCallback(
+    async (content: string) => {
+      if (!(pageDialogPath && activeSpaceId)) return
+      await apiJson(
         transport.apiBase,
-        `/api/wiki/spaces/${encodeURIComponent(activeSpace.id)}/pages/${pageDialog.pagePath
+        `/api/wiki/spaces/${encodeURIComponent(activeSpaceId)}/pages/${pageDialogPath
           .split("/")
           .map(encodeURIComponent)
           .join("/")}`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            title: pageDialog.title,
-            content: pageDialog.content,
-          }),
+          body: JSON.stringify({ title: pageDialogTitle, content }),
         }
       )
-      setPageDialog(null)
+      setPageDialog((current) =>
+        current ? { ...current, originalContent: content } : current
+      )
       await onReload()
-    } finally {
-      setIsBusy(false)
-    }
-  }, [activeSpace, onReload, pageDialog, transport])
+    },
+    [activeSpaceId, onReload, pageDialogPath, pageDialogTitle, transport]
+  )
+
+  const renameWikiPageFile = useCallback(
+    async (pagePath: string) => {
+      if (!(pageDialogPath && activeSpaceId)) return
+      await apiJson(
+        transport.apiBase,
+        `/api/wiki/spaces/${encodeURIComponent(activeSpaceId)}/pages/${pageDialogPath
+          .split("/")
+          .map(encodeURIComponent)
+          .join("/")}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ pagePath }),
+        }
+      )
+      setPageDialog((current) =>
+        current
+          ? {
+              ...current,
+              pagePath,
+              title: titleFromFileName(pagePath),
+            }
+          : current
+      )
+      await onReload()
+    },
+    [activeSpaceId, onReload, pageDialogPath, transport.apiBase]
+  )
 
   const updateWikiAgentSkill = useCallback(
     async (agentSkillId: string) => {
@@ -710,9 +790,97 @@ export function WikiPanel({
       setGeneratedDocumentDialog({
         content: data.content ?? "",
         document,
+        originalContent: data.content ?? "",
       })
     },
     [transport.apiBase]
+  )
+
+  const createGeneratedMarkdownDocument = useCallback(async () => {
+    setIsBusy(true)
+    try {
+      const data = await apiJson<{ document: WikiGeneratedDocument }>(
+        transport.apiBase,
+        "/api/wiki/generated-documents",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            content: "",
+            fileName: "untitled.md",
+            mimeType: "text/markdown",
+            title: t`Untitled`,
+          }),
+        }
+      )
+      await onReload()
+      setGeneratedDocumentDialog({
+        content: "",
+        document: data.document,
+        originalContent: "",
+      })
+    } finally {
+      setIsBusy(false)
+    }
+  }, [onReload, t, transport.apiBase])
+
+  const saveGeneratedMarkdown = useCallback(
+    async (content: string) => {
+      if (
+        !(
+          generatedDialogDocumentId &&
+          generatedDialogFileName &&
+          generatedDialogMimeType
+        )
+      )
+        return
+      const data = await apiJson<{ document: WikiGeneratedDocument }>(
+        transport.apiBase,
+        `/api/wiki/generated-documents/${encodeURIComponent(generatedDialogDocumentId)}`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            content,
+            fileName: generatedDialogFileName,
+            mimeType: generatedDialogMimeType,
+          }),
+        }
+      )
+      setGeneratedDocumentDialog((current) =>
+        current
+          ? { ...current, document: data.document, originalContent: content }
+          : current
+      )
+      await onReload()
+    },
+    [
+      generatedDialogDocumentId,
+      generatedDialogFileName,
+      generatedDialogMimeType,
+      onReload,
+      transport.apiBase,
+    ]
+  )
+
+  const renameGeneratedDocumentFile = useCallback(
+    async (fileName: string) => {
+      if (!generatedDialogDocumentId) return
+      const data = await apiJson<{ document: WikiGeneratedDocument }>(
+        transport.apiBase,
+        `/api/wiki/generated-documents/${encodeURIComponent(generatedDialogDocumentId)}`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ fileName }),
+        }
+      )
+      setGeneratedDocumentDialog((current) =>
+        current ? { ...current, document: data.document } : current
+      )
+      await onReload()
+    },
+    [generatedDialogDocumentId, onReload, transport.apiBase]
   )
 
   const publishGeneratedDocument = useCallback(
@@ -777,15 +945,18 @@ export function WikiPanel({
   )
 
   const retryGeneratedDocument = useCallback(
-    async (document: WikiGeneratedDocument) => {
+    async (
+      document: WikiGeneratedDocument,
+      writingTask?: ProjectTask | null
+    ) => {
       setRetryingGeneratedDocumentId(document.id)
       setGeneratedDocumentRetryError(null)
       try {
-        await apiJson(
-          transport.apiBase,
-          `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/retry`,
-          { method: "POST" }
-        )
+        const path =
+          writingTask?.status === "failed"
+            ? `/api/tasks/${encodeURIComponent(writingTask.id)}/retry`
+            : `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/retry`
+        await apiJson(transport.apiBase, path, { method: "POST" })
         await onReload()
       } catch (error) {
         console.error("Failed to retry generated document", error)
@@ -796,6 +967,10 @@ export function WikiPanel({
     },
     [onReload, transport.apiBase]
   )
+
+  const displayedGeneratedDocuments = writing
+    ? sortGeneratedDocumentsByActivity(state.generatedDocuments, writing.tasks)
+    : state.generatedDocuments
 
   return (
     <section
@@ -836,17 +1011,48 @@ export function WikiPanel({
                     )}
                   </div>
                   <div className="op-wiki-actions">
-                    <Button
-                      aria-label={t`Upload document`}
-                      className="op-wiki-add-button"
-                      isDisabled={isBusy}
-                      isIconOnly
-                      onPress={() => fileInputRef.current?.click()}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <Plus size={16} />
-                    </Button>
+                    <Dropdown>
+                      <Button
+                        aria-label={t`Add document`}
+                        isDisabled={isBusy}
+                        isIconOnly
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <Plus size={16} />
+                      </Button>
+                      <Dropdown.Popover placement="bottom end">
+                        <Dropdown.Menu
+                          aria-label={t`Add document`}
+                          onAction={(key) => {
+                            if (key === "add-file") {
+                              fileInputRef.current?.click()
+                              return
+                            }
+                            if (key === "new-document") {
+                              createRawMarkdownDocument().catch((error) => {
+                                console.error(
+                                  "Failed to create raw Markdown document",
+                                  error
+                                )
+                              })
+                            }
+                          }}
+                        >
+                          <Dropdown.Item id="add-file" textValue={t`Add file`}>
+                            <FileUp size={15} />
+                            <Label>{t`Add file`}</Label>
+                          </Dropdown.Item>
+                          <Dropdown.Item
+                            id="new-document"
+                            textValue={t`New document`}
+                          >
+                            <FilePlus2 size={15} />
+                            <Label>{t`New document`}</Label>
+                          </Dropdown.Item>
+                        </Dropdown.Menu>
+                      </Dropdown.Popover>
+                    </Dropdown>
                   </div>
                   <input
                     hidden
@@ -957,16 +1163,14 @@ export function WikiPanel({
                           </div>
                           <div className="op-wiki-list-item__tools">
                             <Dropdown>
-                              <Dropdown.Trigger>
-                                <Button
-                                  aria-label={t`Document actions`}
-                                  isIconOnly
-                                  size="sm"
-                                  variant="ghost"
-                                >
-                                  <MoreHorizontal size={16} />
-                                </Button>
-                              </Dropdown.Trigger>
+                              <Button
+                                aria-label={t`Document actions`}
+                                isIconOnly
+                                size="sm"
+                                variant="ghost"
+                              >
+                                <MoreHorizontal size={16} />
+                              </Button>
                               <Dropdown.Popover>
                                 <Dropdown.Menu
                                   disabledKeys={[
@@ -1020,30 +1224,46 @@ export function WikiPanel({
                                     }
                                   }}
                                 >
-                                  <Dropdown.Item id="preview">
+                                  <Dropdown.Item
+                                    id="preview"
+                                    textValue={t`Preview original file`}
+                                  >
                                     <Eye size={14} />
-                                    <span>{t`Preview original file`}</span>
-                                  </Dropdown.Item>
-                                  <Dropdown.Item id="open">
-                                    <ExternalLink size={14} />
-                                    <span>{t`Open in new window`}</span>
-                                  </Dropdown.Item>
-                                  <Dropdown.Item id="reveal">
-                                    <FolderOpen size={14} />
-                                    <span>{t`Show in folder`}</span>
-                                  </Dropdown.Item>
-                                  <Dropdown.Item id="sync">
-                                    <RefreshCw size={14} />
-                                    <span>
-                                      {hasMarkdown ? t`Reindex` : t`Re-extract`}
-                                    </span>
+                                    <Label>{t`Preview original file`}</Label>
                                   </Dropdown.Item>
                                   <Dropdown.Item
-                                    className="text-danger"
+                                    id="open"
+                                    textValue={t`Open in new window`}
+                                  >
+                                    <ExternalLink size={14} />
+                                    <Label>{t`Open in new window`}</Label>
+                                  </Dropdown.Item>
+                                  <Dropdown.Item
+                                    id="reveal"
+                                    textValue={t`Show in folder`}
+                                  >
+                                    <FolderOpen size={14} />
+                                    <Label>{t`Show in folder`}</Label>
+                                  </Dropdown.Item>
+                                  <Dropdown.Item
+                                    id="sync"
+                                    textValue={
+                                      hasMarkdown ? t`Reindex` : t`Re-extract`
+                                    }
+                                  >
+                                    <RefreshCw size={14} />
+                                    <Label>
+                                      {hasMarkdown ? t`Reindex` : t`Re-extract`}
+                                    </Label>
+                                  </Dropdown.Item>
+                                  <Separator />
+                                  <Dropdown.Item
                                     id="delete"
+                                    textValue={t`Delete`}
+                                    variant="danger"
                                   >
                                     <Trash2 size={14} />
-                                    <span>{t`Delete`}</span>
+                                    <Label>{t`Delete`}</Label>
                                   </Dropdown.Item>
                                 </Dropdown.Menu>
                               </Dropdown.Popover>
@@ -1075,29 +1295,58 @@ export function WikiPanel({
                       t`Drafts created by agents live here before they become source material. Agents can create and edit these documents. Selecting a document lets the agent discover it and load its latest content when needed.`
                     )}
                   </div>
+                  <div className="op-wiki-actions">
+                    <Button
+                      aria-label={t`New document`}
+                      className="op-wiki-add-button"
+                      isDisabled={isBusy}
+                      isIconOnly
+                      onPress={() => {
+                        createGeneratedMarkdownDocument().catch((error) => {
+                          console.error(
+                            "Failed to create generated Markdown document",
+                            error
+                          )
+                        })
+                      }}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <FilePlus2 size={16} />
+                    </Button>
+                  </div>
                 </div>
                 <div
                   className={
-                    state.generatedDocuments.length === 0
+                    displayedGeneratedDocuments.length === 0
                       ? "op-wiki-list op-wiki-column__content op-wiki-list--empty"
                       : "op-wiki-list op-wiki-column__content"
                   }
                 >
-                  {state.generatedDocuments.length ? (
-                    state.generatedDocuments.map((document) => {
+                  {displayedGeneratedDocuments.length ? (
+                    displayedGeneratedDocuments.map((document) => {
+                      const writingTask = writing
+                        ? latestWritingTaskForDocument(writing.tasks, document)
+                        : null
+                      const writingStatus = writingDocumentStatus(writingTask)
                       const isGenerating =
                         document.generation?.status === "generating"
                       const generationFailed =
                         document.generation?.status === "failed"
+                      const isWritingLocked =
+                        writingStatus === "pending_create" ||
+                        writingStatus === "pending_revise" ||
+                        writingStatus === "active"
+                      const displayTitle = document.title.trim() || t`Untitled`
                       return (
                         <div
                           className="op-wiki-list-item op-wiki-list-item--interactive"
                           key={document.id}
                         >
                           <Checkbox
-                            aria-label={`${t`Select for agent context`}: ${document.title}`}
+                            aria-label={`${t`Select for agent context`}: ${displayTitle}`}
                             className="op-wiki-selection-checkbox op-wiki-selection-checkbox--document"
-                            isDisabled={isSelectionBusy}
+                            isDisabled={isSelectionBusy || isWritingLocked}
                             isSelected={agentSelection.selectedGeneratedDocumentIds.includes(
                               document.id
                             )}
@@ -1130,7 +1379,7 @@ export function WikiPanel({
                           </Checkbox>
                           <button
                             className="op-wiki-list-item__body"
-                            disabled={isGenerating}
+                            disabled={isGenerating || isWritingLocked}
                             onClick={() => {
                               openGeneratedDocument(document).catch((error) => {
                                 console.error(
@@ -1143,7 +1392,7 @@ export function WikiPanel({
                           >
                             <div>
                               <strong className="op-wiki-list-item__title">
-                                {document.title}
+                                {displayTitle}
                               </strong>
                               <GeneratedDocumentMeta
                                 apiBase={transport.apiBase}
@@ -1152,20 +1401,44 @@ export function WikiPanel({
                             </div>
                           </button>
                           <div className="op-wiki-list-item__tools">
-                            {isGenerating ? (
+                            {writingStatus ? (
+                              <Chip
+                                className="op-generated-document-task-status"
+                                color={
+                                  writingStatus === "failed"
+                                    ? "danger"
+                                    : writingStatus === "active"
+                                      ? "accent"
+                                      : "warning"
+                                }
+                                size="sm"
+                                variant="soft"
+                              >
+                                {writingStatus === "pending_create"
+                                  ? t`Pending creation`
+                                  : writingStatus === "pending_revise"
+                                    ? t`Pending revision`
+                                    : writingStatus === "active"
+                                      ? t`In progress`
+                                      : t`Failed`}
+                              </Chip>
+                            ) : isGenerating ? (
                               <span className="op-generated-document-status">
                                 <RefreshCw className="op-wiki-spin" size={14} />
                                 {t`Generating`}
                               </span>
                             ) : null}
-                            {generationFailed ? (
+                            {writingStatus === "failed" || generationFailed ? (
                               <Tooltip closeDelay={0} delay={0}>
                                 <Button
                                   aria-label={t`Generation failed. Click to retry`}
                                   className="op-generated-document-retry"
                                   isIconOnly
                                   onPress={() =>
-                                    retryGeneratedDocument(document)
+                                    retryGeneratedDocument(
+                                      document,
+                                      writingTask
+                                    )
                                   }
                                   size="sm"
                                   variant="secondary"
@@ -1191,20 +1464,19 @@ export function WikiPanel({
                               </Tooltip>
                             ) : null}
                             <Dropdown>
-                              <Dropdown.Trigger>
-                                <Button
-                                  aria-label={t`Document actions`}
-                                  isIconOnly
-                                  size="sm"
-                                  variant="ghost"
-                                >
-                                  <MoreHorizontal size={16} />
-                                </Button>
-                              </Dropdown.Trigger>
+                              <Button
+                                aria-label={t`Document actions`}
+                                isDisabled={isBusy || isWritingLocked}
+                                isIconOnly
+                                size="sm"
+                                variant="ghost"
+                              >
+                                <MoreHorizontal size={16} />
+                              </Button>
                               <Dropdown.Popover>
                                 <Dropdown.Menu
                                   disabledKeys={[
-                                    ...(isBusy
+                                    ...(isBusy || isWritingLocked
                                       ? ["publish", "rename", "delete"]
                                       : []),
                                   ]}
@@ -1229,24 +1501,36 @@ export function WikiPanel({
                                     }
                                   }}
                                 >
-                                  <Dropdown.Item id="publish">
+                                  <Dropdown.Item
+                                    id="publish"
+                                    textValue={
+                                      document.publishHistory.length
+                                        ? t`Add latest version to raw documents`
+                                        : t`Add to raw documents`
+                                    }
+                                  >
                                     <FileOutput size={14} />
-                                    <span>
+                                    <Label>
                                       {document.publishHistory.length
                                         ? t`Add latest version to raw documents`
                                         : t`Add to raw documents`}
-                                    </span>
-                                  </Dropdown.Item>
-                                  <Dropdown.Item id="rename">
-                                    <Pencil size={14} />
-                                    <span>{t`Rename`}</span>
+                                    </Label>
                                   </Dropdown.Item>
                                   <Dropdown.Item
-                                    className="text-danger"
+                                    id="rename"
+                                    textValue={t`Rename`}
+                                  >
+                                    <Pencil size={14} />
+                                    <Label>{t`Rename`}</Label>
+                                  </Dropdown.Item>
+                                  <Separator />
+                                  <Dropdown.Item
                                     id="delete"
+                                    textValue={t`Delete`}
+                                    variant="danger"
                                   >
                                     <Trash2 size={14} />
-                                    <span>{t`Delete`}</span>
+                                    <Label>{t`Delete`}</Label>
                                   </Dropdown.Item>
                                 </Dropdown.Menu>
                               </Dropdown.Popover>
@@ -1320,26 +1604,34 @@ export function WikiPanel({
                     )}
                   </div>
                 </div>
-                <div className="op-wiki-page-tree op-wiki-column__content">
-                  {renderWikiPageNodes(wikiPageTree)}
+                <div
+                  className={
+                    wikiPageTree.length === 0
+                      ? "op-wiki-page-tree op-wiki-page-tree--empty op-wiki-column__content"
+                      : "op-wiki-page-tree op-wiki-column__content"
+                  }
+                >
+                  {wikiPageTree.length ? (
+                    renderWikiPageNodes(wikiPageTree)
+                  ) : (
+                    <WikiPagesEmpty />
+                  )}
                 </div>
                 <div className="op-wiki-agent-skill-footer">
                   <Dropdown>
-                    <Dropdown.Trigger>
-                      <Button
-                        className="op-wiki-agent-skill-trigger"
-                        isDisabled={isBusy || agentSkills.length === 0}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <span>
-                          {agentSkills.find(
-                            (item) => item.skill.id === wikiAgentSkillId
-                          )?.skill.title ?? wikiAgentSkillId}
-                        </span>
-                        <ChevronDown size={14} />
-                      </Button>
-                    </Dropdown.Trigger>
+                    <Button
+                      className="op-wiki-agent-skill-trigger"
+                      isDisabled={isBusy || agentSkills.length === 0}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <span>
+                        {agentSkills.find(
+                          (item) => item.skill.id === wikiAgentSkillId
+                        )?.skill.title ?? wikiAgentSkillId}
+                      </span>
+                      <ChevronDown size={14} />
+                    </Button>
                     <Dropdown.Popover
                       className="op-wiki-agent-skill-popover"
                       placement="top start"
@@ -1356,15 +1648,15 @@ export function WikiPanel({
                         selectionMode="single"
                       >
                         <Dropdown.Section>
-                          <Header className="op-wiki-agent-skill-menu-header">
-                            {t`Wiki generation method`}
-                          </Header>
+                          <Header>{t`Wiki generation method`}</Header>
                           {agentSkills.map((item) => (
                             <Dropdown.Item
                               id={item.skill.id}
                               key={item.skill.id}
+                              textValue={item.skill.title}
                             >
-                              {item.skill.title}
+                              <Dropdown.ItemIndicator />
+                              <Label>{item.skill.title}</Label>
                             </Dropdown.Item>
                           ))}
                         </Dropdown.Section>
@@ -1454,6 +1746,7 @@ export function WikiPanel({
             <WritingComposer
               documents={state.generatedDocuments}
               isSelectionBusy={isSelectionBusy}
+              onOpenAgentTasks={onOpenAgentTasks}
               onOpenLibrary={() => setIsDocumentLibraryOpen(true)}
               onReload={onReload}
               rawDocuments={state.rawDocuments}
@@ -1470,17 +1763,15 @@ export function WikiPanel({
         <MarkdownDialog
           closeLabel={t`Close`}
           content={markdownDialog.content}
-          isBusy={isBusy}
+          fileName={markdownDialog.document.originalFileName}
           onChange={(content) =>
             setMarkdownDialog((current) =>
               current ? { ...current, content } : current
             )
           }
           onClose={() => setMarkdownDialog(null)}
+          onRenameFileName={renameRawDocumentFile}
           onSave={saveMarkdown}
-          saveLabel={t`Save Markdown`}
-          title={markdownDialog.document.title}
-          titleLabel={t`Markdown`}
         />
       ) : null}
 
@@ -1488,17 +1779,15 @@ export function WikiPanel({
         <MarkdownDialog
           closeLabel={t`Close`}
           content={pageDialog.content}
-          isBusy={isBusy}
+          fileName={pageDialog.pagePath}
           onChange={(content) =>
             setPageDialog((current) =>
               current ? { ...current, content } : current
             )
           }
           onClose={() => setPageDialog(null)}
+          onRenameFileName={renameWikiPageFile}
           onSave={saveWikiPage}
-          saveLabel={t`Save Markdown`}
-          title={pageDialog.pagePath}
-          titleLabel={t`Markdown`}
         />
       ) : null}
 
@@ -1517,16 +1806,18 @@ export function WikiPanel({
       ) : null}
 
       {generatedDocumentDialog ? (
-        <GeneratedDocumentDialog
+        <MarkdownDialog
           closeLabel={t`Close`}
           content={generatedDocumentDialog.content}
-          onClose={() => setGeneratedDocumentDialog(null)}
-          title={generatedDocumentDialog.document.title}
-          titleLabel={
-            generatedDocumentDialog.document.format === "markdown"
-              ? t`Markdown`
-              : t`Plain text`
+          fileName={generatedDocumentDialog.document.originalFileName}
+          onChange={(content) =>
+            setGeneratedDocumentDialog((current) =>
+              current ? { ...current, content } : current
+            )
           }
+          onClose={() => setGeneratedDocumentDialog(null)}
+          onRenameFileName={renameGeneratedDocumentFile}
+          onSave={saveGeneratedMarkdown}
         />
       ) : null}
 
@@ -1589,6 +1880,7 @@ export function WikiPanel({
 function WritingComposer({
   documents,
   isSelectionBusy,
+  onOpenAgentTasks,
   onOpenLibrary,
   onReload,
   rawDocuments,
@@ -1599,6 +1891,10 @@ function WritingComposer({
 }: {
   documents: WikiGeneratedDocument[]
   isSelectionBusy: boolean
+  onOpenAgentTasks: (
+    filter: "active" | "pending" | "all",
+    taskIds?: string[]
+  ) => void
   onOpenLibrary: () => void
   onReload: () => Promise<void>
   rawDocuments: WikiRawDocument[]
@@ -1624,15 +1920,16 @@ function WritingComposer({
     selectedRevisionWritingSkillId
   )
   const [writingSkills, setWritingSkills] = useState<AgentSkillListing[]>([])
+  const [skillFilesDialog, setSkillFilesDialog] = useState<{
+    files: SkillTextFile[]
+    skill: AgentSkillListing
+  } | null>(null)
+  const [pendingDeleteSkill, setPendingDeleteSkill] =
+    useState<AgentSkillListing | null>(null)
+  const [isDeletingSkill, setIsDeletingSkill] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const writingTasks = useMemo(() => {
-    const taskType =
-      mode === "refine" ? "refine_writing_skill" : "generate_document"
-    return tasks.filter(
-      (task) => task.queue === "writing" && task.type === taskType
-    )
-  }, [mode, tasks])
+  const refinementGroups = useMemo(() => refinementTaskGroups(tasks), [tasks])
   const refinementTaskVersion = useMemo(
     () =>
       tasks
@@ -1817,17 +2114,67 @@ function WritingComposer({
     [mode]
   )
 
-  const taskAction = useCallback(
-    async (taskId: string, action: "cancel" | "retry") => {
+  const openSkillFiles = useCallback(
+    async (skill: AgentSkillListing) => {
+      const payload = await apiJson<{ files?: SkillTextFile[] }>(
+        transport.apiBase,
+        `/api/writing/skills/${encodeURIComponent(skill.skill.id)}`
+      )
+      setSkillFilesDialog({ files: payload.files ?? [], skill })
+    },
+    [transport.apiBase]
+  )
+
+  const saveSkillFile = useCallback(
+    async (path: string, content: string) => {
+      if (!skillFilesDialog) return
       await apiJson(
         transport.apiBase,
-        `/api/tasks/${encodeURIComponent(taskId)}/${action}`,
-        { method: "POST" }
+        `/api/writing/skills/${encodeURIComponent(skillFilesDialog.skill.skill.id)}/file`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path, content }),
+        }
       )
-      await onReload()
+      setSkillFilesDialog((current) =>
+        current
+          ? {
+              ...current,
+              files: current.files.map((file) =>
+                file.path === path ? { ...file, content } : file
+              ),
+            }
+          : null
+      )
     },
-    [onReload, transport.apiBase]
+    [skillFilesDialog, transport.apiBase]
   )
+
+  const deleteSkill = useCallback(async () => {
+    if (!pendingDeleteSkill) return
+    setIsDeletingSkill(true)
+    try {
+      await apiJson(
+        transport.apiBase,
+        `/api/writing/skills/${encodeURIComponent(pendingDeleteSkill.skill.id)}`,
+        { method: "DELETE" }
+      )
+      const deletedId = pendingDeleteSkill.skill.id
+      setWritingSkills((current) =>
+        current.filter((item) => item.skill.id !== deletedId)
+      )
+      setSelectedCreateWritingSkillIds((current) =>
+        current.filter((id) => id !== deletedId)
+      )
+      setSelectedRevisionWritingSkillId((current) =>
+        current === deletedId ? null : current
+      )
+      setPendingDeleteSkill(null)
+    } finally {
+      setIsDeletingSkill(false)
+    }
+  }, [pendingDeleteSkill, transport.apiBase])
 
   return (
     <section className="op-wiki-column op-writing-composer">
@@ -1844,6 +2191,35 @@ function WritingComposer({
             <PanelLeft size={17} />
           </Button>
           <h2>{t`Writing`}</h2>
+        </div>
+        <div className="op-writing-refinement-statuses">
+          {(
+            [
+              ["active", t`refinement in progress`, t`refinements in progress`],
+              ["waiting", t`refinement waiting`, t`refinements waiting`],
+              ["error", t`refinement error`, t`refinement errors`],
+            ] as const
+          ).map(([group, singularLabel, pluralLabel]) => {
+            const groupTasks = refinementGroups[group]
+            if (!groupTasks.length) return null
+            return (
+              <Button
+                className={`op-writing-refinement-status op-writing-refinement-status--${group}`}
+                key={group}
+                onPress={() =>
+                  onOpenAgentTasks(
+                    "all",
+                    groupTasks.map((task) => task.id)
+                  )
+                }
+                size="sm"
+                variant={group === "error" ? "danger" : "ghost"}
+              >
+                {groupTasks.length}{" "}
+                {groupTasks.length === 1 ? singularLabel : pluralLabel}
+              </Button>
+            )
+          })}
         </div>
       </div>
       <div className="op-writing-composer__content op-wiki-column__content">
@@ -1883,68 +2259,120 @@ function WritingComposer({
                 </p>
               </div>
             </div>
-            <p className="op-writing-refinement__note">
-              {t`The selected Wiki is ignored. Raw documents must be converted to Markdown. When complete, the project Skill will be available for new documents and revisions.`}
-            </p>
-            <div className="op-writing-refinement__sources">
-              <strong>
-                {t("Selected articles")}: {selectedSourceCount}
-              </strong>
-              {selectedSourceCount === 0 ? (
-                <span>{t`Select at least one raw or generated document`}</span>
-              ) : unreadySourceCount > 0 ? (
-                <span>
-                  {t`Some selected documents are not ready. Wait for processing or deselect them.`}
-                </span>
-              ) : (
-                <span>{t`All selected articles will be refined together`}</span>
-              )}
-            </div>
-            <label className="op-writing-target">
-              <span>{t`Writing Skill name`}</span>
-              <input
+            <div className="op-writing-target">
+              <Label className="op-writing-section-title">
+                {t`Writing Skill name`}
+              </Label>
+              <Input
                 aria-label={t`Writing Skill name`}
+                fullWidth
                 maxLength={80}
                 onChange={(event) => setRefinementName(event.target.value)}
                 placeholder={t`Name this reusable writing method`}
                 value={refinementName}
               />
-            </label>
+            </div>
+            <div className="op-writing-refinement__sources">
+              <strong className="op-writing-section-title">
+                {t("Selected articles")}: {selectedSourceCount}
+              </strong>
+              {selectedSourceCount === 0 ? (
+                <Alert
+                  className="op-writing-refinement__warning"
+                  status="warning"
+                >
+                  <Alert.Indicator />
+                  <Alert.Content>
+                    <Alert.Title className="op-writing-refinement__warning-text">
+                      {t`Select at least one raw or generated document`}
+                    </Alert.Title>
+                  </Alert.Content>
+                </Alert>
+              ) : (
+                <>
+                  <ul className="op-writing-refinement__source-list">
+                    {selectedRawDocuments.map((document) => (
+                      <li key={document.id}>
+                        <FileText aria-hidden size={14} />
+                        <span title={document.title}>{document.title}</span>
+                        <small>{t`Raw Documents`}</small>
+                      </li>
+                    ))}
+                    {selectedGeneratedDocuments.map((document) => (
+                      <li key={document.id}>
+                        <FileOutput aria-hidden size={14} />
+                        <span title={document.title}>{document.title}</span>
+                        <small>{t`Generated Documents`}</small>
+                      </li>
+                    ))}
+                  </ul>
+                  {unreadySourceCount > 0 ? (
+                    <Alert
+                      className="op-writing-refinement__warning"
+                      status="warning"
+                    >
+                      <Alert.Indicator />
+                      <Alert.Content>
+                        <Alert.Title className="op-writing-refinement__warning-text">
+                          {t`Some selected documents are not ready. Wait for processing or deselect them.`}
+                        </Alert.Title>
+                      </Alert.Content>
+                    </Alert>
+                  ) : null}
+                </>
+              )}
+            </div>
             {error ? <div className="op-writing-error">{error}</div> : null}
           </div>
         ) : (
           <>
             {mode === "revise" ? (
-              <label className="op-writing-target">
-                <span>{t`Document to revise`}</span>
-                <select
-                  onChange={(event) => setTargetId(event.target.value || null)}
+              <div className="op-writing-target">
+                <Label className="op-writing-section-title">
+                  {t`Document to revise`}
+                </Label>
+                <Select
+                  aria-label={t`Document to revise`}
+                  onChange={(key) => setTargetId(key ? String(key) : null)}
+                  selectionMode="single"
                   value={targetId ?? ""}
                 >
-                  <option value="">{t`Select a generated document`}</option>
-                  {documents.map((document) => (
-                    <option key={document.id} value={document.id}>
-                      {document.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  <Select.Trigger>
+                    <Select.Value>
+                      {documents.find((document) => document.id === targetId)
+                        ?.title ?? t`Select a generated document`}
+                    </Select.Value>
+                    <Select.Indicator />
+                  </Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      {documents.map((document) => (
+                        <ListBox.Item
+                          id={document.id}
+                          key={document.id}
+                          textValue={document.title}
+                        >
+                          {document.title}
+                        </ListBox.Item>
+                      ))}
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
+              </div>
             ) : null}
 
             <div className="op-writing-skills">
               <div className="op-writing-skills__header">
-                <strong>{t`Writing Skills`}</strong>
+                <strong className="op-writing-section-title">
+                  {t`Writing Skills`}
+                </strong>
                 <span>
                   {mode === "revise" ? t`Select one` : t`Select one or more`}
                 </span>
               </div>
               <div className="op-writing-skills__list">
                 {writingSkills.map((item) => (
-                  <label
-                    className="op-writing-skill"
-                    htmlFor={`writing-skill-${item.skill.id}`}
-                    key={item.skill.id}
-                  >
+                  <div className="op-writing-skill" key={item.skill.id}>
                     <Checkbox
                       aria-label={`${t`Select Writing Skill`}: ${item.skill.title}`}
                       id={`writing-skill-${item.skill.id}`}
@@ -1955,18 +2383,72 @@ function WritingComposer({
                         toggleWritingSkill(item.skill.id, isSelected)
                       }
                     />
-                    <span className="op-writing-skill__body">
+                    <label
+                      className="op-writing-skill__body"
+                      htmlFor={`writing-skill-${item.skill.id}`}
+                    >
                       <span className="op-writing-skill__title">
                         <strong>{item.skill.title}</strong>
                         <span>
-                          {item.source === "builtin" ? t`Built-in` : t`Project`}
+                          {item.source === "builtin"
+                            ? t`Built-in`
+                            : t`Self-built`}
                         </span>
                       </span>
                       <span className="op-writing-skill__description">
                         {item.skill.description}
                       </span>
-                    </span>
-                  </label>
+                    </label>
+                    <Dropdown>
+                      <Button
+                        aria-label={`${t`Writing Skill actions`}: ${item.skill.title}`}
+                        isIconOnly
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <MoreHorizontal size={16} />
+                      </Button>
+                      <Dropdown.Popover>
+                        <Dropdown.Menu
+                          onAction={(key) => {
+                            if (key === "view" || key === "edit") {
+                              openSkillFiles(item).catch((openError) => {
+                                console.error(
+                                  "Failed to open Writing Skill",
+                                  openError
+                                )
+                              })
+                            } else if (key === "delete") {
+                              setPendingDeleteSkill(item)
+                            }
+                          }}
+                        >
+                          {item.source === "builtin" ? (
+                            <Dropdown.Item id="view" textValue={t`View`}>
+                              <Eye size={14} />
+                              <Label>{t`View`}</Label>
+                            </Dropdown.Item>
+                          ) : (
+                            <>
+                              <Dropdown.Item id="edit" textValue={t`Edit`}>
+                                <Pencil size={14} />
+                                <Label>{t`Edit`}</Label>
+                              </Dropdown.Item>
+                              <Separator />
+                              <Dropdown.Item
+                                id="delete"
+                                textValue={t`Delete`}
+                                variant="danger"
+                              >
+                                <Trash2 size={14} />
+                                <Label>{t`Delete`}</Label>
+                              </Dropdown.Item>
+                            </>
+                          )}
+                        </Dropdown.Menu>
+                      </Dropdown.Popover>
+                    </Dropdown>
+                  </div>
                 ))}
                 {writingSkills.length === 0 ? (
                   <div className="op-wiki-empty-inline">
@@ -1985,9 +2467,10 @@ function WritingComposer({
               ) : null}
             </div>
 
-            <textarea
+            <TextArea
               aria-label={t`Writing instructions`}
               className="op-writing-instructions"
+              fullWidth
               onChange={(event) => setDraft(event.target.value)}
               placeholder={t`Describe what the agent should write`}
               value={draft}
@@ -1995,74 +2478,6 @@ function WritingComposer({
             {error ? <div className="op-writing-error">{error}</div> : null}
           </>
         )}
-
-        <div className="op-writing-requests">
-          {writingTasks.map((task) => {
-            const instruction = taskInstruction(task)
-            const skillTitle = taskWritingSkillTitle(task)
-            const isRefinement = task.type === "refine_writing_skill"
-            const canCancel = [
-              "queued",
-              "reserved",
-              "running",
-              "claimed",
-            ].includes(task.status)
-            return (
-              <div className="op-writing-request" key={task.id}>
-                <div className="op-writing-request__body">
-                  <strong>
-                    {skillTitle ||
-                      (isRefinement
-                        ? t`Writing Skill refinement`
-                        : t`Writing request`)}
-                  </strong>
-                  {instruction ? (
-                    <span className="op-writing-request__instruction">
-                      {instruction}
-                    </span>
-                  ) : null}
-                  <span>{writingTaskStatus(task, t)}</span>
-                </div>
-                {canCancel ? (
-                  <Button
-                    aria-label={
-                      isRefinement
-                        ? t`Cancel refinement request`
-                        : t`Cancel writing request`
-                    }
-                    isIconOnly
-                    onPress={() => taskAction(task.id, "cancel")}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    <X size={14} />
-                  </Button>
-                ) : task.status === "failed" ? (
-                  <Button
-                    aria-label={
-                      isRefinement
-                        ? t`Retry refinement request`
-                        : t`Retry writing request`
-                    }
-                    isIconOnly
-                    onPress={() => taskAction(task.id, "retry")}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    <RotateCcw size={14} />
-                  </Button>
-                ) : null}
-              </div>
-            )
-          })}
-          {writingTasks.length === 0 ? (
-            <div className="op-wiki-empty-inline">
-              {mode === "refine"
-                ? t`No refinement requests yet`
-                : t`No writing requests yet`}
-            </div>
-          ) : null}
-        </div>
       </div>
       <div className="op-writing-submit-dock">
         {mode === "refine" ? (
@@ -2099,39 +2514,31 @@ function WritingComposer({
           </Button>
         )}
       </div>
+      {skillFilesDialog ? (
+        <SkillFilesDialog
+          closeLabel={t`Close`}
+          files={skillFilesDialog.files}
+          onClose={() => setSkillFilesDialog(null)}
+          onSave={saveSkillFile}
+          readOnly={skillFilesDialog.skill.source === "builtin"}
+          title={skillFilesDialog.skill.skill.title}
+        />
+      ) : null}
+      {pendingDeleteSkill ? (
+        <ConfirmDialog
+          cancelLabel={t`Cancel`}
+          confirmLabel={t`Delete`}
+          isBusy={isDeletingSkill}
+          message={t`After deletion, this Writing Skill can no longer be used.`}
+          onCancel={() => setPendingDeleteSkill(null)}
+          onConfirm={() =>
+            deleteSkill().catch((deleteError) => {
+              console.error("Failed to delete Writing Skill", deleteError)
+            })
+          }
+          title={t`Delete Writing Skill?`}
+        />
+      ) : null}
     </section>
   )
-}
-
-function taskInstruction(task: ProjectTask): string {
-  if (!task.input || typeof task.input !== "object") return ""
-  const instruction = (task.input as { instruction?: unknown }).instruction
-  return typeof instruction === "string" ? instruction : ""
-}
-
-function taskWritingSkillTitle(task: ProjectTask): string {
-  if (!task.input || typeof task.input !== "object") return ""
-  const refinementName = (task.input as { name?: unknown }).name
-  if (typeof refinementName === "string") return refinementName
-  const writingSkill = (task.input as { writingSkill?: unknown }).writingSkill
-  if (!(writingSkill && typeof writingSkill === "object")) return ""
-  const title = (writingSkill as { title?: unknown }).title
-  return typeof title === "string" ? title : ""
-}
-
-function writingTaskStatus(
-  task: ProjectTask,
-  t: (value: string) => string
-): string {
-  if (task.dispatchState === "noTarget" && task.status === "queued") {
-    return t("Waiting for Agent")
-  }
-  if (task.status === "queued" || task.status === "reserved") return t("Queued")
-  if (["running", "claimed"].includes(task.status)) {
-    return task.type === "refine_writing_skill" ? t("Refining") : t("Writing")
-  }
-  if (task.status === "succeeded") return t("Completed")
-  if (task.status === "failed") return t("Failed")
-  if (task.status === "cancelled") return t("Cancelled")
-  return task.status
 }

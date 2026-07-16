@@ -84,8 +84,8 @@ export function FillItem({ editor, shape }: FillColorItemProps) {
         <Button
           aria-label={t`Fill settings`}
           className={cn(
-            "flex h-7 w-7 cursor-pointer items-center justify-center overflow-hidden rounded-full border-2 border-white p-0 outline-none",
-            "ring-1 ring-zinc-300 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+            "flex h-7 w-7 cursor-pointer items-center justify-center overflow-hidden rounded-full border-2 border-foreground p-0 outline-none",
+            "ring-1 ring-border focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2"
           )}
           style={{
             background: TRANSPARENT_BG,
@@ -100,7 +100,7 @@ export function FillItem({ editor, shape }: FillColorItemProps) {
         </Button>
         <Tooltip.Content>{t`Fill`}</Tooltip.Content>
       </Tooltip>
-      <Popover.Content className="border border-border" offset={12}>
+      <Popover.Content offset={12}>
         <Popover.Dialog className="w-72 p-0">
           <div className="flex items-center justify-between px-4 py-3">
             <Popover.Heading>

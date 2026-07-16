@@ -126,6 +126,23 @@ pub fn ensure_project_bootstrap(
     })
 }
 
+pub fn activate_project_panel(
+    paths: &MyOpenPanelsPaths,
+    kind: PanelKind,
+) -> Result<ProjectBootstrap, CliError> {
+    let bootstrap = read_project_bootstrap(
+        paths,
+        BootstrapRequest {
+            requested_panel_id: None,
+            requested_panel_kind: Some(kind),
+            requested_project_id: None,
+        },
+    )?;
+    write_active_project(paths, &bootstrap.project.id)?;
+    write_active_panel(paths, &bootstrap.panel)?;
+    Ok(bootstrap)
+}
+
 pub fn read_project_bootstrap(
     paths: &MyOpenPanelsPaths,
     request: BootstrapRequest,
@@ -185,9 +202,6 @@ pub fn read_project_bootstrap(
             ))
         })?
         .clone();
-
-    write_active_project(paths, &project.id)?;
-    write_active_panel(paths, &snapshot.panel)?;
 
     Ok(ProjectBootstrap {
         active_panel_id: snapshot.panel.id.clone(),
@@ -1179,7 +1193,7 @@ fn empty_wiki_state() -> Value {
         }],
         "activeRawDocumentId": null,
         "activeWikiSpaceId": DEFAULT_WIKI_SPACE_ID,
-        "activeWikiPagePath": "index.md",
+        "activeWikiPagePath": null,
         "wikiAgentSkillConfigured": false,
         "wikiAgentSkillId": "karpathy-llm-wiki",
     })
@@ -1351,6 +1365,7 @@ mod tests {
         );
         assert_eq!(bootstrap.state["schemaVersion"], json!(4));
         assert_eq!(bootstrap.state["wikiSpaces"][0]["title"], json!("Wiki"));
+        assert_eq!(bootstrap.state["activeWikiPagePath"], Value::Null);
         let writing = bootstrap
             .panels
             .iter()

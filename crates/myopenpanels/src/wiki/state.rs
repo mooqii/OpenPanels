@@ -18,29 +18,9 @@ pub(super) struct WikiSpaceValue {
 pub(super) fn get_wiki_bootstrap(
     paths: &MyOpenPanelsPaths,
 ) -> Result<WikiBootstrapValue, CliError> {
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    if matches!(
-        bootstrap.active_panel_kind,
-        PanelKind::Writing | PanelKind::Typesetting
-    ) {
-        let wiki_panel = bootstrap
-            .panels
-            .iter()
-            .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
-            .ok_or_else(|| CliError::new("The current Project has no Wiki panel."))?;
-        return get_wiki_target(paths, &bootstrap.project.id, &wiki_panel.panel.id);
-    }
-    if bootstrap.active_panel_kind != PanelKind::Wiki {
-        return Err(CliError::with_recovery(
-            "panel_kind_mismatch",
-            format!(
-                "The active panel is {}, but this command requires wiki.",
-                bootstrap.active_panel_kind.as_str()
-            ),
-            true,
-            "Run `myopenpanels panel activate --panel-kind wiki --format json`, read the new focus revision, and retry.",
-        ));
-    }
+    let mut request = BootstrapRequest::new();
+    request.requested_panel_kind = Some(PanelKind::Wiki);
+    let bootstrap = read_project_bootstrap(paths, request)?;
     ensure_default_wiki_files(
         paths,
         &bootstrap.project.id,
@@ -174,6 +154,40 @@ mod tests {
     use crate::paths::resolve_myopenpanels_paths;
 
     #[test]
+    fn new_wiki_does_not_create_an_index_page() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join("storage");
+        std::fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+
+        let bootstrap =
+            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let wiki = get_wiki_target(&paths, &bootstrap.project.id, &bootstrap.panel.id)
+            .expect("wiki target");
+        let panel_dir = Storage::open(&paths)
+            .expect("storage")
+            .panel_dir(&wiki.project.id, &wiki.panel.id);
+        let wiki_space_id = wiki.state["activeWikiSpaceId"]
+            .as_str()
+            .expect("active Wiki space");
+        let pages_dir = panel_dir
+            .join("wikis")
+            .join(sanitize_path_part(wiki_space_id))
+            .join("pages");
+
+        assert!(pages_dir.is_dir());
+        assert!(!pages_dir.join("index.md").exists());
+        assert_eq!(wiki.state["activeWikiPagePath"], Value::Null);
+        assert_eq!(wiki.state["wikiSpaces"][0]["pageIndex"], json!([]));
+    }
+
+    #[test]
     fn typesetting_reads_wiki_documents_without_changing_focus() {
         let temp = tempfile::tempdir().expect("temp");
         let project_dir = temp.path().join("project");
@@ -260,7 +274,6 @@ pub(super) fn ensure_default_wiki_files(
                 .join(sanitize_path_part(space_id))
                 .join("pages");
             fs::create_dir_all(&pages_dir).map_err(to_cli_error)?;
-            write_file_if_missing(&pages_dir.join("index.md"), "# Index\n\nNo pages yet.\n")?;
             write_file_if_missing(&pages_dir.join("log.md"), "# Log\n")?;
         }
     }
@@ -291,7 +304,7 @@ pub(super) fn create_wiki_task(
         "agentSkillId": agent_skill_id,
         "markdownVersion": markdown_version,
         "attempt": 0,
-        "maxAttempts": 3,
+        "maxAttempts": 8,
         "leaseOwner": null,
         "leaseExpiresAt": null,
         "lastHeartbeatAt": null,
@@ -316,15 +329,36 @@ pub(super) fn create_wiki_rebuild_index_task(
     tasks: &mut Vec<Value>,
     wiki_space_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    create_wiki_task(
+    let space = resolve_wiki_space(state, wiki_space_id)?;
+    if let Some(existing) = tasks.iter().find(|task| {
+        task.get("type").and_then(Value::as_str) == Some("rebuild_wiki_index")
+            && task.get("wikiSpaceId").and_then(Value::as_str) == Some(space.id.as_str())
+            && (matches!(
+                task.get("status").and_then(Value::as_str),
+                Some("waiting" | "queued" | "reserved" | "running" | "indexing")
+            ) || (task.get("status").and_then(Value::as_str) == Some("failed")
+                && task.get("attempt").and_then(Value::as_i64).unwrap_or(0)
+                    < task.get("maxAttempts").and_then(Value::as_i64).unwrap_or(8)))
+    }) {
+        return Ok(existing.clone());
+    }
+    let mut task = create_wiki_task(
         state,
         tasks,
         "rebuild_wiki_index",
         "index.md",
         None,
         None,
-        wiki_space_id,
-    )
+        Some(space.id.as_str()),
+    )?;
+    task["idempotencyKey"] = json!(format!("rebuild:{}", space.id));
+    if let Some(stored) = tasks
+        .iter_mut()
+        .find(|stored| stored.get("id") == task.get("id"))
+    {
+        stored["idempotencyKey"] = task["idempotencyKey"].clone();
+    }
+    Ok(task)
 }
 
 pub(super) fn create_ingestion_state(task: &Value, markdown_version: i64) -> Value {

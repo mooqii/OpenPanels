@@ -1,4 +1,14 @@
-import { Button, Modal, Tabs, Tooltip } from "@heroui/react"
+import {
+  Button,
+  Input,
+  Label,
+  ListBox,
+  Modal,
+  Popover,
+  Select,
+  Tabs,
+  Tooltip,
+} from "@heroui/react"
 import Image from "@tiptap/extension-image"
 import { Markdown } from "@tiptap/markdown"
 import {
@@ -980,12 +990,7 @@ function PublicationList({
         </div>
       ) : (
         <div className="op-typesetting-list-empty">
-          <FileText size={24} />
-          <strong>{t`No publication projects yet`}</strong>
-          <Button onPress={onCreate} size="sm" variant="primary">
-            <Plus size={15} />
-            {t`New`}
-          </Button>
+          {t`No publication projects yet`}
         </div>
       )}
     </div>
@@ -1222,9 +1227,11 @@ function PublicationDetail({
       </div>
 
       <div className="op-typesetting-detail-scroll">
-        <label className="op-typesetting-field">
-          <span>{t`Title`}</span>
-          <input
+        <div className="op-typesetting-field">
+          <Label>{t`Title`}</Label>
+          <Input
+            aria-label={t`Title`}
+            fullWidth
             onChange={(event) => {
               const title = event.currentTarget.value
               onUpdate((current) => ({
@@ -1236,7 +1243,7 @@ function PublicationDetail({
             placeholder={t`Untitled publication`}
             value={publication.title}
           />
-        </label>
+        </div>
 
         <section className="op-typesetting-section">
           <div className="op-typesetting-section__heading">
@@ -1388,7 +1395,6 @@ function PublicationDetail({
               </div>
             ) : (
               <div className="op-typesetting-drop-empty">
-                <ImageIcon size={20} />
                 <span>{t`Drag images from the asset library to add covers.`}</span>
               </div>
             )}
@@ -1407,7 +1413,6 @@ function PublicationDetail({
             <div className="op-typesetting-editor__body">
               {editor && isTypesettingDocumentEmpty(editor.getJSON()) ? (
                 <div className="op-typesetting-editor__empty">
-                  <FileText size={20} />
                   <span>{t`Open a document from the library and insert it here.`}</span>
                 </div>
               ) : null}
@@ -1474,10 +1479,11 @@ function TypesettingToolbar({
 
   return (
     <div className="op-typesetting-toolbar">
-      <select
+      <Select
         aria-label={t`Text style`}
-        onChange={(event) => {
-          const value = event.currentTarget.value
+        className="w-24 shrink-0"
+        onChange={(key) => {
+          const value = String(key)
           if (value === "p") editor.chain().focus().setParagraph().run()
           else {
             editor
@@ -1487,13 +1493,31 @@ function TypesettingToolbar({
               .run()
           }
         }}
+        selectionMode="single"
         value={state?.block ?? "p"}
+        variant="secondary"
       >
-        <option value="p">{t`Paragraph`}</option>
-        <option value="h1">H1</option>
-        <option value="h2">H2</option>
-        <option value="h3">H3</option>
-      </select>
+        <Select.Trigger>
+          <Select.Value />
+          <Select.Indicator />
+        </Select.Trigger>
+        <Select.Popover>
+          <ListBox>
+            <ListBox.Item id="p" textValue={t`Paragraph`}>
+              {t`Paragraph`}
+            </ListBox.Item>
+            <ListBox.Item id="h1" textValue="H1">
+              H1
+            </ListBox.Item>
+            <ListBox.Item id="h2" textValue="H2">
+              H2
+            </ListBox.Item>
+            <ListBox.Item id="h3" textValue="H3">
+              H3
+            </ListBox.Item>
+          </ListBox>
+        </Select.Popover>
+      </Select>
       <ToolbarButton
         active={state?.bold}
         label={t`Bold`}
@@ -1529,48 +1553,55 @@ function TypesettingToolbar({
       >
         <Quote size={16} />
       </ToolbarButton>
-      <div className="op-typesetting-link-control">
+      <Popover
+        isOpen={isLinkOpen}
+        onOpenChange={(isOpen) => {
+          setIsLinkOpen(isOpen)
+          if (isOpen) {
+            setLinkValue(editor.getAttributes("link").href ?? "")
+          }
+        }}
+      >
         <ToolbarButton
           active={state?.link}
           label={t`Link`}
-          onPress={() => {
-            setLinkValue(editor.getAttributes("link").href ?? "")
-            setIsLinkOpen((open) => !open)
-          }}
+          onPress={() => undefined}
         >
           <LinkIcon size={16} />
         </ToolbarButton>
-        {isLinkOpen ? (
-          <div className="op-typesetting-link-popover">
-            <input
-              aria-label={t`Link URL`}
-              autoFocus
-              onChange={(event) => setLinkValue(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") applyLink()
-                if (event.key === "Escape") setIsLinkOpen(false)
-              }}
-              placeholder="https://"
-              value={linkValue}
-            />
-            <Button onPress={applyLink} size="sm" variant="primary">
-              {t`Apply`}
-            </Button>
-            {state?.link ? (
-              <Button
-                onPress={() => {
-                  editor.chain().focus().unsetLink().run()
-                  setIsLinkOpen(false)
+        <Popover.Content placement="bottom start">
+          <Popover.Dialog className="w-[min(360px,calc(100vw-40px))]">
+            <div className="flex items-center gap-2">
+              <Input
+                aria-label={t`Link URL`}
+                autoFocus
+                className="min-w-30 flex-1"
+                onChange={(event) => setLinkValue(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") applyLink()
                 }}
-                size="sm"
-                variant="ghost"
-              >
-                {t`Remove`}
+                placeholder="https://"
+                value={linkValue}
+              />
+              <Button onPress={applyLink} size="sm" variant="primary">
+                {t`Apply`}
               </Button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+              {state?.link ? (
+                <Button
+                  onPress={() => {
+                    editor.chain().focus().unsetLink().run()
+                    setIsLinkOpen(false)
+                  }}
+                  size="sm"
+                  variant="ghost"
+                >
+                  {t`Remove`}
+                </Button>
+              ) : null}
+            </div>
+          </Popover.Dialog>
+        </Popover.Content>
+      </Popover>
       <span className="op-typesetting-toolbar__spacer" />
       <ToolbarButton
         disabled={!state?.canUndo}
@@ -1607,12 +1638,11 @@ function ToolbarButton({
     <Tooltip closeDelay={0} delay={300}>
       <Button
         aria-label={label}
-        className={active ? "is-active" : ""}
         isDisabled={disabled}
         isIconOnly
         onPress={onPress}
         size="sm"
-        variant="ghost"
+        variant={active ? "primary" : "ghost"}
       >
         {children}
       </Button>

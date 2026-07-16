@@ -37,8 +37,8 @@ export function TextColorItem({ editor, shape }: TextColorItemProps) {
         <Button
           aria-label={t`Text Fill Color`}
           className={cn(
-            "flex h-7 w-7 cursor-pointer items-center justify-center overflow-hidden rounded-full border-2 border-white p-0 outline-none",
-            "ring-1 ring-zinc-300 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+            "flex h-7 w-7 cursor-pointer items-center justify-center overflow-hidden rounded-full border-2 border-foreground p-0 outline-none",
+            "ring-1 ring-border focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2"
           )}
           style={{
             background: TRANSPARENT_BG,
@@ -53,7 +53,7 @@ export function TextColorItem({ editor, shape }: TextColorItemProps) {
         </Button>
         <Tooltip.Content>{t`Fill Color`}</Tooltip.Content>
       </Tooltip>
-      <Popover.Content className="border border-border" offset={12}>
+      <Popover.Content offset={12}>
         <Popover.Dialog className="w-68 p-0">
           <Popover.Heading className="px-4 py-3">
             <span>{t`Fill`}</span>

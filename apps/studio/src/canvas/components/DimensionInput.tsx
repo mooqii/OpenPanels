@@ -72,7 +72,7 @@ export function DimensionInput({
     <div className={cn("flex items-center gap-1 text-sm", className)}>
       {/* Width Input */}
       <NumberInput
-        className="group flex w-20 items-center rounded-lg bg-surface-secondary px-1 py-0.5 focus-within:ring-2 focus-within:ring-blue-500"
+        className="group flex w-20 items-center rounded-lg px-1 py-0.5"
         dragVelocity={1}
         min={0}
         onChange={handleWidthChange}
@@ -90,8 +90,8 @@ export function DimensionInput({
         className={cn(
           "flex h-6 w-6 items-center justify-center rounded-md transition-colors",
           isLinked
-            ? "bg-interactive-active text-foreground"
-            : "text-gray-400 hover:bg-interactive-hover"
+            ? "bg-accent-soft text-accent-soft-foreground"
+            : "text-muted hover:bg-default-hover hover:text-foreground"
         )}
         onClick={toggleLinked}
         type="button"
@@ -101,7 +101,7 @@ export function DimensionInput({
 
       {/* Height Input */}
       <NumberInput
-        className="group flex w-20 items-center rounded-lg bg-surface-secondary px-1 py-0.5 focus-within:ring-2 focus-within:ring-blue-500"
+        className="group flex w-20 items-center rounded-lg px-1 py-0.5"
         dragVelocity={1}
         min={0}
         onChange={handleHeightChange}
