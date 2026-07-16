@@ -72,8 +72,10 @@ export interface ModelGatewaySettings {
     providerId: string | null
   }
   localCli: {
+    enabledProviderIds: string[]
     executablePaths: Record<string, string>
     model: string | null
+    providerOrder: string[]
     providerId: string | null
     reasoning: string | null
   }
@@ -208,7 +210,7 @@ export interface ProjectTask {
     status: string
     successCondition: string
   }>
-  dispatchMode?: "auto" | "prefer" | "only"
+  dispatchMode?: "auto" | "prefer"
   dispatchState?: "eligible" | "noTarget" | "running" | "done" | string
   error?: unknown
   executionGeneration?: number
@@ -222,6 +224,9 @@ export interface ProjectTask {
   lifecycleState?: string
   matchedTargetCount?: number
   maxAttempts?: number
+  mutationBlocked?: boolean
+  mutationKey?: string | null
+  mutationSequence?: number | null
   nextRunAt?: string | null
   panelId: string
   panelKind: MyOpenPanelsPanelKind | string

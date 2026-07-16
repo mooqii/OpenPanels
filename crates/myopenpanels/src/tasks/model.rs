@@ -42,6 +42,8 @@ pub(crate) struct TaskRecord {
     pub(crate) required_protocol_version: i64,
     pub(crate) dispatch_mode: String,
     pub(crate) requested_gateway_connection_id: Option<String>,
+    pub(crate) mutation_key: Option<String>,
+    pub(crate) mutation_sequence: Option<i64>,
     pub(crate) input: Value,
     pub(crate) source: Value,
     pub(crate) result: Value,

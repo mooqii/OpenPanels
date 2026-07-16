@@ -140,6 +140,13 @@ Studio reaches this boundary through `/api/model-gateway/settings`,
 `/api/model-gateway/local-clis/test`. Provider-specific process details stay in
 `model_gateway`; panel code and Task producers never build model commands.
 
+Local CLI discovery and activation are separate. A scan reports whether an
+adapter executable is currently available but does not mutate its persisted
+`enabled` flag. Users explicitly activate channels and arrange them by
+`priority`; only enabled, available channels become Agent Targets. The first
+enabled channel is the default primary connection. Newly registered adapters
+start disabled, so installing a CLI never silently adds execution capacity.
+
 Task deletion is intentionally not supported. Terminal Tasks may be archived,
 which hides them from default lists while retaining dependencies, Attempts,
 Events, and provenance.
@@ -158,13 +165,20 @@ the next eligible channel can claim the Task immediately. When every channel in
 the route has been attempted, the normal Task backoff applies before a new
 round. Terminal Task failures do not fall through to another channel.
 
-Each Task has a dispatch mode. `auto` follows the route, `prefer` tries a
-requested Model Gateway connection before the remaining route, and `only`
-allows only the requested connection. Channel selection and Attempt creation
-remain inside the Task reservation transaction so concurrent Targets cannot
-claim the same Task. The Task queue continues to own leases, retry budgets,
-fencing, lifecycle transitions, and final validation; the gateway owns adapter
-execution and normalized failure classification.
+Each Task has a dispatch mode. `auto` follows the route, while `prefer` tries a
+requested Model Gateway connection before the remaining route. A preferred
+channel is never an exclusive pin: retryable failure immediately falls through
+to the next eligible channel. Channel selection and Attempt creation remain
+inside the Task reservation transaction so concurrent Targets cannot claim the
+same Task. The Task queue continues to own leases, retry budgets, fencing,
+lifecycle transitions, and final validation; the gateway owns adapter execution
+and normalized failure classification.
+
+Studio exposes these controls at both levels: Model Gateway settings manage
+channel activation and default order, while pending Task details can select
+automatic or preferred-channel dispatch. Task overrides
+reference stable Model Gateway connection IDs rather than ephemeral Agent
+Target IDs.
 
 ## Atomic Content Broker
 

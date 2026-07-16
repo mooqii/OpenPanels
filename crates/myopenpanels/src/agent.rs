@@ -630,6 +630,35 @@ pub fn list_writing_agent_skills(
         .collect())
 }
 
+pub(crate) fn wiki_agent_skill_for_project(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    skill_id: &str,
+) -> Result<AgentSkillListing, CliError> {
+    load_agent_skills(paths, project_id)?
+        .into_iter()
+        .filter(|item| {
+            metadata_matches(
+                &item.metadata.applies_to,
+                &item.metadata.task_types,
+                Some("wiki"),
+                Some("ingest_markdown_into_wiki"),
+            ) && item
+                .metadata
+                .task_types
+                .iter()
+                .any(|task_type| task_type == "maintain_wiki")
+        })
+        .map(|skill| agent_skill_listing(paths, project_id, skill.metadata))
+        .find(|item| item.skill.id == skill_id)
+        .ok_or_else(|| {
+            CliError::with_code(
+                "wiki_skill_not_found",
+                format!("Wiki generation Skill not found or incomplete: {skill_id}"),
+            )
+        })
+}
+
 pub fn writing_agent_skill(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,

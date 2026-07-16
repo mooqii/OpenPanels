@@ -420,6 +420,8 @@ pub(super) async fn api_wiki_agent_skill(State(state): State<Arc<AppState>>) -> 
 #[serde(rename_all = "camelCase")]
 pub(super) struct AgentSkillBody {
     agent_skill_id: Option<String>,
+    #[serde(default)]
+    rebuild_confirmed: bool,
 }
 
 pub(super) async fn api_wiki_set_agent_skill(
@@ -429,9 +431,9 @@ pub(super) async fn api_wiki_set_agent_skill(
     let Some(agent_skill_id) = body.agent_skill_id else {
         return json_error(StatusCode::BAD_REQUEST, "Missing agentSkillId");
     };
-    match wiki::set_agent_skill(&state.paths, &agent_skill_id) {
+    match wiki::set_agent_skill(&state.paths, &agent_skill_id, body.rebuild_confirmed) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+        Err(error) => json_error(StatusCode::BAD_REQUEST, error.message()),
     }
 }
 

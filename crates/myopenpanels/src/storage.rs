@@ -519,7 +519,7 @@ impl Storage {
     ) -> Result<(), CliError> {
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
-        let mut inserted = 0usize;
+        let mut changed = 0usize;
         for task in tasks {
             let id = task
                 .get("id")
@@ -541,11 +541,11 @@ impl Storage {
             let input = json!({
                 "documentId": task.get("documentId"),
                 "markdownVersion": task.get("markdownVersion"),
+                "changedPaths": task.get("changedPaths"),
+                "changeReasons": task.get("changeReasons"),
             });
             let source = json!({
                 "wikiSpaceId": task.get("wikiSpaceId"),
-                "ruleSetId": task.get("ruleSetId"),
-                "ruleSetVersion": task.get("ruleSetVersion"),
                 "agentSkillId": task.get("agentSkillId"),
             });
             let workflow_id = task
@@ -563,14 +563,22 @@ impl Storage {
                 &source,
                 &created_at,
             )?;
-            let was_inserted = tx
+            let already_exists = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?)",
+                    [id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(to_cli_error)?;
+            changed += tx
                 .execute(
                     r#"
                     INSERT INTO tasks (
                       id, project_id, panel_id, queue, type, capability, status, target_ref,
                       input_json, source_json, attempts, max_attempts, created_at, updated_at,
-                      workflow_id, idempotency_key, available_at, required_protocol_version
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      workflow_id, idempotency_key, available_at, required_protocol_version,
+                      mutation_key, mutation_sequence
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                       status = CASE
                         WHEN excluded.status IN ('waiting', 'cancelled', 'stale', 'superseded')
@@ -579,6 +587,10 @@ impl Storage {
                         ELSE tasks.status
                       END,
                       updated_at = MAX(tasks.updated_at, excluded.updated_at),
+                      input_json = excluded.input_json,
+                      source_json = excluded.source_json,
+                      mutation_key = COALESCE(tasks.mutation_key, excluded.mutation_key),
+                      mutation_sequence = COALESCE(tasks.mutation_sequence, excluded.mutation_sequence),
                       terminal_reason_json = CASE
                         WHEN excluded.status IN ('cancelled', 'stale', 'superseded')
                           THEN COALESCE(tasks.terminal_reason_json, json_object('code', excluded.status))
@@ -608,11 +620,12 @@ impl Storage {
                             .and_then(Value::as_str)
                             .unwrap_or(&created_at),
                         content_task_protocol_version(),
+                        task.get("mutationKey").and_then(Value::as_str),
+                        task.get("mutationSequence").and_then(Value::as_i64),
                     ],
                 )
                 .map_err(to_cli_error)?;
-            inserted += was_inserted;
-            if was_inserted == 1 {
+            if !already_exists {
                 insert_task_created_records(
                     &tx,
                     id,
@@ -641,7 +654,7 @@ impl Storage {
                 }
             }
         }
-        if inserted > 0 {
+        if changed > 0 {
             record_scope(&tx, "tasks", Some(project_id), None)?;
         }
         tx.commit().map_err(to_cli_error)
@@ -715,6 +728,42 @@ impl Storage {
             .into_iter()
             .find(|task| task.get("id").and_then(Value::as_str) == Some(id.as_str()))
             .ok_or_else(|| CliError::new(format!("Created task was not found: {id}")))
+    }
+
+    pub(crate) fn ensure_workflow(
+        &self,
+        project_id: &str,
+        panel_id: &str,
+        workflow_id: &str,
+        workflow_type: &str,
+        status: &str,
+        source: &Value,
+    ) -> Result<(), CliError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+            .map_err(to_cli_error)?;
+        let now = crate::control::now_iso();
+        insert_workflow_if_missing(
+            &tx,
+            workflow_id,
+            project_id,
+            panel_id,
+            workflow_type,
+            None,
+            source,
+            &now,
+        )?;
+        tx.execute(
+            "UPDATE workflows SET type = ?, status = ?, source_json = ?, updated_at = ? WHERE id = ?",
+            params![
+                workflow_type,
+                status,
+                serde_json::to_string(source).map_err(to_cli_error)?,
+                now,
+                workflow_id
+            ],
+        )
+        .map_err(to_cli_error)?;
+        tx.commit().map_err(to_cli_error)
     }
 
     pub fn insert_tasks_with_panel_states(
@@ -836,7 +885,8 @@ impl Storage {
                   t.capability, t.assigned_agent_id, t.result_json, t.error_json, t.completed_at,
                   t.input_json, t.source_json, t.workflow_id, t.execution_generation,
                   t.available_at, t.archived_at, t.terminal_reason_json,
-                  t.required_protocol_version, {dispatch_columns}
+                  t.required_protocol_version, {dispatch_columns},
+                  t.mutation_key, t.mutation_sequence
                 FROM tasks t
                 JOIN panels p ON p.project_id = t.project_id AND p.id = t.panel_id
                 WHERE t.project_id = ?
@@ -914,6 +964,8 @@ impl Storage {
                     required_protocol_version: row.get(28)?,
                     dispatch_mode: row.get(29)?,
                     requested_gateway_connection_id: row.get(30)?,
+                    mutation_key: row.get(31)?,
+                    mutation_sequence: row.get(32)?,
                     input,
                     source,
                     result,
@@ -1675,6 +1727,7 @@ fn project_task_capability(queue: &str, task_type: &str) -> String {
     match (queue, task_type) {
         ("wiki", "convert_document_to_markdown") => "wiki.convertDocument".to_owned(),
         ("wiki", "ingest_markdown_into_wiki") => "wiki.ingestMarkdown".to_owned(),
+        ("wiki", "maintain_wiki") => "wiki.maintain".to_owned(),
         ("wiki", "rebuild_wiki_index") => "wiki.rebuildIndex".to_owned(),
         ("writing", "refine_writing_skill") => "writing.refineSkill".to_owned(),
         _ => format!("{}.{}", queue, task_type.replace('_', ".")),
@@ -2166,6 +2219,10 @@ const MIGRATION_0012_SQL: &str = include_str!("../migrations/0012_content_broker
 const MIGRATION_0013_SQL: &str = include_str!("../migrations/0013_remove_webhook_transport.sql");
 const MIGRATION_0014_SQL: &str = include_str!("../migrations/0014_model_gateway.sql");
 const MIGRATION_0015_SQL: &str = include_str!("../migrations/0015_task_channel_dispatch.sql");
+const MIGRATION_0016_SQL: &str =
+    include_str!("../migrations/0016_model_gateway_channel_controls.sql");
+const MIGRATION_0017_SQL: &str = include_str!("../migrations/0017_preferred_task_dispatch.sql");
+const MIGRATION_0018_SQL: &str = include_str!("../migrations/0018_wiki_mutation_lanes.sql");
 
 struct Migration {
     id: &'static str,
@@ -2271,6 +2328,24 @@ fn migrations() -> &'static [Migration] {
             description: "Add channel-aware Task dispatch and immutable Attempt provenance",
             checksum_material: MIGRATION_0015_SQL,
             up: migration_0015,
+        },
+        Migration {
+            id: "0016_model_gateway_channel_controls",
+            description: "Add explicit model gateway channel activation and ordering",
+            checksum_material: MIGRATION_0016_SQL,
+            up: migration_0016,
+        },
+        Migration {
+            id: "0017_preferred_task_dispatch",
+            description: "Replace exclusive Task channel pins with preferred failover routing",
+            checksum_material: MIGRATION_0017_SQL,
+            up: migration_0017,
+        },
+        Migration {
+            id: "0018_wiki_mutation_lanes",
+            description: "Serialize generated Wiki mutations and retire index-specific Tasks",
+            checksum_material: MIGRATION_0018_SQL,
+            up: migration_0018,
         },
     ]
 }
@@ -2739,6 +2814,18 @@ fn migration_0014(tx: &Transaction<'_>) -> Result<(), CliError> {
 
 fn migration_0015(tx: &Transaction<'_>) -> Result<(), CliError> {
     tx.execute_batch(MIGRATION_0015_SQL).map_err(to_cli_error)
+}
+
+fn migration_0016(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0016_SQL).map_err(to_cli_error)
+}
+
+fn migration_0017(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0017_SQL).map_err(to_cli_error)
+}
+
+fn migration_0018(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0018_SQL).map_err(to_cli_error)
 }
 
 fn rewrite_json_column(
@@ -4060,5 +4147,14 @@ mod tests {
         assert_eq!(tasks[0]["lease"]["expiresAt"], json!("expires:stable"));
         assert_eq!(tasks[0]["lease"]["heartbeatAt"], json!("heartbeat:stable"));
         assert_eq!(tasks[0]["retryAfter"], json!("retry:stable"));
+        let created_event_count: i64 = storage
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM task_events WHERE task_id = 'task:missing-times' AND event_type = 'created'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("created event count");
+        assert_eq!(created_event_count, 1);
     }
 }

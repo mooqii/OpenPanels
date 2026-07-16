@@ -4174,6 +4174,13 @@ fn retryable_failure_falls_through_ordered_model_channels() {
         .find(|panel| panel.panel.kind == PanelKind::Wiki)
         .expect("wiki panel");
     let storage = Storage::open(&paths).expect("storage");
+    storage
+        .connection()
+        .execute(
+            "UPDATE model_gateway_connections SET enabled = 1 WHERE id IN ('local-cli:codex', 'local-cli:hermes')",
+            [],
+        )
+        .expect("enable test channels");
     let task = storage
         .insert_task(
             &bootstrap.project.id,
@@ -4280,7 +4287,7 @@ fn retryable_failure_falls_through_ordered_model_channels() {
 }
 
 #[test]
-fn exclusive_task_dispatch_rejects_other_channels() {
+fn preferred_task_dispatch_falls_back_to_other_channels() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -4297,8 +4304,15 @@ fn exclusive_task_dispatch_rejects_other_channels() {
         .iter()
         .find(|panel| panel.panel.kind == PanelKind::Wiki)
         .expect("wiki panel");
-    let task = Storage::open(&paths)
-        .expect("storage")
+    let storage = Storage::open(&paths).expect("storage");
+    storage
+        .connection()
+        .execute(
+            "UPDATE model_gateway_connections SET enabled = 1 WHERE id IN ('local-cli:codex', 'local-cli:hermes')",
+            [],
+        )
+        .expect("enable test channels");
+    let task = storage
         .insert_task(
             &bootstrap.project.id,
             &wiki_panel.panel.id,
@@ -4331,11 +4345,11 @@ fn exclusive_task_dispatch_rejects_other_channels() {
     let configured = tasks::set_task_dispatch(
         &paths,
         task["id"].as_str().unwrap(),
-        "only",
+        "prefer",
         Some("local-cli:hermes"),
     )
     .expect("dispatch override");
-    assert_eq!(configured["task"]["dispatchMode"], "only");
+    assert_eq!(configured["task"]["dispatchMode"], "prefer");
     assert_eq!(
         configured["task"]["requestedGatewayConnectionId"],
         "local-cli:hermes"
@@ -4345,15 +4359,41 @@ fn exclusive_task_dispatch_rejects_other_channels() {
         task["id"].as_str().unwrap(),
         primary["target"]["id"].as_str().unwrap(),
     )
-    .expect_err("other channel must not claim an exclusive task");
+    .expect_err("fallback must wait for the preferred channel");
     assert_eq!(rejected.code(), Some("task_not_claimable"));
     let claimed = tasks::claim_task(
         &paths,
         task["id"].as_str().unwrap(),
         pinned["target"]["id"].as_str().unwrap(),
     )
-    .expect("pinned claim");
+    .expect("preferred claim");
     assert_eq!(claimed["target"]["name"], "pinned-channel");
+    let failed = tasks::fail_task_with_class(
+        &paths,
+        task["id"].as_str().unwrap(),
+        claimed["leaseToken"].as_str().unwrap(),
+        "preferred channel unavailable",
+        None,
+        tasks::TaskFailureClass::RetryableChannel,
+    )
+    .expect("preferred failure");
+    assert_eq!(failed["task"]["ready"], true);
+    let fallback = tasks::claim_task(
+        &paths,
+        task["id"].as_str().unwrap(),
+        primary["target"]["id"].as_str().unwrap(),
+    )
+    .expect("fallback claim");
+    assert_eq!(fallback["target"]["name"], "automatic-primary");
+
+    let exclusive = tasks::set_task_dispatch(
+        &paths,
+        task["id"].as_str().unwrap(),
+        "only",
+        Some("local-cli:hermes"),
+    )
+    .expect_err("exclusive dispatch is unsupported");
+    assert_eq!(exclusive.code(), Some("invalid_dispatch_mode"));
 }
 
 #[test]

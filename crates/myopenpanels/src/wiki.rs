@@ -847,6 +847,7 @@ pub fn add_raw_document(
     let storage = Storage::open(paths)?;
     let now = now_iso();
     let wiki_space = resolve_wiki_space(&wiki.state, wiki_space_id)?;
+    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space.id);
     let safe_file_name = sanitize_path_part(file_name);
     let document_id = create_id("raw");
     let original_ref = wiki_ref(&["raw", &document_id, "original", &safe_file_name]);
@@ -896,6 +897,7 @@ pub fn add_raw_document(
             Some(&document_id),
             Some(0),
             Some(wiki_space.id.as_str()),
+            None,
         )?)
     };
     if let Some(task) = conversion_task.as_mut() {
@@ -919,6 +921,7 @@ pub fn add_raw_document(
             Some(&document_id),
             Some(1),
             Some(wiki_space.id.as_str()),
+            Some(&mutation_key),
         )?)
     } else {
         let mut task = create_wiki_task(
@@ -929,6 +932,7 @@ pub fn add_raw_document(
             Some(&document_id),
             Some(1),
             Some(wiki_space.id.as_str()),
+            Some(&mutation_key),
         )?;
         let conversion_id = conversion_task
             .as_ref()
@@ -1143,14 +1147,14 @@ pub fn delete_raw_document(
             task["updatedAt"] = json!(now);
         }
     }
-    let task = create_wiki_task(
+    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space.id);
+    let task = create_wiki_maintenance_task(
         &wiki.state,
         &mut wiki.tasks,
-        "rebuild_wiki_index",
-        "index.md",
-        None,
-        None,
         Some(wiki_space.id.as_str()),
+        &mutation_key,
+        None,
+        "source_deleted",
     )?;
     if wiki
         .state
@@ -1288,6 +1292,7 @@ pub fn extract_raw_document_markdown(
         Some(document_id),
         Some(markdown_version),
         Some(wiki_space.id.as_str()),
+        None,
     )?;
     let document = find_document_mut(&mut wiki.state, document_id)?;
     document["conversion"] = json!({
@@ -1323,6 +1328,7 @@ pub fn reindex_raw_document(
         .get("markdownVersion")
         .and_then(Value::as_i64)
         .unwrap_or(0);
+    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space.id);
     let task = create_wiki_task(
         &wiki.state,
         &mut wiki.tasks,
@@ -1331,6 +1337,7 @@ pub fn reindex_raw_document(
         Some(document_id),
         Some(markdown_version),
         Some(wiki_space.id.as_str()),
+        Some(&mutation_key),
     )?;
     let document = find_document_mut(&mut wiki.state, document_id)?;
     let ingestion = document
@@ -1522,23 +1529,17 @@ fn complete_task_internal(
         let markdown = std::str::from_utf8(bytes).map_err(|_| {
             CliError::with_code("invalid_output", "Wiki pages must be valid UTF-8.")
         })?;
-        if page_path != "log.md" {
-            upsert_page_index(
-                &mut wiki.state,
-                wiki_space_id,
-                page_path,
-                markdown,
-                metadata.get("title").and_then(Value::as_str),
-                &now,
-            )?;
-        }
+        upsert_page_index(
+            &mut wiki.state,
+            wiki_space_id,
+            page_path,
+            markdown,
+            metadata.get("title").and_then(Value::as_str),
+            &now,
+        )?;
         update_wiki_space_timestamp(&mut wiki.state, wiki_space_id, &now)?;
     }
-    if let Some((wiki_space_id, page_path, _, _)) = staged_wiki
-        .iter()
-        .find(|(_, page_path, _, _)| page_path.as_str() == "index.md")
-        .or_else(|| staged_wiki.first())
-    {
+    if let Some((wiki_space_id, page_path, _, _)) = staged_wiki.first() {
         state_object_mut(&mut wiki.state)?
             .insert("activeWikiSpaceId".to_owned(), json!(wiki_space_id));
         state_object_mut(&mut wiki.state)?
@@ -1624,6 +1625,12 @@ fn complete_task_internal(
                 wiki.tasks[index]["updatedAt"] = json!(now);
                 wiki.tasks[index].clone()
             } else {
+                let wiki_space_id = task_snapshot
+                    .get("wikiSpaceId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("wiki:default");
+                let mutation_key =
+                    wiki_mutation_key(&wiki.project.id, &wiki.panel.id, wiki_space_id);
                 create_wiki_task(
                     &wiki.state,
                     &mut wiki.tasks,
@@ -1631,18 +1638,10 @@ fn complete_task_internal(
                     document_id,
                     Some(document_id),
                     Some(markdown_version),
-                    task_snapshot.get("wikiSpaceId").and_then(Value::as_str),
+                    Some(wiki_space_id),
+                    Some(&mutation_key),
                 )?
             };
-            if let Some(agent_skill_id) = task_snapshot.get("agentSkillId").cloned() {
-                ingest_task["agentSkillId"] = agent_skill_id.clone();
-                let ingest_task_id = ingest_task
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                task_mut(&mut wiki.tasks, &ingest_task_id)?["agentSkillId"] = agent_skill_id;
-            }
             follow_up_task_ids.push(
                 ingest_task
                     .get("id")
@@ -2085,6 +2084,7 @@ pub fn write_markdown(
                 existing["updatedAt"] = json!(now);
             }
         }
+        let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space_id);
         let task = create_wiki_task(
             &wiki.state,
             &mut wiki.tasks,
@@ -2093,6 +2093,7 @@ pub fn write_markdown(
             Some(document_id),
             Some(version),
             Some(&wiki_space_id),
+            Some(&mutation_key),
         )?;
         let document = find_document_mut(&mut wiki.state, document_id)?;
         let ingestion = document
@@ -2118,25 +2119,248 @@ pub fn write_markdown(
     )
 }
 
-pub fn set_agent_skill(paths: &MyOpenPanelsPaths, skill_id: &str) -> Result<Value, CliError> {
-    if !matches!(skill_id, "karpathy-llm-wiki" | "karpathy-llm-wiki-zh") {
-        return Err(CliError::new(
-            "Expected wiki agent skill to be one of: karpathy-llm-wiki, karpathy-llm-wiki-zh",
+pub fn set_agent_skill(
+    paths: &MyOpenPanelsPaths,
+    skill_id: &str,
+    rebuild_confirmed: bool,
+) -> Result<Value, CliError> {
+    let wiki = get_wiki_bootstrap(paths)?;
+    crate::agent::wiki_agent_skill_for_project(paths, &wiki.project.id, skill_id)?;
+    let current_skill_id = selected_agent_skill_id(&wiki.state);
+    if current_skill_id == skill_id {
+        return Ok(json!({
+            "agentSkillId": skill_id,
+            "rebuildWorkflowId": null,
+            "cancelledTaskIds": [],
+            "queuedTaskIds": [],
+            "rawDocumentCount": wiki.state.get("rawDocuments").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
+            "state": wiki.state,
+        }));
+    }
+    if !rebuild_confirmed {
+        return Err(CliError::with_code(
+            "wiki_rebuild_confirmation_required",
+            "Changing the Wiki generation Skill requires confirmed full regeneration.",
         ));
     }
+
+    let cancellable_task_ids = wiki
+        .tasks
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.get("type").and_then(Value::as_str),
+                Some("ingest_markdown_into_wiki" | "maintain_wiki" | "rebuild_wiki_index")
+            ) && matches!(
+                task.get("status").and_then(Value::as_str),
+                Some(
+                    "waiting"
+                        | "queued"
+                        | "failed"
+                        | "reserved"
+                        | "running"
+                        | "claimed"
+                        | "indexing"
+                )
+            )
+        })
+        .filter_map(|task| task.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect::<Vec<_>>();
+    let mut cancelled_task_ids = Vec::new();
+    for task_id in cancellable_task_ids {
+        if crate::tasks::cancel_task(paths, &task_id).is_ok() {
+            cancelled_task_ids.push(task_id);
+        }
+    }
+
     let mut wiki = get_wiki_bootstrap(paths)?;
+    let space = resolve_wiki_space(&wiki.state, None)?;
+    let space_id = space.id.clone();
+    let storage = Storage::open(paths)?;
+    let pages_dir = storage
+        .panel_dir(&wiki.project.id, &wiki.panel.id)
+        .join("wikis")
+        .join(sanitize_path_part(&space_id))
+        .join("pages");
+    if pages_dir.exists() {
+        fs::remove_dir_all(&pages_dir).map_err(to_cli_error)?;
+    }
+    fs::create_dir_all(&pages_dir).map_err(to_cli_error)?;
+    crate::content::archive_resource(
+        paths,
+        Some(&wiki.project.id),
+        crate::content::ResourceKind::WikiSpace,
+        &space_id,
+    )?;
+
+    let now = now_iso();
+    if let Some(space) = state_array_mut(&mut wiki.state, "wikiSpaces")?
+        .iter_mut()
+        .find(|space| space.get("id").and_then(Value::as_str) == Some(space_id.as_str()))
+    {
+        space["pageIndex"] = json!([]);
+        space["updatedAt"] = json!(now);
+        if space.get("ruleSetId").and_then(Value::as_str) == Some("rule-set:default") {
+            space["ruleSetId"] = Value::Null;
+            space["ruleSetVersion"] = Value::Null;
+        }
+    }
     let state = state_object_mut(&mut wiki.state)?;
+    state.insert("activeWikiPagePath".to_owned(), Value::Null);
     state.insert("wikiAgentSkillId".to_owned(), json!(skill_id));
     state.insert("wikiAgentSkillConfigured".to_owned(), json!(true));
+    remove_legacy_default_rules(paths, &wiki.project.id, &wiki.panel.id, &mut wiki.state)?;
+
+    let workflow_id = create_id("workflow");
+    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space_id);
+    let mut documents = wiki
+        .state
+        .get("rawDocuments")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    documents.sort_by(|left, right| {
+        left.get("createdAt")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(right.get("createdAt").and_then(Value::as_str).unwrap_or(""))
+            .then_with(|| {
+                left.get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .cmp(right.get("id").and_then(Value::as_str).unwrap_or(""))
+            })
+    });
+    let mut queued_task_ids = Vec::new();
+    for document in &documents {
+        let Some(document_id) = document.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let markdown_version = document
+            .get("markdownVersion")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let markdown_ready = document.get("markdownRef").and_then(Value::as_str).is_some();
+        let conversion_task_id = if markdown_ready {
+            None
+        } else {
+            active_conversion_task_id(&wiki.tasks, document_id).or_else(|| {
+                let mut conversion = create_wiki_task(
+                    &wiki.state,
+                    &mut wiki.tasks,
+                    "convert_document_to_markdown",
+                    document_id,
+                    Some(document_id),
+                    Some(markdown_version),
+                    Some(&space_id),
+                    None,
+                )
+                .ok()?;
+                conversion["idempotencyKey"] =
+                    json!(format!("rebuild-convert:{document_id}:{markdown_version}"));
+                let conversion_id = conversion["id"].as_str()?.to_owned();
+                if let Some(stored) = wiki.tasks.iter_mut().find(|task| task["id"] == conversion["id"])
+                {
+                    *stored = conversion;
+                }
+                Some(conversion_id)
+            })
+        };
+        let mut ingest = create_wiki_task(
+            &wiki.state,
+            &mut wiki.tasks,
+            "ingest_markdown_into_wiki",
+            document_id,
+            Some(document_id),
+            Some(markdown_version),
+            Some(&space_id),
+            Some(&mutation_key),
+        )?;
+        ingest["workflowId"] = json!(workflow_id);
+        ingest["idempotencyKey"] = json!(format!(
+            "rebuild-ingest:{workflow_id}:{document_id}:{markdown_version}"
+        ));
+        if let Some(conversion_task_id) = conversion_task_id {
+            ingest["status"] = json!("waiting");
+            ingest["dependsOnTaskIds"] = json!([conversion_task_id]);
+        }
+        let ingest_id = ingest["id"].as_str().unwrap_or_default().to_owned();
+        if let Some(stored) = wiki.tasks.iter_mut().find(|task| task["id"] == ingest["id"]) {
+            *stored = ingest.clone();
+        }
+        queued_task_ids.push(ingest_id);
+        let raw_document = find_document_mut(&mut wiki.state, document_id)?;
+        let ingestion = raw_document
+            .as_object_mut()
+            .ok_or_else(|| CliError::new("Wiki raw document is invalid."))?
+            .entry("ingestionByWikiSpace")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| CliError::new("Wiki raw document ingestion state is invalid."))?;
+        ingestion.insert(space_id.clone(), create_ingestion_state(&ingest, markdown_version));
+    }
     save_wiki_state(paths, &wiki)?;
-    Ok(json!({ "agentSkillId": skill_id, "state": wiki.state }))
+    storage.ensure_workflow(
+        &wiki.project.id,
+        &wiki.panel.id,
+        &workflow_id,
+        "wiki.rebuild",
+        if queued_task_ids.is_empty() { "succeeded" } else { "active" },
+        &json!({ "agentSkillId": skill_id, "rawDocumentCount": documents.len() }),
+    )?;
+    Ok(json!({
+        "agentSkillId": skill_id,
+        "rebuildWorkflowId": workflow_id,
+        "cancelledTaskIds": cancelled_task_ids,
+        "queuedTaskIds": queued_task_ids,
+        "rawDocumentCount": documents.len(),
+        "state": wiki.state,
+    }))
 }
 
 pub fn selected_agent_skill_id(state: &Value) -> &str {
-    match state.get("wikiAgentSkillId").and_then(Value::as_str) {
-        Some("karpathy-llm-wiki-zh") => "karpathy-llm-wiki-zh",
-        _ => "karpathy-llm-wiki",
+    state
+        .get("wikiAgentSkillId")
+        .and_then(Value::as_str)
+        .filter(|skill_id| !skill_id.is_empty())
+        .unwrap_or("karpathy-llm-wiki")
+}
+
+fn active_conversion_task_id(tasks: &[Value], document_id: &str) -> Option<String> {
+    tasks
+        .iter()
+        .find(|task| {
+            task.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown")
+                && task.get("documentId").and_then(Value::as_str) == Some(document_id)
+                && matches!(
+                    task.get("status").and_then(Value::as_str),
+                    Some("waiting" | "queued" | "failed" | "reserved" | "running" | "claimed" | "converting")
+                )
+        })
+        .and_then(|task| task.get("id").and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
+fn remove_legacy_default_rules(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    panel_id: &str,
+    state: &mut Value,
+) -> Result<(), CliError> {
+    const LEGACY_RULES: &str = "# Default LLM Wiki Rules\n\n- Keep `index.md` as the primary agent-readable map.\n- Keep `log.md` as an append-only change log.\n- Preserve source document references in page frontmatter.\n";
+    let path = Storage::open(paths)?
+        .panel_dir(project_id, panel_id)
+        .join("rules/default/rules.md");
+    if fs::read_to_string(&path).ok().as_deref() != Some(LEGACY_RULES) {
+        return Ok(());
     }
+    let _ = fs::remove_file(path);
+    if let Some(rule_sets) = state.get_mut("ruleSets").and_then(Value::as_array_mut) {
+        rule_sets.retain(|rule_set| {
+            rule_set.get("id").and_then(Value::as_str) != Some("rule-set:default")
+        });
+    }
+    Ok(())
 }
 
 pub fn list_spaces(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
@@ -2327,6 +2551,14 @@ pub fn write_page(
     };
     let storage = Storage::open(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
+    if task_id.is_none() {
+        let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space.id);
+        crate::tasks::supersede_active_wiki_mutations(
+            paths,
+            &wiki.project.id,
+            &mutation_key,
+        )?;
+    }
     let path = wiki_page_path(
         &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
         &space.id,
@@ -2355,10 +2587,14 @@ pub fn write_page(
     state_object_mut(&mut wiki.state)?.insert("activeWikiSpaceId".to_owned(), json!(space.id));
     state_object_mut(&mut wiki.state)?.insert("activeWikiPagePath".to_owned(), json!(page_path));
     let task = if task_id.is_none() {
-        Some(create_wiki_rebuild_index_task(
+        let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space.id);
+        Some(create_wiki_maintenance_task(
             &wiki.state,
             &mut wiki.tasks,
             Some(space.id.as_str()),
+            &mutation_key,
+            Some(page_path),
+            "page_written",
         )?)
     } else {
         None
@@ -2391,6 +2627,8 @@ pub fn rename_page(
     let mut wiki = get_wiki_bootstrap(paths)?;
     let storage = Storage::open(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
+    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space.id);
+    crate::tasks::supersede_active_wiki_mutations(paths, &wiki.project.id, &mutation_key)?;
     let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
     let old_path = wiki_page_path(&panel_dir, &space.id, page_path)?;
     let new_path = wiki_page_path(&panel_dir, &space.id, next_page_path)?;
@@ -2419,17 +2657,19 @@ pub fn rename_page(
         .ok_or_else(|| CliError::new(format!("Wiki page not found: {page_path}")))?;
     page["path"] = json!(next_page_path);
     page["title"] = json!(title_from_file_name(next_page_path));
-    page["type"] = json!(if next_page_path == "index.md" {
-        "overview"
-    } else {
-        "page"
-    });
+    page["type"] = json!("page");
     page["updatedAt"] = json!(now);
     state_object_mut(&mut wiki.state)?
         .insert("activeWikiPagePath".to_owned(), json!(next_page_path));
     update_wiki_space_timestamp(&mut wiki.state, &space.id, &now)?;
-    let task =
-        create_wiki_rebuild_index_task(&wiki.state, &mut wiki.tasks, Some(space.id.as_str()))?;
+    let task = create_wiki_maintenance_task(
+        &wiki.state,
+        &mut wiki.tasks,
+        Some(space.id.as_str()),
+        &mutation_key,
+        Some(next_page_path),
+        "page_renamed",
+    )?;
     save_wiki_state(paths, &wiki)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
     Ok(
@@ -2443,8 +2683,15 @@ pub fn reindex_wiki_space(
 ) -> Result<Value, CliError> {
     let mut wiki = get_wiki_bootstrap(paths)?;
     let space = resolve_wiki_space(&wiki.state, wiki_space_id)?;
-    let task =
-        create_wiki_rebuild_index_task(&wiki.state, &mut wiki.tasks, Some(space.id.as_str()))?;
+    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space.id);
+    let task = create_wiki_maintenance_task(
+        &wiki.state,
+        &mut wiki.tasks,
+        Some(space.id.as_str()),
+        &mutation_key,
+        None,
+        "manual_maintenance",
+    )?;
     save_wiki_state(paths, &wiki)?;
     let space = resolve_wiki_space(&wiki.state, wiki_space_id)?;
     Ok(json!({ "task": task, "state": wiki.state, "wikiSpace": space.value }))

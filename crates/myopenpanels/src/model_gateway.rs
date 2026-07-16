@@ -31,6 +31,10 @@ pub struct LocalCliSettings {
     pub model: Option<String>,
     pub reasoning: Option<String>,
     #[serde(default)]
+    pub enabled_provider_ids: Vec<String>,
+    #[serde(default)]
+    pub provider_order: Vec<String>,
+    #[serde(default)]
     pub executable_paths: BTreeMap<String, String>,
 }
 
@@ -44,12 +48,16 @@ pub struct ByokSettings {
 
 impl Default for ModelGatewaySettings {
     fn default() -> Self {
+        let provider_id = default_provider_from_env();
+        let provider_order = provider_id.iter().cloned().collect::<Vec<_>>();
         Self {
             mode: "localCli".to_owned(),
             local_cli: LocalCliSettings {
-                provider_id: default_provider_from_env(),
+                provider_id,
                 model: None,
                 reasoning: None,
+                enabled_provider_ids: provider_order.clone(),
+                provider_order,
                 executable_paths: BTreeMap::new(),
             },
             byok: ByokSettings::default(),
@@ -202,9 +210,9 @@ fn sync_builtin_local_cli_connections(
                 r#"
                 INSERT INTO model_gateway_connections (
                   id, transport, provider_id, display_name, config_json,
-                  enabled, created_at, updated_at
+                  enabled, priority, created_at, updated_at
                 )
-                VALUES (?, 'local_cli', ?, ?, ?, 1, ?, ?)
+                VALUES (?, 'local_cli', ?, ?, ?, 0, 0, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   provider_id = excluded.provider_id,
                   display_name = excluded.display_name,
@@ -212,12 +220,10 @@ fn sync_builtin_local_cli_connections(
                     model_gateway_connections.config_json,
                     excluded.config_json
                   ),
-                  enabled = 1,
                   updated_at = excluded.updated_at
                 WHERE model_gateway_connections.transport != 'local_cli'
                    OR model_gateway_connections.provider_id != excluded.provider_id
                    OR model_gateway_connections.display_name != excluded.display_name
-                   OR model_gateway_connections.enabled != 1
                    OR json_extract(
                         model_gateway_connections.config_json,
                         '$.origin'
@@ -308,7 +314,7 @@ fn builtin_local_cli_registry_needs_sync(
         let current = connection
             .query_row(
                 r#"
-                SELECT provider_id, display_name, enabled,
+                SELECT provider_id, display_name,
                        json_extract(config_json, '$.origin'),
                        json_extract(config_json, '$.adapterVersion'),
                        json_extract(config_json, '$.binaryName')
@@ -320,10 +326,9 @@ fn builtin_local_cli_registry_needs_sync(
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<i64>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 },
             )
@@ -332,7 +337,6 @@ fn builtin_local_cli_registry_needs_sync(
         let expected = (
             definition.id,
             definition.name,
-            1,
             Some("builtin"),
             Some(definition.adapter_version),
             Some(definition.bin),
@@ -341,10 +345,9 @@ fn builtin_local_cli_registry_needs_sync(
             (
                 value.0.as_str(),
                 value.1.as_str(),
-                value.2,
-                value.3.as_deref(),
-                value.4,
-                value.5.as_deref(),
+                value.2.as_deref(),
+                value.3,
+                value.4.as_deref(),
             )
         }) != Some(expected)
         {
@@ -420,19 +423,34 @@ pub fn read_settings(paths: &MyOpenPanelsPaths) -> Result<ModelGatewaySettings, 
         .map_err(to_cli_error)?
         .flatten();
     let mut executable_paths = BTreeMap::new();
+    let mut enabled_provider_ids = Vec::new();
     let mut statement = connection
         .prepare(
-            "SELECT provider_id, executable_path FROM model_gateway_connections WHERE transport = 'local_cli' AND executable_path IS NOT NULL",
+            r#"
+            SELECT provider_id, executable_path, enabled
+            FROM model_gateway_connections
+            WHERE transport = 'local_cli'
+            ORDER BY priority DESC, id ASC
+            "#,
         )
         .map_err(to_cli_error)?;
     let rows = statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
         })
         .map_err(to_cli_error)?;
     for row in rows {
-        let (provider_id, executable_path) = row.map_err(to_cli_error)?;
-        executable_paths.insert(provider_id, executable_path);
+        let (provider_id, executable_path, enabled) = row.map_err(to_cli_error)?;
+        if let Some(executable_path) = executable_path {
+            executable_paths.insert(provider_id.clone(), executable_path);
+        }
+        if enabled {
+            enabled_provider_ids.push(provider_id);
+        }
     }
     drop(statement);
 
@@ -466,6 +484,8 @@ pub fn read_settings(paths: &MyOpenPanelsPaths) -> Result<ModelGatewaySettings, 
             provider_id,
             model,
             reasoning,
+            provider_order: enabled_provider_ids.clone(),
+            enabled_provider_ids,
             executable_paths,
         },
         byok,
@@ -490,6 +510,13 @@ pub fn write_settings(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(to_cli_error)?;
     let now = crate::control::now_iso();
+    let enabled_positions = settings
+        .local_cli
+        .provider_order
+        .iter()
+        .enumerate()
+        .map(|(position, provider_id)| (provider_id.as_str(), position))
+        .collect::<BTreeMap<_, _>>();
     for definition in LOCAL_CLI_DEFINITIONS {
         let connection_id = format!("local-cli:{}", definition.id);
         let executable_path = settings
@@ -497,16 +524,21 @@ pub fn write_settings(
             .executable_paths
             .get(definition.id)
             .map(String::as_str);
+        let position = enabled_positions.get(definition.id).copied();
+        let enabled = position.is_some();
+        let priority = position
+            .map(|position| 1000_i64.saturating_sub(position as i64))
+            .unwrap_or(0);
         if settings.local_cli.provider_id.as_deref() == Some(definition.id) {
             tx.execute(
-                "UPDATE model_gateway_connections SET executable_path = ?, model = ?, reasoning = ?, updated_at = ? WHERE id = ? AND transport = 'local_cli'",
-                params![executable_path, settings.local_cli.model, settings.local_cli.reasoning, now, connection_id],
+                "UPDATE model_gateway_connections SET executable_path = ?, model = ?, reasoning = ?, enabled = ?, priority = ?, updated_at = ? WHERE id = ? AND transport = 'local_cli'",
+                params![executable_path, settings.local_cli.model, settings.local_cli.reasoning, enabled, priority, now, connection_id],
             )
             .map_err(to_cli_error)?;
         } else {
             tx.execute(
-                "UPDATE model_gateway_connections SET executable_path = ?, updated_at = ? WHERE id = ? AND transport = 'local_cli'",
-                params![executable_path, now, connection_id],
+                "UPDATE model_gateway_connections SET executable_path = ?, enabled = ?, priority = ?, updated_at = ? WHERE id = ? AND transport = 'local_cli'",
+                params![executable_path, enabled, priority, now, connection_id],
             )
             .map_err(to_cli_error)?;
         }
@@ -664,43 +696,44 @@ pub fn worker_specs(paths: &MyOpenPanelsPaths) -> Result<Vec<GatewayWorkerSpec>,
     let mut storage = Storage::open(paths)?;
     sync_builtin_local_cli_connections(&mut storage, LOCAL_CLI_DEFINITIONS)?;
     let connection = storage.connection();
-    let (mode, active_connection_id) = connection
+    let mode = connection
         .query_row(
-            "SELECT mode, active_local_connection_id FROM model_gateway_config WHERE id = 1",
+            "SELECT mode FROM model_gateway_config WHERE id = 1",
             [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(to_cli_error)?
-        .unwrap_or_else(|| ("local_cli".to_owned(), None));
+        .unwrap_or_else(|| "local_cli".to_owned());
     if mode != "local_cli" {
         return Ok(Vec::new());
     }
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, provider_id, executable_path, model, reasoning
+            SELECT id, provider_id, executable_path, model, reasoning, priority
             FROM model_gateway_connections
             WHERE transport = 'local_cli' AND enabled = 1
-            ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, updated_at DESC, id ASC
+            ORDER BY priority DESC, id ASC
             "#,
         )
         .map_err(to_cli_error)?;
     let rows = statement
-        .query_map([active_connection_id], |row| {
+        .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
             ))
         })
         .map_err(to_cli_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(to_cli_error)?;
     let mut specs = Vec::new();
-    for (connection_id, provider_id, configured_path, model, reasoning) in rows {
+    for (connection_id, provider_id, configured_path, model, reasoning, priority) in rows {
         let Some(definition) = definition(&provider_id) else {
             continue;
         };
@@ -711,11 +744,12 @@ pub fn worker_specs(paths: &MyOpenPanelsPaths) -> Result<Vec<GatewayWorkerSpec>,
         let command =
             (definition.task_command)(&executable, model.as_deref(), reasoning.as_deref());
         let key = format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}",
             connection_id,
             executable,
             model.as_deref().unwrap_or("default"),
-            reasoning.as_deref().unwrap_or("default")
+            reasoning.as_deref().unwrap_or("default"),
+            priority,
         );
         specs.push(GatewayWorkerSpec {
             agent_prompt: true,
@@ -767,6 +801,49 @@ fn normalize_settings(
             ));
         }
     }
+    let mut seen = HashSet::new();
+    settings
+        .local_cli
+        .enabled_provider_ids
+        .retain(|provider_id| {
+            definition(provider_id).is_some() && seen.insert(provider_id.clone())
+        });
+    seen.clear();
+    settings.local_cli.provider_order.retain(|provider_id| {
+        definition(provider_id).is_some()
+            && settings
+                .local_cli
+                .enabled_provider_ids
+                .contains(provider_id)
+            && seen.insert(provider_id.clone())
+    });
+    if let Some(provider_id) = settings.local_cli.provider_id.clone() {
+        settings
+            .local_cli
+            .enabled_provider_ids
+            .retain(|candidate| candidate != &provider_id);
+        settings
+            .local_cli
+            .enabled_provider_ids
+            .insert(0, provider_id.clone());
+        settings
+            .local_cli
+            .provider_order
+            .retain(|candidate| candidate != &provider_id);
+        settings.local_cli.provider_order.insert(0, provider_id);
+    }
+    if settings.local_cli.enabled_provider_ids.is_empty() {
+        if let Some(provider_id) = settings.local_cli.provider_id.clone() {
+            settings.local_cli.enabled_provider_ids.push(provider_id);
+        }
+    }
+    for provider_id in &settings.local_cli.enabled_provider_ids {
+        if !settings.local_cli.provider_order.contains(provider_id) {
+            settings.local_cli.provider_order.push(provider_id.clone());
+        }
+    }
+    settings.local_cli.enabled_provider_ids = settings.local_cli.provider_order.clone();
+    settings.local_cli.provider_id = settings.local_cli.provider_order.first().cloned();
     if let Some(model) = settings.local_cli.model.as_deref() {
         validate_cli_value("model", model)?;
     }
@@ -1594,6 +1671,25 @@ mod tests {
             .is_none());
     }
 
+    #[test]
+    fn new_gateway_storage_activates_only_the_primary_local_channel() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().join("project");
+        let storage_dir = temp.path().join("storage");
+        fs::create_dir_all(&project).expect("project");
+        let paths = crate::paths::resolve_myopenpanels_paths(
+            Some(project.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("model-gateway-default-channel-test"),
+        )
+        .expect("paths");
+
+        let settings = read_settings(&paths).expect("settings");
+        assert_eq!(settings.local_cli.provider_id.as_deref(), Some("codex"));
+        assert_eq!(settings.local_cli.provider_order, ["codex"]);
+        assert_eq!(settings.local_cli.enabled_provider_ids, ["codex"]);
+    }
+
     #[cfg(unix)]
     #[test]
     fn worker_specs_include_all_available_local_channels_in_priority_order() {
@@ -1619,6 +1715,8 @@ mod tests {
         .expect("paths");
         let mut settings = ModelGatewaySettings::default();
         settings.local_cli.provider_id = Some("codex".to_owned());
+        settings.local_cli.enabled_provider_ids = vec!["codex".to_owned(), "hermes".to_owned()];
+        settings.local_cli.provider_order = vec!["codex".to_owned(), "hermes".to_owned()];
         settings
             .local_cli
             .executable_paths
@@ -1633,6 +1731,15 @@ mod tests {
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].connection_id, "local-cli:codex");
         assert_eq!(specs[1].connection_id, "local-cli:hermes");
+
+        let mut settings = read_settings(&paths).expect("persisted settings");
+        settings.local_cli.provider_order = vec!["hermes".to_owned(), "codex".to_owned()];
+        settings.local_cli.enabled_provider_ids = settings.local_cli.provider_order.clone();
+        settings.local_cli.provider_id = Some("hermes".to_owned());
+        write_settings(&paths, settings).expect("reordered settings");
+        let reordered = worker_specs(&paths).expect("reordered worker specs");
+        assert_eq!(reordered[0].connection_id, "local-cli:hermes");
+        assert_eq!(reordered[1].connection_id, "local-cli:codex");
     }
 
     #[test]
@@ -1680,19 +1787,28 @@ mod tests {
             ..example
         };
         sync_builtin_local_cli_connections(&mut storage, &[upgraded]).expect("upgrade sync");
-        let connection: (String, i64, String, String) = storage
+        let connection: (String, i64, String, String, i64) = storage
             .connection()
             .query_row(
                 r#"
                 SELECT executable_path,
                        json_extract(config_json, '$.adapterVersion'),
                        json_extract(config_json, '$.binaryName'),
-                       json_extract(config_json, '$.userOption')
+                       json_extract(config_json, '$.userOption'),
+                       enabled
                 FROM model_gateway_connections
                 WHERE id = 'local-cli:example-agent'
                 "#,
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .expect("connection");
         assert_eq!(
@@ -1701,7 +1817,8 @@ mod tests {
                 "/opt/example-agent".to_owned(),
                 2,
                 "example-agent".to_owned(),
-                "preserved".to_owned()
+                "preserved".to_owned(),
+                0
             )
         );
         let revision_before = storage.read_change_seq().expect("revision before");

@@ -20,9 +20,9 @@ Workflow:
 1. Read Wiki selection when Wiki or document context may matter.
 2. Decide whether the request needs the whole Wiki, selected raw documents,
    selected generated documents, or neither.
-3. For a Wiki query, read `SCHEMA.md` and `index.md`, search for relevant terms,
-   then read only the pages required to answer. Read recent `log.md` entries only
-   when recent changes matter.
+3. For a Wiki query, list and search the generated pages, then read only the
+   pages required to answer. Do not assume any particular entry page, schema,
+   index, log, or directory structure.
 4. Read selected raw documents through their Markdown representation. Use the
    returned original local file path only when a format-specific file tool is
    required.

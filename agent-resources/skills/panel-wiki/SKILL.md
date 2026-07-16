@@ -9,6 +9,7 @@ taskTypes:
 requiresCommands:
   - panel.selection.read
   - wiki.raw.read
+  - wiki.raw.update
   - wiki.document.read
   - wiki.document.generate
   - operation.complete
@@ -31,9 +32,10 @@ Intent routing:
 - To create or revise a standalone report, plan, proposal, research summary, or
   specification in the generated-document area, read
   `references/generated-documents.md`.
-- To convert a raw document, synthesize Markdown into Wiki pages, or rebuild Wiki
-  navigation, read `references/authoring-skill-routing.md`, then load the
-  selected Wiki authoring skill for the current task.
+- To convert a raw document, read `references/convert-document.md`.
+- To synthesize Markdown into Wiki pages or maintain generated Wiki content,
+  read `references/authoring-skill-routing.md`, then load the selected Wiki
+  authoring skill for the current task.
 
 Core rules:
 

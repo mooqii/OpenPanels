@@ -1,7 +1,6 @@
 # Route Wiki Authoring To The Selected Skill
 
-Use this reference for `convert_document_to_markdown`,
-`ingest_markdown_into_wiki`, and `rebuild_wiki_index` tasks.
+Use this reference for `ingest_markdown_into_wiki` and `maintain_wiki` tasks.
 
 The Wiki panel skill owns MyOpenPanels context and task lifecycle. The selected
 authoring skill owns language, document conversion, page structure, synthesis,

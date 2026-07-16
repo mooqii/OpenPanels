@@ -142,6 +142,9 @@ export function WikiPanel({
   const activeSpaceId = activeSpace?.id
   const wikiAgentSkillId = state.wikiAgentSkillId || DEFAULT_WIKI_AGENT_SKILL_ID
   const [agentSkills, setAgentSkills] = useState<AgentSkillListing[]>([])
+  const [pendingWikiAgentSkillId, setPendingWikiAgentSkillId] = useState<
+    string | null
+  >(null)
   const [markdownDialog, setMarkdownDialog] = useState<{
     content: string
     document: WikiRawDocument
@@ -346,7 +349,8 @@ export function WikiPanel({
             (data.skills ?? []).filter(
               (item) =>
                 item.skill.appliesTo.includes("wiki") &&
-                item.skill.taskTypes.length > 0
+                item.skill.taskTypes.includes("ingest_markdown_into_wiki") &&
+                item.skill.taskTypes.includes("maintain_wiki")
             )
           )
         }
@@ -737,7 +741,7 @@ export function WikiPanel({
   )
 
   const updateWikiAgentSkill = useCallback(
-    async (agentSkillId: string) => {
+    async (agentSkillId: string, rebuildConfirmed = true) => {
       setIsBusy(true)
       try {
         const response = await apiFetch(
@@ -746,7 +750,7 @@ export function WikiPanel({
           {
             method: "PUT",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ agentSkillId }),
+            body: JSON.stringify({ agentSkillId, rebuildConfirmed }),
           }
         )
         if (!response.ok) {
@@ -755,6 +759,7 @@ export function WikiPanel({
             `Failed to update wiki agent skill: ${response.status}`
           )
         }
+        setPendingWikiAgentSkillId(null)
         await onReload()
       } finally {
         setIsBusy(false)
@@ -770,7 +775,7 @@ export function WikiPanel({
         ? DEFAULT_ZH_WIKI_AGENT_SKILL_ID
         : DEFAULT_WIKI_AGENT_SKILL_ID
     if (!agentSkills.some((item) => item.skill.id === defaultSkillId)) return
-    updateWikiAgentSkill(defaultSkillId).catch((error) => {
+    updateWikiAgentSkill(defaultSkillId, true).catch((error) => {
       console.error("Failed to set the locale-aware Wiki agent skill", error)
     })
   }, [
@@ -1640,9 +1645,10 @@ export function WikiPanel({
                       <Dropdown.Menu
                         aria-label={t`Wiki generation method`}
                         onAction={(key) => {
-                          updateWikiAgentSkill(String(key)).catch(
-                            () => undefined
-                          )
+                          const nextSkillId = String(key)
+                          if (nextSkillId !== wikiAgentSkillId) {
+                            setPendingWikiAgentSkillId(nextSkillId)
+                          }
                         }}
                         selectedKeys={[wikiAgentSkillId]}
                         selectionMode="single"
@@ -1871,6 +1877,22 @@ export function WikiPanel({
             })
           }
           title={t`Delete document?`}
+        />
+      ) : null}
+
+      {pendingWikiAgentSkillId ? (
+        <ConfirmDialog
+          cancelLabel={t`Cancel`}
+          confirmLabel={t`Switch and rebuild`}
+          isBusy={isBusy}
+          message={t`All generated Wiki pages in this project will be deleted and rebuilt with the selected Skill. Raw documents and generated documents will be kept.`}
+          onCancel={() => setPendingWikiAgentSkillId(null)}
+          onConfirm={() =>
+            updateWikiAgentSkill(pendingWikiAgentSkillId, true).catch((error) => {
+              console.error("Failed to switch Wiki generation Skill", error)
+            })
+          }
+          title={t`Switch Wiki generation Skill?`}
         />
       ) : null}
     </section>

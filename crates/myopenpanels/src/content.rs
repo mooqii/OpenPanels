@@ -1515,7 +1515,7 @@ fn validate_resource_scope(
         }
         ResourceKind::WikiSpace => matches!(
             context.capability.as_str(),
-            "wiki.ingestMarkdown" | "wiki.rebuildIndex"
+            "wiki.ingestMarkdown" | "wiki.maintain" | "wiki.rebuildIndex"
         ),
         ResourceKind::GeneratedDocument => context.capability == "writing.generateDocument",
         ResourceKind::WritingSkill => context.capability == "writing.refineSkill",
@@ -1600,7 +1600,7 @@ fn seed_existing_output_resource(
             .get("documentId")
             .and_then(Value::as_str)
             .map(|key| (ResourceKind::WikiMarkdown, key, panel_id.as_str())),
-        "wiki.ingestMarkdown" | "wiki.rebuildIndex" => source
+        "wiki.ingestMarkdown" | "wiki.maintain" | "wiki.rebuildIndex" => source
             .get("wikiSpaceId")
             .or_else(|| input.get("wikiSpaceId"))
             .and_then(Value::as_str)
@@ -1814,12 +1814,6 @@ fn validate_manifest(
             return Err(CliError::with_code(
                 "content_too_large",
                 "Wiki revision contains too many files.",
-            ));
-        }
-        if !manifest.contains_key("index.md") || !manifest.contains_key("log.md") {
-            return Err(CliError::with_code(
-                "invalid_output",
-                "Wiki revision must contain index.md and log.md.",
             ));
         }
     }

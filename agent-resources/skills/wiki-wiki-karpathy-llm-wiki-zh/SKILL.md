@@ -6,9 +6,8 @@ source: builtin
 appliesTo:
   - wiki
 taskTypes:
-  - convert_document_to_markdown
   - ingest_markdown_into_wiki
-  - rebuild_wiki_index
+  - maintain_wiki
 requiresCommands:
   - task.claim
   - task.heartbeat
@@ -42,9 +41,8 @@ skill.
 
 Task routing:
 
-- `convert_document_to_markdown`: read `references/convert-document.md`.
 - `ingest_markdown_into_wiki`: read `references/ingest-markdown-into-wiki.md`.
-- `rebuild_wiki_index`: read `references/rebuild-index.md`.
+- `maintain_wiki`: read `references/rebuild-index.md`.
 
 For every task that writes generated wiki pages, first read
 `references/wiki-conventions.md`.

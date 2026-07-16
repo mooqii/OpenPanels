@@ -258,10 +258,6 @@ pub(super) fn ensure_default_wiki_files(
 ) -> Result<(), CliError> {
     let storage = Storage::open(paths)?;
     let panel_dir = storage.panel_dir(project_id, panel_id);
-    write_file_if_missing(
-        &wiki_panel_path(&panel_dir, "rules/default/rules.md")?,
-        default_rules_markdown(),
-    )?;
     for space in state
         .get("wikiSpaces")
         .and_then(Value::as_array)
@@ -274,7 +270,6 @@ pub(super) fn ensure_default_wiki_files(
                 .join(sanitize_path_part(space_id))
                 .join("pages");
             fs::create_dir_all(&pages_dir).map_err(to_cli_error)?;
-            write_file_if_missing(&pages_dir.join("log.md"), "# Log\n")?;
         }
     }
     Ok(())
@@ -288,10 +283,20 @@ pub(super) fn create_wiki_task(
     document_id: Option<&str>,
     markdown_version: Option<i64>,
     wiki_space_id: Option<&str>,
+    mutation_key: Option<&str>,
 ) -> Result<Value, CliError> {
     let space = resolve_wiki_space(state, wiki_space_id)?;
     let agent_skill_id = selected_agent_skill_id(state).to_owned();
     let now = now_iso();
+    let mutation_sequence = mutation_key.map(|key| {
+        tasks
+            .iter()
+            .filter(|task| task.get("mutationKey").and_then(Value::as_str) == Some(key))
+            .filter_map(|task| task.get("mutationSequence").and_then(Value::as_i64))
+            .max()
+            .unwrap_or(0)
+            + 1
+    });
     let task = json!({
         "id": create_id("task"),
         "type": task_type,
@@ -299,10 +304,10 @@ pub(super) fn create_wiki_task(
         "targetId": target_id,
         "documentId": document_id,
         "wikiSpaceId": space.id,
-        "ruleSetId": space.value.get("ruleSetId").cloned().unwrap_or(Value::Null),
-        "ruleSetVersion": space.value.get("ruleSetVersion").cloned().unwrap_or(Value::Null),
         "agentSkillId": agent_skill_id,
         "markdownVersion": markdown_version,
+        "mutationKey": mutation_key,
+        "mutationSequence": mutation_sequence,
         "attempt": 0,
         "maxAttempts": 8,
         "leaseOwner": null,
@@ -324,46 +329,72 @@ pub(super) fn create_wiki_task(
     Ok(task)
 }
 
-pub(super) fn create_wiki_rebuild_index_task(
+pub(super) fn create_wiki_maintenance_task(
     state: &Value,
     tasks: &mut Vec<Value>,
     wiki_space_id: Option<&str>,
+    mutation_key: &str,
+    changed_path: Option<&str>,
+    change_reason: &str,
 ) -> Result<Value, CliError> {
     let space = resolve_wiki_space(state, wiki_space_id)?;
-    if let Some(existing) = tasks.iter().find(|task| {
-        task.get("type").and_then(Value::as_str) == Some("rebuild_wiki_index")
+    if let Some(existing) = tasks.iter_mut().find(|task| {
+        task.get("type").and_then(Value::as_str) == Some("maintain_wiki")
             && task.get("wikiSpaceId").and_then(Value::as_str) == Some(space.id.as_str())
-            && (matches!(
+            && matches!(
                 task.get("status").and_then(Value::as_str),
-                Some("waiting" | "queued" | "reserved" | "running" | "indexing")
-            ) || (task.get("status").and_then(Value::as_str) == Some("failed")
-                && task.get("attempt").and_then(Value::as_i64).unwrap_or(0)
-                    < task.get("maxAttempts").and_then(Value::as_i64).unwrap_or(8)))
+                Some("waiting" | "queued" | "failed")
+            )
     }) {
+        if let Some(changed_path) = changed_path {
+            append_unique_string(existing, "changedPaths", changed_path);
+        }
+        append_unique_string(existing, "changeReasons", change_reason);
+        existing["updatedAt"] = json!(now_iso());
         return Ok(existing.clone());
     }
     let mut task = create_wiki_task(
         state,
         tasks,
-        "rebuild_wiki_index",
-        "index.md",
+        "maintain_wiki",
+        space.id.as_str(),
         None,
         None,
         Some(space.id.as_str()),
+        Some(mutation_key),
     )?;
-    task["idempotencyKey"] = json!(format!("rebuild:{}", space.id));
+    task["changedPaths"] = changed_path.map_or_else(|| json!([]), |path| json!([path]));
+    task["changeReasons"] = json!([change_reason]);
+    task["idempotencyKey"] = json!(format!("maintain:{}:{}", space.id, task["id"]));
     if let Some(stored) = tasks
         .iter_mut()
         .find(|stored| stored.get("id") == task.get("id"))
     {
-        stored["idempotencyKey"] = task["idempotencyKey"].clone();
+        *stored = task.clone();
     }
     Ok(task)
 }
 
+pub(super) fn wiki_mutation_key(project_id: &str, panel_id: &str, wiki_space_id: &str) -> String {
+    format!("wiki:{project_id}:{panel_id}:{wiki_space_id}")
+}
+
+fn append_unique_string(task: &mut Value, field: &str, value: &str) {
+    let values = task
+        .as_object_mut()
+        .expect("Wiki Task must be an object")
+        .entry(field.to_owned())
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .expect("Wiki Task string collection must be an array");
+    if !values.iter().any(|candidate| candidate.as_str() == Some(value)) {
+        values.push(json!(value));
+    }
+}
+
 pub(super) fn create_ingestion_state(task: &Value, markdown_version: i64) -> Value {
     json!({
-        "status": "queued",
+        "status": task.get("status").and_then(Value::as_str).unwrap_or("queued"),
         "taskId": task.get("id").cloned().unwrap_or(Value::Null),
         "markdownVersion": markdown_version,
         "error": null,
@@ -495,7 +526,7 @@ pub(super) fn upsert_page_index(
             .map(str::trim)
             .or_else(|| heading_title(markdown))
             .unwrap_or_else(|| title_from_file_name(page_path)),
-        "type": if page_path == "index.md" { "overview" } else { "page" },
+        "type": "page",
         "summary": first_markdown_paragraph(markdown),
         "tags": [],
         "sourceDocumentIds": [],
@@ -591,16 +622,6 @@ pub(super) fn wiki_page_path(
     Ok(path)
 }
 
-pub(super) fn write_file_if_missing(path: &Path, content: &str) -> Result<(), CliError> {
-    if path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(path, content).map_err(to_cli_error)
-}
-
 pub(super) fn is_plain_text_file(file_name: &str, mime_type: Option<&str>) -> bool {
     let extension = Path::new(file_name)
         .extension()
@@ -647,10 +668,6 @@ pub(super) fn first_markdown_paragraph(markdown: &str) -> String {
         .collect()
 }
 
-pub(super) fn default_rules_markdown() -> &'static str {
-    "# Default LLM Wiki Rules\n\n- Keep `index.md` as the primary agent-readable map.\n- Keep `log.md` as an append-only change log.\n- Preserve source document references in page frontmatter.\n"
-}
-
 pub(super) fn sha256_hex(content: &[u8]) -> String {
     format!("{:x}", Sha256::digest(content))
 }
@@ -681,7 +698,8 @@ pub(super) fn task_type_label(task_type: &str) -> &'static str {
     match task_type {
         "convert_document_to_markdown" => "document conversion",
         "ingest_markdown_into_wiki" => "wiki indexing",
-        "rebuild_wiki_index" => "wiki index rebuild",
+        "maintain_wiki" => "wiki maintenance",
+        "rebuild_wiki_index" => "legacy wiki maintenance",
         _ => "wiki task",
     }
 }

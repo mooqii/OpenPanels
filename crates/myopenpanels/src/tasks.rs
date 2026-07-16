@@ -1023,10 +1023,10 @@ pub fn set_task_dispatch(
     mode: &str,
     requested_connection_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    if !matches!(mode, "auto" | "prefer" | "only") {
+    if !matches!(mode, "auto" | "prefer") {
         return Err(CliError::with_code(
             "invalid_dispatch_mode",
-            "Dispatch mode must be auto, prefer, or only.",
+            "Dispatch mode must be auto or prefer.",
         ));
     }
     let requested_connection_id = requested_connection_id.filter(|value| !value.trim().is_empty());
@@ -1036,10 +1036,10 @@ pub fn set_task_dispatch(
             "Automatic dispatch cannot pin a model gateway connection.",
         ));
     }
-    if matches!(mode, "prefer" | "only") && requested_connection_id.is_none() {
+    if mode == "prefer" && requested_connection_id.is_none() {
         return Err(CliError::with_code(
             "invalid_dispatch_mode",
-            "Preferred and exclusive dispatch require a model gateway connection.",
+            "Preferred dispatch requires a model gateway connection.",
         ));
     }
     let project_id = task_project_id(paths, task_id)?;
@@ -1476,18 +1476,42 @@ fn reserve_task(
         let mut statement = tx
             .prepare(
                 r#"
-                SELECT id, queue, status, capability, required_protocol_version
-                FROM tasks
-                WHERE project_id = ?
-                  AND status IN ('queued', 'failed')
-                  AND attempts < max_attempts
-                  AND (retry_after IS NULL OR retry_after <= ?)
-                  AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
-                  AND (? IS NULL OR id = ?)
-                  AND (? IS NULL OR capability = ?)
-                  AND (? IS NULL OR queue = ?)
-                ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END,
-                         updated_at ASC, id ASC
+                SELECT candidate.id, candidate.queue, candidate.status, candidate.capability,
+                       candidate.required_protocol_version
+                FROM tasks AS candidate
+                WHERE candidate.project_id = ?
+                  AND candidate.status IN ('queued', 'failed')
+                  AND candidate.attempts < candidate.max_attempts
+                  AND (candidate.retry_after IS NULL OR candidate.retry_after <= ?)
+                  AND (candidate.lease_expires_at IS NULL OR candidate.lease_expires_at <= ?)
+                  AND (? IS NULL OR candidate.id = ?)
+                  AND (? IS NULL OR candidate.capability = ?)
+                  AND (? IS NULL OR candidate.queue = ?)
+                  AND (
+                    candidate.mutation_key IS NULL
+                    OR NOT EXISTS (
+                      SELECT 1 FROM tasks AS active
+                      WHERE active.project_id = candidate.project_id
+                        AND active.mutation_key = candidate.mutation_key
+                        AND active.id <> candidate.id
+                        AND active.status IN ('reserved', 'running', 'claimed', 'converting', 'indexing')
+                    )
+                  )
+                  AND (
+                    candidate.mutation_key IS NULL
+                    OR NOT EXISTS (
+                      SELECT 1 FROM tasks AS predecessor
+                      WHERE predecessor.project_id = candidate.project_id
+                        AND predecessor.mutation_key = candidate.mutation_key
+                        AND predecessor.mutation_sequence < candidate.mutation_sequence
+                        AND (
+                          predecessor.status IN ('waiting', 'queued', 'reserved', 'running', 'claimed', 'converting', 'indexing')
+                          OR (predecessor.status = 'failed' AND predecessor.attempts < predecessor.max_attempts)
+                        )
+                    )
+                  )
+                ORDER BY CASE candidate.status WHEN 'queued' THEN 0 ELSE 1 END,
+                         candidate.updated_at ASC, candidate.id ASC
                 "#,
             )
             .map_err(to_cli_error)?;
@@ -1793,6 +1817,68 @@ pub(crate) fn supersede_tasks_for_changed_resource(
         .map_err(to_cli_error)?;
         tx.execute("UPDATE task_attempts SET status = 'cancelled', finished_at = ?, error_json = ? WHERE task_id = ? AND status = 'leased'", params![now, reason.to_string(), task_id]).map_err(to_cli_error)?;
         tx.execute("INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'input_changed', ?, 'superseded', ?, ?)", params![task_id, workflow_id, previous_status, reason.to_string(), now]).map_err(to_cli_error)?;
+        refresh_workflow_status(&tx, &workflow_id, &now)?;
+        superseded.push(task_id);
+    }
+    if !superseded.is_empty() {
+        crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
+    }
+    tx.commit().map_err(to_cli_error)?;
+    Ok(superseded)
+}
+
+pub(crate) fn supersede_active_wiki_mutations(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    mutation_key: &str,
+) -> Result<Vec<String>, CliError> {
+    let storage = Storage::open(paths)?;
+    let tx = storage
+        .connection()
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
+    let now = crate::control::now_iso();
+    let tasks = {
+        let mut statement = tx
+            .prepare(
+                r#"SELECT id, workflow_id, status FROM tasks
+                   WHERE project_id = ? AND mutation_key = ?
+                     AND status IN ('reserved', 'running', 'claimed', 'indexing')"#,
+            )
+            .map_err(to_cli_error)?;
+        let rows = statement
+            .query_map(params![project_id, mutation_key], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(to_cli_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(to_cli_error)?
+    };
+    let reason = json!({ "code": "content_conflict", "mutationKey": mutation_key });
+    let mut superseded = Vec::new();
+    for (task_id, workflow_id, previous_status) in tasks {
+        tx.execute(
+            r#"UPDATE tasks SET status = 'superseded', assigned_agent_id = NULL,
+               lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL,
+               last_heartbeat_at = NULL, execution_generation = execution_generation + 1,
+               terminal_reason_json = ?, completed_at = ?, updated_at = ? WHERE id = ?"#,
+            params![reason.to_string(), now, now, task_id],
+        )
+        .map_err(to_cli_error)?;
+        tx.execute(
+            "UPDATE task_attempts SET status = 'cancelled', finished_at = ?, error_json = ? WHERE task_id = ? AND status = 'leased'",
+            params![now, reason.to_string(), task_id],
+        )
+        .map_err(to_cli_error)?;
+        crate::content::abandon_task_staging_in_transaction(&tx, &task_id, &now)?;
+        tx.execute(
+            "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'content_conflict', ?, 'superseded', ?, ?)",
+            params![task_id, workflow_id, previous_status, reason.to_string(), now],
+        )
+        .map_err(to_cli_error)?;
         refresh_workflow_status(&tx, &workflow_id, &now)?;
         superseded.push(task_id);
     }
@@ -2269,15 +2355,7 @@ fn annotate_dispatch_state(
     let mut output = Vec::with_capacity(tasks.len());
     for mut task in tasks {
         let capability = task.get("capability").and_then(Value::as_str).unwrap_or("");
-        let mut matching = matching_targets(&targets, capability);
-        if task.get("dispatchMode").and_then(Value::as_str) == Some("only") {
-            if let Some(requested) = task
-                .get("requestedGatewayConnectionId")
-                .and_then(Value::as_str)
-            {
-                matching.retain(|target| target_channel_key(target) == requested);
-            }
-        }
+        let matching = matching_targets(&targets, capability);
         let assigned_target = task
             .get("assignedTargetId")
             .and_then(Value::as_str)
@@ -2285,6 +2363,10 @@ fn annotate_dispatch_state(
             .cloned();
         let dependencies =
             read_task_dependency_values(storage.connection(), task["id"].as_str().unwrap_or(""))?;
+        let mutation_blocked = mutation_task_blocked(
+            storage.connection(),
+            task["id"].as_str().unwrap_or(""),
+        )?;
         let required_protocol = task
             .get("requiredProtocolVersion")
             .and_then(Value::as_i64)
@@ -2301,7 +2383,9 @@ fn annotate_dispatch_state(
             .count();
         let dispatch_state = if is_active_task(&task) {
             "running"
-        } else if task.get("status").and_then(Value::as_str) == Some("waiting") {
+        } else if task.get("status").and_then(Value::as_str) == Some("waiting")
+            || mutation_blocked
+        {
             "waiting"
         } else if !is_pending_task(&task) {
             "done"
@@ -2320,6 +2404,11 @@ fn annotate_dispatch_state(
                 json!(compatible_target_count),
             );
             object.insert("dependencies".to_owned(), json!(dependencies));
+            object.insert("mutationBlocked".to_owned(), json!(mutation_blocked));
+            if mutation_blocked {
+                object.insert("ready".to_owned(), json!(false));
+                object.insert("blockedReason".to_owned(), json!("mutationPredecessor"));
+            }
             object.insert(
                 "assignedTarget".to_owned(),
                 assigned_target.unwrap_or(Value::Null),
@@ -2328,6 +2417,45 @@ fn annotate_dispatch_state(
         output.push(task);
     }
     Ok(output)
+}
+
+fn mutation_task_blocked(
+    connection: &rusqlite::Connection,
+    task_id: &str,
+) -> Result<bool, CliError> {
+    connection
+        .query_row(
+            r#"
+            SELECT EXISTS(
+              SELECT 1
+              FROM tasks AS candidate
+              WHERE candidate.id = ?
+                AND candidate.mutation_key IS NOT NULL
+                AND (
+                  EXISTS (
+                    SELECT 1 FROM tasks AS active
+                    WHERE active.project_id = candidate.project_id
+                      AND active.mutation_key = candidate.mutation_key
+                      AND active.id <> candidate.id
+                      AND active.status IN ('reserved', 'running', 'claimed', 'converting', 'indexing')
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM tasks AS predecessor
+                    WHERE predecessor.project_id = candidate.project_id
+                      AND predecessor.mutation_key = candidate.mutation_key
+                      AND predecessor.mutation_sequence < candidate.mutation_sequence
+                      AND (
+                        predecessor.status IN ('waiting', 'queued', 'reserved', 'running', 'claimed', 'converting', 'indexing')
+                        OR (predecessor.status = 'failed' AND predecessor.attempts < predecessor.max_attempts)
+                      )
+                  )
+                )
+            )
+            "#,
+            [task_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(to_cli_error)
 }
 
 fn read_targets(paths: &MyOpenPanelsPaths, project_id: &str) -> Result<Vec<Value>, CliError> {
@@ -2489,9 +2617,7 @@ fn preferred_target_id(
         }
     }
     if let Some(requested) = requested_connection_id.as_deref() {
-        if dispatch_mode == "only" {
-            ordered.retain(|target| target_channel_key(target) == requested);
-        } else if dispatch_mode == "prefer" {
+        if dispatch_mode == "prefer" {
             ordered.sort_by_key(|target| usize::from(target_channel_key(target) != requested));
         }
     }
@@ -2566,22 +2692,14 @@ fn has_untried_eligible_target(
 ) -> Result<bool, CliError> {
     let storage = Storage::open(paths)?;
     let connection = storage.connection();
-    let (capability, required_protocol, dispatch_mode, requested_connection_id) = connection
+    let (capability, required_protocol) = connection
         .query_row(
             r#"
-            SELECT capability, required_protocol_version, dispatch_mode,
-                   requested_gateway_connection_id
+            SELECT capability, required_protocol_version
             FROM tasks WHERE id = ? AND project_id = ?
             "#,
             params![task_id, project_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            },
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )
         .map_err(to_cli_error)?;
     let targets = read_targets_from_connection(connection, project_id)?;
@@ -2601,12 +2719,6 @@ fn has_untried_eligible_target(
                 .and_then(Value::as_i64)
                 .unwrap_or(1)
                 >= required_protocol
-        })
-        .filter(|target| {
-            dispatch_mode != "only"
-                || requested_connection_id
-                    .as_deref()
-                    .is_some_and(|requested| target_channel_key(target) == requested)
         })
         .any(|target| {
             target_channel_key(target) != current_key

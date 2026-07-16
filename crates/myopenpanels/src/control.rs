@@ -16,7 +16,6 @@ const DEFAULT_PANEL_KINDS: &[PanelKind] = &[
     PanelKind::Publishing,
 ];
 const DEFAULT_ACTIVE_PANEL_KIND: PanelKind = PanelKind::Wiki;
-const DEFAULT_WIKI_RULE_SET_ID: &str = "rule-set:default";
 const DEFAULT_WIKI_SPACE_ID: &str = "wiki:default";
 const DEFAULT_WRITING_SKILL_ID: &str = "writing-default";
 
@@ -927,19 +926,14 @@ fn normalize_wiki_state_v2(mut state: Value) -> PanelStateMigrationResult {
         if object.remove("wikiLanguage").is_some() {
             changed = true;
         }
-        let current_skill = object
+        if object
             .get("wikiAgentSkillId")
             .and_then(Value::as_str)
-            .unwrap_or_default();
-        let normalized_skill = match current_skill {
-            "karpathy-llm-wiki" => Some("karpathy-llm-wiki"),
-            "karpathy-llm-wiki-zh" => Some("karpathy-llm-wiki-zh"),
-            _ => None,
-        };
-        if normalized_skill != Some(current_skill) {
+            .is_none_or(str::is_empty)
+        {
             object.insert(
                 "wikiAgentSkillId".to_owned(),
-                json!(normalized_skill.unwrap_or("karpathy-llm-wiki")),
+                json!("karpathy-llm-wiki"),
             );
             changed = true;
         }
@@ -1049,7 +1043,7 @@ fn migrate_wiki_state_v1_to_v4(
         page_index.push(json!({
             "path": page_path,
             "title": title,
-            "type": if page_path == "index.md" { "overview" } else { "page" },
+            "type": "page",
             "summary": first_markdown_paragraph(markdown),
             "tags": [],
             "sourceDocumentIds": [],
@@ -1058,9 +1052,7 @@ fn migrate_wiki_state_v1_to_v4(
         }));
     }
 
-    let active_path = active_page_path
-        .or(first_page_path)
-        .unwrap_or_else(|| "index.md".to_owned());
+    let active_path = active_page_path.or(first_page_path);
     if let Some(space) = migrated
         .get_mut("wikiSpaces")
         .and_then(Value::as_array_mut)
@@ -1171,21 +1163,12 @@ fn empty_wiki_state() -> Value {
         "schemaVersion": 4,
         "rawDocuments": [],
         "generatedDocuments": [],
-        "ruleSets": [{
-            "id": DEFAULT_WIKI_RULE_SET_ID,
-            "title": "Default LLM Wiki",
-            "description": "Default agent-friendly structured wiki rules.",
-            "builtIn": true,
-            "version": 1,
-            "rulesRef": "rules/default/rules.md",
-            "createdAt": now,
-            "updatedAt": now,
-        }],
+        "ruleSets": [],
         "wikiSpaces": [{
             "id": DEFAULT_WIKI_SPACE_ID,
             "title": "Wiki",
-            "ruleSetId": DEFAULT_WIKI_RULE_SET_ID,
-            "ruleSetVersion": 1,
+            "ruleSetId": null,
+            "ruleSetVersion": null,
             "rootRef": "wikis/wiki:default",
             "pageIndex": [],
             "createdAt": now,

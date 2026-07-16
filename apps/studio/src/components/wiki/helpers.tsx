@@ -149,8 +149,10 @@ export function formatWikiTaskType(
       return t`Convert to Markdown`
     case "ingest_markdown_into_wiki":
       return t`Update wiki`
+    case "maintain_wiki":
+      return t`Maintain wiki`
     case "rebuild_wiki_index":
-      return t`Rebuild wiki index`
+      return t`Legacy wiki maintenance`
     case "lint_wiki":
       return t`Check wiki`
     default:

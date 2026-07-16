@@ -13,8 +13,8 @@ import {
   MyOpenPanelsBrowserAssetStore,
   ProjectChrome,
 } from "./components/project/ProjectChrome"
-import { ModelGatewaySettingsDialog } from "./components/settings/ModelGatewaySettings"
 import { PublishingPanel } from "./components/publishing/PublishingPanel"
+import { ModelGatewaySettingsDialog } from "./components/settings/ModelGatewaySettings"
 import {
   AgentPanel,
   type AgentPanelTab,

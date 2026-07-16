@@ -2,13 +2,18 @@ import {
   Button,
   Chip,
   Input,
+  Label,
   ListBox,
   Modal,
   Select,
+  Switch,
   Tabs,
+  Tooltip,
 } from "@heroui/react"
 import {
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
   CheckCircle2,
   KeyRound,
   LoaderCircle,
@@ -41,6 +46,8 @@ const EMPTY_SETTINGS: ModelGatewaySettings = {
     providerId: "codex",
     model: null,
     reasoning: null,
+    enabledProviderIds: ["codex"],
+    providerOrder: ["codex"],
     executablePaths: {},
   },
   byok: { providerId: null, baseUrl: null, model: null },
@@ -180,6 +187,64 @@ export function ModelGatewaySettingsDialog({
     (cli) => cli.id === settings.localCli.providerId
   )
   const installedCount = localClis.filter((cli) => cli.available).length
+  const orderedLocalClis = [
+    ...settings.localCli.providerOrder
+      .map((providerId) => localClis.find((cli) => cli.id === providerId))
+      .filter((cli): cli is LocalCliInfo => Boolean(cli)),
+    ...localClis.filter(
+      (cli) => !settings.localCli.providerOrder.includes(cli.id)
+    ),
+  ]
+
+  const setProviderOrder = (providerOrder: string[]) => {
+    setSettings((current) => {
+      const providerId = providerOrder[0] ?? null
+      const primaryChanged = providerId !== current.localCli.providerId
+      return {
+        ...current,
+        localCli: {
+          ...current.localCli,
+          enabledProviderIds: providerOrder,
+          model: primaryChanged ? "default" : current.localCli.model,
+          providerId,
+          providerOrder,
+          reasoning: primaryChanged ? "default" : current.localCli.reasoning,
+        },
+      }
+    })
+    setTestState({ status: "idle" })
+  }
+
+  const toggleProvider = (providerId: string, enabled: boolean) => {
+    const currentOrder = settings.localCli.providerOrder.filter(
+      (id) => id !== providerId
+    )
+    setProviderOrder(enabled ? [...currentOrder, providerId] : currentOrder)
+  }
+
+  const makePrimary = (providerId: string) => {
+    setProviderOrder([
+      providerId,
+      ...settings.localCli.providerOrder.filter((id) => id !== providerId),
+    ])
+  }
+
+  const moveProvider = (providerId: string, offset: -1 | 1) => {
+    const currentIndex = settings.localCli.providerOrder.indexOf(providerId)
+    const nextIndex = currentIndex + offset
+    if (
+      currentIndex < 0 ||
+      nextIndex < 0 ||
+      nextIndex >= settings.localCli.providerOrder.length
+    )
+      return
+    const providerOrder = [...settings.localCli.providerOrder]
+    ;[providerOrder[currentIndex], providerOrder[nextIndex]] = [
+      providerOrder[nextIndex],
+      providerOrder[currentIndex],
+    ]
+    setProviderOrder(providerOrder)
+  }
 
   return (
     <Modal.Backdrop isOpen={isOpen} onOpenChange={onOpenChange} variant="blur">
@@ -237,9 +302,14 @@ export function ModelGatewaySettingsDialog({
                     {t`Rescan`}
                   </Button>
                 </div>
-                <div className="op-cli-list" aria-busy={isLoading}>
-                  {localClis.map((cli) => {
+                <div aria-busy={isLoading} className="op-cli-list">
+                  {orderedLocalClis.map((cli) => {
                     const selected = settings.localCli.providerId === cli.id
+                    const enabled =
+                      settings.localCli.enabledProviderIds.includes(cli.id)
+                    const orderIndex = settings.localCli.providerOrder.indexOf(
+                      cli.id
+                    )
                     const testing =
                       testState.status === "running" &&
                       testState.providerId === cli.id
@@ -253,52 +323,91 @@ export function ModelGatewaySettingsDialog({
                         className={`op-cli-item ${selected ? "op-cli-item--selected" : ""}`}
                         key={cli.id}
                       >
-                        <button
-                          aria-pressed={selected}
-                          className="op-cli-item__select"
-                          onClick={() => {
-                            setSettings((current) => ({
-                              ...current,
-                              localCli: {
-                                ...current.localCli,
-                                providerId: cli.id,
-                                model:
-                                  current.localCli.providerId === cli.id
-                                    ? current.localCli.model
-                                    : "default",
-                                reasoning:
-                                  current.localCli.providerId === cli.id
-                                    ? current.localCli.reasoning
-                                    : "default",
-                              },
-                            }))
-                            setTestState({ status: "idle" })
-                          }}
-                          type="button"
-                        >
-                          <span className="op-cli-item__icon">
-                            <SquareTerminal size={18} />
-                          </span>
-                          <span className="op-cli-item__identity">
-                            <strong>{cli.name}</strong>
-                            <span>
-                              {cli.available
-                                ? cli.version || cli.path
-                                : t`Not installed`}
-                            </span>
-                          </span>
-                          <Chip
-                            color={cli.available ? "success" : "default"}
-                            size="sm"
-                            variant="soft"
+                        <div className="op-cli-item__header">
+                          <button
+                            aria-pressed={selected}
+                            className="op-cli-item__select"
+                            onClick={() => makePrimary(cli.id)}
+                            type="button"
                           >
-                            {cli.available ? t`Connected` : t`Unavailable`}
-                          </Chip>
-                        </button>
+                            <span className="op-cli-item__icon">
+                              <SquareTerminal size={18} />
+                            </span>
+                            <span className="op-cli-item__identity">
+                              <strong>{cli.name}</strong>
+                              <span>
+                                {cli.available
+                                  ? cli.version || cli.path
+                                  : t`Not installed`}
+                              </span>
+                            </span>
+                          </button>
+                          <div className="op-cli-item__controls">
+                            <Chip
+                              color={cli.available ? "success" : "default"}
+                              size="sm"
+                              variant="soft"
+                            >
+                              {cli.available ? t`Connected` : t`Unavailable`}
+                            </Chip>
+                            {enabled ? (
+                              <div className="op-cli-item__order">
+                                <Tooltip>
+                                  <Button
+                                    aria-label={t`Move up`}
+                                    isDisabled={orderIndex <= 0}
+                                    isIconOnly
+                                    onPress={() => moveProvider(cli.id, -1)}
+                                    size="sm"
+                                    variant="ghost"
+                                  >
+                                    <ArrowUp size={14} />
+                                  </Button>
+                                  <Tooltip.Content>{t`Move up`}</Tooltip.Content>
+                                </Tooltip>
+                                <Tooltip>
+                                  <Button
+                                    aria-label={t`Move down`}
+                                    isDisabled={
+                                      orderIndex ===
+                                      settings.localCli.providerOrder.length - 1
+                                    }
+                                    isIconOnly
+                                    onPress={() => moveProvider(cli.id, 1)}
+                                    size="sm"
+                                    variant="ghost"
+                                  >
+                                    <ArrowDown size={14} />
+                                  </Button>
+                                  <Tooltip.Content>{t`Move down`}</Tooltip.Content>
+                                </Tooltip>
+                              </div>
+                            ) : null}
+                            <Switch
+                              isSelected={enabled}
+                              onChange={(isSelected) =>
+                                toggleProvider(cli.id, isSelected)
+                              }
+                            >
+                              <Switch.Content
+                                aria-label={
+                                  enabled ? t`Deactivate` : t`Activate`
+                                }
+                              >
+                                <Switch.Control>
+                                  <Switch.Thumb />
+                                </Switch.Control>
+                                <Label className="op-cli-item__switch-label">
+                                  {enabled ? t`Active` : t`Inactive`}
+                                </Label>
+                              </Switch.Content>
+                            </Switch>
+                          </div>
+                        </div>
                         {selected ? (
                           <div className="op-cli-item__config">
                             <div className="op-cli-item__fields">
-                              <label>
+                              <div className="op-cli-item__field">
                                 <span>{t`Model`}</span>
                                 <Select
                                   aria-label={t`Model`}
@@ -333,9 +442,9 @@ export function ModelGatewaySettingsDialog({
                                     </ListBox>
                                   </Select.Popover>
                                 </Select>
-                              </label>
+                              </div>
                               {cli.reasoningOptions.length ? (
-                                <label>
+                                <div className="op-cli-item__field">
                                   <span>{t`Reasoning`}</span>
                                   <Select
                                     aria-label={t`Reasoning`}
@@ -372,10 +481,10 @@ export function ModelGatewaySettingsDialog({
                                       </ListBox>
                                     </Select.Popover>
                                   </Select>
-                                </label>
+                                </div>
                               ) : null}
                             </div>
-                            <label className="op-cli-item__path">
+                            <div className="op-cli-item__path">
                               <span>{t`Executable path`}</span>
                               <Input
                                 aria-label={t`Executable path`}
@@ -398,7 +507,7 @@ export function ModelGatewaySettingsDialog({
                                 }
                                 variant="secondary"
                               />
-                            </label>
+                            </div>
                             {cli.diagnostic || cli.authMessage ? (
                               <p className="op-cli-item__diagnostic">
                                 <AlertCircle size={14} />
@@ -481,7 +590,6 @@ export function ModelGatewaySettingsDialog({
               {t`Cancel`}
             </Button>
             <Button
-              isDisabled={!settings.localCli.providerId}
               isPending={isSaving}
               onPress={async () => {
                 setIsSaving(true)
