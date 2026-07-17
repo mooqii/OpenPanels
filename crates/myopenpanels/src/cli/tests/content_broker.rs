@@ -148,7 +148,7 @@ fn panel_targeted_commands_do_not_change_focus_and_selection_remains_focus_bound
 
 #[test]
 fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
-    let skill = include_str!("../../../../../skills/myopenpanels/SKILL.md");
+    let skill = include_str!("../../../../../skills/myopenpanels/SKILL.md").replace("\r\n", "\n");
     let install = include_str!("../../../../../skills/myopenpanels/references/install.md");
     assert!(skill.contains("version: \"5.1\""));
     assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "5.1");

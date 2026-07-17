@@ -75,7 +75,14 @@
         let custom_command_input = serde_json::to_string_pretty(&materialized).expect("task json");
         assert!(custom_command_input.contains("workflow:noise"));
         assert!(custom_command_input.contains("executionInputs"));
-        assert!(custom_command_input.contains(original_path.to_str().unwrap()));
+        let serialized_task: Value =
+            serde_json::from_str(&custom_command_input).expect("serialized task");
+        assert_eq!(
+            serialized_task
+                .pointer("/executionInputs/originalDocument/filePath")
+                .and_then(Value::as_str),
+            original_path.to_str()
+        );
     }
 
     #[test]
@@ -431,4 +438,3 @@
         assert_eq!(completed["document"]["format"], "text");
         assert_eq!(completed["content"], "Generated plain text\n");
     }
-

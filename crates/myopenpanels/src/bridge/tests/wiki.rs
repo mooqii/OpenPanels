@@ -53,7 +53,7 @@
         assert!(prompt.contains("wiki page create"));
         assert!(prompt.contains(&format!(
             "--project-dir {}",
-            paths.project_dir.display()
+            shell_quote_prompt_arg(&paths.project_dir.display().to_string())
         )));
         assert!(prompt.contains("--space-id wiki:default"));
         assert!(prompt.contains(task["id"].as_str().unwrap()));
