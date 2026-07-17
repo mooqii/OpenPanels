@@ -1,7 +1,7 @@
 import type { KonvaEventObject } from "konva/lib/Node"
 import { useCallback, useRef } from "react"
 import type { Editor } from "../editor"
-import type { ShapeId } from "../types/ids"
+import { ShapeId } from "../types/ids"
 import { cloneShapesForPaste } from "../utils/shape-actions"
 
 interface CopyState {
@@ -58,7 +58,7 @@ export function useAltDragCopy(editor: Editor) {
 
       // Create clones at original positions with original indices (they stay in place)
       // The originals will be moved to higher indices (on top) since they become the "copies"
-      const idFactory = () => `shape:${crypto.randomUUID()}` as ShapeId
+      const idFactory = ShapeId.create
       const clones = cloneShapesForPaste(shapesToClone, {
         idFactory,
         offset: { x: 0, y: 0 },

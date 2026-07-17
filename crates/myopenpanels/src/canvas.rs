@@ -3,7 +3,6 @@ use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
 use crate::storage::Storage;
 use crate::types::{Panel, PanelKind, Project};
-use rand::Rng;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -731,8 +730,7 @@ fn read_image_dimensions(buffer: &[u8]) -> Option<ImageDimensions> {
 }
 
 fn create_id(prefix: &str) -> String {
-    let random: u128 = rand::rng().random();
-    format!("{prefix}:{random:032x}")
+    crate::ids::random_id(prefix)
 }
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {

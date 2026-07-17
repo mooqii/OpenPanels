@@ -3,8 +3,7 @@
 Use the generated-documents module for standalone document deliverables such as
 reports, plans, proposals, research summaries, and specifications.
 
-- Write document deliverables as UTF-8 Markdown by default. Plain text is
-  accepted only for compatibility.
+- Write document deliverables as UTF-8 Markdown.
 - Do not register ordinary code changes, temporary notes, chat explanations, or
   non-document outputs.
 - Begin a Wiki generation operation before writing the deliverable. For a

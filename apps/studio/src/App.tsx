@@ -1,5 +1,3 @@
-import { Button } from "@heroui/react"
-import { ExternalLink } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   CanvasPanel,
@@ -8,28 +6,28 @@ import {
   type StoreSnapshot,
   useMyOpenPanelsI18n,
 } from "./canvas"
+import { AppOverlays } from "./components/AppOverlays"
+import {
+  BootStatus,
+  OpenBrowserPrompt,
+  OperationNotice,
+} from "./components/AppStatus"
 import {
   BottomPanelTabs,
   MyOpenPanelsBrowserAssetStore,
   ProjectChrome,
 } from "./components/project/ProjectChrome"
 import { PublishingPanel } from "./components/publishing/PublishingPanel"
-import { ModelGatewaySettingsDialog } from "./components/settings/ModelGatewaySettings"
 import {
   AgentPanel,
   type AgentPanelTab,
-  AgentToggleButton,
-  BuildVersionBadge,
   type TaskFilter,
 } from "./components/trace/TracePanel"
 import { TypesettingPanel } from "./components/typesetting/TypesettingPanel"
-import {
-  type StudioRuntimeState,
-  StudioRuntimeStatus,
-} from "./components/update/StudioRuntimeStatus"
-import { UpdatePrompt } from "./components/update/UpdatePrompt"
+import type { StudioRuntimeState } from "./components/update/StudioRuntimeStatus"
 import { WikiPanel } from "./components/wiki/WikiPanel"
 import { ACTIVE_PROJECT_STORAGE_KEY } from "./constants"
+import { useStudioUpdate } from "./hooks/use-studio-update"
 import {
   apiFetch,
   apiUrl,
@@ -41,14 +39,10 @@ import {
   fetchSelectionMaterializationRequest,
   fetchSelectionState,
   fetchStudioHealth,
-  fetchUpdateStatus,
-  isNotFoundError,
   loadBootstrap,
   normalizeBootstrap,
   normalizePanelState,
   normalizeSnapshot,
-  requestUpdateDownload,
-  requestUpdateInstallRestart,
   saveCanvasPanelState,
   saveSelectionState,
   typesettingRevisionFromAppState,
@@ -57,10 +51,7 @@ import {
   writingStateFromAppState,
 } from "./lib/api"
 import { mergeLiveProjectBootstrap, sameSelectedShapeIds } from "./lib/app-sync"
-import {
-  externalBrowserPath,
-  shouldShowOpenInBrowserPrompt,
-} from "./lib/browser-context"
+import { shouldShowOpenInBrowserPrompt } from "./lib/browser-context"
 import {
   flushBeforeRuntimeReload,
   RUNTIME_RECONNECT_NOTICE_MS,
@@ -79,17 +70,8 @@ import type {
   AppState,
   BootstrapResponse,
   MyOpenPanelsTransport,
-  MyOpenPanelsUpdateStatus,
   TypesettingState,
 } from "./types"
-
-type UpdateAction =
-  | "checking"
-  | "downloading"
-  | "installing"
-  | "restarting"
-  | "failed"
-  | null
 
 export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   const { t } = useMyOpenPanelsI18n()
@@ -104,15 +86,23 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   const [projects, setProjects] = useState<MyOpenPanelsProject[]>([])
   const [snapshotLoadVersion, setSnapshotLoadVersion] = useState(0)
   const [wikiSelectionVersion, setWikiSelectionVersion] = useState(0)
-  const [updateStatus, setUpdateStatus] =
-    useState<MyOpenPanelsUpdateStatus | null>(null)
-  const [updateAction, setUpdateAction] = useState<UpdateAction>(null)
-  const [updateError, setUpdateError] = useState<string | null>(null)
   const [loadedRuntimeVersion, setLoadedRuntimeVersion] = useState<
     string | null
   >(null)
   const [runtimeState, setRuntimeState] =
     useState<StudioRuntimeState>("connected")
+  const {
+    checkUpdateFromBadge,
+    dismissUpdateError,
+    refreshUpdateNow,
+    retryUpdateReconnect,
+    setUpdateAction,
+    setUpdateError,
+    updateAction,
+    updateError,
+    updateNow,
+    updateStatus,
+  } = useStudioUpdate(transport, setRuntimeState)
   const [isTraceOpen, setIsTraceOpen] = useState(false)
   const [isModelSettingsOpen, setIsModelSettingsOpen] = useState(false)
   const [agentPanelTab, setAgentPanelTab] = useState<AgentPanelTab>("tasks")
@@ -147,14 +137,6 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     },
     []
   )
-
-  const openInDefaultBrowser = useCallback(async () => {
-    await apiFetch(transport.apiBase, "/api/studio/open-browser", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: externalBrowserPath(window.location) }),
-    })
-  }, [transport.apiBase])
 
   useEffect(() => {
     appStateRef.current = appState
@@ -401,111 +383,6 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       source.close()
     }
   }, [activeAppProjectId, loadProject, transport])
-
-  const refreshUpdateStatus = useCallback(
-    async (options?: { refresh?: boolean }) => {
-      setUpdateAction("checking")
-      setUpdateError(null)
-      try {
-        const status = await fetchUpdateStatus(transport, options)
-        setUpdateStatus(status)
-      } catch (error) {
-        if (!isNotFoundError(error)) {
-          console.error("Failed to check MyOpenPanels update status", error)
-        }
-      } finally {
-        setUpdateAction((current) => (current === "checking" ? null : current))
-      }
-    },
-    [transport]
-  )
-
-  useEffect(() => {
-    refreshUpdateStatus()
-  }, [refreshUpdateStatus])
-
-  const downloadUpdate = useCallback(async () => {
-    setUpdateAction("downloading")
-    setUpdateError(null)
-    try {
-      const status = await requestUpdateDownload(transport)
-      setUpdateAction((current) => (current === "downloading" ? null : current))
-      return status
-    } catch (error) {
-      console.error("Failed to download MyOpenPanels update", error)
-      setUpdateError(
-        "更新下载失败。请稍后重试，或让 agent 重新打开 MyOpenPanels 面板。"
-      )
-      setUpdateAction("failed")
-      return null
-    }
-  }, [transport])
-
-  const installAndRestartUpdate = useCallback(async () => {
-    setUpdateAction("installing")
-    setUpdateError(null)
-    try {
-      const result = await requestUpdateInstallRestart(transport)
-      if (!result.restarting) {
-        setUpdateAction(null)
-        await refreshUpdateStatus({ refresh: true })
-        return
-      }
-      setUpdateAction("restarting")
-      window.dispatchEvent(new Event("myopenpanels:runtime-check"))
-    } catch (error) {
-      console.error("Failed to install MyOpenPanels update", error)
-      setUpdateError(
-        error instanceof Error && error.message
-          ? error.message
-          : "更新安装失败。请稍后重试，或让 agent 重新打开 MyOpenPanels 面板。"
-      )
-      setUpdateAction("failed")
-    }
-  }, [refreshUpdateStatus, transport])
-
-  const retryUpdateReconnect = useCallback(() => {
-    setUpdateAction("restarting")
-    setUpdateError(null)
-    setRuntimeState("reconnecting")
-    window.dispatchEvent(new Event("myopenpanels:runtime-check"))
-  }, [])
-
-  const dismissUpdateError = useCallback(() => {
-    setUpdateAction(null)
-    setUpdateError(null)
-  }, [])
-
-  const updateNow = useCallback(async () => {
-    if (!(updateStatus?.updateAvailable || updateStatus?.readyToInstall)) {
-      return
-    }
-    if (updateAction && updateAction !== "failed") return
-    const downloaded = Boolean(
-      updateStatus.downloaded || updateStatus.readyToInstall
-    )
-    if (downloaded) {
-      installAndRestartUpdate()
-      return
-    }
-    const status = await downloadUpdate()
-    if (!(status?.downloaded || status?.readyToInstall)) return
-    setUpdateStatus(status)
-    installAndRestartUpdate()
-  }, [downloadUpdate, installAndRestartUpdate, updateAction, updateStatus])
-
-  const checkUpdateFromBadge = useCallback(
-    (options?: { refresh?: boolean }) => {
-      if (!updateAction) {
-        refreshUpdateStatus(options)
-      }
-    },
-    [refreshUpdateStatus, updateAction]
-  )
-
-  const refreshUpdateNow = useCallback(() => {
-    refreshUpdateStatus({ refresh: true })
-  }, [refreshUpdateStatus])
 
   const canvasPanel = useMemo(
     () =>
@@ -865,7 +742,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             RUNTIME_RELOAD_MARKER
           )
         } catch {
-          // Storage can be unavailable in constrained embedded browsers.
+          /* Storage unavailable. */
         }
         const decision = runtimeVersionDecision({
           attemptedVersion,
@@ -878,7 +755,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             try {
               window.sessionStorage.removeItem(RUNTIME_RELOAD_MARKER)
             } catch {
-              // Storage can be unavailable in constrained embedded browsers.
+              /* Storage unavailable. */
             }
           }
           return
@@ -900,7 +777,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
         try {
           window.sessionStorage.setItem(RUNTIME_RELOAD_MARKER, health.version)
         } catch {
-          // Reload still works without loop protection when storage is unavailable.
+          /* Storage unavailable. */
         }
         reloadRequested = true
         window.location.reload()
@@ -948,20 +825,22 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       window.removeEventListener("myopenpanels:runtime-check", requestCheck)
       document.removeEventListener("visibilitychange", requestCheck)
     }
-  }, [flushCanvasSave, loadedRuntimeVersion, transport, updateAction])
+  }, [
+    flushCanvasSave,
+    loadedRuntimeVersion,
+    setUpdateAction,
+    setUpdateError,
+    transport,
+    updateAction,
+  ])
 
   if (!appState) {
     return (
-      <main className="design-shell design-shell--status">
-        <div className="op-boot-status">
-          <div>
-            {bootstrapError ? t`Failed to load canvas` : t`Loading canvas`}
-          </div>
-          {bootstrapError ? (
-            <div className="op-boot-status__detail">{bootstrapError}</div>
-          ) : null}
-        </div>
-      </main>
+      <BootStatus
+        error={bootstrapError}
+        failedLabel={t`Failed to load canvas`}
+        loadingLabel={t`Loading canvas`}
+      />
     )
   }
 
@@ -983,22 +862,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     >
       <section className="design-shell__workspace">
         {showOpenInBrowserPrompt ? (
-          <Button
-            className="op-open-browser-prompt"
-            onPress={() => {
-              openInDefaultBrowser().catch((error) => {
-                console.error(
-                  "Failed to open MyOpenPanels in the default browser",
-                  error
-                )
-              })
-            }}
-            size="sm"
-            variant="secondary"
-          >
-            <ExternalLink size={14} strokeWidth={1.8} />
-            <span>{t`Open in browser`}</span>
-          </Button>
+          <OpenBrowserPrompt label={t`Open in browser`} transport={transport} />
         ) : null}
         {appState.activePanelKind === "canvas" && canvasSnapshot ? (
           <CanvasPanel
@@ -1057,69 +921,37 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           panels={appState.panels.map(({ panel }) => panel)}
         />
         {operationNotice ? (
-          <div
-            className={`op-operation-notice${
-              operationNotice.status === "failed"
-                ? "op-operation-notice--failed"
-                : ""
-            }`}
-            role="status"
-          >
-            <strong>
-              {operationNotice.status === "completed"
-                ? t`Agent work completed`
-                : t`Agent work failed`}
-            </strong>
-            <span>
-              {operationNotice.projectTitle ?? operationNotice.projectId}
-              {" · "}
-              {operationNotice.panelTitle ?? operationNotice.panelKind}
-            </span>
-          </div>
+          <OperationNotice
+            completedLabel={t`Agent work completed`}
+            failedLabel={t`Agent work failed`}
+            notice={operationNotice}
+          />
         ) : null}
-        <div className="op-status-cluster">
-          {!isTraceOpen && appState.buildInfo ? (
-            <BuildVersionBadge
-              info={appState.buildInfo}
-              isChecking={updateAction === "checking"}
-              onCheckUpdate={checkUpdateFromBadge}
-              onUpdate={updateNow}
-              status={updateStatus}
-            />
-          ) : null}
-          <AgentToggleButton
-            isOpen={isTraceOpen}
-            onToggle={() => {
-              if (!isTraceOpen) {
-                setAgentPanelTab("tasks")
-                setAgentTaskFilter("pending")
-                setFocusedAgentTaskIds(null)
-              }
-              setIsTraceOpen((value) => !value)
-            }}
-            pendingCount={appState.pendingTaskCount ?? 0}
-          />
-        </div>
-        <ModelGatewaySettingsDialog
-          isOpen={isModelSettingsOpen}
-          onOpenChange={setIsModelSettingsOpen}
-          transport={transport}
-        />
-        <UpdatePrompt
-          action={updateAction}
-          errorMessage={updateError}
-          onDismissError={dismissUpdateError}
-          onRefresh={refreshUpdateNow}
+        <AppOverlays
+          buildInfo={appState.buildInfo}
+          isModelSettingsOpen={isModelSettingsOpen}
+          isTraceOpen={isTraceOpen}
+          onCheckUpdate={checkUpdateFromBadge}
+          onDismissUpdateError={dismissUpdateError}
+          onRefreshUpdate={refreshUpdateNow}
           onRetryConnect={retryUpdateReconnect}
+          onToggleAgentPanel={() => {
+            if (!isTraceOpen) {
+              setAgentPanelTab("tasks")
+              setAgentTaskFilter("pending")
+              setFocusedAgentTaskIds(null)
+            }
+            setIsTraceOpen((value) => !value)
+          }}
           onUpdate={updateNow}
-          status={updateStatus}
+          pendingTaskCount={appState.pendingTaskCount ?? 0}
+          runtimeState={runtimeState}
+          setIsModelSettingsOpen={setIsModelSettingsOpen}
+          transport={transport}
+          updateAction={updateAction}
+          updateError={updateError}
+          updateStatus={updateStatus}
         />
-        {updateAction ? null : (
-          <StudioRuntimeStatus
-            onRetry={retryUpdateReconnect}
-            state={runtimeState}
-          />
-        )}
       </section>
       <AgentPanel
         activeTab={agentPanelTab}

@@ -5,7 +5,7 @@ structured wiki.
 
 Workflow:
 
-1. Claim the task.
+1. Claim the task only when lifecycle is not bridge-managed.
 2. Read the source markdown.
 3. Read `wiki-conventions.md`, list the target wiki space's pages, and inspect
    `SCHEMA.md`, `index.md`, `log.md`, plus any existing pages likely to change.
@@ -19,7 +19,7 @@ Workflow:
 7. Update `index.md` so every created page is discoverable in the right section.
 8. Append one concise ingest entry to `log.md` that names all changed paths.
 9. Write every changed page with the task id.
-10. Complete the task.
+10. Complete the task only when lifecycle is not bridge-managed.
 
 Writing rules:
 
@@ -44,4 +44,4 @@ Completion criteria:
 - Related wiki pages reflect the new evidence.
 - `SCHEMA.md`, `index.md`, and `log.md` are present and consistent whenever
   this task initializes or materially changes the wiki.
-- The task is marked complete.
+- The task is marked complete by the agent or its bridge-managed executor.

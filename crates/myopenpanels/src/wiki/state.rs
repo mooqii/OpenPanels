@@ -334,8 +334,7 @@ pub(super) fn create_wiki_maintenance_task(
     tasks: &mut Vec<Value>,
     wiki_space_id: Option<&str>,
     mutation_key: &str,
-    changed_path: Option<&str>,
-    change_reason: &str,
+    change_event: Value,
 ) -> Result<Value, CliError> {
     let space = resolve_wiki_space(state, wiki_space_id)?;
     if let Some(existing) = tasks.iter_mut().find(|task| {
@@ -346,10 +345,7 @@ pub(super) fn create_wiki_maintenance_task(
                 Some("waiting" | "queued" | "failed")
             )
     }) {
-        if let Some(changed_path) = changed_path {
-            append_unique_string(existing, "changedPaths", changed_path);
-        }
-        append_unique_string(existing, "changeReasons", change_reason);
+        append_unique_value(existing, "changeEvents", change_event.clone());
         existing["updatedAt"] = json!(now_iso());
         return Ok(existing.clone());
     }
@@ -363,8 +359,7 @@ pub(super) fn create_wiki_maintenance_task(
         Some(space.id.as_str()),
         Some(mutation_key),
     )?;
-    task["changedPaths"] = changed_path.map_or_else(|| json!([]), |path| json!([path]));
-    task["changeReasons"] = json!([change_reason]);
+    task["changeEvents"] = json!([change_event.clone()]);
     task["idempotencyKey"] = json!(format!("maintain:{}:{}", space.id, task["id"]));
     if let Some(stored) = tasks
         .iter_mut()
@@ -375,21 +370,21 @@ pub(super) fn create_wiki_maintenance_task(
     Ok(task)
 }
 
-pub(super) fn wiki_mutation_key(project_id: &str, panel_id: &str, wiki_space_id: &str) -> String {
-    format!("wiki:{project_id}:{panel_id}:{wiki_space_id}")
-}
-
-fn append_unique_string(task: &mut Value, field: &str, value: &str) {
+fn append_unique_value(task: &mut Value, field: &str, value: Value) {
     let values = task
         .as_object_mut()
         .expect("Wiki Task must be an object")
         .entry(field.to_owned())
         .or_insert_with(|| json!([]))
         .as_array_mut()
-        .expect("Wiki Task string collection must be an array");
-    if !values.iter().any(|candidate| candidate.as_str() == Some(value)) {
-        values.push(json!(value));
+        .expect("Wiki Task value collection must be an array");
+    if !values.iter().any(|candidate| candidate == &value) {
+        values.push(value);
     }
+}
+
+pub(super) fn wiki_mutation_key(project_id: &str, panel_id: &str, wiki_space_id: &str) -> String {
+    format!("wiki:{project_id}:{panel_id}:{wiki_space_id}")
 }
 
 pub(super) fn create_ingestion_state(task: &Value, markdown_version: i64) -> Value {
@@ -699,14 +694,12 @@ pub(super) fn task_type_label(task_type: &str) -> &'static str {
         "convert_document_to_markdown" => "document conversion",
         "ingest_markdown_into_wiki" => "wiki indexing",
         "maintain_wiki" => "wiki maintenance",
-        "rebuild_wiki_index" => "legacy wiki maintenance",
         _ => "wiki task",
     }
 }
 
 pub(super) fn create_id(prefix: &str) -> String {
-    let random: u128 = rand::rng().random();
-    format!("{prefix}:{random:032x}")
+    crate::ids::random_id(prefix)
 }
 
 pub(super) fn to_cli_error(error: impl std::fmt::Display) -> CliError {

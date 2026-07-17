@@ -145,8 +145,11 @@ POST /api/update/install-restart
 asset without replacing the running binary. `install-restart` is only invoked
 after user confirmation; it installs the cached update when possible and then
 spawns a delayed replacement studio process on the same host, port, project,
-storage directory, context id, and static asset override. The new process
-writes the storage-wide `studio/instance.json` before the current server exits.
+context id, and static asset override. It normally keeps the selected storage
+directory. As part of the destructive storage-baseline release, a previous
+release's platform-specific default storage argument is redirected to
+`~/.myopenpanels/`; the old directory is left untouched. The new process writes
+the storage-wide `studio/instance.json` before the current server exits.
 
 Environment controls:
 

@@ -125,7 +125,6 @@ export function Canvas({
     editor.setSelectedShapes(nextIds)
   }, [editor, selectedShapeIds])
 
-  // Filter to top-level shapes only (direct children of the page, not nested in groups)
   const topLevelShapes = useMemo(
     () => shapes.filter((s) => PageId.isValid(s.parentId)),
     [shapes]
@@ -192,10 +191,8 @@ export function Canvas({
     groupRef: hoverGroupRef,
   })
 
-  // Crop mode state
   const crop = useCrop(editor)
 
-  // Disable shape dragging and selection when in crop mode
   const isInCropMode = crop.cropShapeId != null
   const isShapeDraggable =
     !(camera.isPanning || transform.isTransforming || isInCropMode) &&
@@ -250,7 +247,6 @@ export function Canvas({
     transform.transformerRef.current,
   ])
 
-  // Transformer nodes (filter out crop shape when in crop mode)
   const effectiveTransformerNodes = useMemo(() => {
     if (!crop.cropShapeId) return transform.transformerNodes
     return transform.transformerNodes.filter(

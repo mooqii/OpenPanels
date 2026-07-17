@@ -41,7 +41,7 @@ skill.
 Task routing:
 
 - `ingest_markdown_into_wiki`: read `references/ingest-markdown-into-wiki.md`.
-- `maintain_wiki`: read `references/rebuild-index.md`.
+- `maintain_wiki`: read `references/maintain-wiki.md`.
 
 For every task that writes generated wiki pages, first read
 `references/wiki-conventions.md`.
@@ -68,4 +68,5 @@ Completion criteria:
 - The selected task-specific reference workflow has been followed.
 - The wiki remains navigable through index pages and cross-links.
 - All relevant markdown source or wiki page writes include the current task id.
-- The task is marked complete, or failed with an actionable error.
+- The task is marked complete or failed by the agent, or finalized by its
+  bridge-managed executor.

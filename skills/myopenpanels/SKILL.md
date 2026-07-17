@@ -2,7 +2,7 @@
 name: myopenpanels
 description: "Use MyOpenPanels for persistent visual, knowledge, or writing work in its Canvas, Wiki, or Writing panel, including drawing, image work, diagrams, moodboards, brainstorming, organizing, research, drafting, and writing. Also use when the user asks to open or launch MyOpenPanels (including 打开面板) or refers to its current panel, selection, or content. After Studio is open, run a fresh `myopenpanels agent bootstrap --format json` before every panel-related request. Skip Bootstrap only for an open-only request or work clearly unrelated to MyOpenPanels."
 metadata:
-  version: "5.0"
+  version: "5.1"
 ---
 
 # MyOpenPanels
@@ -31,10 +31,28 @@ myopenpanels studio start --local-only --project-dir "$PWD" --format json
 ```
 
 Success means Studio is ready, not visible. Execute `actions.required` in order.
-Open the URL action unchanged with a callable in-app opener. The CLI fallback
-action is conditional: execute it only when the URL opener is unavailable,
-fails, or gives no success signal. Report completion only after an opener
-succeeds. For an open-only request, stop here without Bootstrap.
+
+Treat an `open-url` action as a host display action, not as browser automation:
+
+1. Open the returned URL unchanged with the current Agent host's native
+   embedded browser, webview, preview, or equivalent in-host URL opener.
+2. Prefer that embedded surface when the user simply asks to open or launch
+   MyOpenPanels without naming a browser.
+3. Do not initialize browser automation, inspect the page, load browser-control
+   instructions, or use Playwright merely to display Studio. If the host only
+   exposes an embedded browser through a control API, perform only the minimum
+   operation needed to open the URL.
+4. Treat the embedded open as successful only after the host returns a success
+   signal. Studio being ready at the URL is not proof that it is visible.
+
+Execute the CLI fallback action only when the embedded opener is unavailable,
+fails, or gives no success signal. A fallback to an external or system browser
+is not an embedded-open success; state that fallback clearly. If the user
+explicitly requested an embedded surface, report the failure instead of
+silently substituting an external browser.
+
+For an open-only request, stop after an opener succeeds. Do not run Bootstrap,
+inspect Studio, or search the repository.
 
 ## Work With Panels
 

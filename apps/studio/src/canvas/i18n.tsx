@@ -295,7 +295,6 @@ const zhCNMessages: Record<string, string> = {
   "Rename generated document": "重命名已生成文档",
   "Re-extract": "重新提取",
   Reindex: "重新索引",
-  "Rebuild wiki index": "重建 Wiki 索引",
   Running: "运行中",
   "Save Markdown": "保存 Markdown",
   "Plain text": "纯文本",

@@ -444,11 +444,11 @@ pub(super) async fn api_wiki_spaces(State(state): State<Arc<AppState>>) -> Respo
     }
 }
 
-pub(super) async fn api_wiki_reindex_space(
+pub(super) async fn api_wiki_maintain_space(
     State(state): State<Arc<AppState>>,
     Path(wiki_space_id): Path<String>,
 ) -> Response {
-    match wiki::reindex_wiki_space(&state.paths, Some(&wiki_space_id)) {
+    match wiki::maintain_wiki_space(&state.paths, Some(&wiki_space_id)) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }

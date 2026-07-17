@@ -33,17 +33,24 @@ and its `change_scopes` revision must commit in the same transaction.
 - Agent context files contain only Agent-private loader and lifecycle state;
   they never select or own a Studio process.
 
-## Compatibility
+The baseline contains 28 tables including `schema_migrations`: nine core
+storage tables, six Workflow/Task tables, three Agent tables, eight content and
+staging tables, and two Model Gateway tables. Historical delivery, dispatch
+outbox, and content-import checkpoint tables are not part of the baseline.
 
-The permanent compatibility surface is `studio start`, `agent bootstrap`, the
-CLI JSON envelope, released database migrations, and self-update behavior.
-Business commands are discovered from the installed Command Registry. Studio
-HTTP APIs support only the currently installed package; queue-specific legacy
-Wiki Task routes are not supported.
+## Storage baseline
 
-Published migrations `0001` through `0004` are immutable. Later migrations
-upgrade Session storage to Project storage, preserve Wiki and Canvas data, and
-back up unsupported historical Panel records before removing them.
+New storage starts from the single immutable `0001_initial` migration. It
+creates the complete current schema; later releases add migrations after that
+baseline rather than rewriting it. A database with an older migration history,
+or business tables without the current migration record, is rejected with
+`incompatible_storage_baseline` and is not modified.
+
+Release data lives in `~/.myopenpanels/`. The previous platform-specific
+default directory is deliberately not imported or deleted. Self-update startup
+arguments that point to that previous default are redirected to the new release
+directory; other explicitly selected storage directories are opened normally
+and must match the current baseline.
 
 | Surface | Status | Authority |
 | --- | --- | --- |
@@ -70,11 +77,10 @@ store.
 
 ## Atomic Workflows
 
-Migration `0011_atomic_workflows` keeps the public Task lease API while adding
-Workflow DAGs, versioned inputs, Attempts, append-only Events, fencing
-generations, and capability routes. Workflow-aware Tasks use
-execution protocol v2, while atomic content Tasks use v3; legacy Targets remain
-v1 until explicitly upgraded.
+The initial schema includes Workflow DAGs, versioned inputs, Attempts,
+append-only Events, fencing generations, and capability routes. Tasks and Agent
+Targets use execution protocol v3 exclusively; omitted target versions default
+to v3, while v1 and v2 are rejected.
 
 Ready Tasks are selected from dependency state and `available_at`. Claiming a
 Task creates exactly one Attempt and advances its execution generation in the
@@ -86,9 +92,7 @@ notification together.
 
 Task transport is pull-based. Poll Targets actively call `claim-next`, while
 Command Targets are local CLI bridges that claim work before starting a
-one-shot process. Legacy Webhook Targets and delivery records remain in
-upgraded databases only as inert historical data; they are hidden from routing
-and public APIs.
+one-shot process. The only target transports are `poll` and `command`.
 
 ## Model Gateway
 
@@ -101,13 +105,11 @@ connection. The selected connection is the default first choice; the other
 connections remain eligible as ordered fallbacks. Runtime setting changes
 refresh the Target without changing its connection identity.
 
-Migration `0014_model_gateway` promotes gateway state out of the generic
-settings key/value store. `model_gateway_connections` stores transport-neutral
+`model_gateway_connections` stores transport-neutral
 connection profiles, provider-specific configuration, executable overrides,
 model selection, and future BYOK credential references.
 `model_gateway_config` stores the active Local CLI and BYOK connection pointers
-plus the current execution mode. The migration imports and removes the earlier
-`settings/model_gateway` JSON row when present.
+plus the current execution mode.
 
 Local CLI adapters are registered in the CLI runtime registry rather than in a
 database migration. Each definition supplies version and authentication probes,
@@ -182,16 +184,16 @@ Target IDs.
 
 ## Atomic Content Broker
 
-Migration `0012_content_broker` adds content resources, immutable revisions,
-CAS objects, Attempt staging sessions, and execution-token fencing. Content
-Tasks require execution protocol v3. The Agent-facing CLI preserves its
-commands but forwards task-scoped reads and writes to the Studio Task Broker;
-it never receives the SQLite path or global storage write access.
+The initial schema includes content resources, immutable revisions, CAS
+objects, Attempt staging sessions, and execution-token fencing. All Tasks use
+execution protocol v3. The Agent-facing CLI forwards task-scoped reads and
+writes to the Studio Task Broker; it never receives the SQLite path or global
+storage write access.
 
 Broker writes create invisible staging records. Task completion validates the
 candidate manifest, then activates the content revision together with panel
 state, Writing Operation state, Task/Attempt/Event state, dependent activation,
-Outbox records, and change scopes in one SQLite transaction. CAS bytes are
+and change scopes in one SQLite transaction. CAS bytes are
 written before that transaction but have no visibility without the active
 revision pointer. Cancellation, lease loss, timeout, and generation changes
 revoke the execution token and abandon staging. Old unpinned objects are

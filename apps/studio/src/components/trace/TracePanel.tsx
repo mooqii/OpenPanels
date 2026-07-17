@@ -1,11 +1,9 @@
-import { Button, Chip, ListBox, Popover, Select, Tabs } from "@heroui/react"
+import { Button, Chip, ListBox, Select, Tabs } from "@heroui/react"
 import {
   Activity,
   ArrowDown,
   ArrowLeft,
-  CheckCircle2,
   Copy,
-  Download,
   ListTodo,
   MessageSquare,
   Pause,
@@ -27,11 +25,31 @@ import type {
   ModelGatewaySettings,
   MyOpenPanelsBuildInfo,
   MyOpenPanelsTransport,
-  MyOpenPanelsUpdateStatus,
   ProjectTask,
   TraceCategory,
   TraceEvent,
 } from "../../types"
+
+import {
+  compareTasksForDisplay,
+  formatBlockedReason,
+  formatDispatchState,
+  formatTaskCount,
+  formatTaskError,
+  formatTaskTime,
+  formatTaskType,
+  formatWorkerStatus,
+  isActiveTask,
+  isDoneTask,
+  pendingTaskCount,
+  taskCommand,
+  taskMatchesFilter,
+  taskStatusColor,
+  taskStatusTone,
+  traceCategoryColor,
+} from "./trace-utils"
+
+export { BuildVersionBadge } from "./BuildVersionBadge"
 
 const TRACE_CATEGORIES: TraceCategory[] = [
   "agent",
@@ -863,88 +881,6 @@ function WorkerStatusCard({
   )
 }
 
-function taskCommand(
-  task: ProjectTask
-): { label: string; value: string } | null {
-  if (task.status !== "queued" && task.status !== "failed") return null
-  if (!task.ready) return null
-  return {
-    label: "Claim with a registered target",
-    value: `myopenpanels task claim --task-id ${shellQuote(task.id)} --target-id <target-id> --format json`,
-  }
-}
-
-function compareTasksForDisplay(left: ProjectTask, right: ProjectTask): number {
-  const rank = taskDisplayRank(left) - taskDisplayRank(right)
-  if (rank !== 0) return rank
-  return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-}
-
-function taskDisplayRank(task: ProjectTask): number {
-  if (task.ready && task.status === "failed") return 0
-  if (task.ready && task.status === "queued") return 1
-  if (!task.ready && task.status === "failed") return 2
-  if (!task.ready && task.status === "queued") return 3
-  return 4
-}
-
-function formatBlockedReason(reason: string): string {
-  switch (reason) {
-    case "attemptsExceeded":
-      return "exhausted"
-    case "retryLater":
-      return "retry later"
-    case "leased":
-      return "leased"
-    default:
-      return reason
-  }
-}
-
-function formatTaskError(error: unknown): string {
-  if (typeof error === "string") return error
-  try {
-    return JSON.stringify(error)
-  } catch {
-    return "Task failed"
-  }
-}
-
-function shellQuote(value: string): string {
-  if (/^[A-Za-z0-9_./:-]+$/.test(value)) return value
-  return `'${value.replaceAll("'", "'\\''")}'`
-}
-
-function taskMatchesFilter(task: ProjectTask, filter: TaskFilter): boolean {
-  switch (filter) {
-    case "pending":
-      return ["waiting", "queued", "failed"].includes(task.status)
-    case "active":
-      return isActiveTask(task)
-    case "done":
-      return isDoneTask(task)
-    case "all":
-      return true
-    default:
-      return true
-  }
-}
-
-function isActiveTask(task: ProjectTask): boolean {
-  return [
-    "reserved",
-    "running",
-    "claimed",
-    "converting",
-    "indexing",
-    "cancel_requested",
-  ].includes(task.status)
-}
-
-function isDoneTask(task: ProjectTask): boolean {
-  return ["succeeded", "cancelled", "stale", "superseded"].includes(task.status)
-}
-
 function TraceEventRow({
   event,
   isDevelopment,
@@ -1000,217 +936,4 @@ function TraceEventRow({
       ) : null}
     </article>
   )
-}
-
-export function BuildVersionBadge({
-  info,
-  isChecking,
-  onCheckUpdate,
-  onUpdate,
-  status,
-}: {
-  info: MyOpenPanelsBuildInfo
-  isChecking: boolean
-  onCheckUpdate: (options?: { refresh?: boolean }) => void
-  onUpdate: () => void
-  status: MyOpenPanelsUpdateStatus | null
-}) {
-  const localBuildTime = info.buildTime
-    ? formatLocalBuildTime(info.buildTime)
-    : null
-  const label =
-    info.channel === "development" && localBuildTime
-      ? localBuildTime
-      : info.label
-  const hasUpdate = Boolean(status?.updateAvailable || status?.readyToInstall)
-  const currentVersion = status?.currentVersion ?? info.version
-  const latestVersion = status?.latestVersion ?? null
-  const updateText = isChecking
-    ? "正在检查更新"
-    : hasUpdate
-      ? `发现新版本 ${latestVersion ?? ""}`.trim()
-      : status
-        ? "当前已是最新版"
-        : "点击检查更新"
-  const updateDetail = status
-    ? `当前 ${currentVersion}${latestVersion ? ` · 最新 ${latestVersion}` : ""}`
-    : "会从 GitHub Release 获取最新状态"
-
-  return (
-    <Popover
-      onOpenChange={(isOpen) => {
-        if (isOpen) onCheckUpdate({ refresh: true })
-      }}
-    >
-      <Button
-        aria-label="查看版本与更新状态"
-        className="op-build-badge"
-        size="sm"
-        variant="ghost"
-      >
-        {label}
-      </Button>
-      <Popover.Content placement="top end">
-        <Popover.Dialog className="min-w-72">
-          <div className="op-build-popover__status">
-            <span
-              className={`op-build-popover__icon ${
-                isChecking
-                  ? "op-build-popover__icon--checking"
-                  : hasUpdate
-                    ? "op-build-popover__icon--update"
-                    : "op-build-popover__icon--current"
-              }`}
-            >
-              {isChecking ? (
-                <RefreshCw size={15} />
-              ) : hasUpdate ? (
-                <Download size={15} />
-              ) : (
-                <CheckCircle2 size={15} />
-              )}
-            </span>
-            <div>
-              <strong>{updateText}</strong>
-              <span>{updateDetail}</span>
-            </div>
-          </div>
-          {hasUpdate ? (
-            <div className="op-build-popover__actions">
-              <Button
-                isDisabled={isChecking}
-                onPress={onUpdate}
-                size="sm"
-                variant="primary"
-              >
-                立即更新
-              </Button>
-            </div>
-          ) : null}
-        </Popover.Dialog>
-      </Popover.Content>
-    </Popover>
-  )
-}
-
-function pendingTaskCount(tasks: ProjectTask[]): number {
-  return tasks.filter(
-    (task) => task.status === "queued" || task.status === "failed"
-  ).length
-}
-
-function formatTaskCount(count: number): string {
-  return count > 99 ? "99+" : String(count)
-}
-
-function formatTaskType(type: string): string {
-  return type
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ")
-}
-
-function formatWorkerStatus(status: string): string {
-  switch (status) {
-    case "running":
-      return "Running"
-    case "error":
-      return "Error"
-    case "noTarget":
-      return "No target"
-    default:
-      return "Idle"
-  }
-}
-
-function formatDispatchState(status: string): string {
-  switch (status) {
-    case "noTarget":
-      return "no target"
-    default:
-      return status
-  }
-}
-
-function formatTaskTime(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    month: "short",
-    day: "numeric",
-  }).format(date)
-}
-
-function taskStatusTone(status: string): string {
-  if (status === "failed") return "danger"
-  if (["waiting", "queued"].includes(status)) return "warning"
-  if (
-    [
-      "reserved",
-      "running",
-      "claimed",
-      "converting",
-      "indexing",
-      "cancel_requested",
-    ].includes(status)
-  ) {
-    return "active"
-  }
-  if (status === "succeeded") return "success"
-  return "muted"
-}
-
-function taskStatusColor(status: string) {
-  switch (taskStatusTone(status)) {
-    case "danger":
-      return "danger"
-    case "warning":
-      return "warning"
-    case "success":
-      return "success"
-    case "active":
-      return "accent"
-    default:
-      return "default"
-  }
-}
-
-function traceCategoryColor(category: TraceCategory) {
-  switch (category) {
-    case "error":
-      return "danger"
-    case "cli":
-      return "warning"
-    case "task":
-      return "success"
-    case "api":
-    case "agent":
-      return "accent"
-    case "system":
-      return "default"
-    default:
-      return "default"
-  }
-}
-
-function formatLocalBuildTime(value: string): string | null {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return null
-  const datePart = [
-    padDatePart(date.getMonth() + 1),
-    padDatePart(date.getDate()),
-  ].join("-")
-  const timePart = [
-    padDatePart(date.getHours()),
-    padDatePart(date.getMinutes()),
-    padDatePart(date.getSeconds()),
-  ].join(":")
-  return `${datePart} ${timePart}`
-}
-
-function padDatePart(value: number): string {
-  return String(value).padStart(2, "0")
 }

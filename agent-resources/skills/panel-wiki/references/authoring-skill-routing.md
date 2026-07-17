@@ -17,8 +17,8 @@ Workflow:
 4. Claim the task before writing unless the task bridge already owns lifecycle.
 5. Perform all Markdown and Wiki page writes through the CLI with the current
    task id.
-6. Complete the task on success. Fail it with an actionable error when it cannot
-   be completed reliably.
+6. Complete or fail the task only when lifecycle is not bridge-managed. In
+   bridge-managed execution, leave lifecycle finalization to the bridge.
 
 Do not replace the selected authoring skill with rules remembered from another
 Wiki style. Do not duplicate its writing method in this panel skill.

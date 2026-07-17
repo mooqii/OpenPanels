@@ -35,9 +35,10 @@ task.
    `taskTypes: generate_document`, and an empty `requiresCommands` list.
 5. Give the Skill a concise description and actionable authoring rules. Do not
    reference other files or the source documents from the finished Skill.
-6. Install the file with `writing skill install`, then complete the Task. Fail
-   the Task when a source is unavailable, the generated Skill is invalid, or a
-   name conflict is reported.
+6. Install the file with `writing skill install`. In bridge-managed execution,
+   the bridge completes or fails the Task; otherwise complete the Task after a
+   successful install and fail it when a source is unavailable, the generated
+   Skill is invalid, or a name conflict is reported.
 
 The finished Skill should reproduce the sources' reusable writing method, not
 their subject matter.

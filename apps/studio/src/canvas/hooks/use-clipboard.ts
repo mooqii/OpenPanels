@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react"
 import type { Editor } from "../editor"
-import type { PageId, ShapeId } from "../types/ids"
+import { type PageId, ShapeId } from "../types/ids"
 import type { Bounds, Shape } from "../types/shapes"
 import {
   getAbsoluteRotatedAnchorPoints,
@@ -111,7 +111,7 @@ export function useClipboard(editor: Editor): UseClipboardResult {
 
       const parentId = currentPageId ?? currentClipboard[0].parentId
 
-      const idFactory = () => `shape:${crypto.randomUUID()}` as ShapeId
+      const idFactory = ShapeId.create
       const clones = cloneShapesForPaste(currentClipboard, {
         idFactory,
         offset,

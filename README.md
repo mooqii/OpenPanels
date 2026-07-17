@@ -42,7 +42,7 @@ release changes the Entry Skill requirement, Bootstrap delivers a one-time
 Agent-host update check and keeps it pending until that Agent context
 acknowledges the installed version. The installed CLI remains authoritative for
 current command catalogs and returned actions.
-Protocol v5 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes. It
+Protocol v6 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes. It
 prepares the required Panel and task-specific Skills locally and returns their
 ordered context and Skill paths in `nextRequiredAction.steps`; optional command
 descriptors, Tasks, and Operations remain progressively discoverable. Longer
