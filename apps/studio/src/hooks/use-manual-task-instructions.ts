@@ -116,8 +116,8 @@ export function useManualTaskInstructions({
   useEffect(() => {
     if (hasUsableCli === null) return
     if (hasUsableCli) {
-      setQueue([])
-      setAwaitingCheck([])
+      setQueue(clearTasksIfNeeded)
+      setAwaitingCheck(clearTasksIfNeeded)
       return
     }
     if (!awaitingCheck.length) return
@@ -140,6 +140,10 @@ export function useManualTaskInstructions({
 export type ManualTaskInstructionsController = ReturnType<
   typeof useManualTaskInstructions
 >
+
+export function clearTasksIfNeeded(tasks: ProjectTask[]): ProjectTask[] {
+  return tasks.length ? [] : tasks
+}
 
 function appendUniqueTasks(
   current: ProjectTask[],
