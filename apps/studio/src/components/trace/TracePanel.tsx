@@ -1,24 +1,18 @@
-import { Button, Chip, ListBox, Select, Tabs } from "@heroui/react"
+import { Button, Chip, ListBox, Select, Tabs, Tooltip } from "@heroui/react"
 import {
-  Activity,
   ArrowDown,
   ArrowLeft,
   Copy,
-  ListTodo,
-  MessageSquare,
-  Pause,
-  Play,
+  Info,
   RefreshCw,
+  Settings,
   Trash2,
   X,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import {
-  appendTraceEvent,
-  fetchTraceSnapshot,
-  formatTraceConnection,
-  formatTraceTime,
-} from "../../lib/api"
+import { useMyOpenPanelsI18n } from "../../canvas"
+import { MODEL_GATEWAY_SETTINGS_CHANGED_EVENT } from "../../constants"
+import { apiJson, appendTraceEvent, fetchTraceSnapshot } from "../../lib/api"
 import type {
   AgentWorkerStatus,
   LocalCliInfo,
@@ -29,7 +23,9 @@ import type {
   TraceCategory,
   TraceEvent,
 } from "../../types"
-
+import { TaskDispatchControl } from "./TaskDispatchControl"
+import { TraceEventRow } from "./TraceEventRow"
+import type { TraceFilter } from "./trace-utils"
 import {
   compareTasksForDisplay,
   formatBlockedReason,
@@ -38,67 +34,39 @@ import {
   formatTaskError,
   formatTaskTime,
   formatTaskType,
-  formatWorkerStatus,
+  groupWikiUpdateTasks,
   isActiveTask,
   isDoneTask,
   pendingTaskCount,
-  taskCommand,
   taskMatchesFilter,
   taskStatusColor,
   taskStatusTone,
-  traceCategoryColor,
+  traceEventMatchesFilter,
 } from "./trace-utils"
 
-export { BuildVersionBadge } from "./BuildVersionBadge"
-
 const TRACE_CATEGORIES: TraceCategory[] = [
-  "agent",
   "cli",
+  "agent",
   "api",
   "task",
   "system",
   "error",
 ]
+const TRACE_FILTERS: TraceFilter[] = ["all", ...TRACE_CATEGORIES]
 
 export type AgentPanelTab = "tasks" | "communication"
 export type TaskFilter = "pending" | "active" | "done" | "all"
-
-export function AgentToggleButton({
-  isOpen,
-  pendingCount,
-  onToggle,
-}: {
-  isOpen: boolean
-  pendingCount: number
-  onToggle: () => void
-}) {
-  return (
-    <Button
-      aria-expanded={isOpen}
-      aria-label={isOpen ? "折叠 Agent 面板" : "展开 Agent 面板"}
-      className={`op-trace-toggle ${isOpen ? "op-trace-toggle--active" : ""}`}
-      isIconOnly
-      onPress={onToggle}
-      size="sm"
-      variant={isOpen ? "secondary" : "ghost"}
-    >
-      <Activity size={14} />
-      {pendingCount > 0 ? (
-        <span className="op-trace-toggle__dot">
-          {formatTaskCount(pendingCount)}
-        </span>
-      ) : null}
-    </Button>
-  )
-}
 
 export function AgentPanel({
   activeTab,
   buildInfo,
   focusedTaskIds,
+  hasUsableAgentCli,
   isOpen,
   onClearFocusedTasks,
   onClose,
+  onOpenModelSettings,
+  onOpenManualTask,
   onTabChange,
   onTaskFilterChange,
   taskFilter,
@@ -109,9 +77,12 @@ export function AgentPanel({
   activeTab: AgentPanelTab
   buildInfo?: MyOpenPanelsBuildInfo
   focusedTaskIds: string[] | null
+  hasUsableAgentCli: boolean | null
   isOpen: boolean
   onClearFocusedTasks: () => void
   onClose: () => void
+  onOpenModelSettings: () => void
+  onOpenManualTask: (task: ProjectTask) => void
   onTabChange: (tab: AgentPanelTab) => void
   onTaskFilterChange: (filter: TaskFilter) => void
   taskFilter: TaskFilter
@@ -120,16 +91,10 @@ export function AgentPanel({
   workerStatus?: AgentWorkerStatus
 }) {
   const isDevelopment = buildInfo?.channel === "development"
-  const audience = isDevelopment ? "development" : "release"
-  const [isPaused, setIsPaused] = useState(false)
-  const [activeCategories, setActiveCategories] = useState<Set<TraceCategory>>(
-    () => new Set(TRACE_CATEGORIES)
-  )
+  const displayedTab = isDevelopment ? activeTab : "tasks"
+  const [traceFilter, setTraceFilter] = useState<TraceFilter>("all")
   const [events, setEvents] = useState<TraceEvent[]>([])
   const [isFollowing, setIsFollowing] = useState(true)
-  const [connectionState, setConnectionState] = useState<
-    "connecting" | "live" | "paused" | "offline"
-  >("connecting")
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
@@ -138,25 +103,20 @@ export function AgentPanel({
   }, [focusedTaskIds])
 
   useEffect(() => {
-    if (isPaused) {
-      setConnectionState("paused")
+    if (!isDevelopment) {
+      setEvents([])
       return
     }
     let cancelled = false
-    setConnectionState("connecting")
-    fetchTraceSnapshot(transport, audience)
+    fetchTraceSnapshot(transport, "development")
       .then((snapshot) => {
         if (!cancelled) setEvents(snapshot.events)
       })
-      .catch(() => {
-        if (!cancelled) setConnectionState("offline")
-      })
+      .catch(() => undefined)
 
     const source = new EventSource(
-      `${transport.apiBase}/api/trace/stream?audience=${encodeURIComponent(audience)}`
+      `${transport.apiBase}/api/trace/stream?audience=development`
     )
-    source.addEventListener("open", () => setConnectionState("live"))
-    source.addEventListener("error", () => setConnectionState("offline"))
     source.addEventListener("trace", (message) => {
       try {
         const event = JSON.parse((message as MessageEvent).data) as TraceEvent
@@ -169,14 +129,13 @@ export function AgentPanel({
       cancelled = true
       source.close()
     }
-  }, [audience, isPaused, transport])
+  }, [isDevelopment, transport])
 
   const visibleEvents = useMemo(() => {
-    if (!isDevelopment) return events
-    return events.filter((event) => activeCategories.has(event.category))
-  }, [activeCategories, events, isDevelopment])
+    if (!isDevelopment) return []
+    return events.filter((event) => traceEventMatchesFilter(event, traceFilter))
+  }, [events, isDevelopment, traceFilter])
   const latestVisibleSeq = visibleEvents.at(-1)?.seq ?? 0
-  const pendingTasks = pendingTaskCount(tasks)
 
   useEffect(() => {
     if (!(isOpen && isFollowing)) return
@@ -185,18 +144,6 @@ export function AgentPanel({
     if (!element) return
     element.scrollTop = element.scrollHeight
   }, [isFollowing, isOpen, latestVisibleSeq])
-
-  const toggleCategory = useCallback((category: TraceCategory) => {
-    setActiveCategories((current) => {
-      const next = new Set(current)
-      if (next.has(category)) {
-        next.delete(category)
-      } else {
-        next.add(category)
-      }
-      return next.size ? next : new Set([category])
-    })
-  }, [])
 
   const onScroll = useCallback(() => {
     const element = scrollRef.current
@@ -213,40 +160,44 @@ export function AgentPanel({
     >
       <div className="op-trace-panel__body">
         <header className="op-trace-panel__header">
-          <div>
-            <strong>Agent</strong>
-            <span>
-              {activeTab === "communication"
-                ? formatTraceConnection(connectionState)
-                : `${pendingTasks} pending task${pendingTasks === 1 ? "" : "s"}`}
-            </span>
+          <div className="op-trace-panel__heading">
+            {isDevelopment ? (
+              <Tabs
+                className="op-agent-panel__page-tabs"
+                onSelectionChange={(key) =>
+                  onTabChange(String(key) as AgentPanelTab)
+                }
+                selectedKey={displayedTab}
+                variant="secondary"
+              >
+                <Tabs.ListContainer>
+                  <Tabs.List aria-label="Agent panel pages">
+                    <Tabs.Tab id="tasks">
+                      Tasks
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    <Tabs.Tab id="communication">
+                      Communication
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                  </Tabs.List>
+                </Tabs.ListContainer>
+              </Tabs>
+            ) : (
+              <strong>Tasks</strong>
+            )}
           </div>
           <div className="op-trace-panel__actions">
-            {activeTab === "communication" ? (
-              <>
-                <Button
-                  aria-label={
-                    isPaused
-                      ? "Resume communication stream"
-                      : "Pause communication stream"
-                  }
-                  isIconOnly
-                  onPress={() => setIsPaused((value) => !value)}
-                  size="sm"
-                  variant="ghost"
-                >
-                  {isPaused ? <Play size={15} /> : <Pause size={15} />}
-                </Button>
-                <Button
-                  aria-label="Clear communication view"
-                  isIconOnly
-                  onPress={() => setEvents([])}
-                  size="sm"
-                  variant="ghost"
-                >
-                  <Trash2 size={15} />
-                </Button>
-              </>
+            {displayedTab === "communication" ? (
+              <Button
+                aria-label="Clear communication view"
+                isIconOnly
+                onPress={() => setEvents([])}
+                size="sm"
+                variant="ghost"
+              >
+                <Trash2 size={15} />
+              </Button>
             ) : null}
             <Button
               aria-label="关闭 Agent 面板"
@@ -260,41 +211,47 @@ export function AgentPanel({
           </div>
         </header>
 
-        <Tabs
-          className="op-agent-panel__tabs"
-          onSelectionChange={(key) => onTabChange(String(key) as AgentPanelTab)}
-          selectedKey={activeTab}
-        >
-          <Tabs.ListContainer>
-            <Tabs.List aria-label="Agent panel sections">
-              <Tabs.Tab className="op-agent-panel__tab" id="tasks">
-                <ListTodo size={14} />
-                Tasks
-                <Tabs.Indicator />
-              </Tabs.Tab>
-              <Tabs.Tab className="op-agent-panel__tab" id="communication">
-                <MessageSquare size={14} />
-                Communication
-                <Tabs.Indicator />
-              </Tabs.Tab>
-            </Tabs.List>
-          </Tabs.ListContainer>
-        </Tabs>
-
-        {activeTab === "tasks" ? (
+        {displayedTab === "tasks" ? (
           <TaskList
             apiBase={transport.apiBase}
             expandedTaskId={expandedTaskId}
             filter={taskFilter}
             focusedTaskIds={focusedTaskIds}
+            hasUsableAgentCli={hasUsableAgentCli}
+            isActive={isOpen}
             onClearFocusedTasks={onClearFocusedTasks}
             onExpandTask={setExpandedTaskId}
             onFilterChange={onTaskFilterChange}
+            onOpenManualTask={onOpenManualTask}
+            onOpenModelSettings={onOpenModelSettings}
             tasks={tasks}
             workerStatus={workerStatus}
           />
         ) : (
-          <>
+          <section className="op-trace-panel__communication">
+            <Tabs
+              className="op-trace-panel__filters"
+              onSelectionChange={(key) =>
+                setTraceFilter(String(key) as TraceFilter)
+              }
+              selectedKey={traceFilter}
+              variant="secondary"
+            >
+              <Tabs.ListContainer>
+                <Tabs.List aria-label="Communication event types">
+                  {TRACE_FILTERS.map((filter) => (
+                    <Tabs.Tab
+                      className="op-trace-panel__filter"
+                      id={filter}
+                      key={filter}
+                    >
+                      {filter}
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                  ))}
+                </Tabs.List>
+              </Tabs.ListContainer>
+            </Tabs>
             <div
               className="op-trace-panel__events"
               onScroll={onScroll}
@@ -310,9 +267,7 @@ export function AgentPanel({
                 ))
               ) : (
                 <div className="op-trace-panel__empty">
-                  {isDevelopment
-                    ? "No communication events in this view."
-                    : "No agent activity yet."}
+                  No communication events in this view.
                 </div>
               )}
             </div>
@@ -332,29 +287,8 @@ export function AgentPanel({
                 Latest
               </Button>
             ) : null}
-          </>
+          </section>
         )}
-
-        {activeTab === "communication" && isDevelopment ? (
-          <footer className="op-trace-panel__filters">
-            {TRACE_CATEGORIES.map((category) => (
-              <Button
-                aria-pressed={activeCategories.has(category)}
-                className={
-                  activeCategories.has(category)
-                    ? "op-trace-panel__filter op-trace-panel__filter--active"
-                    : "op-trace-panel__filter"
-                }
-                key={category}
-                onPress={() => toggleCategory(category)}
-                size="sm"
-                variant={activeCategories.has(category) ? "secondary" : "ghost"}
-              >
-                {category}
-              </Button>
-            ))}
-          </footer>
-        ) : null}
       </div>
     </aside>
   )
@@ -365,9 +299,13 @@ function TaskList({
   expandedTaskId,
   filter,
   focusedTaskIds,
+  hasUsableAgentCli,
+  isActive,
   onClearFocusedTasks,
   onExpandTask,
   onFilterChange,
+  onOpenModelSettings,
+  onOpenManualTask,
   tasks,
   workerStatus,
 }: {
@@ -375,15 +313,21 @@ function TaskList({
   expandedTaskId: string | null
   filter: TaskFilter
   focusedTaskIds: string[] | null
+  hasUsableAgentCli: boolean | null
+  isActive: boolean
   onClearFocusedTasks: () => void
   onExpandTask: (taskId: string | null) => void
   onFilterChange: (filter: TaskFilter) => void
+  onOpenModelSettings: () => void
+  onOpenManualTask: (task: ProjectTask) => void
   tasks: ProjectTask[]
   workerStatus?: AgentWorkerStatus
 }) {
   const focusedTaskIdSet = focusedTaskIds ? new Set(focusedTaskIds) : null
-  const filteredTasks = tasks
-    .filter((task) => !focusedTaskIdSet || focusedTaskIdSet.has(task.id))
+  const groupedTasks = groupWikiUpdateTasks(tasks)
+  const filteredTasks = groupWikiUpdateTasks(
+    tasks.filter((task) => !focusedTaskIdSet || focusedTaskIdSet.has(task.id))
+  )
     .filter((task) =>
       focusedTaskIdSet ? true : taskMatchesFilter(task, filter)
     )
@@ -402,347 +346,253 @@ function TaskList({
     id: TaskFilter
     label: string
   }> = [
-    { id: "pending", label: "Pending", count: pendingTaskCount(tasks) },
-    { id: "active", label: "Active", count: tasks.filter(isActiveTask).length },
-    { id: "done", label: "Closed", count: tasks.filter(isDoneTask).length },
-    { id: "all", label: "All", count: tasks.length },
+    { id: "pending", label: "Pending", count: pendingTaskCount(groupedTasks) },
+    {
+      id: "active",
+      label: "Active",
+      count: groupedTasks.filter(isActiveTask).length,
+    },
+    {
+      id: "done",
+      label: "Closed",
+      count: groupedTasks.filter(isDoneTask).length,
+    },
+    { id: "all", label: "All", count: groupedTasks.length },
   ]
 
   if (!tasks.length) {
     return (
       <div className="op-agent-tasks">
-        <WorkerStatusCard workerStatus={workerStatus} />
-        <div className="op-trace-panel__empty">No project tasks yet.</div>
+        <div className="op-agent-tasks__scroll">
+          <div className="op-trace-panel__empty">No project tasks yet.</div>
+        </div>
+        <WorkerStatusCard
+          apiBase={apiBase}
+          isActive={isActive}
+          onOpenModelSettings={onOpenModelSettings}
+          workerStatus={workerStatus}
+        />
       </div>
     )
   }
   return (
     <div className="op-agent-tasks">
-      <WorkerStatusCard workerStatus={workerStatus} />
-      {focusedTaskIds?.length ? (
-        <div className="op-agent-task-focus">
-          <span>
-            Refinement tasks <strong>{focusedTaskIds.length}</strong>
-          </span>
-          <Button onPress={onClearFocusedTasks} size="sm" variant="ghost">
-            <ArrowLeft size={14} />
-            All tasks
-          </Button>
-        </div>
-      ) : (
-        <div className="op-agent-task-filters">
-          {filterItems.map((item) => (
-            <button
-              aria-label={`${item.label} tasks (${item.count})`}
-              aria-pressed={filter === item.id}
-              className={
-                filter === item.id
-                  ? "op-agent-task-filter op-agent-task-filter--active"
-                  : "op-agent-task-filter"
-              }
-              key={item.id}
-              onClick={() => onFilterChange(item.id)}
-              type="button"
-            >
-              <span>{item.label}</span>
-              <strong
-                className={
-                  item.id === "pending" && item.count > 0
-                    ? "op-agent-task-filter__count op-agent-task-filter__count--danger"
-                    : "op-agent-task-filter__count"
-                }
-              >
-                {formatTaskCount(item.count)}
-              </strong>
-            </button>
-          ))}
-        </div>
-      )}
-      {filteredTasks.length ? (
-        filteredTasks.map((task) => {
-          const isExpanded = expandedTaskId === task.id
-          const detail = JSON.stringify(task, null, 2)
-          const command = taskCommand(task)
-          return (
-            <article
-              className={`op-agent-task op-agent-task--${taskStatusTone(task.status)}`}
-              key={task.id}
-              ref={task.id === focusedTaskIds?.[0] ? focusedTaskRef : undefined}
-            >
+      <div className="op-agent-tasks__scroll">
+        {focusedTaskIds?.length ? (
+          <div className="op-agent-task-focus">
+            <span>
+              Refinement tasks <strong>{focusedTaskIds.length}</strong>
+            </span>
+            <Button onPress={onClearFocusedTasks} size="sm" variant="ghost">
+              <ArrowLeft size={14} />
+              All tasks
+            </Button>
+          </div>
+        ) : (
+          <div className="op-agent-task-filters">
+            {filterItems.map((item) => (
               <button
-                aria-expanded={isExpanded}
-                className="op-agent-task__summary"
-                onClick={() => onExpandTask(isExpanded ? null : task.id)}
+                aria-label={`${item.label} tasks (${item.count})`}
+                aria-pressed={filter === item.id}
+                className={
+                  filter === item.id
+                    ? "op-agent-task-filter op-agent-task-filter--active"
+                    : "op-agent-task-filter"
+                }
+                key={item.id}
+                onClick={() => onFilterChange(item.id)}
                 type="button"
               >
-                <span className="op-agent-task__topline">
-                  <Chip
-                    className="op-agent-task__queue"
-                    color={taskStatusColor(task.status)}
-                    size="sm"
-                    variant="soft"
-                  >
-                    {task.queue}
-                  </Chip>
-                  <span>{formatTaskTime(task.updatedAt)}</span>
-                </span>
-                <strong>{task.capability ?? formatTaskType(task.type)}</strong>
-                <span className="op-agent-task__meta">
-                  <span>{task.status}</span>
-                  <span
-                    className={
-                      task.ready
-                        ? "op-agent-task__state op-agent-task__state--ready"
-                        : task.blockedReason
-                          ? "op-agent-task__state op-agent-task__state--blocked"
-                          : "op-agent-task__state"
-                    }
-                  >
-                    {task.ready
-                      ? "ready"
-                      : task.blockedReason
-                        ? formatBlockedReason(task.blockedReason)
-                        : "not ready"}
+                <span>{item.label}</span>
+                <strong
+                  className={
+                    item.id === "pending" && item.count > 0
+                      ? "op-agent-task-filter__count op-agent-task-filter__count--danger"
+                      : "op-agent-task-filter__count"
+                  }
+                >
+                  {formatTaskCount(item.count)}
+                </strong>
+              </button>
+            ))}
+          </div>
+        )}
+        {filteredTasks.length ? (
+          filteredTasks.map((task) => {
+            const isExpanded = expandedTaskId === task.id
+            const detail = JSON.stringify(task, null, 2)
+            return (
+              <article
+                className={`op-agent-task op-agent-task--${taskStatusTone(task.status)}`}
+                key={task.id}
+                ref={
+                  task.id === focusedTaskIds?.[0] ? focusedTaskRef : undefined
+                }
+              >
+                <button
+                  aria-expanded={isExpanded}
+                  className="op-agent-task__summary"
+                  onClick={() => onExpandTask(isExpanded ? null : task.id)}
+                  type="button"
+                >
+                  <span className="op-agent-task__topline">
+                    <Chip
+                      className="op-agent-task__queue"
+                      color={taskStatusColor(task.status)}
+                      size="sm"
+                      variant="soft"
+                    >
+                      {task.queue}
+                    </Chip>
+                    <span>{formatTaskTime(task.updatedAt)}</span>
                   </span>
-                  {task.attempt ? (
-                    <span>
-                      attempt {task.attempt}
-                      {task.maxAttempts ? `/${task.maxAttempts}` : ""}
+                  <strong>
+                    {task.wikiUpdateGroup
+                      ? `Wiki updates · ${task.wikiUpdateGroup.tasks.length} tasks`
+                      : (task.capability ?? formatTaskType(task.type))}
+                  </strong>
+                  <span className="op-agent-task__meta">
+                    <span>{task.status}</span>
+                    <span
+                      className={
+                        task.ready
+                          ? "op-agent-task__state op-agent-task__state--ready"
+                          : task.blockedReason
+                            ? "op-agent-task__state op-agent-task__state--blocked"
+                            : "op-agent-task__state"
+                      }
+                    >
+                      {task.ready
+                        ? "ready"
+                        : task.blockedReason
+                          ? formatBlockedReason(task.blockedReason)
+                          : "not ready"}
+                    </span>
+                    {task.attempt ? (
+                      <span>
+                        attempt {task.attempt}
+                        {task.maxAttempts ? `/${task.maxAttempts}` : ""}
+                      </span>
+                    ) : null}
+                    {task.dispatchState ? (
+                      <span>{formatDispatchState(task.dispatchState)}</span>
+                    ) : null}
+                    {task.workflowId ? <span>workflow</span> : null}
+                    {task.assignedTarget ? (
+                      <span>{task.assignedTarget.name}</span>
+                    ) : null}
+                    <span>{task.panelKind}</span>
+                    <span>{task.targetId || task.id}</span>
+                    {task.wikiUpdateGroup ? (
+                      <span>
+                        {task.wikiUpdateGroup.tasks.filter(isDoneTask).length}/
+                        {task.wikiUpdateGroup.tasks.length} complete
+                      </span>
+                    ) : null}
+                  </span>
+                  {task.error &&
+                  (task.status === "failed" || task.status === "cancelled") ? (
+                    <span className="op-agent-task__note">
+                      {formatTaskError(task.error)}
                     </span>
                   ) : null}
-                  {task.dispatchState ? (
-                    <span>{formatDispatchState(task.dispatchState)}</span>
+                  {task.nextRunAt ? (
+                    <span className="op-agent-task__note">
+                      Next run {formatTaskTime(task.nextRunAt)}
+                    </span>
+                  ) : task.lease?.expiresAt &&
+                    task.blockedReason === "leased" ? (
+                    <span className="op-agent-task__note">
+                      Lease until {formatTaskTime(task.lease.expiresAt)}
+                    </span>
                   ) : null}
-                  {task.workflowId ? <span>workflow</span> : null}
-                  {task.assignedTarget ? (
-                    <span>{task.assignedTarget.name}</span>
-                  ) : null}
-                  <span>{task.panelKind}</span>
-                  <span>{task.targetId || task.id}</span>
-                </span>
-                {task.error &&
-                (task.status === "failed" || task.status === "cancelled") ? (
-                  <span className="op-agent-task__note">
-                    {formatTaskError(task.error)}
-                  </span>
-                ) : null}
-                {task.nextRunAt ? (
-                  <span className="op-agent-task__note">
-                    Next run {formatTaskTime(task.nextRunAt)}
-                  </span>
-                ) : task.lease?.expiresAt && task.blockedReason === "leased" ? (
-                  <span className="op-agent-task__note">
-                    Lease until {formatTaskTime(task.lease.expiresAt)}
-                  </span>
-                ) : null}
-                <code>{task.id}</code>
-              </button>
-              <TaskDispatchControl apiBase={apiBase} task={task} />
-              {isExpanded ? (
-                <div className="op-agent-task__detail">
-                  {task.workflowId ? (
-                    <div className="op-agent-task__command">
-                      <span>Workflow</span>
-                      <code>{task.workflowId}</code>
-                    </div>
-                  ) : null}
-                  {task.dependencies?.length ? (
-                    <div className="op-agent-task__command">
-                      <span>Prerequisites</span>
-                      <code>
-                        {task.dependencies
-                          .map(
-                            (dependency) =>
-                              `${dependency.prerequisiteTaskId} · ${dependency.status} · ${dependency.failurePolicy}`
-                          )
-                          .join("\n")}
-                      </code>
-                    </div>
-                  ) : null}
-                  {task.requiredProtocolVersion ? (
-                    <div className="op-agent-task__command">
-                      <span>Execution</span>
-                      <code>
-                        protocol v{task.requiredProtocolVersion} · generation{" "}
-                        {task.executionGeneration ?? 0} · compatible targets{" "}
-                        {task.compatibleTargetCount ?? 0}
-                      </code>
-                    </div>
-                  ) : null}
-                  <TaskHistory apiBase={apiBase} task={task} />
-                  {command ? (
-                    <div className="op-agent-task__command">
-                      <span>{command.label}</span>
+                  <code>{task.id}</code>
+                </button>
+                <TaskDispatchControl
+                  apiBase={apiBase}
+                  onOpenManualTask={onOpenManualTask}
+                  showManualInstruction={hasUsableAgentCli === false}
+                  task={task}
+                />
+                {isExpanded ? (
+                  <div className="op-agent-task__detail">
+                    {task.wikiUpdateGroup ? (
+                      <div className="op-agent-task__members">
+                        {task.wikiUpdateGroup.tasks.map((member) => (
+                          <div
+                            className="op-agent-task__member"
+                            key={member.id}
+                          >
+                            <span>{formatTaskType(member.type)}</span>
+                            <span>{member.status}</span>
+                            <code>{member.id}</code>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {!task.wikiUpdateGroup && task.workflowId ? (
+                      <div className="op-agent-task__command">
+                        <span>Workflow</span>
+                        <code>{task.workflowId}</code>
+                      </div>
+                    ) : null}
+                    {task.dependencies?.length ? (
+                      <div className="op-agent-task__command">
+                        <span>Prerequisites</span>
+                        <code>
+                          {task.dependencies
+                            .map(
+                              (dependency) =>
+                                `${dependency.prerequisiteTaskId} · ${dependency.status} · ${dependency.failurePolicy}`
+                            )
+                            .join("\n")}
+                        </code>
+                      </div>
+                    ) : null}
+                    {task.requiredProtocolVersion ? (
+                      <div className="op-agent-task__command">
+                        <span>Execution</span>
+                        <code>
+                          protocol v{task.requiredProtocolVersion} · generation{" "}
+                          {task.executionGeneration ?? 0} · compatible targets{" "}
+                          {task.compatibleTargetCount ?? 0}
+                        </code>
+                      </div>
+                    ) : null}
+                    {task.wikiUpdateGroup ? null : (
+                      <TaskHistory apiBase={apiBase} task={task} />
+                    )}
+                    <div className="op-agent-task__json">
                       <Button
-                        aria-label="Copy task command"
+                        aria-label="Copy task detail"
                         isIconOnly
-                        onPress={() =>
-                          navigator.clipboard?.writeText(command.value)
-                        }
+                        onPress={() => navigator.clipboard?.writeText(detail)}
                         size="sm"
                         variant="ghost"
                       >
                         <Copy size={14} />
                       </Button>
-                      <code>{command.value}</code>
+                      <pre>{detail}</pre>
                     </div>
-                  ) : null}
-                  <div className="op-agent-task__json">
-                    <Button
-                      aria-label="Copy task detail"
-                      isIconOnly
-                      onPress={() => navigator.clipboard?.writeText(detail)}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <Copy size={14} />
-                    </Button>
-                    <pre>{detail}</pre>
                   </div>
-                </div>
-              ) : null}
-            </article>
-          )
-        })
-      ) : (
-        <div className="op-trace-panel__empty">
-          No {filter === "all" ? "project" : filter} tasks.
-        </div>
-      )}
-    </div>
-  )
-}
-
-function TaskDispatchControl({
-  apiBase,
-  task,
-}: {
-  apiBase: string
-  task: ProjectTask
-}) {
-  const [channels, setChannels] = useState<LocalCliInfo[]>([])
-  const [selection, setSelection] = useState(() => taskDispatchSelection(task))
-  const [isSaving, setIsSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const canDispatch = ["waiting", "queued", "failed"].includes(task.status)
-  const currentTaskSelection = taskDispatchSelection(task)
-
-  useEffect(() => {
-    setSelection(currentTaskSelection)
-  }, [currentTaskSelection])
-
-  useEffect(() => {
-    let cancelled = false
-    Promise.all([
-      fetch(`${apiBase}/api/model-gateway/settings`).then((response) =>
-        response.json()
-      ),
-      fetch(`${apiBase}/api/model-gateway/local-clis`).then((response) =>
-        response.json()
-      ),
-    ])
-      .then(([settingsPayload, scanPayload]) => {
-        if (cancelled) return
-        const settings = settingsPayload.settings as ModelGatewaySettings
-        const localClis = Array.isArray(scanPayload.localClis)
-          ? (scanPayload.localClis as LocalCliInfo[])
-          : []
-        const enabled = new Set(settings.localCli.enabledProviderIds)
-        setChannels(
-          settings.localCli.providerOrder
-            .filter((providerId) => enabled.has(providerId))
-            .map((providerId) =>
-              localClis.find((channel) => channel.id === providerId)
+                ) : null}
+              </article>
             )
-            .filter((channel): channel is LocalCliInfo => Boolean(channel))
-        )
-      })
-      .catch(() => {
-        if (!cancelled) setChannels([])
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [apiBase])
-
-  const updateDispatch = async (value: string) => {
-    const [mode, providerId] = value.split(":", 2)
-    const connectionId = providerId ? `local-cli:${providerId}` : null
-    setSelection(value)
-    setIsSaving(true)
-    setError(null)
-    try {
-      const response = await fetch(
-        `${apiBase}/api/tasks/${encodeURIComponent(task.id)}/dispatch`,
-        {
-          body: JSON.stringify({
-            mode,
-            modelGatewayConnectionId: connectionId,
-          }),
-          headers: { "content-type": "application/json" },
-          method: "PUT",
-        }
-      )
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null)
-        throw new Error(
-          payload?.error || `Dispatch update failed (${response.status})`
-        )
-      }
-    } catch (cause) {
-      setSelection(currentTaskSelection)
-      setError(formatTaskError(cause))
-    } finally {
-      setIsSaving(false)
-    }
-  }
-
-  if (!canDispatch) return null
-  return (
-    <div className="op-agent-task__dispatch">
-      <span>Channel</span>
-      <Select
-        aria-label="Task channel"
-        isDisabled={isSaving}
-        onChange={(key) => updateDispatch(String(key))}
-        selectionMode="single"
-        value={selection}
-        variant="secondary"
-      >
-        <Select.Trigger>
-          <Select.Value />
-          <Select.Indicator />
-        </Select.Trigger>
-        <Select.Popover>
-          <ListBox>
-            <ListBox.Item id="auto" textValue="Automatic">
-              Automatic
-            </ListBox.Item>
-            {channels.map((channel) => (
-              <ListBox.Item
-                id={`prefer:${channel.id}`}
-                key={`prefer:${channel.id}`}
-                textValue={`Prefer ${channel.name}`}
-              >
-                Prefer {channel.name}
-              </ListBox.Item>
-            ))}
-          </ListBox>
-        </Select.Popover>
-      </Select>
-      {error ? <small role="alert">{error}</small> : null}
+          })
+        ) : (
+          <div className="op-trace-panel__empty">
+            No {filter === "all" ? "project" : filter} tasks.
+          </div>
+        )}
+      </div>
+      <WorkerStatusCard
+        apiBase={apiBase}
+        isActive={isActive}
+        onOpenModelSettings={onOpenModelSettings}
+        workerStatus={workerStatus}
+      />
     </div>
   )
-}
-
-function taskDispatchSelection(task: ProjectTask): string {
-  const providerId = task.requestedGatewayConnectionId?.replace(
-    /^local-cli:/,
-    ""
-  )
-  return task.dispatchMode && task.dispatchMode !== "auto" && providerId
-    ? `${task.dispatchMode}:${providerId}`
-    : "auto"
 }
 
 function TaskHistory({
@@ -848,92 +698,250 @@ function TaskHistory({
   )
 }
 
+type LocalCliTone = "normal" | "disabled" | "warning"
+
 function WorkerStatusCard({
+  apiBase,
+  isActive,
+  onOpenModelSettings,
   workerStatus,
 }: {
+  apiBase: string
+  isActive: boolean
+  onOpenModelSettings: () => void
   workerStatus?: AgentWorkerStatus
 }) {
-  const queue = workerStatus?.queue
-  const status = queue?.status ?? workerStatus?.status ?? "idle"
-  const tone =
-    status === "running"
-      ? "active"
-      : status === "error" || status === "noTarget"
-        ? "danger"
-        : "success"
-  return (
-    <div className={`op-agent-worker op-agent-worker--${tone}`}>
-      <span>
-        <Activity size={13} />
-        Worker
-      </span>
-      <strong>{formatWorkerStatus(status)}</strong>
-      {queue ? (
-        <small>
-          {queue.onlineTargetCount ?? 0}/{queue.targetCount ?? 0} targets
-        </small>
-      ) : null}
-      {workerStatus?.lastError ? <em>{workerStatus.lastError}</em> : null}
-      {workerStatus?.heartbeatAt ? (
-        <small>{formatTaskTime(workerStatus.heartbeatAt)}</small>
-      ) : null}
-    </div>
-  )
-}
+  const { t } = useMyOpenPanelsI18n()
+  const [settings, setSettings] = useState<ModelGatewaySettings | null>(null)
+  const [localClis, setLocalClis] = useState<LocalCliInfo[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-function TraceEventRow({
-  event,
-  isDevelopment,
-}: {
-  event: TraceEvent
-  isDevelopment: boolean
-}) {
-  const [isExpanded, setIsExpanded] = useState(false)
-  const detail = useMemo(
-    () => JSON.stringify(event.detail ?? event, null, 2),
-    [event]
+  const refresh = useCallback(async () => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const [settingsResponse, scanResponse] = await Promise.all([
+        apiJson<{ settings: ModelGatewaySettings }>(
+          apiBase,
+          "/api/model-gateway/settings"
+        ),
+        apiJson<{ localClis: LocalCliInfo[] }>(
+          apiBase,
+          "/api/model-gateway/local-clis"
+        ),
+      ])
+      setSettings(settingsResponse.settings)
+      setLocalClis(scanResponse.localClis)
+    } catch (cause) {
+      setError(formatTaskError(cause))
+    } finally {
+      setIsLoading(false)
+    }
+  }, [apiBase])
+
+  useEffect(() => {
+    if (!isActive) return
+    refresh().catch(() => undefined)
+    const onSettingsChanged = () => {
+      refresh().catch(() => undefined)
+    }
+    window.addEventListener(
+      MODEL_GATEWAY_SETTINGS_CHANGED_EVENT,
+      onSettingsChanged
+    )
+    return () =>
+      window.removeEventListener(
+        MODEL_GATEWAY_SETTINGS_CHANGED_EVENT,
+        onSettingsChanged
+      )
+  }, [isActive, refresh])
+
+  const orderedLocalClis = useMemo(() => {
+    const providerOrder = settings?.localCli.providerOrder ?? []
+    return [
+      ...providerOrder
+        .map((providerId) => localClis.find((cli) => cli.id === providerId))
+        .filter((cli): cli is LocalCliInfo => Boolean(cli)),
+      ...localClis.filter((cli) => !providerOrder.includes(cli.id)),
+    ].filter((cli) => cli.available)
+  }, [localClis, settings])
+  const maxConcurrency = settings?.maxConcurrency ?? 2
+  const enabledProviderIds = settings?.localCli.enabledProviderIds ?? []
+  const enabledLocalClis = orderedLocalClis.filter((cli) =>
+    enabledProviderIds.includes(cli.id)
   )
+
+  const statusForCli = (cli: LocalCliInfo): LocalCliTone => {
+    if (!enabledProviderIds.includes(cli.id)) return "disabled"
+    const target = workerStatus?.queue?.targets?.find(
+      (candidate) =>
+        candidate.modelGatewayConnectionId === `local-cli:${cli.id}`
+    )
+    return cli.authStatus === "missing" ||
+      Boolean(cli.authMessage) ||
+      Boolean(cli.diagnostic) ||
+      target?.status === "offline" ||
+      Boolean(target?.lastError)
+      ? "warning"
+      : "normal"
+  }
+
+  const updateConcurrency = async (value: string) => {
+    const nextConcurrency = Number(value)
+    if (!(settings && Number.isInteger(nextConcurrency))) return
+    const previous = settings
+    const next = { ...settings, maxConcurrency: nextConcurrency }
+    setSettings(next)
+    setIsSaving(true)
+    setError(null)
+    try {
+      const response = await apiJson<{ settings: ModelGatewaySettings }>(
+        apiBase,
+        "/api/model-gateway/settings",
+        {
+          body: JSON.stringify({ settings: next }),
+          headers: { "content-type": "application/json" },
+          method: "PUT",
+        }
+      )
+      setSettings(response.settings)
+      window.dispatchEvent(new Event(MODEL_GATEWAY_SETTINGS_CHANGED_EVENT))
+    } catch (cause) {
+      setSettings(previous)
+      setError(formatTaskError(cause))
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   return (
-    <article className={`op-trace-event op-trace-event--${event.category}`}>
-      <button
-        className="op-trace-event__summary"
-        onClick={() => setIsExpanded((value) => !value)}
-        type="button"
-      >
-        <span className="op-trace-event__header">
-          <span className="op-trace-event__time">
-            {formatTraceTime(event.timestamp)}
-          </span>
-          <Chip
-            className="op-trace-event__badge"
-            color={traceCategoryColor(event.category)}
-            size="sm"
-            variant="soft"
-          >
-            {event.category}
-          </Chip>
-          <span className="op-trace-event__meta">
-            <span>{event.source ?? "myopenpanels"}</span>
-            {event.direction ? <span>{event.direction}</span> : null}
-            {event.taskId ? <span>{event.taskId}</span> : null}
-          </span>
-        </span>
-        <span className="op-trace-event__text">{event.summary}</span>
-      </button>
-      {isDevelopment && isExpanded ? (
-        <div className="op-trace-event__detail">
-          <Button
-            aria-label="Copy trace detail"
-            isIconOnly
-            onPress={() => navigator.clipboard?.writeText(detail)}
-            size="sm"
-            variant="ghost"
-          >
-            <Copy size={14} />
-          </Button>
-          <pre>{detail}</pre>
+    <section aria-label={t`Task processing`} className="op-agent-worker">
+      <div className="op-agent-worker__header">
+        <div className="op-agent-worker__title">
+          <strong>{t`Task processing`}</strong>
+          <Tooltip closeDelay={0} delay={0}>
+            <Button
+              aria-label={t`How tasks are processed`}
+              className="op-agent-worker__info"
+              isIconOnly
+              size="sm"
+              variant="ghost"
+            >
+              <Info size={13} />
+            </Button>
+            <Tooltip.Content
+              className="op-agent-worker__tooltip"
+              placement="top end"
+              showArrow
+            >
+              <Tooltip.Arrow />
+              <p>
+                {t`Enabled Agent CLIs claim queued tasks from left to right in priority order.`}
+              </p>
+              <p>
+                {t`Current priority:`}{" "}
+                {enabledLocalClis.length
+                  ? enabledLocalClis.map((cli) => cli.name).join(" > ")
+                  : t`No enabled automatic task channel.`}
+              </p>
+              <p>
+                {t`This project can process up to`} {maxConcurrency}{" "}
+                {t`tasks at the same time.`}
+              </p>
+            </Tooltip.Content>
+          </Tooltip>
         </div>
+        <div className="op-agent-worker__controls">
+          <Select
+            aria-label={t`Parallel task count`}
+            className="op-agent-worker__concurrency"
+            isDisabled={!settings || isLoading || isSaving}
+            onChange={(key) => {
+              updateConcurrency(String(key)).catch(() => undefined)
+            }}
+            selectionMode="single"
+            value={String(maxConcurrency)}
+            variant="secondary"
+          >
+            <Select.Trigger>
+              <Select.Value />
+              <Select.Indicator />
+            </Select.Trigger>
+            <Select.Popover placement="top end">
+              <ListBox>
+                {[1, 2, 3, 4, 5].map((count) => (
+                  <ListBox.Item
+                    id={String(count)}
+                    key={count}
+                    textValue={`${count} ${t`parallel`}`}
+                  >
+                    {count} {t`parallel`}
+                    <ListBox.ItemIndicator />
+                  </ListBox.Item>
+                ))}
+              </ListBox>
+            </Select.Popover>
+          </Select>
+          <Tooltip closeDelay={0} delay={300}>
+            <Button
+              aria-label={t`Model and Agent settings`}
+              className="op-agent-worker__settings"
+              isIconOnly
+              onPress={onOpenModelSettings}
+              size="sm"
+              variant="ghost"
+            >
+              <Settings size={15} />
+            </Button>
+            <Tooltip.Content placement="top">
+              {t`Model and Agent settings`}
+            </Tooltip.Content>
+          </Tooltip>
+        </div>
+      </div>
+      <div className="op-agent-worker__agents">
+        {isLoading && !settings ? (
+          <span className="op-agent-worker__loading">
+            {t`Scanning available Agent CLIs`}
+          </span>
+        ) : orderedLocalClis.length ? (
+          orderedLocalClis.map((cli) => {
+            const tone = statusForCli(cli)
+            const statusLabel =
+              tone === "normal"
+                ? t`Running normally`
+                : tone === "disabled"
+                  ? t`Disabled`
+                  : t`Connection needs attention`
+            return (
+              <span
+                aria-label={`${cli.name}: ${statusLabel}`}
+                className="op-agent-worker__agent"
+                key={cli.id}
+                role="img"
+                title={statusLabel}
+              >
+                <i
+                  aria-hidden="true"
+                  className={`op-agent-worker__dot op-agent-worker__dot--${tone}`}
+                />
+                {cli.name}
+              </span>
+            )
+          })
+        ) : (
+          <p className="op-agent-worker__empty">
+            {t`No task-processing model is available. Send each task's instructions to an Agent manually.`}
+          </p>
+        )}
+      </div>
+      {error ? (
+        <p className="op-agent-worker__error" role="alert">
+          {error}
+        </p>
       ) : null}
-    </article>
+    </section>
   )
 }

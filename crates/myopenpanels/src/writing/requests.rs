@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-pub const WRITING_PANEL_SKILL_ID: &str = "writing-panel";
+pub const WRITING_PANEL_SKILL_ID: &str = "myopenpanels-writing-panel";
 pub const WRITING_CAPABILITY: &str = "writing.generateDocument";
 pub const WRITING_REFINEMENT_CAPABILITY: &str = "writing.refineSkill";
 pub const WRITING_SKILL_REFINER_ID: &str = "writing-skill-refiner";
@@ -65,13 +65,28 @@ fn writing_selection_value(
         &wiki.state,
         "generatedDocuments",
     );
+    let is_wiki_selected = stored
+        .get("isWikiSelected")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let agent_context = crate::wiki::agent_content_context(
+        paths,
+        &bootstrap.project.id,
+        &wiki.panel.id,
+        &raw_ids,
+        &generated_ids,
+        is_wiki_selected,
+    )?;
     Ok(json!({
         "kind": "writing",
         "projectId": bootstrap.project.id,
         "panelId": bootstrap.panel.id,
-        "isWikiSelected": stored.get("isWikiSelected").and_then(Value::as_bool).unwrap_or(false),
+        "isWikiSelected": is_wiki_selected,
         "selectedRawDocumentIds": raw_ids,
         "selectedGeneratedDocumentIds": generated_ids,
+        "selectedRawDocuments": agent_context["selectedRawDocuments"],
+        "selectedGeneratedDocuments": agent_context["selectedGeneratedDocuments"],
+        "wiki": agent_context["wiki"],
         "updatedAt": stored.get("updatedAt").cloned().unwrap_or(Value::Null),
     }))
 }
@@ -145,6 +160,28 @@ pub fn save_draft(
     selected_create_writing_skill_ids: &[String],
     selected_revision_writing_skill_id: Option<&str>,
 ) -> Result<Value, CliError> {
+    save_draft_with_refinement_skill(
+        paths,
+        draft,
+        mode,
+        refinement_name,
+        target_generated_document_id,
+        selected_create_writing_skill_ids,
+        selected_revision_writing_skill_id,
+        None,
+    )
+}
+
+pub fn save_draft_with_refinement_skill(
+    paths: &MyOpenPanelsPaths,
+    draft: &str,
+    mode: &str,
+    refinement_name: &str,
+    target_generated_document_id: Option<&str>,
+    selected_create_writing_skill_ids: &[String],
+    selected_revision_writing_skill_id: Option<&str>,
+    selected_refinement_skill_id: Option<&str>,
+) -> Result<Value, CliError> {
     let bootstrap = writing_panel(paths)?;
     validate_mode(
         mode,
@@ -157,6 +194,10 @@ pub fn save_draft(
         .map(|id| vec![id.to_owned()])
         .unwrap_or_default();
     validate_writing_skills(paths, &revision_skill_ids, false, "revise")?;
+    let refinement_skill_id = selected_refinement_skill_id
+        .or_else(|| bootstrap.state["selectedRefinementSkillId"].as_str())
+        .unwrap_or(WRITING_SKILL_REFINER_ID);
+    crate::agent::writing_refinement_agent_skill(paths, refinement_skill_id)?;
     let state = json!({
         "schemaVersion": 5,
         "draft": draft,
@@ -165,6 +206,7 @@ pub fn save_draft(
         "targetGeneratedDocumentId": if mode == "revise" { target_generated_document_id } else { None },
         "selectedCreateWritingSkillIds": selected_create_writing_skill_ids,
         "selectedRevisionWritingSkillId": selected_revision_writing_skill_id,
+        "selectedRefinementSkillId": refinement_skill_id,
     });
     let revision = Storage::open(paths)?.write_panel_state(
         &bootstrap.project.id,
@@ -344,7 +386,7 @@ pub fn create_requests(
                     "writingSkillId": listing.skill.id.clone(),
                     "writingSkill": {
                         "id": listing.skill.id.clone(),
-                        "title": listing.skill.title.clone(),
+                        "name": listing.skill.name.clone(),
                         "description": listing.skill.description.clone(),
                         "source": listing.source.clone(),
                     },
@@ -395,6 +437,7 @@ pub fn create_requests(
         "targetGeneratedDocumentId": null,
         "selectedCreateWritingSkillIds": selected_create_writing_skill_ids,
         "selectedRevisionWritingSkillId": selected_revision_writing_skill_id,
+        "selectedRefinementSkillId": bootstrap.state.get("selectedRefinementSkillId").cloned().unwrap_or_else(|| json!(WRITING_SKILL_REFINER_ID)),
     });
     let mut panel_states = vec![(bootstrap.panel.id.as_str(), &state)];
     if mode == "create" {
@@ -512,6 +555,14 @@ pub fn create_refinement_request(
     paths: &MyOpenPanelsPaths,
     requested_name: &str,
 ) -> Result<Value, CliError> {
+    create_refinement_request_with_skill(paths, requested_name, None)
+}
+
+pub fn create_refinement_request_with_skill(
+    paths: &MyOpenPanelsPaths,
+    requested_name: &str,
+    requested_refiner_skill_id: Option<&str>,
+) -> Result<Value, CliError> {
     let name = normalize_skill_name(requested_name)?;
     let bootstrap = writing_panel(paths)?;
     let wiki = wiki_snapshot(&bootstrap)?;
@@ -539,13 +590,11 @@ pub fn create_refinement_request(
         "generatedDocuments": captured["generatedDocuments"],
     });
     crate::agent::sync_builtin_agent_skills(paths)?;
-    let refiner_markdown = fs::read_to_string(
-        paths
-            .storage_dir
-            .join("skills")
-            .join(WRITING_SKILL_REFINER_ID)
-            .join("SKILL.md"),
-    )
+    let refiner_skill_id = requested_refiner_skill_id
+        .or_else(|| bootstrap.state["selectedRefinementSkillId"].as_str())
+        .unwrap_or(WRITING_SKILL_REFINER_ID);
+    let refiner = crate::agent::writing_refinement_agent_skill(paths, refiner_skill_id)?;
+    let refiner_markdown = fs::read_to_string(PathBuf::from(&refiner.local_dir).join("SKILL.md"))
     .map_err(|error| {
         CliError::with_code(
             "invalid_skill_package",
@@ -554,13 +603,18 @@ pub fn create_refinement_request(
     })?;
     let refiner_content_hash = format!("{:x}", Sha256::digest(refiner_markdown.as_bytes()));
 
-    let skill_id = format!("writing-custom-{}", crate::ids::random_base64url_96());
+    let suffix = crate::ids::random_base64url_96()
+        .to_ascii_lowercase()
+        .replace(['_', '-'], "x");
+    let skill_id = format!("writing-custom-{suffix}");
     let input = json!({
         "name": name,
         "skillId": skill_id,
-        "refinerSkillId": WRITING_SKILL_REFINER_ID,
+        "refinerSkillId": refiner_skill_id,
         "refinerSkillSnapshot": {
-            "id": WRITING_SKILL_REFINER_ID,
+            "id": refiner_skill_id,
+            "name": refiner.skill.name,
+            "source": refiner.source,
             "markdown": refiner_markdown,
             "contentHash": refiner_content_hash,
         },
@@ -574,7 +628,7 @@ pub fn create_refinement_request(
         "writingPanelId": bootstrap.panel.id,
         "wikiPanelId": wiki.panel.id,
         "panelSkillId": WRITING_PANEL_SKILL_ID,
-        "refinerSkillId": WRITING_SKILL_REFINER_ID,
+        "refinerSkillId": refiner_skill_id,
     });
     let task = Storage::open(paths)?.insert_task(
         &bootstrap.project.id,
@@ -594,6 +648,7 @@ pub fn create_refinement_request(
         "targetGeneratedDocumentId": bootstrap.state.get("targetGeneratedDocumentId").cloned().unwrap_or(Value::Null),
         "selectedCreateWritingSkillIds": bootstrap.state.get("selectedCreateWritingSkillIds").cloned().unwrap_or_else(|| json!([])),
         "selectedRevisionWritingSkillId": bootstrap.state.get("selectedRevisionWritingSkillId").cloned().unwrap_or(Value::Null),
+        "selectedRefinementSkillId": refiner_skill_id,
     });
     let revision = Storage::open(paths)?.write_panel_state(
         &bootstrap.project.id,

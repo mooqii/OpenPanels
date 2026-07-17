@@ -103,7 +103,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|action| action["skillId"] == "task-queue")
+        .find(|action| action["skillId"] == "myopenpanels-task-queue")
         .expect("Task queue Skill action");
     assert_action_parses(task_queue_action);
 
@@ -125,13 +125,17 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(code, 0, "{stderr}{stdout}");
     let authoring_skills = serde_json::from_str::<Value>(&stdout).expect("authoring skills");
     assert_eq!(authoring_skills["skills"].as_array().unwrap().len(), 2);
+    for skill in authoring_skills["skills"].as_array().unwrap() {
+        assert!(skill.get("name").and_then(Value::as_str).is_some());
+        assert!(skill.get("title").is_none());
+    }
 
     let (code, stdout, stderr) = run(&[
         "agent",
         "skill",
         "read",
         "--skill-id",
-        "wiki-panel",
+        "myopenpanels-wiki-panel",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -145,10 +149,29 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let panel_skill = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(panel_skill["skill"]["name"], "MyOpenPanels Wiki Panel");
+    assert!(panel_skill["skill"].get("title").is_none());
     assert!(panel_skill["markdown"]
         .as_str()
         .unwrap_or("")
         .contains("`agent.skill.read`"));
+
+    let (code, _, _) = run(&[
+        "agent",
+        "skill",
+        "read",
+        "--skill-id",
+        "wiki-panel",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_ne!(code, 0, "legacy platform Skill id must be rejected");
 
     let (code, stdout, stderr) = run(&[
         "task",
@@ -518,9 +541,26 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     assert!(stdout.contains(&format!("- task id: {task_id}")));
-    assert!(stdout.contains("`task.claim`"));
+    assert!(!stdout.contains("`task.claim`"));
     assert!(stdout.contains("Read `SKILL.md` directly from the local path above"));
     assert!(stdout.contains("# Skill: karpathy-llm-wiki"));
+
+    let (code, panel_stdout, stderr) = run(&[
+        "agent",
+        "skill",
+        "read",
+        "--skill-id",
+        "myopenpanels-wiki-panel",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(panel_stdout.contains("`task.claim`"));
+    assert!(panel_stdout.contains("`wiki.page.create`"));
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -785,4 +825,3 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "queued"
     );
 }
-

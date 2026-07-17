@@ -3,7 +3,6 @@ pub fn selected_worker_spec(
 ) -> Result<Option<GatewayWorkerSpec>, CliError> {
     Ok(worker_specs(paths)?.into_iter().next())
 }
-
 fn normalize_settings(
     mut settings: ModelGatewaySettings,
 ) -> Result<ModelGatewaySettings, CliError> {
@@ -14,9 +13,23 @@ fn normalize_settings(
             "Model gateway mode must be localCli or byok.",
         ));
     }
+    if !(1..=5).contains(&settings.max_concurrency) {
+        return Err(CliError::with_code(
+            "invalid_model_gateway_settings",
+            "Task concurrency must be between 1 and 5.",
+        ));
+    }
     settings.local_cli.provider_id = clean_owned(settings.local_cli.provider_id);
     settings.local_cli.model = clean_owned(settings.local_cli.model);
     settings.local_cli.reasoning = clean_owned(settings.local_cli.reasoning);
+    if let Some(model) = settings.local_cli.model.as_deref() {
+        validate_cli_value("model", model)?;
+    }
+    if let Some(reasoning) = settings.local_cli.reasoning.as_deref() {
+        validate_cli_value("reasoning", reasoning)?;
+    }
+    normalize_cli_value_map(&mut settings.local_cli.provider_models)?;
+    normalize_cli_value_map(&mut settings.local_cli.provider_reasoning)?;
     settings.byok.provider_id = clean_owned(settings.byok.provider_id);
     settings.byok.base_url = clean_owned(settings.byok.base_url);
     settings.byok.model = clean_owned(settings.byok.model);
@@ -78,13 +91,45 @@ fn normalize_settings(
     }
     settings.local_cli.enabled_provider_ids = settings.local_cli.provider_order.clone();
     settings.local_cli.provider_id = settings.local_cli.provider_order.first().cloned();
-    if let Some(model) = settings.local_cli.model.as_deref() {
-        validate_cli_value("model", model)?;
-    }
-    if let Some(reasoning) = settings.local_cli.reasoning.as_deref() {
-        validate_cli_value("reasoning", reasoning)?;
+    if let Some(provider_id) = settings.local_cli.provider_id.as_ref() {
+        if let Some(model) = settings.local_cli.model.clone() {
+            settings
+                .local_cli
+                .provider_models
+                .insert(provider_id.clone(), model);
+        } else {
+            settings.local_cli.model = settings
+                .local_cli
+                .provider_models
+                .get(provider_id)
+                .cloned();
+        }
+        if let Some(reasoning) = settings.local_cli.reasoning.clone() {
+            settings
+                .local_cli
+                .provider_reasoning
+                .insert(provider_id.clone(), reasoning);
+        } else {
+            settings.local_cli.reasoning = settings
+                .local_cli
+                .provider_reasoning
+                .get(provider_id)
+                .cloned();
+        }
+    } else {
+        settings.local_cli.model = None;
+        settings.local_cli.reasoning = None;
     }
     Ok(settings)
+}
+
+fn normalize_cli_value_map(values: &mut BTreeMap<String, String>) -> Result<(), CliError> {
+    values.retain(|provider_id, value| definition(provider_id).is_some() && !value.trim().is_empty());
+    for value in values.values_mut() {
+        *value = value.trim().to_owned();
+        validate_cli_value("CLI option", value)?;
+    }
+    Ok(())
 }
 
 fn clean_owned(value: Option<String>) -> Option<String> {
@@ -113,9 +158,15 @@ fn validate_cli_value(name: &str, value: &str) -> Result<(), CliError> {
 }
 
 fn default_provider_from_env() -> Option<String> {
-    match std::env::var("MYOPENPANELS_AGENT_PROVIDER").ok().as_deref() {
-        Some("none") => None,
-        Some("hermes") => Some("hermes".to_owned()),
+    match std::env::var("MYOPENPANELS_AGENT_PROVIDER").ok() {
+        Some(value) if value.trim() == "none" => None,
+        Some(value)
+            if LOCAL_CLI_DEFINITIONS
+                .iter()
+                .any(|definition| definition.id == value.trim()) =>
+        {
+            Some(value.trim().to_owned())
+        }
         _ => Some("codex".to_owned()),
     }
 }
@@ -132,7 +183,7 @@ fn scan_local_cli(
     configured_path: Option<String>,
     cwd: &Path,
 ) -> LocalCliInfo {
-    let resolution = resolve_executable(definition.bin, configured_path.as_deref());
+    let resolution = resolve_executable(definition, configured_path.as_deref());
     let Some(path) = resolution.path.clone() else {
         let mut unavailable = unavailable_cli(definition.id, definition.name, definition.bin);
         unavailable.configured_path = configured_path;
@@ -154,6 +205,30 @@ fn scan_local_cli(
             Some("The executable was found but could not be started.".to_owned());
         return unavailable;
     };
+    if !version_output.success {
+        let mut unavailable = unavailable_cli(definition.id, definition.name, definition.bin);
+        unavailable.path = Some(path);
+        unavailable.configured_path = configured_path;
+        unavailable.diagnostic = Some(if version_output.timed_out {
+            "The executable was found, but its version check timed out.".to_owned()
+        } else {
+            let detail = first_non_empty(&version_output.stderr, &version_output.stdout)
+                .trim()
+                .chars()
+                .take(300)
+                .collect::<String>();
+            let status = version_output
+                .status_code
+                .map(|code| format!(" with exit code {code}"))
+                .unwrap_or_default();
+            if detail.is_empty() {
+                format!("The executable was found, but its version check failed{status}.")
+            } else {
+                format!("The executable version check failed{status}: {detail}")
+            }
+        });
+        return unavailable;
+    }
     let version = first_non_empty(&version_output.stdout, &version_output.stderr)
         .lines()
         .next()
@@ -258,6 +333,82 @@ fn probe_hermes_models(executable: &str, cwd: &Path) -> Option<Vec<ModelOption>>
     probe_hermes_acp_models(executable, cwd).ok()
 }
 
+fn probe_no_models(_executable: &str, _cwd: &Path) -> Option<Vec<ModelOption>> {
+    None
+}
+
+fn probe_opencode_models(executable: &str, cwd: &Path) -> Option<Vec<ModelOption>> {
+    run_process(
+        executable,
+        &owned_args(&["models", "--verbose"]),
+        None,
+        Some(cwd),
+        Duration::from_secs(15),
+    )
+    .ok()
+    .filter(|output| output.success)
+    .and_then(|output| parse_verbose_models(&output.stdout))
+}
+
+fn probe_kilo_models(executable: &str, cwd: &Path) -> Option<Vec<ModelOption>> {
+    run_process(
+        executable,
+        &owned_args(&["models"]),
+        None,
+        Some(cwd),
+        Duration::from_secs(15),
+    )
+    .ok()
+    .filter(|output| output.success)
+    .and_then(|output| parse_line_separated_models(&output.stdout))
+}
+
+fn probe_cursor_models(executable: &str, cwd: &Path) -> Option<Vec<ModelOption>> {
+    run_process(
+        executable,
+        &owned_args(&["models"]),
+        None,
+        Some(cwd),
+        Duration::from_secs(8),
+    )
+    .ok()
+    .filter(|output| output.success)
+    .and_then(|output| parse_line_separated_models(&output.stdout))
+}
+
+fn parse_line_separated_models(stdout: &str) -> Option<Vec<ModelOption>> {
+    let mut result = model_options(DEFAULT_MODELS);
+    let mut seen = HashSet::from(["default".to_owned()]);
+    for line in stdout.lines().map(str::trim) {
+        if line.is_empty()
+            || line.starts_with('#')
+            || line.eq_ignore_ascii_case("models")
+            || line.eq_ignore_ascii_case("available models")
+            || line.to_ascii_lowercase().contains("no models available")
+        {
+            continue;
+        }
+        let (id, label) = line
+            .split_once(" - ")
+            .map(|(id, label)| (id.trim(), label.trim()))
+            .unwrap_or((line, line));
+        if id.is_empty()
+            || !id.chars().all(|ch| {
+                ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':' | '/' | '@')
+            })
+            || !seen.insert(id.to_owned())
+        {
+            continue;
+        }
+        result.push(ModelOption {
+            id: id.to_owned(),
+            label: if label.is_empty() { id } else { label }.to_owned(),
+            reasoning_options: Vec::new(),
+        });
+    }
+    (result.len() > 1).then_some(result)
+}
+
 fn parse_codex_models(stdout: &str) -> Option<Vec<ModelOption>> {
     let parsed = serde_json::from_str::<Value>(stdout).ok()?;
     let entries = parsed.get("models")?.as_array()?;
@@ -289,9 +440,79 @@ fn parse_codex_models(stdout: &str) -> Option<Vec<ModelOption>> {
         result.push(ModelOption {
             id: id.to_owned(),
             label: label.to_owned(),
+            reasoning_options: Vec::new(),
         });
     }
     Some(result)
+}
+
+fn parse_verbose_models(stdout: &str) -> Option<Vec<ModelOption>> {
+    let mut result = model_options(DEFAULT_MODELS);
+    let mut lines = stdout.lines().peekable();
+    while let Some(line) = lines.next() {
+        let id = line.trim();
+        if id.is_empty()
+            || !id.chars().all(|ch| {
+                ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':' | '/' | '@')
+            })
+            || lines.peek().map(|line| line.trim()) != Some("{")
+        {
+            continue;
+        }
+        let mut json = String::new();
+        let metadata = loop {
+            let Some(line) = lines.next() else {
+                break None;
+            };
+            json.push_str(line);
+            json.push('\n');
+            match serde_json::from_str::<Value>(&json) {
+                Ok(value) => break Some(value),
+                Err(error) if error.is_eof() => continue,
+                Err(_) => break None,
+            }
+        };
+        let Some(metadata) = metadata else {
+            continue;
+        };
+        let label = metadata
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|name| format!("{name} ({id})"))
+            .unwrap_or_else(|| id.to_owned());
+        let mut reasoning_options = model_options(&[("default", "Default")]);
+        for variant in metadata
+            .get("variants")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|variants| variants.keys())
+        {
+            reasoning_options.push(ModelOption {
+                id: variant.clone(),
+                label: title_case_option(variant),
+                reasoning_options: Vec::new(),
+            });
+        }
+        if reasoning_options.len() == 1 {
+            reasoning_options.clear();
+        }
+        result.push(ModelOption {
+            id: id.to_owned(),
+            label,
+            reasoning_options,
+        });
+    }
+    (result.len() > 1).then_some(result)
+}
+
+fn title_case_option(value: &str) -> String {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+        .unwrap_or_default()
 }
 
 fn probe_hermes_acp_models(executable: &str, cwd: &Path) -> Result<Vec<ModelOption>, CliError> {
@@ -465,6 +686,7 @@ fn push_acp_model(
         } else {
             label
         },
+        reasoning_options: Vec::new(),
     });
 }
 
@@ -488,6 +710,7 @@ fn model_options(entries: &[(&str, &str)]) -> Vec<ModelOption> {
         .map(|(id, label)| ModelOption {
             id: (*id).to_owned(),
             label: (*label).to_owned(),
+            reasoning_options: Vec::new(),
         })
         .collect()
 }
@@ -501,7 +724,10 @@ struct ExecutableResolution {
     diagnostic: Option<String>,
 }
 
-fn resolve_executable(bin: &str, configured_path: Option<&str>) -> ExecutableResolution {
+fn resolve_executable(
+    definition: LocalCliDefinition,
+    configured_path: Option<&str>,
+) -> ExecutableResolution {
     let configured_path = configured_path
         .map(str::trim)
         .filter(|path| !path.is_empty());
@@ -514,9 +740,14 @@ fn resolve_executable(bin: &str, configured_path: Option<&str>) -> ExecutableRes
             };
         }
     }
-    let detected = executable_search_dirs()
-        .into_iter()
-        .flat_map(|directory| executable_candidates(&directory, bin))
+    let bins = std::iter::once(definition.bin).chain(definition.fallback_bins.iter().copied());
+    let search_dirs = executable_search_dirs();
+    let detected = bins
+        .flat_map(|bin| {
+            search_dirs
+                .iter()
+                .flat_map(move |directory| executable_candidates(directory, bin))
+        })
         .find(|path| is_invocable_file(path))
         .map(|path| path.display().to_string());
     ExecutableResolution {
@@ -579,234 +810,4 @@ fn is_invocable_file(path: &Path) -> bool {
     {
         true
     }
-}
-
-fn codex_smoke_invocation(
-    cwd: &Path,
-    model: Option<&str>,
-    reasoning: Option<&str>,
-) -> LocalCliInvocation {
-    let mut args = vec![
-        "exec".to_owned(),
-        "--json".to_owned(),
-        "--ephemeral".to_owned(),
-        "--ignore-rules".to_owned(),
-        "--skip-git-repo-check".to_owned(),
-        "--sandbox".to_owned(),
-        "workspace-write".to_owned(),
-        "-C".to_owned(),
-        cwd.display().to_string(),
-    ];
-    push_codex_model_args(&mut args, model, reasoning);
-    LocalCliInvocation {
-        args,
-        input: Some(SMOKE_PROMPT),
-    }
-}
-
-fn hermes_smoke_invocation(
-    _cwd: &Path,
-    model: Option<&str>,
-    _reasoning: Option<&str>,
-) -> LocalCliInvocation {
-    let mut args = vec!["--ignore-rules".to_owned()];
-    if let Some(model) = model.filter(|value| *value != "default") {
-        args.push("--model".to_owned());
-        args.push(model.to_owned());
-    }
-    args.extend(["--oneshot".to_owned(), SMOKE_PROMPT.to_owned()]);
-    LocalCliInvocation { args, input: None }
-}
-
-fn codex_task_command(executable: &str, model: Option<&str>, reasoning: Option<&str>) -> String {
-    let mut args = vec![
-        shell_quote(executable),
-        "exec".to_owned(),
-        "--json".to_owned(),
-        "--ephemeral".to_owned(),
-        "--ignore-rules".to_owned(),
-        "--skip-git-repo-check".to_owned(),
-        "--sandbox".to_owned(),
-        "workspace-write".to_owned(),
-        "-c".to_owned(),
-        "sandbox_workspace_write.network_access=true".to_owned(),
-        "-C".to_owned(),
-        "\"$MYOPENPANELS_EXECUTION_WORKSPACE\"".to_owned(),
-    ];
-    push_codex_model_args(&mut args, clean_optional(model), clean_optional(reasoning));
-    args.join(" ")
-}
-
-fn hermes_task_command(executable: &str, model: Option<&str>, _reasoning: Option<&str>) -> String {
-    let mut args = vec![shell_quote(executable), "--ignore-rules".to_owned()];
-    if let Some(model) = clean_optional(model).filter(|value| *value != "default") {
-        args.push("--model".to_owned());
-        args.push(shell_quote(model));
-    }
-    args.extend(["--oneshot".to_owned(), "\"$(cat)\"".to_owned()]);
-    args.join(" ")
-}
-
-fn push_codex_model_args(args: &mut Vec<String>, model: Option<&str>, reasoning: Option<&str>) {
-    if let Some(model) = model.filter(|value| *value != "default") {
-        args.push("--model".to_owned());
-        args.push(model.to_owned());
-    }
-    if let Some(reasoning) = reasoning.filter(|value| *value != "default") {
-        args.push("-c".to_owned());
-        args.push(format!("model_reasoning_effort=\"{reasoning}\""));
-    }
-}
-
-fn shell_quote(value: &str) -> String {
-    if value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':'))
-    {
-        value.to_owned()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
-}
-
-struct ProcessOutput {
-    success: bool,
-    status_code: Option<i32>,
-    timed_out: bool,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_process(
-    executable: &str,
-    args: &[String],
-    input: Option<&str>,
-    cwd: Option<&Path>,
-    timeout: Duration,
-) -> Result<ProcessOutput, CliError> {
-    let mut command = Command::new(executable);
-    command
-        .args(args)
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    configure_process_group(&mut command);
-    let mut child = command.spawn().map_err(to_cli_error)?;
-    if let (Some(input), Some(stdin)) = (input, child.stdin.as_mut()) {
-        stdin.write_all(input.as_bytes()).map_err(to_cli_error)?;
-        stdin.write_all(b"\n").map_err(to_cli_error)?;
-    }
-    drop(child.stdin.take());
-    let stdout_reader = {
-        let stdout = child.stdout.take();
-        thread::spawn(move || read_pipe(stdout))
-    };
-    let stderr_reader = {
-        let stderr = child.stderr.take();
-        thread::spawn(move || read_pipe(stderr))
-    };
-    let started = Instant::now();
-    let mut timed_out = false;
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(to_cli_error)? {
-            break status;
-        }
-        if started.elapsed() >= timeout {
-            timed_out = true;
-            terminate_process(&mut child);
-            break child.wait().map_err(to_cli_error)?;
-        }
-        thread::sleep(Duration::from_millis(25));
-    };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| CliError::new("Process stdout reader failed."))?
-        .map_err(to_cli_error)?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| CliError::new("Process stderr reader failed."))?
-        .map_err(to_cli_error)?;
-    Ok(ProcessOutput {
-        success: status.success() && !timed_out,
-        status_code: status.code(),
-        timed_out,
-        stdout: String::from_utf8_lossy(&stdout[..stdout.len().min(PROCESS_OUTPUT_LIMIT)])
-            .to_string(),
-        stderr: String::from_utf8_lossy(&stderr[..stderr.len().min(PROCESS_OUTPUT_LIMIT)])
-            .to_string(),
-    })
-}
-
-fn read_pipe(mut pipe: Option<impl Read>) -> std::io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    if let Some(pipe) = pipe.as_mut() {
-        pipe.read_to_end(&mut bytes)?;
-    }
-    Ok(bytes)
-}
-
-fn assistant_sample(provider_id: &str, stdout: &str) -> String {
-    if provider_id != "codex" {
-        return stdout.trim().to_owned();
-    }
-    let mut messages = Vec::new();
-    for line in stdout.lines() {
-        let Ok(event) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if event.get("type").and_then(Value::as_str) == Some("item.completed")
-            && event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
-        {
-            if let Some(text) = event.pointer("/item/text").and_then(Value::as_str) {
-                messages.push(text.to_owned());
-            }
-        }
-    }
-    messages
-        .last()
-        .cloned()
-        .unwrap_or_else(|| stdout.trim().to_owned())
-}
-
-fn first_non_empty<'a>(primary: &'a str, fallback: &'a str) -> &'a str {
-    if primary.trim().is_empty() {
-        fallback
-    } else {
-        primary
-    }
-}
-
-#[cfg(unix)]
-fn configure_process_group(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    command.process_group(0);
-}
-
-#[cfg(not(unix))]
-fn configure_process_group(_command: &mut Command) {}
-
-#[cfg(unix)]
-fn terminate_process(child: &mut Child) {
-    let group = format!("-{}", child.id());
-    let _ = Command::new("kill").args(["-TERM", &group]).status();
-    thread::sleep(Duration::from_millis(150));
-    if matches!(child.try_wait(), Ok(None)) {
-        let _ = Command::new("kill").args(["-KILL", &group]).status();
-    }
-}
-
-#[cfg(not(unix))]
-fn terminate_process(child: &mut Child) {
-    let _ = child.kill();
-}
-
-fn to_cli_error(error: impl std::fmt::Display) -> CliError {
-    CliError::new(error.to_string())
 }

@@ -72,6 +72,7 @@
 
         assert!(prompt.contains("Write a concise report"));
         assert!(prompt.contains("Write a polished Xiaohongshu-style note"));
+        assert!(prompt.contains("selected portable Writing Skill"));
         assert!(prompt.contains("# Captured raw source"));
         assert!(prompt.contains("# Captured generated source"));
         assert!(prompt.contains("guides/reference.md"));
@@ -164,4 +165,3 @@
         .expect("UTF-8");
         assert_eq!(pinned_text, "# Captured Wiki page\n");
     }
-

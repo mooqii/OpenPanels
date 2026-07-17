@@ -302,20 +302,16 @@ fn validate_writing_skill_manifest(
     })?;
     let source = String::from_utf8(read_object(paths, &skill_entry.object_hash)?)
         .map_err(|_| CliError::with_code("invalid_output", "Writing Skill is not valid UTF-8."))?;
-    let parsed = crate::agent::parse_skill(&source, "SKILL.md")?;
     let server_manifest: Value =
         serde_json::from_slice(&read_object(paths, &manifest_entry.object_hash)?).map_err(
             |_| CliError::with_code("invalid_output", "Writing Skill manifest is invalid."),
         )?;
-    if parsed.metadata.id != resource_key
-        || parsed.metadata.source != "custom"
-        || parsed.metadata.applies_to != ["writing"]
-        || parsed.metadata.task_types != ["generate_document"]
-        || parsed.body.trim().is_empty()
-        || server_manifest.get("skillId").and_then(Value::as_str) != Some(resource_key)
-        || server_manifest.get("title").and_then(Value::as_str)
-            != Some(parsed.metadata.title.as_str())
-    {
+    let parsed = crate::agent::custom_writing_skill_from_source(
+        &source,
+        "SKILL.md",
+        &server_manifest,
+    )?;
+    if parsed.metadata.id != resource_key {
         return Err(CliError::with_code(
             "invalid_output",
             "Writing Skill metadata does not match its resource identity.",
@@ -342,10 +338,10 @@ fn validate_writing_skill_manifest(
             Ok(value) => value,
             Err(_) => continue,
         };
-        if existing.get("title").and_then(Value::as_str) == Some(parsed.metadata.title.as_str()) {
+        if existing.get("name").and_then(Value::as_str) == Some(parsed.metadata.name.as_str()) {
             return Err(CliError::with_code(
                 "invalid_output",
-                "Another active Writing Skill already uses this title.",
+                "Another active Writing Skill already uses this name.",
             ));
         }
     }

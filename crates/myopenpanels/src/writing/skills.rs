@@ -88,7 +88,7 @@ fn validate_available_skill_name(
         .into_iter()
         .any(|item| {
             Some(item.skill.id.as_str()) != allowed_skill_id
-                && normalized_name_key(&item.skill.title) == key
+                && normalized_name_key(&item.skill.name) == key
         })
     {
         return Err(CliError::with_code(
@@ -96,8 +96,12 @@ fn validate_available_skill_name(
             format!("A Writing Skill with this name already exists: {name}"),
         ));
     }
-    let pending_conflict = Storage::open(paths)?
-        .list_tasks(project_id)?
+    let storage = Storage::open(paths)?;
+    let mut tasks = Vec::new();
+    for project in storage.list_projects()? {
+        tasks.extend(storage.list_tasks(&project.id)?);
+    }
+    let pending_conflict = tasks
         .into_iter()
         .any(|task| {
             task.get("queue").and_then(Value::as_str) == Some("writing")
@@ -210,11 +214,14 @@ pub fn read_refinement(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value
             format!("Task is not a Writing Skill refinement: {task_id}"),
         ));
     }
+    let refiner_skill_id = payload["task"]["input"]["refinerSkillId"]
+        .as_str()
+        .unwrap_or(WRITING_SKILL_REFINER_ID);
     let skill_action = crate::cli::registry::command_action(
         crate::cli::registry::CommandId::registered("agent.skill.read"),
         vec![
             "--skill-id".to_owned(),
-            WRITING_SKILL_REFINER_ID.to_owned(),
+            refiner_skill_id.to_owned(),
             "--task-id".to_owned(),
             task_id.to_owned(),
             "--format".to_owned(),
@@ -238,16 +245,19 @@ pub fn install_project_skill(
                 format!("Could not read Writing Skill file: {error}"),
             )
         })?;
-        let skill = crate::agent::parse_skill(&source, skill_file)?;
+        let skill = crate::agent::parse_portable_skill(&source, skill_file)?;
         return crate::content::broker_prepare_skill(&crate::content::PrepareSkillRequest {
             skill_id: skill.metadata.id.clone(),
             source,
             manifest: json!({
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "source": "custom",
                 "taskId": task_id,
                 "skillId": skill.metadata.id,
-                "title": skill.metadata.title,
+                "binding": {
+                    "appliesTo": ["writing"],
+                    "taskTypes": ["generate_document"],
+                },
                 "createdAt": now_iso(),
             }),
         });
@@ -280,20 +290,23 @@ pub fn install_project_skill(
             format!("Could not read Writing Skill file: {error}"),
         )
     })?;
-    let skill = crate::agent::parse_skill(&source, skill_file)?;
-    validate_generated_project_skill(&skill, skill_id, name)?;
+    crate::agent::validate_portable_writing_skill(&source, skill_file, skill_id)?;
     validate_available_skill_name(paths, project_id, name, Some(skill_id))?;
 
     let skills_dir = crate::agent::custom_writing_skills_dir(paths);
     fs::create_dir_all(&skills_dir).map_err(to_cli_error)?;
     let final_dir = skills_dir.join(crate::paths::sanitize_path_part(skill_id));
     let manifest = json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "source": "custom",
         "originProjectId": project_id,
         "taskId": task_id,
         "skillId": skill_id,
-        "title": name,
+        "name": name,
+        "binding": {
+            "appliesTo": ["writing"],
+            "taskTypes": ["generate_document"],
+        },
         "createdAt": now_iso(),
     });
     if final_dir.exists() {
@@ -301,10 +314,15 @@ pub fn install_project_skill(
         let existing_source =
             fs::read_to_string(final_dir.join("SKILL.md")).map_err(to_cli_error)?;
         if existing_manifest["taskId"].as_str() == Some(task_id) && existing_source == source {
+            let stored = crate::agent::custom_writing_skill_from_source(
+                &source,
+                skill_file,
+                &manifest,
+            )?;
             let listing = crate::agent::project_agent_skill_listing(
                 paths,
                 project_id,
-                skill.metadata.clone(),
+                stored.metadata,
             );
             return Ok(json!({ "skill": listing }));
         }
@@ -334,32 +352,10 @@ pub fn install_project_skill(
         let _ = fs::remove_dir_all(&staging_dir);
     }
     install_result?;
-    let listing =
-        crate::agent::project_agent_skill_listing(paths, project_id, skill.metadata.clone());
+    let stored =
+        crate::agent::custom_writing_skill_from_source(&source, skill_file, &manifest)?;
+    let listing = crate::agent::project_agent_skill_listing(paths, project_id, stored.metadata);
     Ok(json!({ "skill": listing }))
-}
-
-fn validate_generated_project_skill(
-    skill: &crate::agent::AgentSkill,
-    expected_id: &str,
-    expected_title: &str,
-) -> Result<(), CliError> {
-    let metadata = &skill.metadata;
-    let valid = metadata.id == expected_id
-        && metadata.title == expected_title
-        && metadata.source == "custom"
-        && metadata.applies_to == ["writing"]
-        && metadata.task_types == ["generate_document"]
-        && metadata.requires_commands.is_empty()
-        && !metadata.description.trim().is_empty()
-        && !skill.body.trim().is_empty();
-    if !valid {
-        return Err(CliError::with_code(
-            "writing_skill_file_invalid",
-            "Generated Writing Skill frontmatter or body does not match the refinement task.",
-        ));
-    }
-    Ok(())
 }
 
 fn read_skill_manifest(skill_dir: &Path) -> Result<Value, CliError> {
@@ -421,8 +417,17 @@ pub fn write_custom_skill_file(
         ));
     }
     let relative = safe_skill_relative_path(relative_path)?;
-    let target = PathBuf::from(&listing.local_dir).join(&relative);
-    if !target.is_file()
+    let root = PathBuf::from(&listing.local_dir);
+    let target = root.join(&relative);
+    let target_metadata = fs::symlink_metadata(&target).ok();
+    let stays_inside_root = fs::canonicalize(&target)
+        .ok()
+        .zip(fs::canonicalize(&root).ok())
+        .is_some_and(|(target, root)| target.starts_with(root));
+    if target_metadata
+        .as_ref()
+        .is_none_or(|metadata| !metadata.is_file() || metadata.file_type().is_symlink())
+        || !stays_inside_root
         || target
             .file_name()
             .is_some_and(|name| name == "manifest.json")
@@ -433,72 +438,70 @@ pub fn write_custom_skill_file(
         ));
     }
     if relative == Path::new("SKILL.md") {
-        let skill = crate::agent::parse_skill(content, "SKILL.md")?;
-        validate_generated_project_skill(&skill, skill_id, &skill.metadata.title)?;
+        let parsed = crate::agent::parse_skill(content, "SKILL.md")?;
+        if parsed.metadata.id != skill_id {
+            return Err(CliError::with_code(
+                "writing_skill_file_invalid",
+                "Writing Skill name does not match its registered id.",
+            ));
+        }
+        let was_legacy = parsed.metadata.source == "custom";
+        let portable_content = if was_legacy {
+            crate::agent::render_portable_skill(&parsed)
+        } else {
+            content.to_owned()
+        };
+        crate::agent::validate_portable_writing_skill(
+            &portable_content,
+            "SKILL.md",
+            skill_id,
+        )?;
+        let name = if was_legacy {
+            parsed.metadata.name.as_str()
+        } else {
+            listing.skill.name.as_str()
+        };
         let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
         validate_available_skill_name(
             paths,
             &bootstrap.project.id,
-            &skill.metadata.title,
+            name,
             Some(skill_id),
         )?;
         let mut manifest = read_skill_manifest(Path::new(&listing.local_dir))?;
-        manifest["title"] = json!(skill.metadata.title);
+        manifest["schemaVersion"] = json!(2);
+        manifest["name"] = json!(name);
+        if let Some(object) = manifest.as_object_mut() {
+            object.remove("title");
+        }
+        manifest["binding"] = json!({
+            "appliesTo": ["writing"],
+            "taskTypes": ["generate_document"],
+        });
         let manifest_content = format!(
             "{}\n",
             serde_json::to_string_pretty(&manifest).map_err(to_cli_error)?
         );
-        if let Some(project_id) = crate::content::writing_skill_project_id(paths, skill_id)? {
-            crate::content::commit_immediate_text(
-                paths,
-                &project_id,
-                None,
-                crate::content::ResourceKind::WritingSkill,
-                skill_id,
-                "manifest.json",
-                manifest_content.as_bytes(),
-                "application/json",
-                false,
-            )?;
-            crate::content::commit_immediate_text(
-                paths,
-                &project_id,
-                None,
-                crate::content::ResourceKind::WritingSkill,
-                skill_id,
-                "SKILL.md",
-                content.as_bytes(),
-                "text/markdown",
-                false,
-            )?;
-            return Ok(json!({ "path": relative_path, "content": content }));
-        }
         fs::write(
             Path::new(&listing.local_dir).join("manifest.json"),
             manifest_content,
         )
         .map_err(to_cli_error)?;
+        fs::write(&target, portable_content.as_bytes()).map_err(to_cli_error)?;
+        return Ok(json!({ "path": relative_path, "content": portable_content }));
     }
     fs::write(&target, content.as_bytes()).map_err(to_cli_error)?;
     Ok(json!({ "path": relative_path, "content": content }))
 }
 
 pub fn delete_custom_skill(paths: &MyOpenPanelsPaths, skill_id: &str) -> Result<Value, CliError> {
-    let listing = crate::agent::writing_agent_skill(paths, skill_id)?;
-    if listing.source != "custom" {
-        return Err(CliError::with_code(
-            "writing_skill_read_only",
-            "Built-in Writing Skills cannot be deleted.",
-        ));
-    }
-    crate::content::archive_resource(
-        paths,
-        None,
-        crate::content::ResourceKind::WritingSkill,
-        skill_id,
-    )?;
-    let _ = fs::remove_dir_all(&listing.local_dir);
-    Ok(json!({ "deleted": true, "skillId": skill_id }))
+    crate::agent::delete_managed_skill(paths, skill_id).map_err(|error| {
+        if error.code() == Some("skill_read_only") {
+            CliError::with_code("writing_skill_read_only", error.message())
+        } else {
+            error
+        }
+    })
 }
 
 fn safe_skill_relative_path(value: &str) -> Result<PathBuf, CliError> {

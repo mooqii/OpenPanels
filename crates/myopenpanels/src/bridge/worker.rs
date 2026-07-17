@@ -190,7 +190,25 @@ pub fn start_builtin_worker_loop(paths: MyOpenPanelsPaths) -> BuiltinWorkerHandl
 
 fn run_model_gateway_loop(paths: MyOpenPanelsPaths, shutdown: Arc<AtomicBool>) {
     let mut active: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut executions: Vec<thread::JoinHandle<()>> = Vec::new();
     while !shutdown.load(Ordering::Acquire) {
+        let mut running_executions = Vec::with_capacity(executions.len());
+        for execution in executions.drain(..) {
+            if execution.is_finished() {
+                let _ = execution.join();
+            } else {
+                running_executions.push(execution);
+            }
+        }
+        executions = running_executions;
+        let max_concurrency = match crate::model_gateway::read_settings(&paths) {
+            Ok(settings) => settings.max_concurrency as usize,
+            Err(error) => {
+                record_gateway_error(&paths, error.message());
+                wait_for_worker_interval(&shutdown);
+                continue;
+            }
+        };
         let specs = match crate::model_gateway::worker_specs(&paths) {
             Ok(specs) => specs,
             Err(error) => {
@@ -273,7 +291,7 @@ fn run_model_gateway_loop(paths: MyOpenPanelsPaths, shutdown: Arc<AtomicBool>) {
             }
         }
         for (position, spec) in specs.iter().enumerate() {
-            let desired_key = format!("{}:{project_id}", spec.key);
+            let desired_key = format!("{}:{project_id}:{max_concurrency}", spec.key);
             if active
                 .get(&spec.connection_id)
                 .is_some_and(|(key, _)| key == &desired_key)
@@ -289,7 +307,7 @@ fn run_model_gateway_loop(paths: MyOpenPanelsPaths, shutdown: Arc<AtomicBool>) {
                     capabilities: vec!["*".to_owned()],
                     priority: 1000 - position as i64,
                     protocol_version: 3,
-                    max_concurrency: 1,
+                    max_concurrency: max_concurrency as i64,
                     model_gateway_connection_id: (spec.connection_id != "custom")
                         .then_some(spec.connection_id.as_str()),
                 },
@@ -309,18 +327,30 @@ fn run_model_gateway_loop(paths: MyOpenPanelsPaths, shutdown: Arc<AtomicBool>) {
                 Err(error) => record_gateway_error(&paths, error.message()),
             }
         }
-        let mut claimed = None;
+        let mut candidates = Vec::new();
+        let mut offline_connections = Vec::new();
         for spec in &specs {
             let Some((_, target_id)) = active.get(&spec.connection_id) else {
                 continue;
             };
             if tasks::heartbeat_target(&paths, target_id).is_err() {
-                active.remove(&spec.connection_id);
-                continue;
+                offline_connections.push(spec.connection_id.clone());
+            } else {
+                candidates.push((spec.clone(), target_id.clone()));
             }
-            match tasks::claim_next_filtered(&paths, target_id, None, None, Some(0)) {
+        }
+        for connection_id in offline_connections {
+            active.remove(&connection_id);
+        }
+        if executions.len() >= max_concurrency {
+            wait_for_worker_interval(&shutdown);
+            continue;
+        }
+        let mut claimed = None;
+        for (spec, target_id) in candidates {
+            match tasks::claim_next_filtered(&paths, &target_id, None, None, Some(0)) {
                 Ok(payload) if payload.get("task").is_some_and(|task| !task.is_null()) => {
-                    claimed = Some((spec.clone(), target_id.clone(), payload));
+                    claimed = Some((spec, target_id, payload));
                     break;
                 }
                 Ok(_) => {}
@@ -337,90 +367,116 @@ fn run_model_gateway_loop(paths: MyOpenPanelsPaths, shutdown: Arc<AtomicBool>) {
         let Some(task) = payload.get("task").filter(|value| !value.is_null()) else {
             continue;
         };
-        let Some(lease_token) = payload.get("leaseToken").and_then(Value::as_str) else {
+        if payload.get("leaseToken").and_then(Value::as_str).is_none() {
             record_gateway_error(&paths, "Claimed task lease token is missing.");
             wait_for_worker_interval(&shutdown);
             continue;
-        };
+        }
         let _ = write_bridge_status(&paths, "running", Some(task), None, None);
-        let mut result = match run_task_command(
-            &paths,
-            &spec.command,
-            DEFAULT_LOCAL_AGENT_TIMEOUT_MS,
-            task,
-            &target_id,
-            lease_token,
-            spec.agent_prompt,
-            payload.get("attemptId").and_then(Value::as_str),
-            payload.get("executionGeneration").and_then(Value::as_i64),
-            payload.get("taskBrokerUrl").and_then(Value::as_str),
-            payload.get("executionToken").and_then(Value::as_str),
-            Some(&shutdown),
-        ) {
-            Ok(result) => result,
-            Err(error) => {
-                let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
-                if shutdown.load(Ordering::Acquire) {
-                    let _ = tasks::interrupt_task_for_studio_restart(&paths, task_id, lease_token);
-                    break;
-                }
-                let _ = tasks::fail_task_with_class(
-                    &paths,
-                    task_id,
-                    lease_token,
-                    error.message(),
-                    None,
-                    tasks::TaskFailureClass::RetryableChannel,
-                );
-                record_gateway_error(&paths, error.message());
-                wait_for_worker_interval(&shutdown);
-                continue;
-            }
-        };
-        if result.get("interrupted").and_then(Value::as_bool) == Some(true) {
-            let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
-            if let Err(error) =
-                tasks::interrupt_task_for_studio_restart(&paths, task_id, lease_token)
-            {
-                if error.code() != Some("execution_fenced") {
-                    record_gateway_error(&paths, error.message());
-                }
-            }
-            let _ = write_bridge_status(&paths, "stopping", None, Some(&result), None);
-            break;
-        }
-        result["targetId"] = json!(target_id);
-        result["providerId"] = json!(spec.provider_id);
-        result["providerName"] = json!(spec.provider_name);
-        result["modelGatewayConnectionId"] = json!(spec.connection_id);
-        let finalized = finalize_task_result(
-            &paths,
-            &mut result,
-            task,
-            &target_id,
-            lease_token,
-            spec.agent_prompt,
-            &spec.host,
-            false,
-        );
-        if let Err(error) = finalized {
-            result["success"] = json!(false);
-            result["error"] = json!(error.message());
-        }
-        let success = result.get("success").and_then(Value::as_bool) == Some(true);
-        let error = result
-            .get("error")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let _ = write_bridge_status(
-            &paths,
-            if success { "idle" } else { "error" },
-            None,
-            Some(&result),
-            error.as_deref(),
-        );
+        let execution_paths = paths.clone();
+        let execution_shutdown = shutdown.clone();
+        executions.push(thread::spawn(move || {
+            run_claimed_model_gateway_task(
+                execution_paths,
+                execution_shutdown,
+                spec,
+                target_id,
+                payload,
+            );
+        }));
         wait_for_worker_interval(&shutdown);
     }
+    for execution in executions {
+        let _ = execution.join();
+    }
+}
+
+fn run_claimed_model_gateway_task(
+    paths: MyOpenPanelsPaths,
+    shutdown: Arc<AtomicBool>,
+    spec: crate::model_gateway::GatewayWorkerSpec,
+    target_id: String,
+    payload: Value,
+) {
+    let Some(task) = payload.get("task").filter(|value| !value.is_null()) else {
+        return;
+    };
+    let Some(lease_token) = payload.get("leaseToken").and_then(Value::as_str) else {
+        record_gateway_error(&paths, "Claimed task lease token is missing.");
+        return;
+    };
+    let mut result = match run_task_command(
+        &paths,
+        &spec.command,
+        DEFAULT_LOCAL_AGENT_TIMEOUT_MS,
+        task,
+        &target_id,
+        lease_token,
+        spec.agent_prompt,
+        payload.get("attemptId").and_then(Value::as_str),
+        payload.get("executionGeneration").and_then(Value::as_i64),
+        payload.get("taskBrokerUrl").and_then(Value::as_str),
+        payload.get("executionToken").and_then(Value::as_str),
+        Some(&shutdown),
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
+            if shutdown.load(Ordering::Acquire) {
+                let _ = tasks::interrupt_task_for_studio_restart(&paths, task_id, lease_token);
+                return;
+            }
+            let _ = tasks::fail_task_with_class(
+                &paths,
+                task_id,
+                lease_token,
+                error.message(),
+                None,
+                tasks::TaskFailureClass::RetryableChannel,
+            );
+            record_gateway_error(&paths, error.message());
+            return;
+        }
+    };
+    if result.get("interrupted").and_then(Value::as_bool) == Some(true) {
+        let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
+        if let Err(error) = tasks::interrupt_task_for_studio_restart(&paths, task_id, lease_token) {
+            if error.code() != Some("execution_fenced") {
+                record_gateway_error(&paths, error.message());
+            }
+        }
+        let _ = write_bridge_status(&paths, "stopping", None, Some(&result), None);
+        return;
+    }
+    result["targetId"] = json!(target_id);
+    result["providerId"] = json!(spec.provider_id);
+    result["providerName"] = json!(spec.provider_name);
+    result["modelGatewayConnectionId"] = json!(spec.connection_id);
+    if let Err(error) = finalize_task_result(
+        &paths,
+        &mut result,
+        task,
+        &target_id,
+        lease_token,
+        spec.agent_prompt,
+        &spec.host,
+        false,
+    ) {
+        result["success"] = json!(false);
+        result["error"] = json!(error.message());
+    }
+    let success = result.get("success").and_then(Value::as_bool) == Some(true);
+    let error = result
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let _ = write_bridge_status(
+        &paths,
+        if success { "idle" } else { "error" },
+        None,
+        Some(&result),
+        error.as_deref(),
+    );
 }
 
 fn wait_for_worker_interval(shutdown: &AtomicBool) {
@@ -558,4 +614,3 @@ pub fn read_bridge_status(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> 
     }
     Ok(status)
 }
-

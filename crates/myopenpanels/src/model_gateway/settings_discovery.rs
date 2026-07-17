@@ -15,13 +15,23 @@ use std::time::{Duration, Instant};
 
 const PROCESS_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const SMOKE_PROMPT: &str = "Reply with only: ok";
+const MODEL_GATEWAY_SETTINGS_NAMESPACE: &str = "model_gateway";
+const MAX_CONCURRENCY_SETTING_KEY: &str = "max_concurrency";
+const LOCAL_CLI_SCAN_CACHE_SETTING_KEY: &str = "local_cli_scan_cache";
 
+pub const DEFAULT_MAX_CONCURRENCY: i64 = 2;
+
+fn default_max_concurrency() -> i64 {
+    DEFAULT_MAX_CONCURRENCY
+}
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelGatewaySettings {
     pub mode: String,
     pub local_cli: LocalCliSettings,
     pub byok: ByokSettings,
+    #[serde(default = "default_max_concurrency")]
+    pub max_concurrency: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -30,6 +40,10 @@ pub struct LocalCliSettings {
     pub provider_id: Option<String>,
     pub model: Option<String>,
     pub reasoning: Option<String>,
+    #[serde(default)]
+    pub provider_models: BTreeMap<String, String>,
+    #[serde(default)]
+    pub provider_reasoning: BTreeMap<String, String>,
     #[serde(default)]
     pub enabled_provider_ids: Vec<String>,
     #[serde(default)]
@@ -56,11 +70,14 @@ impl Default for ModelGatewaySettings {
                 provider_id,
                 model: None,
                 reasoning: None,
+                provider_models: BTreeMap::new(),
+                provider_reasoning: BTreeMap::new(),
                 enabled_provider_ids: provider_order.clone(),
                 provider_order,
                 executable_paths: BTreeMap::new(),
             },
             byok: ByokSettings::default(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
         }
     }
 }
@@ -70,6 +87,8 @@ impl Default for ModelGatewaySettings {
 pub struct ModelOption {
     pub id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_options: Vec<ModelOption>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -123,6 +142,7 @@ struct LocalCliDefinition {
     id: &'static str,
     name: &'static str,
     bin: &'static str,
+    fallback_bins: &'static [&'static str],
     adapter_version: i64,
     version_args: &'static [&'static str],
     auth_args: &'static [&'static str],
@@ -137,52 +157,6 @@ struct LocalCliInvocation {
     args: Vec<String>,
     input: Option<&'static str>,
 }
-
-const DEFAULT_MODELS: &[(&str, &str)] = &[("default", "Default (CLI config)")];
-const CODEX_FALLBACK_MODELS: &[(&str, &str)] = &[
-    ("default", "Default (CLI config)"),
-    ("gpt-5.6-sol", "gpt-5.6-sol"),
-    ("gpt-5.4", "gpt-5.4"),
-    ("gpt-5.3-codex", "gpt-5.3-codex"),
-    ("gpt-5.1", "gpt-5.1"),
-    ("gpt-5", "gpt-5"),
-];
-const CODEX_REASONING: &[(&str, &str)] = &[
-    ("default", "Default"),
-    ("low", "Low"),
-    ("medium", "Medium"),
-    ("high", "High"),
-    ("xhigh", "Extra high"),
-];
-
-const LOCAL_CLI_DEFINITIONS: &[LocalCliDefinition] = &[
-    LocalCliDefinition {
-        id: "codex",
-        name: "Codex CLI",
-        bin: "codex",
-        adapter_version: 1,
-        version_args: &["--version"],
-        auth_args: &["login", "status"],
-        fallback_models: CODEX_FALLBACK_MODELS,
-        reasoning_options: CODEX_REASONING,
-        probe_models: probe_codex_models,
-        smoke_invocation: codex_smoke_invocation,
-        task_command: codex_task_command,
-    },
-    LocalCliDefinition {
-        id: "hermes",
-        name: "Hermes",
-        bin: "hermes",
-        adapter_version: 1,
-        version_args: &["--version"],
-        auth_args: &["config", "check"],
-        fallback_models: DEFAULT_MODELS,
-        reasoning_options: &[],
-        probe_models: probe_hermes_models,
-        smoke_invocation: hermes_smoke_invocation,
-        task_command: hermes_task_command,
-    },
-];
 
 fn sync_builtin_local_cli_connections(
     storage: &mut Storage,
@@ -422,6 +396,13 @@ fn builtin_local_cli_registry_needs_sync(
 pub fn read_settings(paths: &MyOpenPanelsPaths) -> Result<ModelGatewaySettings, CliError> {
     let mut storage = Storage::open(paths)?;
     sync_builtin_local_cli_connections(&mut storage, LOCAL_CLI_DEFINITIONS)?;
+    let max_concurrency = storage
+        .read_setting(
+            MODEL_GATEWAY_SETTINGS_NAMESPACE,
+            MAX_CONCURRENCY_SETTING_KEY,
+        )?
+        .and_then(|raw| serde_json::from_str::<i64>(&raw).ok())
+        .unwrap_or(DEFAULT_MAX_CONCURRENCY);
     let connection = storage.connection();
     let config = connection
         .query_row(
@@ -441,32 +422,14 @@ pub fn read_settings(paths: &MyOpenPanelsPaths) -> Result<ModelGatewaySettings, 
         return Ok(ModelGatewaySettings::default());
     };
 
-    let local_selection = active_local_id
-        .as_deref()
-        .map(|connection_id| {
-            connection
-                .query_row(
-                    "SELECT provider_id, model, reasoning FROM model_gateway_connections WHERE id = ? AND transport = 'local_cli' AND enabled = 1",
-                    [connection_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, Option<String>>(2)?,
-                        ))
-                    },
-                )
-                .optional()
-        })
-        .transpose()
-        .map_err(to_cli_error)?
-        .flatten();
     let mut executable_paths = BTreeMap::new();
+    let mut provider_models = BTreeMap::new();
+    let mut provider_reasoning = BTreeMap::new();
     let mut enabled_provider_ids = Vec::new();
     let mut statement = connection
         .prepare(
             r#"
-            SELECT provider_id, executable_path, enabled
+            SELECT provider_id, executable_path, model, reasoning, enabled
             FROM model_gateway_connections
             WHERE transport = 'local_cli'
             ORDER BY priority DESC, id ASC
@@ -478,14 +441,23 @@ pub fn read_settings(paths: &MyOpenPanelsPaths) -> Result<ModelGatewaySettings, 
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<String>>(1)?,
-                row.get::<_, bool>(2)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, bool>(4)?,
             ))
         })
         .map_err(to_cli_error)?;
     for row in rows {
-        let (provider_id, executable_path, enabled) = row.map_err(to_cli_error)?;
+        let (provider_id, executable_path, model, reasoning, enabled) =
+            row.map_err(to_cli_error)?;
         if let Some(executable_path) = executable_path {
             executable_paths.insert(provider_id.clone(), executable_path);
+        }
+        if let Some(model) = model {
+            provider_models.insert(provider_id.clone(), model);
+        }
+        if let Some(reasoning) = reasoning {
+            provider_reasoning.insert(provider_id.clone(), reasoning);
         }
         if enabled {
             enabled_provider_ids.push(provider_id);
@@ -514,20 +486,31 @@ pub fn read_settings(paths: &MyOpenPanelsPaths) -> Result<ModelGatewaySettings, 
         .map_err(to_cli_error)?
         .flatten()
         .unwrap_or_default();
-    let (provider_id, model, reasoning) = local_selection
-        .map(|(provider_id, model, reasoning)| (Some(provider_id), model, reasoning))
-        .unwrap_or((None, None, None));
+    let provider_id = active_local_id
+        .as_deref()
+        .and_then(|connection_id| connection_id.strip_prefix("local-cli:"))
+        .filter(|provider_id| enabled_provider_ids.iter().any(|id| id == provider_id))
+        .map(str::to_owned);
+    let model = provider_id
+        .as_ref()
+        .and_then(|provider_id| provider_models.get(provider_id).cloned());
+    let reasoning = provider_id
+        .as_ref()
+        .and_then(|provider_id| provider_reasoning.get(provider_id).cloned());
     normalize_settings(ModelGatewaySettings {
         mode: if mode == "byok" { "byok" } else { "localCli" }.to_owned(),
         local_cli: LocalCliSettings {
             provider_id,
             model,
             reasoning,
+            provider_models,
+            provider_reasoning,
             provider_order: enabled_provider_ids.clone(),
             enabled_provider_ids,
             executable_paths,
         },
         byok,
+        max_concurrency,
     })
 }
 
@@ -568,19 +551,13 @@ pub fn write_settings(
         let priority = position
             .map(|position| 1000_i64.saturating_sub(position as i64))
             .unwrap_or(0);
-        if settings.local_cli.provider_id.as_deref() == Some(definition.id) {
-            tx.execute(
-                "UPDATE model_gateway_connections SET executable_path = ?, model = ?, reasoning = ?, enabled = ?, priority = ?, updated_at = ? WHERE id = ? AND transport = 'local_cli'",
-                params![executable_path, settings.local_cli.model, settings.local_cli.reasoning, enabled, priority, now, connection_id],
-            )
-            .map_err(to_cli_error)?;
-        } else {
-            tx.execute(
-                "UPDATE model_gateway_connections SET executable_path = ?, enabled = ?, priority = ?, updated_at = ? WHERE id = ? AND transport = 'local_cli'",
-                params![executable_path, enabled, priority, now, connection_id],
-            )
-            .map_err(to_cli_error)?;
-        }
+        let model = settings.local_cli.provider_models.get(definition.id);
+        let reasoning = settings.local_cli.provider_reasoning.get(definition.id);
+        tx.execute(
+            "UPDATE model_gateway_connections SET executable_path = ?, model = ?, reasoning = ?, enabled = ?, priority = ?, updated_at = ? WHERE id = ? AND transport = 'local_cli'",
+            params![executable_path, model, reasoning, enabled, priority, now, connection_id],
+        )
+        .map_err(to_cli_error)?;
     }
     let active_local_connection_id = settings
         .local_cli
@@ -590,6 +567,22 @@ pub fn write_settings(
     tx.execute(
         "UPDATE model_gateway_config SET mode = 'local_cli', active_local_connection_id = ?, updated_at = ? WHERE id = 1",
         params![active_local_connection_id, now],
+    )
+    .map_err(to_cli_error)?;
+    tx.execute(
+        r#"
+        INSERT INTO settings (namespace, key, value_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(namespace, key) DO UPDATE SET
+          value_json = excluded.value_json,
+          updated_at = excluded.updated_at
+        "#,
+        params![
+            MODEL_GATEWAY_SETTINGS_NAMESPACE,
+            MAX_CONCURRENCY_SETTING_KEY,
+            settings.max_concurrency.to_string(),
+            now,
+        ],
     )
     .map_err(to_cli_error)?;
     crate::storage::record_scope(&tx, "catalog", None, None)?;
@@ -616,6 +609,25 @@ pub fn scan_local_clis(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     scan_local_clis_with_overrides(paths, settings.local_cli.executable_paths)
 }
 
+pub fn cached_local_clis(paths: &MyOpenPanelsPaths) -> Result<Option<Value>, CliError> {
+    let storage = Storage::open(paths)?;
+    let Some(raw) = storage.read_setting(
+        MODEL_GATEWAY_SETTINGS_NAMESPACE,
+        LOCAL_CLI_SCAN_CACHE_SETTING_KEY,
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut payload = match serde_json::from_str::<Value>(&raw) {
+        Ok(payload) if payload.get("localClis").and_then(Value::as_array).is_some() => payload,
+        _ => return Ok(None),
+    };
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("cached".to_owned(), Value::Bool(true));
+    }
+    Ok(Some(payload))
+}
+
 pub fn scan_local_clis_with_overrides(
     paths: &MyOpenPanelsPaths,
     executable_paths: BTreeMap<String, String>,
@@ -636,7 +648,13 @@ pub fn scan_local_clis_with_overrides(
                 .unwrap_or_else(|_| unavailable_cli("unknown", "Unknown CLI", ""))
         })
         .collect::<Vec<_>>();
-    Ok(json!({ "localClis": agents }))
+    let payload = json!({ "cached": false, "localClis": agents });
+    Storage::open(paths)?.write_setting(
+        MODEL_GATEWAY_SETTINGS_NAMESPACE,
+        LOCAL_CLI_SCAN_CACHE_SETTING_KEY,
+        &payload.to_string(),
+    )?;
+    Ok(payload)
 }
 
 pub fn test_local_cli(
@@ -658,7 +676,7 @@ pub fn test_local_cli(
             .get(definition.id)
             .map(String::as_str)
     });
-    let resolution = resolve_executable(definition.bin, configured);
+    let resolution = resolve_executable(definition, configured);
     let Some(path) = resolution.path else {
         return Ok(json!({
             "ok": false,
@@ -682,7 +700,9 @@ pub fn test_local_cli(
         Duration::from_secs(120),
     )?;
     let sample = assistant_sample(definition.id, &output.stdout);
-    let ok = output.success && !sample.trim().is_empty();
+    let ok = output.success
+        && output_semantically_succeeded(&output.stdout)
+        && !sample.trim().is_empty();
     let detail = if ok {
         None
     } else {
@@ -776,7 +796,7 @@ pub fn worker_specs(paths: &MyOpenPanelsPaths) -> Result<Vec<GatewayWorkerSpec>,
         let Some(definition) = definition(&provider_id) else {
             continue;
         };
-        let Some(executable) = resolve_executable(definition.bin, configured_path.as_deref()).path
+        let Some(executable) = resolve_executable(definition, configured_path.as_deref()).path
         else {
             continue;
         };

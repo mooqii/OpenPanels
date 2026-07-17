@@ -86,10 +86,27 @@ mod tests {
         );
         crate::tasks::complete_task(&paths, task_id, claim["leaseToken"].as_str().unwrap(), None)
             .expect("complete");
+        let wiki_panel = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
+            .expect("wiki panel");
+        let markdown_path = Storage::open(&paths)
+            .expect("storage")
+            .panel_dir(&bootstrap.project.id, &wiki_panel.panel.id)
+            .join("raw")
+            .join(document_id)
+            .join("source.md");
+        assert!(!markdown_path.exists());
+        let after = crate::wiki::read_markdown(&paths, document_id).expect("after");
         assert_eq!(
-            crate::wiki::read_markdown(&paths, document_id).expect("after")["markdown"],
+            after["markdown"],
             "# Converted\n"
         );
+        assert_eq!(after["markdownAccess"]["status"], "ready");
+        assert!(after["markdownFilePath"]
+            .as_str()
+            .is_some_and(|path| Path::new(path).is_file()));
         let fenced = stage_file(
             &paths,
             execution_token,
@@ -304,9 +321,11 @@ mod tests {
             None,
         )
         .expect("complete");
-        assert_eq!(
-            crate::wiki::read_generated_document(&paths, document_id).expect("after")["content"],
-            "# Atomic report\n\nCommitted once.\n"
-        );
+        let after = crate::wiki::read_generated_document(&paths, document_id).expect("after");
+        assert_eq!(after["content"], "# Atomic report\n\nCommitted once.\n");
+        assert_eq!(after["contentAccess"]["status"], "ready");
+        assert!(after["contentFilePath"]
+            .as_str()
+            .is_some_and(|path| Path::new(path).is_file()));
     }
 }

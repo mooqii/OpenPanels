@@ -1,7 +1,22 @@
 pub fn list_spaces(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
+    reject_live_content_access_for_task()?;
     let wiki = get_wiki_bootstrap(paths)?;
+    let spaces = wiki
+        .state
+        .get("wikiSpaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|space| {
+            let mut item = space.clone();
+            if let Some(space_id) = space.get("id").and_then(Value::as_str) {
+                item["localAccess"] = wiki_local_access(paths, &wiki, space_id, false);
+            }
+            item
+        })
+        .collect::<Vec<_>>();
     Ok(json!({
-        "spaces": wiki.state.get("wikiSpaces").cloned().unwrap_or_else(|| json!([])),
+        "spaces": spaces,
         "state": wiki.state,
     }))
 }
@@ -15,9 +30,9 @@ pub fn set_active_space(paths: &MyOpenPanelsPaths, wiki_space_id: &str) -> Resul
 }
 
 pub fn list_pages(paths: &MyOpenPanelsPaths, wiki_space_id: &str) -> Result<Value, CliError> {
+    reject_live_content_access_for_task()?;
     let wiki = get_wiki_bootstrap(paths)?;
-    let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
-    Ok(json!({ "pages": space.value.get("pageIndex").cloned().unwrap_or_else(|| json!([])) }))
+    materialize_wiki_space_for(paths, &wiki, wiki_space_id)
 }
 
 pub fn search_pages(
@@ -26,6 +41,7 @@ pub fn search_pages(
     query: &str,
     limit: usize,
 ) -> Result<Value, CliError> {
+    reject_live_content_access_for_task()?;
     let query = query.trim();
     if query.is_empty() {
         return Err(CliError::new("Wiki page search query cannot be empty."));
@@ -33,6 +49,7 @@ pub fn search_pages(
     let wiki = get_wiki_bootstrap(paths)?;
     let storage = Storage::open(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
+    let materialized = materialize_wiki_space_for(paths, &wiki, &space.id)?;
     let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
     let query_lower = query.to_lowercase();
     let terms = query_lower
@@ -100,6 +117,7 @@ pub fn search_pages(
         "query": query,
         "wikiSpace": space.value,
         "matches": matches,
+        "localAccess": materialized["localAccess"],
     }))
 }
 
@@ -125,6 +143,7 @@ pub fn read_page(
     let wiki = get_wiki_bootstrap(paths)?;
     let storage = Storage::open(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
+    let materialized = materialize_wiki_space_for(paths, &wiki, &space.id)?;
     let path = wiki_page_path(
         &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
         &space.id,
@@ -138,8 +157,14 @@ pub fn read_page(
         page_path,
     )?
     .map(Ok)
-    .unwrap_or_else(|| fs::read_to_string(path).map_err(to_cli_error))?;
-    Ok(json!({ "pagePath": page_path, "wikiSpace": space.value, "markdown": markdown }))
+    .unwrap_or_else(|| fs::read_to_string(&path).map_err(to_cli_error))?;
+    Ok(json!({
+        "pagePath": page_path,
+        "wikiSpace": space.value,
+        "markdown": markdown,
+        "contentFilePath": path,
+        "localAccess": materialized["localAccess"],
+    }))
 }
 
 fn search_snippet(markdown: &str, query: &str, terms: &[&str]) -> String {
@@ -285,6 +310,20 @@ pub fn rename_page(
             fs::create_dir_all(parent).map_err(to_cli_error)?;
         }
         fs::rename(old_path, new_path).map_err(to_cli_error)?;
+        if let Err(error) = crate::content::rename_active_file(
+            paths,
+            &wiki.project.id,
+            crate::content::ResourceKind::WikiSpace,
+            &space.id,
+            page_path,
+            next_page_path,
+        ) {
+            let _ = fs::rename(
+                wiki_page_path(&panel_dir, &space.id, next_page_path)?,
+                wiki_page_path(&panel_dir, &space.id, page_path)?,
+            );
+            return Err(error);
+        }
     }
     let now = now_iso();
     let spaces = state_array_mut(&mut wiki.state, "wikiSpaces")?;

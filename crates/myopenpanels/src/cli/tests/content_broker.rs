@@ -234,7 +234,7 @@ fn task_and_operation_discovery_use_response_level_actions() {
         json!({
             "id": "operation:1",
             "status": "active",
-            "skillId": "canvas-panel",
+            "skillId": "myopenpanels-canvas-panel",
         }),
         false,
     );

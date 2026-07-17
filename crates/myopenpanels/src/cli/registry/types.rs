@@ -2,7 +2,7 @@ use clap::{ArgAction, Command};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const COMMAND_CATALOG_VERSION: u32 = 1;
+pub(crate) const COMMAND_CATALOG_VERSION: u32 = 2;
 const COMMAND_CATALOG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,4 +153,3 @@ const INTERNAL_STUDIO_DEFINITION: CommandDefinition = CommandDefinition {
     required_panel_kind: None,
     audience: CommandAudience::Internal,
 };
-

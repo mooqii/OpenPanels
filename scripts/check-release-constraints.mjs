@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { readdirSync, readFileSync, statSync } from "node:fs"
 
 const ROOT = new URL("..", import.meta.url)
 const RELEASE_TARGETS = [
@@ -20,6 +20,17 @@ function readCargoVersion(path) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
+}
+
+function walkFiles(path) {
+  const root = new URL(path, ROOT)
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const child = new URL(entry.name, `${root.href}/`)
+    if (entry.isDirectory()) {
+      return walkFiles(`${path}/${entry.name}`)
+    }
+    return statSync(child).isFile() ? [child] : []
+  })
 }
 
 const rootVersion = readJson("package.json").version
@@ -103,6 +114,85 @@ assert(
   tag === `v${rootVersion}`,
   `Release tag must be v${rootVersion}; got ${tag}.`
 )
+
+const builtinRegistry = readJson("agent-resources/builtin-skill-registry.json")
+assert(
+  builtinRegistry.schemaVersion === 1,
+  "Built-in Skill registry must use schemaVersion 1."
+)
+const forbiddenPortableSkillText = [
+  "myopenpanels",
+  "my open panels",
+  "--task-id",
+  "agent bootstrap",
+  "agent skill read",
+  "writing skill install",
+  "operation complete",
+  "task.claim",
+  "task.heartbeat",
+  "task.complete",
+  "task.fail",
+  "bridge-managed",
+]
+const builtinSkillIds = new Set()
+for (const [group, registrations] of [
+  ["system-skills", builtinRegistry.systemSkills],
+  ["preset-skills", builtinRegistry.presetSkills],
+]) {
+  assert(Array.isArray(registrations), `Missing built-in Skill group: ${group}`)
+  const packageDirs = readdirSync(new URL(`agent-resources/${group}/`, ROOT), {
+    withFileTypes: true,
+  })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort()
+  const registeredDirs = registrations
+    .map((registration) => registration.packageDir)
+    .sort()
+  assert(
+    JSON.stringify(packageDirs) === JSON.stringify(registeredDirs),
+    `Built-in Skill packages and registrations differ in ${group}.`
+  )
+  for (const registration of registrations) {
+    assert(
+      registration.packageDir === registration.id,
+      `Built-in Skill package directory must match its id: ${registration.id}`
+    )
+    assert(
+      !builtinSkillIds.has(registration.id),
+      `Duplicate built-in Skill id: ${registration.id}`
+    )
+    builtinSkillIds.add(registration.id)
+    const packagePath = `agent-resources/${group}/${registration.packageDir}`
+    const skill = readFileSync(new URL(`${packagePath}/SKILL.md`, ROOT), "utf8")
+    const frontmatter = skill.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? ""
+    const keys = frontmatter
+      .split("\n")
+      .filter((line) => /^[A-Za-z][A-Za-z0-9-]*:/.test(line))
+      .map((line) => line.slice(0, line.indexOf(":")))
+      .sort()
+    assert(
+      JSON.stringify(keys) === JSON.stringify(["description", "name"]),
+      `Built-in Skill must use only name and description frontmatter: ${registration.id}`
+    )
+    const skillName = frontmatter.match(/^name:\s*(.+)$/m)?.[1]?.trim()
+    assert(
+      skillName === registration.id,
+      `Built-in Skill name must match its registered id: ${registration.id}`
+    )
+    if (group === "preset-skills") {
+      for (const file of walkFiles(packagePath)) {
+        const content = readFileSync(file, "utf8").toLowerCase()
+        for (const forbidden of forbiddenPortableSkillText) {
+          assert(
+            !content.includes(forbidden),
+            `Preset Skill ${registration.id} contains platform contract text ${forbidden}: ${file.pathname}`
+          )
+        }
+      }
+    }
+  }
+}
 
 const manifest = {
   schemaVersion: 1,

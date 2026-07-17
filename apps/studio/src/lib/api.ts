@@ -237,6 +237,7 @@ export function emptyWritingState(): import("../types").WritingState {
     mode: "create",
     refinementName: "",
     selectedCreateWritingSkillIds: ["writing-default"],
+    selectedRefinementSkillId: "writing-skill-refiner",
     selectedRevisionWritingSkillId: "writing-default",
     targetGeneratedDocumentId: null,
   }
@@ -259,6 +260,8 @@ export function isWritingState(
     (
       state as { selectedCreateWritingSkillIds: unknown[] }
     ).selectedCreateWritingSkillIds.every((id) => typeof id === "string") &&
+    typeof (state as { selectedRefinementSkillId?: unknown })
+      .selectedRefinementSkillId === "string" &&
     ((state as { selectedRevisionWritingSkillId?: unknown })
       .selectedRevisionWritingSkillId === null ||
       typeof (state as { selectedRevisionWritingSkillId?: unknown })
@@ -810,21 +813,6 @@ export function appendTraceEvent(
     return current
   }
   return [...current, event].slice(-500)
-}
-
-export function formatTraceConnection(
-  state: "connecting" | "live" | "paused" | "offline"
-): string {
-  switch (state) {
-    case "live":
-      return "live"
-    case "paused":
-      return "paused"
-    case "offline":
-      return "offline"
-    default:
-      return "connecting"
-  }
 }
 
 export function formatTraceTime(value: string): string {

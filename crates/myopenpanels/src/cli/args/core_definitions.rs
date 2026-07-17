@@ -348,6 +348,10 @@ struct WikiSpaceArgs {
 #[derive(Debug, Subcommand)]
 enum WikiSpaceCommand {
     List,
+    Materialize {
+        #[arg(long)]
+        space_id: String,
+    },
     Activate {
         #[arg(long)]
         space_id: String,

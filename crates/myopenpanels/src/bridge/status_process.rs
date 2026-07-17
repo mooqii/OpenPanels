@@ -43,10 +43,10 @@ fn local_agent_task_prompt(paths: &MyOpenPanelsPaths, task: &Value) -> Result<St
     };
     let wiki_steps = match task_type {
         "ingest_markdown_into_wiki" => format!(
-            "Load the Wiki panel contract with `{cli} agent skill read --skill-id wiki-panel --task-id {task_id} --format json`, then read its authoring routing reference. Read the source with `{cli} wiki raw read --raw-document-id {document_id} --format json`. Load the selected authoring skill with `{cli} agent skill read --skill-id {wiki_skill} --task-id {task_id} --format json`, read its SKILL.md and routed references, then create useful Wiki pages with `{cli} wiki page create --space-id {wiki_space_id} --path <path.md> --content-file <file> --task-id {task_id} --format json`; use `wiki page update` with the same arguments when revising a page."
+            "Load the Wiki panel contract with `{cli} agent skill read --skill-id myopenpanels-wiki-panel --task-id {task_id} --format json`, then read its authoring routing reference. Read the source with `{cli} wiki raw read --raw-document-id {document_id} --format json`. Load the selected authoring skill with `{cli} agent skill read --skill-id {wiki_skill} --task-id {task_id} --format json`, read its SKILL.md and routed references, then create useful Wiki pages with `{cli} wiki page create --space-id {wiki_space_id} --path <path.md> --content-file <file> --task-id {task_id} --format json`; use `wiki page update` with the same arguments when revising a page."
         ),
         "maintain_wiki" => format!(
-            "Load the Wiki panel contract with `{cli} agent skill read --skill-id wiki-panel --task-id {task_id} --format json`, then load the selected authoring skill with `{cli} agent skill read --skill-id {wiki_skill} --task-id {task_id} --format json`. Follow that Skill while maintaining `{wiki_space_id}` in response to the changed paths and reasons in the Task JSON; use task-bound `wiki page create` and `wiki page update` commands."
+            "Load the Wiki panel contract with `{cli} agent skill read --skill-id myopenpanels-wiki-panel --task-id {task_id} --format json`, then load the selected authoring skill with `{cli} agent skill read --skill-id {wiki_skill} --task-id {task_id} --format json`. Follow that Skill while maintaining `{wiki_space_id}` in response to the changed paths and reasons in the Task JSON; use task-bound `wiki page create` and `wiki page update` commands."
         ),
         _ if task.get("queue").and_then(Value::as_str) == Some("wiki") => format!(
             "Load the task Skill and `{cli} agent catalog --domain wiki --format json`, then perform the requested Wiki writes using `--task-id {task_id}`."
@@ -127,6 +127,10 @@ fn write_bridge_status(
     last_task: Option<&Value>,
     last_error: Option<&str>,
 ) -> Result<(), CliError> {
+    static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let now = crate::control::now_iso();
     let mut existing = read_bridge_status(paths).unwrap_or_else(|_| json!({}));
     if !existing.is_object() {

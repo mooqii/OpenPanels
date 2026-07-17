@@ -24,7 +24,13 @@ async fn api_model_gateway_save_settings(
 
 async fn api_model_gateway_local_clis(State(state): State<Arc<AppState>>) -> Response {
     let paths = state.paths.clone();
-    match tokio::task::spawn_blocking(move || model_gateway::scan_local_clis(&paths)).await {
+    match tokio::task::spawn_blocking(move || {
+        model_gateway::cached_local_clis(&paths)?
+            .map(Ok)
+            .unwrap_or_else(|| model_gateway::scan_local_clis(&paths))
+    })
+    .await
+    {
         Ok(Ok(payload)) => json_response(StatusCode::OK, &payload),
         Ok(Err(error)) => json_cli_error(&error),
         Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
@@ -303,6 +309,29 @@ async fn api_task_dispatch(
     match tasks::set_task_dispatch(
         &state.paths,
         &task_id,
+        &body.mode,
+        body.model_gateway_connection_id.as_deref(),
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_cli_error(&error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WikiUpdateGroupDispatchBody {
+    mutation_key: String,
+    mode: String,
+    model_gateway_connection_id: Option<String>,
+}
+
+async fn api_wiki_update_group_dispatch(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<WikiUpdateGroupDispatchBody>,
+) -> Response {
+    match tasks::set_wiki_update_group_dispatch(
+        &state.paths,
+        &body.mutation_key,
         &body.mode,
         body.model_gateway_connection_id.as_deref(),
     ) {

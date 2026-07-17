@@ -1,6 +1,12 @@
 pub fn sync_builtin_agent_skills(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
     let skills_dir = paths.storage_dir.join("skills");
     fs::create_dir_all(&skills_dir).map_err(to_cli_error)?;
+    for legacy_id in ["canvas-panel", "task-queue", "wiki-panel", "writing-panel"] {
+        let legacy_dir = skills_dir.join(legacy_id);
+        if legacy_dir.exists() {
+            fs::remove_dir_all(legacy_dir).map_err(to_cli_error)?;
+        }
+    }
     for (skill, skill_dir) in load_agent_skill_dirs()? {
         let local_dir = skills_dir.join(&skill.metadata.id);
         if local_dir.exists() {
@@ -127,7 +133,7 @@ pub fn list_agent_skill_summaries(
             let metadata = skill.metadata;
             json!({
                 "id": metadata.id,
-                "title": metadata.title,
+                "name": metadata.name,
                 "description": metadata.description,
                 "appliesTo": metadata.applies_to,
                 "taskTypes": metadata.task_types,
@@ -168,13 +174,61 @@ pub fn read_agent_skill(
     sync_builtin_agent_skills(paths)?;
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let task = task_id.and_then(|id| find_wiki_task(&bootstrap, id));
-    let captured_skill = task
+    let captured_snapshot = task
         .as_ref()
-        .and_then(|task| task.get("writingSkillSnapshot"))
-        .filter(|snapshot| snapshot.get("id").and_then(Value::as_str) == Some(skill_id))
+        .and_then(|task| {
+            task.get("writingSkillSnapshot")
+                .or_else(|| task.get("refinerSkillSnapshot"))
+        })
+        .filter(|snapshot| snapshot.get("id").and_then(Value::as_str) == Some(skill_id));
+    let captured_skill = captured_snapshot
         .and_then(|snapshot| snapshot.get("markdown").and_then(Value::as_str));
     let skill = if let Some(markdown) = captured_skill {
-        parse_skill(markdown, "captured-writing-skill.md")?
+        let mut skill = parse_skill(markdown, "captured-writing-skill.md").or_else(|_| {
+            external_custom_skill_from_source(markdown, "captured-writing-skill.md", skill_id)
+        })?;
+        if skill.metadata.source == "portable" {
+            skill.metadata.applies_to = vec!["writing".to_owned()];
+            skill.metadata.load_when = vec!["The current Writing Task selected this Skill.".to_owned()];
+            skill.metadata.source = task
+                .as_ref()
+                .and_then(|value| value.pointer("/writingSkill/source"))
+                .and_then(Value::as_str)
+                .unwrap_or("custom")
+                .to_owned();
+            skill.metadata.task_types = vec!["generate_document".to_owned()];
+            skill.metadata.name = task
+                .as_ref()
+                .and_then(|value| {
+                    value
+                        .pointer("/writingSkill/name")
+                        .or_else(|| value.pointer("/writingSkill/title"))
+                })
+                .and_then(Value::as_str)
+                .unwrap_or(skill_id)
+                .to_owned();
+            skill.metadata.tokens = "short".to_owned();
+        }
+        if task
+            .as_ref()
+            .and_then(|value| value.get("refinerSkillSnapshot"))
+            .is_some()
+        {
+            skill.metadata.id = skill_id.to_owned();
+            skill.metadata.applies_to = vec!["writing".to_owned()];
+            skill.metadata.task_types = vec!["refine_writing_skill".to_owned()];
+            skill.metadata.name = captured_snapshot
+                .and_then(|value| value.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or(skill_id)
+                .to_owned();
+            skill.metadata.source = captured_snapshot
+                .and_then(|value| value.get("source"))
+                .and_then(Value::as_str)
+                .unwrap_or("custom")
+                .to_owned();
+        }
+        skill
     } else {
         load_agent_skills(paths, &bootstrap.project.id)?
             .into_iter()
@@ -183,12 +237,18 @@ pub fn read_agent_skill(
                 CliError::new(format!("MyOpenPanels agent skill not found: {skill_id}"))
             })?
     };
-    let selection = (bootstrap.active_panel_kind == PanelKind::Canvas)
+    let selection = (task_id.is_none() && bootstrap.active_panel_kind == PanelKind::Canvas)
         .then(|| read_selection(paths, None, false).ok())
         .flatten();
-    let wiki_selection = (bootstrap.active_panel_kind == PanelKind::Wiki)
-        .then(|| read_agent_selection(paths).ok())
-        .flatten();
+    let wiki_selection = if task_id.is_some() {
+        None
+    } else {
+        match bootstrap.active_panel_kind {
+            PanelKind::Wiki => read_agent_selection(paths).ok(),
+            PanelKind::Writing => crate::writing::panel_selection(paths, &bootstrap).ok(),
+            _ => None,
+        }
+    };
     let (local_dir, local_path) = if let (Some(task_id), Some(markdown)) = (task_id, captured_skill)
     {
         let local_dir = paths
@@ -295,9 +355,9 @@ fn render_agent_skill(
         )));
     }
     Ok(format!(
-        "# Skill: {}\n\nTitle: {}\nSource: {}\nLocal dir: {}\nLocal path: {}\nApplies to: {}\n\n## How To Load This Skill\n\nRead `SKILL.md` directly from the local path above. Treat this CLI output as the task-specific loader and command context, not as the skill body. Resolve referenced files relative to the local dir above.\n\n## Current Context\n\n{}\n\n## Required Commands\n\n{}\n\nUse the structured `agent catalog --domain <domain>` actions returned by the CLI for argument definitions. Do not infer command syntax from this loader.\n",
+        "# Skill: {}\n\nName: {}\nSource: {}\nLocal dir: {}\nLocal path: {}\nApplies to: {}\n\n## How To Load This Skill\n\nRead `SKILL.md` directly from the local path above. Treat this CLI output as the task-specific loader and command context, not as the skill body. Resolve referenced files relative to the local dir above.\n\n## Current Context\n\n{}\n\n## Required Commands\n\n{}\n\nUse the structured `agent catalog --domain <domain>` actions returned by the CLI for argument definitions. Do not infer command syntax from this loader.\n",
         skill.metadata.id,
-        skill.metadata.title,
+        skill.metadata.name,
         skill.metadata.source,
         local_dir.display(),
         local_path.display(),
@@ -338,33 +398,9 @@ fn merge_agent_skill_providers(
     Ok(skills)
 }
 
-fn load_agent_skill_dirs() -> Result<Vec<(AgentSkill, &'static Dir<'static>)>, CliError> {
-    let mut seen = BTreeSet::new();
-    let mut skills = Vec::new();
-    for dir in AGENT_SKILLS.dirs() {
-        let skill_path = dir.path().join("SKILL.md");
-        let file = AGENT_SKILLS.get_file(&skill_path).ok_or_else(|| {
-            CliError::new(format!(
-                "MyOpenPanels agent skill is missing SKILL.md: {}",
-                dir.path().display()
-            ))
-        })?;
-        let source = std::str::from_utf8(file.contents()).map_err(to_cli_error)?;
-        let skill = parse_skill(source, &skill_path.display().to_string())?;
-        if !seen.insert(skill.metadata.id.clone()) {
-            return Err(CliError::new(format!(
-                "Duplicate MyOpenPanels agent skill id: {}",
-                skill.metadata.id
-            )));
-        }
-        skills.push((skill, dir));
-    }
-    skills.sort_by(|left, right| left.0.metadata.id.cmp(&right.0.metadata.id));
-    Ok(skills)
-}
-
 fn load_custom_agent_skills(paths: &MyOpenPanelsPaths) -> Result<Vec<AgentSkill>, CliError> {
-    let skills_dir = custom_writing_skills_dir(paths);
+    migrate_legacy_custom_agent_skills(paths)?;
+    let skills_dir = paths.storage_dir.join("skills");
     let mut skills = Vec::new();
     if skills_dir.exists() {
         for entry in fs::read_dir(&skills_dir).map_err(to_cli_error)? {
@@ -384,51 +420,19 @@ fn load_custom_agent_skills(paths: &MyOpenPanelsPaths) -> Result<Vec<AgentSkill>
                 serde_json::from_slice(&fs::read(&manifest_path).map_err(to_cli_error)?)
                     .map_err(to_cli_error)?;
             let source = fs::read_to_string(&skill_path).map_err(to_cli_error)?;
-            let skill = parse_skill(&source, &skill_path.display().to_string())?;
-            if skill.metadata.source != "custom"
-                || manifest.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-                || manifest.get("source").and_then(Value::as_str) != Some("custom")
-                || manifest.get("skillId").and_then(Value::as_str)
-                    != Some(skill.metadata.id.as_str())
-            {
-                return Err(CliError::with_code(
-                    "invalid_custom_skill",
-                    format!(
-                        "Custom Writing Skill must use source: custom: {}",
-                        skill.metadata.id
-                    ),
-                ));
-            }
-            skills.push(skill);
-        }
-    }
-    for (skill_id, source, manifest, local_dir) in
-        crate::content::active_writing_skill_sources(paths)?
-    {
-        let skill_path = PathBuf::from(local_dir).join("SKILL.md");
-        let skill = parse_skill(&source, &skill_path.display().to_string())?;
-        if manifest.get("source").and_then(Value::as_str) != Some("custom")
-            || manifest.get("skillId").and_then(Value::as_str) != Some(skill.metadata.id.as_str())
-        {
-            return Err(CliError::with_code(
-                "invalid_custom_skill",
-                format!("Custom Writing Skill manifest is invalid: {skill_id}"),
-            ));
-        }
-        if let Some(existing) = skills
-            .iter_mut()
-            .find(|candidate| candidate.metadata.id == skill_id)
-        {
-            *existing = skill;
-        } else {
+            let skill = custom_writing_skill_from_source(
+                &source,
+                &skill_path.display().to_string(),
+                &manifest,
+            )?;
             skills.push(skill);
         }
     }
     skills.sort_by(|left, right| {
         left.metadata
-            .title
+            .name
             .to_lowercase()
-            .cmp(&right.metadata.title.to_lowercase())
+            .cmp(&right.metadata.name.to_lowercase())
             .then_with(|| left.metadata.id.cmp(&right.metadata.id))
     });
     Ok(skills)
@@ -454,6 +458,31 @@ fn extract_embedded_dir_contents(
 }
 
 pub(crate) fn parse_skill(source: &str, file_name: &str) -> Result<AgentSkill, CliError> {
+    let (frontmatter, body) = split_skill(source, file_name)?;
+    if frontmatter.contains_key("name") {
+        return portable_skill_from_parts(frontmatter, body, file_name);
+    }
+    legacy_skill_from_parts(frontmatter, body, file_name)
+}
+
+pub(crate) fn parse_portable_skill(
+    source: &str,
+    file_name: &str,
+) -> Result<AgentSkill, CliError> {
+    let (frontmatter, body) = split_skill(source, file_name)?;
+    let keys = frontmatter.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if keys != BTreeSet::from(["description", "name"]) {
+        return Err(CliError::new(format!(
+            "Standard Skill frontmatter must contain exactly name and description: {file_name}"
+        )));
+    }
+    portable_skill_from_parts(frontmatter, body, file_name)
+}
+
+fn split_skill(
+    source: &str,
+    file_name: &str,
+) -> Result<(BTreeMap<String, Vec<String>>, String), CliError> {
     let normalized_source;
     let source = if source.contains("\r\n") {
         normalized_source = source.replace("\r\n", "\n");
@@ -467,11 +496,62 @@ pub(crate) fn parse_skill(source: &str, file_name: &str) -> Result<AgentSkill, C
     let (frontmatter, body) = rest
         .split_once("\n---")
         .ok_or_else(|| CliError::new(format!("Agent skill is missing frontmatter: {file_name}")))?;
-    let frontmatter = parse_frontmatter(frontmatter);
+    Ok((
+        parse_frontmatter(frontmatter),
+        body.trim_start_matches('\n').to_owned(),
+    ))
+}
+
+fn portable_skill_from_parts(
+    frontmatter: BTreeMap<String, Vec<String>>,
+    body: String,
+    file_name: &str,
+) -> Result<AgentSkill, CliError> {
+    let name = scalar(&frontmatter, "name")
+        .ok_or_else(|| CliError::new(format!("Portable Skill requires name: {file_name}")))?;
+    let description = scalar(&frontmatter, "description").unwrap_or_default();
+    let valid_name = name.len() <= 64
+        && name
+            .chars()
+            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
+        && name
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+        && name
+            .chars()
+            .last()
+            .is_some_and(|character| character.is_ascii_lowercase() || character.is_ascii_digit());
+    if !valid_name || description.trim().is_empty() || body.trim().is_empty() {
+        return Err(CliError::new(format!(
+            "Portable Skill requires a valid name, description, and body: {file_name}"
+        )));
+    }
+    Ok(AgentSkill {
+        metadata: AgentSkillMetadata {
+            applies_to: Vec::new(),
+            description,
+            id: name.clone(),
+            load_when: Vec::new(),
+            requires_commands: Vec::new(),
+            source: "portable".to_owned(),
+            task_types: Vec::new(),
+            name,
+            tokens: "medium".to_owned(),
+        },
+        body,
+    })
+}
+
+fn legacy_skill_from_parts(
+    frontmatter: BTreeMap<String, Vec<String>>,
+    body: String,
+    file_name: &str,
+) -> Result<AgentSkill, CliError> {
     let id = scalar(&frontmatter, "id")
-        .ok_or_else(|| CliError::new(format!("Agent skill requires id and title: {file_name}")))?;
+        .ok_or_else(|| CliError::new(format!("Legacy Agent Skill requires id and title: {file_name}")))?;
     let title = scalar(&frontmatter, "title")
-        .ok_or_else(|| CliError::new(format!("Agent skill requires id and title: {file_name}")))?;
+        .ok_or_else(|| CliError::new(format!("Legacy Agent Skill requires id and title: {file_name}")))?;
     Ok(AgentSkill {
         metadata: AgentSkillMetadata {
             applies_to: list(&frontmatter, "appliesTo"),
@@ -481,11 +561,31 @@ pub(crate) fn parse_skill(source: &str, file_name: &str) -> Result<AgentSkill, C
             requires_commands: list(&frontmatter, "requiresCommands"),
             source: scalar(&frontmatter, "source").unwrap_or_else(|| "builtin".to_owned()),
             task_types: list(&frontmatter, "taskTypes"),
-            title,
+            name: title,
             tokens: scalar(&frontmatter, "tokens").unwrap_or_else(|| "medium".to_owned()),
         },
-        body: body.trim_start_matches('\n').to_owned(),
+        body,
     })
+}
+
+fn registered_builtin_skill(
+    mut skill: AgentSkill,
+    registration: &BuiltinSkillRegistration,
+) -> Result<AgentSkill, CliError> {
+    if skill.metadata.id != registration.id {
+        return Err(CliError::new(format!(
+            "Portable Skill name {} does not match registered id {}",
+            skill.metadata.id, registration.id
+        )));
+    }
+    skill.metadata.applies_to = registration.applies_to.clone();
+    skill.metadata.load_when = registration.load_when.clone();
+    skill.metadata.name = registration.name.clone();
+    skill.metadata.requires_commands = registration.requires_commands.clone();
+    skill.metadata.source = registration.source.clone();
+    skill.metadata.task_types = registration.task_types.clone();
+    skill.metadata.tokens = registration.tokens.clone();
+    Ok(skill)
 }
 
 fn parse_frontmatter(source: &str) -> BTreeMap<String, Vec<String>> {
@@ -576,19 +676,13 @@ fn agent_skill_local_paths(
     _project_id: &str,
     skill: &AgentSkillMetadata,
 ) -> (PathBuf, PathBuf) {
-    let local_dir = if skill.source == "custom" {
-        crate::content::active_writing_skill_dir(paths, &skill.id).unwrap_or_else(|| {
-            custom_writing_skills_dir(paths).join(crate::paths::sanitize_path_part(&skill.id))
-        })
-    } else {
-        paths.storage_dir.join("skills").join(&skill.id)
-    };
+    let local_dir = paths.storage_dir.join("skills").join(&skill.id);
     let local_path = local_dir.join("SKILL.md");
     (local_dir, local_path)
 }
 
 pub(crate) fn custom_writing_skills_dir(paths: &MyOpenPanelsPaths) -> PathBuf {
-    paths.storage_dir.join("writing-skills")
+    paths.storage_dir.join("skills")
 }
 
 fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Value {
@@ -646,6 +740,9 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
                 "mimeType": document.get("mimeType").cloned().unwrap_or(Value::Null),
                 "markdownVersion": document.get("markdownVersion").cloned().unwrap_or(Value::Null),
                 "originalFilePath": document.get("originalFilePath").cloned().unwrap_or(Value::Null),
+                "markdownFilePath": document.get("markdownFilePath").cloned().unwrap_or(Value::Null),
+                "originalAccess": document.get("originalAccess").cloned().unwrap_or(Value::Null),
+                "markdownAccess": document.get("markdownAccess").cloned().unwrap_or(Value::Null),
             })
         })
         .collect::<Vec<_>>();
@@ -662,6 +759,7 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
                 "format": document.get("format").cloned().unwrap_or(Value::Null),
                 "contentVersion": document.get("contentVersion").cloned().unwrap_or(Value::Null),
                 "contentFilePath": document.get("contentFilePath").cloned().unwrap_or(Value::Null),
+                "contentAccess": document.get("contentAccess").cloned().unwrap_or(Value::Null),
             })
         })
         .collect::<Vec<_>>();
@@ -669,11 +767,12 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
         "agentSkillId": selected_agent_skill_id(state),
         "nextTaskAgentSkillId": next_task.as_ref().and_then(|task| task.get("agentSkillId")).and_then(Value::as_str).unwrap_or_else(|| selected_agent_skill_id(state)),
         "available": state.get("wikiSpaces").and_then(Value::as_array).is_some_and(|spaces| !spaces.is_empty()),
-        "selected": selection.and_then(|value| value.get("selection")).and_then(|value| value.get("isWikiSelected")).and_then(Value::as_bool).unwrap_or(false),
+        "selected": selection.and_then(|value| value.get("selection")).and_then(|value| value.get("isWikiSelected")).or_else(|| selection.and_then(|value| value.get("isWikiSelected"))).and_then(Value::as_bool).unwrap_or(false),
         "wikiSpaceId": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("wikiSpaceId")).cloned().unwrap_or_else(|| json!(active_space_id)),
         "wikiTitle": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("title")).cloned().or_else(|| active_space.and_then(|space| space.get("title")).cloned()).unwrap_or_else(|| json!("Wiki")),
         "pageCount": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("pageCount")).cloned().unwrap_or_else(|| json!(active_space.and_then(|space| space.get("pageIndex")).and_then(Value::as_array).map(Vec::len).unwrap_or(0))),
         "querySkillId": WIKI_PANEL_SKILL_ID,
+        "localAccess": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("localAccess")).cloned().unwrap_or(Value::Null),
         "selectedRawDocumentCount": selected_documents.len(),
         "selectedRawDocuments": selected_documents,
         "selectedGeneratedDocumentCount": selected_generated_documents.len(),
@@ -778,6 +877,55 @@ fn render_current_context(
         ),
         format!("- canvas selected shape count: {selected_shape_count}"),
     ];
+    if let Some(access) = wiki.get("localAccess").filter(|value| value.is_object()) {
+        lines.push(format!(
+            "- wiki local access: status={}, root={}, manifest={}",
+            access.get("status").and_then(Value::as_str).unwrap_or("unavailable"),
+            access.get("rootPath").and_then(Value::as_str).unwrap_or("none"),
+            access
+                .get("manifestFilePath")
+                .and_then(Value::as_str)
+                .unwrap_or("none")
+        ));
+        if let Some(argv) = access
+            .pointer("/materializeAction/argv")
+            .and_then(Value::as_array)
+        {
+            let command = argv
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            lines.push(format!("- wiki materialize command: `{command}`"));
+        }
+    }
+    for document in wiki["selectedRawDocuments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        lines.push(format!(
+            "- selected raw document: {} ({}); markdown status={}; markdown path={}; original path={}",
+            document.get("title").and_then(Value::as_str).unwrap_or("untitled"),
+            document.get("documentId").and_then(Value::as_str).unwrap_or("unknown"),
+            document.pointer("/markdownAccess/status").and_then(Value::as_str).unwrap_or("unavailable"),
+            document.get("markdownFilePath").and_then(Value::as_str).unwrap_or("none"),
+            document.get("originalFilePath").and_then(Value::as_str).unwrap_or("none")
+        ));
+    }
+    for document in wiki["selectedGeneratedDocuments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        lines.push(format!(
+            "- selected generated document: {} ({}); content status={}; content path={}",
+            document.get("title").and_then(Value::as_str).unwrap_or("untitled"),
+            document.get("documentId").and_then(Value::as_str).unwrap_or("unknown"),
+            document.pointer("/contentAccess/status").and_then(Value::as_str).unwrap_or("unavailable"),
+            document.get("contentFilePath").and_then(Value::as_str).unwrap_or("none")
+        ));
+    }
     if let Some(task) = task {
         lines.push(format!("- task id: {}", task["id"].as_str().unwrap_or("")));
         lines.push(format!(

@@ -279,6 +279,15 @@ const SPECS: &[CommandDefinition] = &[
         panel = "wiki"
     ),
     spec!(
+        "wiki.space.materialize",
+        ["wiki", "space", "materialize"],
+        "Materialize a Wiki Space as local Markdown files",
+        "wiki",
+        "panel-kind",
+        false,
+        panel = "wiki"
+    ),
+    spec!(
         "wiki.page.list",
         ["wiki", "page", "list"],
         "List Wiki Pages",
@@ -743,4 +752,3 @@ pub(crate) fn validate() -> Result<(), String> {
     }
     Ok(())
 }
-

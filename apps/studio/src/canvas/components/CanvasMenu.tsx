@@ -1,6 +1,6 @@
 import { Button, Dropdown, Header, Label, Separator } from "@heroui/react"
 import { useLingui } from "@lingui/react/macro"
-import { Languages, Menu, Moon, Settings, Sun } from "lucide-react"
+import { Blocks, Languages, Menu, Moon, Settings, Sun } from "lucide-react"
 import {
   MYOPENPANELS_LOCALE_LABELS,
   type MyOpenPanelsLocale,
@@ -10,8 +10,10 @@ import { type MyOpenPanelsTheme, useMyOpenPanelsTheme } from "../theme"
 
 export function CanvasMenu({
   onOpenModelSettings,
+  onOpenSkillManager,
 }: {
   onOpenModelSettings?: () => void
+  onOpenSkillManager?: () => void
 }) {
   const { locale, setLocale } = useMyOpenPanelsI18n()
   const { theme, setTheme } = useMyOpenPanelsTheme()
@@ -37,6 +39,10 @@ export function CanvasMenu({
             }
             if (action === "model-settings") {
               onOpenModelSettings?.()
+              return
+            }
+            if (action === "skill-manager") {
+              onOpenSkillManager?.()
             }
           }}
         >
@@ -86,6 +92,12 @@ export function CanvasMenu({
                 <Label className="flex-1">{t`Models and Agents`}</Label>
               </Dropdown.Item>
             </>
+          ) : null}
+          {onOpenSkillManager ? (
+            <Dropdown.Item id="skill-manager" textValue={t`Skill management`}>
+              <Blocks className="shrink-0 text-muted" size={15} />
+              <Label className="flex-1">{t`Skill management`}</Label>
+            </Dropdown.Item>
           ) : null}
         </Dropdown.Menu>
       </Dropdown.Popover>

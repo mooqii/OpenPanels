@@ -2,6 +2,7 @@ include!("server/router.rs");
 include!("server/broker_trace.rs");
 include!("server/tasks_gateway.rs");
 include!("server/writing.rs");
+include!("server/skills.rs");
 include!("server/projects_update.rs");
 include!("server/panels.rs");
 include!("server/assets_static.rs");

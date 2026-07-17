@@ -77,6 +77,115 @@ pub fn set_task_dispatch(
     inspect_task_in_session(paths, &project_id, task_id)
 }
 
+pub fn set_wiki_update_group_dispatch(
+    paths: &MyOpenPanelsPaths,
+    mutation_key: &str,
+    mode: &str,
+    requested_connection_id: Option<&str>,
+) -> Result<Value, CliError> {
+    if mutation_key.trim().is_empty() {
+        return Err(CliError::with_code(
+            "invalid_mutation_key",
+            "Wiki update group mutation key is required.",
+        ));
+    }
+    if !matches!(mode, "auto" | "prefer")
+        || (mode == "auto" && requested_connection_id.is_some())
+        || (mode == "prefer" && requested_connection_id.is_none())
+    {
+        return Err(CliError::with_code(
+            "invalid_dispatch_mode",
+            "Wiki update group dispatch must be automatic or prefer one connection.",
+        ));
+    }
+    let project_id = read_project_bootstrap(paths, BootstrapRequest::new())?
+        .project
+        .id;
+    let storage = Storage::open(paths)?;
+    let tx = storage
+        .connection()
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
+    if let Some(connection_id) = requested_connection_id {
+        let exists = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM model_gateway_connections WHERE id = ? AND enabled = 1)",
+                [connection_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(to_cli_error)?;
+        if !exists {
+            return Err(CliError::with_code(
+                "model_gateway_connection_not_found",
+                format!("Model gateway connection not found: {connection_id}"),
+            ));
+        }
+    }
+    let now = crate::control::now_iso();
+    let member_tasks = {
+        let mut statement = tx
+            .prepare(
+                r#"
+                SELECT id, workflow_id, status FROM tasks
+                WHERE project_id = ? AND queue = 'wiki' AND mutation_key = ?
+                  AND type IN ('ingest_markdown_into_wiki', 'maintain_wiki')
+                  AND status IN ('waiting', 'queued', 'failed')
+                "#,
+            )
+            .map_err(to_cli_error)?;
+        let rows = statement
+            .query_map(params![project_id, mutation_key], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(to_cli_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_cli_error)?;
+        rows
+    };
+    if member_tasks.is_empty() {
+        return Err(CliError::with_code(
+            "invalid_task_transition",
+            "The Wiki update group has no pending Tasks whose dispatch can change.",
+        ));
+    }
+    let changed = tx
+        .execute(
+            r#"
+            UPDATE tasks
+            SET dispatch_mode = ?, requested_gateway_connection_id = ?, updated_at = ?
+            WHERE project_id = ? AND queue = 'wiki' AND mutation_key = ?
+              AND type IN ('ingest_markdown_into_wiki', 'maintain_wiki')
+              AND status IN ('waiting', 'queued', 'failed')
+            "#,
+            params![mode, requested_connection_id, now, project_id, mutation_key],
+        )
+        .map_err(to_cli_error)?;
+    let reason = json!({
+        "dispatchMode": mode,
+        "requestedModelGatewayConnectionId": requested_connection_id,
+        "mutationKey": mutation_key,
+    });
+    for (task_id, workflow_id, status) in member_tasks {
+        tx.execute(
+            "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'dispatch_updated', ?, ?, ?, ?)",
+            params![task_id, workflow_id, status, status, reason.to_string(), now],
+        )
+        .map_err(to_cli_error)?;
+    }
+    crate::storage::record_scope(&tx, "tasks", Some(&project_id), None)?;
+    tx.commit().map_err(to_cli_error)?;
+    Ok(json!({
+        "mutationKey": mutation_key,
+        "dispatchMode": mode,
+        "requestedGatewayConnectionId": requested_connection_id,
+        "updatedTaskCount": changed,
+    }))
+}
+
 pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     let task = inspect_task(paths, task_id)?;
     if matches!(
@@ -379,4 +488,3 @@ pub fn remove_agent_route(paths: &MyOpenPanelsPaths, capability: &str) -> Result
     tx.commit().map_err(to_cli_error)?;
     list_agent_routes(paths)
 }
-

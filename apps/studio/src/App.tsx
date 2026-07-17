@@ -18,6 +18,7 @@ import {
   ProjectChrome,
 } from "./components/project/ProjectChrome"
 import { PublishingPanel } from "./components/publishing/PublishingPanel"
+import { ManualTaskInstructionPrompt } from "./components/trace/ManualTaskInstructionDialog"
 import {
   AgentPanel,
   type AgentPanelTab,
@@ -27,6 +28,7 @@ import { TypesettingPanel } from "./components/typesetting/TypesettingPanel"
 import type { StudioRuntimeState } from "./components/update/StudioRuntimeStatus"
 import { WikiPanel } from "./components/wiki/WikiPanel"
 import { ACTIVE_PROJECT_STORAGE_KEY } from "./constants"
+import { useManualTaskInstructions } from "./hooks/use-manual-task-instructions"
 import { useStudioUpdate } from "./hooks/use-studio-update"
 import {
   apiFetch,
@@ -105,6 +107,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   } = useStudioUpdate(transport, setRuntimeState)
   const [isTraceOpen, setIsTraceOpen] = useState(false)
   const [isModelSettingsOpen, setIsModelSettingsOpen] = useState(false)
+  const [isSkillManagerOpen, setIsSkillManagerOpen] = useState(false)
   const [agentPanelTab, setAgentPanelTab] = useState<AgentPanelTab>("tasks")
   const [agentTaskFilter, setAgentTaskFilter] = useState<TaskFilter>("pending")
   const [focusedAgentTaskIds, setFocusedAgentTaskIds] = useState<
@@ -127,6 +130,11 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   const showOpenInBrowserPrompt = shouldShowOpenInBrowserPrompt(
     window.navigator.userAgent
   )
+  const manualTaskInstructions = useManualTaskInstructions({
+    projectId: appState?.project.id ?? null,
+    tasks: appState?.tasks,
+    transport,
+  })
 
   const openAgentTaskList = useCallback(
     (filter: TaskFilter, taskIds?: string[]) => {
@@ -850,6 +858,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       onCreateProject={createProject}
       onDeleteProject={deleteProject}
       onOpenModelSettings={() => setIsModelSettingsOpen(true)}
+      onOpenSkillManager={() => setIsSkillManagerOpen(true)}
       onRenameProject={renameProject}
       onSwitchProject={loadProject}
       projects={projects}
@@ -930,6 +939,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
         <AppOverlays
           buildInfo={appState.buildInfo}
           isModelSettingsOpen={isModelSettingsOpen}
+          isSkillManagerOpen={isSkillManagerOpen}
           isTraceOpen={isTraceOpen}
           onCheckUpdate={checkUpdateFromBadge}
           onDismissUpdateError={dismissUpdateError}
@@ -947,16 +957,22 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           pendingTaskCount={appState.pendingTaskCount ?? 0}
           runtimeState={runtimeState}
           setIsModelSettingsOpen={setIsModelSettingsOpen}
+          setIsSkillManagerOpen={setIsSkillManagerOpen}
           transport={transport}
           updateAction={updateAction}
           updateError={updateError}
           updateStatus={updateStatus}
+        />
+        <ManualTaskInstructionPrompt
+          controller={manualTaskInstructions}
+          onConfigureCli={() => setIsModelSettingsOpen(true)}
         />
       </section>
       <AgentPanel
         activeTab={agentPanelTab}
         buildInfo={appState.buildInfo}
         focusedTaskIds={focusedAgentTaskIds}
+        hasUsableAgentCli={manualTaskInstructions.hasUsableCli}
         isOpen={isTraceOpen}
         onClearFocusedTasks={() => {
           setFocusedAgentTaskIds(null)
@@ -966,6 +982,8 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           setFocusedAgentTaskIds(null)
           setIsTraceOpen(false)
         }}
+        onOpenManualTask={manualTaskInstructions.open}
+        onOpenModelSettings={() => setIsModelSettingsOpen(true)}
         onTabChange={setAgentPanelTab}
         onTaskFilterChange={(filter) => {
           setFocusedAgentTaskIds(null)

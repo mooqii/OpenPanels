@@ -34,6 +34,7 @@ interface SkillFileTreeNode {
 }
 
 export function SkillFilesDialog({
+  backdropClassName,
   closeLabel,
   files,
   onClose,
@@ -41,6 +42,7 @@ export function SkillFilesDialog({
   readOnly,
   title,
 }: {
+  backdropClassName?: string
   closeLabel: string
   files: SkillTextFile[]
   onClose: () => void
@@ -116,6 +118,7 @@ export function SkillFilesDialog({
   const tree = buildSkillFileTree(files)
   return (
     <Modal.Backdrop
+      className={backdropClassName}
       isOpen
       onOpenChange={(isOpen) => !isOpen && closeAfterSave()}
     >
@@ -825,6 +828,7 @@ export function OriginalPreviewDialog({
 }
 
 export function ConfirmDialog({
+  backdropClassName,
   cancelLabel,
   confirmLabel,
   isBusy,
@@ -833,6 +837,7 @@ export function ConfirmDialog({
   onConfirm,
   title,
 }: {
+  backdropClassName?: string
   cancelLabel: string
   confirmLabel: string
   isBusy: boolean
@@ -843,6 +848,7 @@ export function ConfirmDialog({
 }) {
   return (
     <AlertDialog.Backdrop
+      className={backdropClassName}
       isOpen
       onOpenChange={(isOpen) => {
         if (!isOpen) onCancel()

@@ -84,12 +84,18 @@ export function WritingComposer({
     useState(state.selectedCreateWritingSkillIds)
   const [selectedRevisionWritingSkillId, setSelectedRevisionWritingSkillId] =
     useState<string | null>(state.selectedRevisionWritingSkillId)
+  const [selectedRefinementSkillId, setSelectedRefinementSkillId] = useState(
+    state.selectedRefinementSkillId || "writing-skill-refiner"
+  )
   const selectedWritingSkillIds = activeWritingSkillIds(
     mode,
     selectedCreateWritingSkillIds,
     selectedRevisionWritingSkillId
   )
   const [writingSkills, setWritingSkills] = useState<AgentSkillListing[]>([])
+  const [refinementSkills, setRefinementSkills] = useState<AgentSkillListing[]>(
+    []
+  )
   const [skillFilesDialog, setSkillFilesDialog] = useState<{
     files: SkillTextFile[]
     skill: AgentSkillListing
@@ -121,13 +127,17 @@ export function WritingComposer({
   useEffect(() => {
     let isCancelled = false
     apiJson<{
+      refinementSkills?: AgentSkillListing[]
       skills?: AgentSkillListing[]
     }>(
       transport.apiBase,
       `/api/writing/skills?taskVersion=${encodeURIComponent(refinementTaskVersion)}`
     )
       .then((data) => {
-        if (!isCancelled) setWritingSkills(data.skills ?? [])
+        if (!isCancelled) {
+          setWritingSkills(data.skills ?? [])
+          setRefinementSkills(data.refinementSkills ?? [])
+        }
       })
       .catch((skillError) => {
         if (!isCancelled) {
@@ -149,6 +159,7 @@ export function WritingComposer({
           mode,
           refinementName,
           selectedCreateWritingSkillIds,
+          selectedRefinementSkillId,
           selectedRevisionWritingSkillId,
           targetGeneratedDocumentId: mode === "revise" ? targetId : null,
         }),
@@ -162,6 +173,7 @@ export function WritingComposer({
     mode,
     refinementName,
     selectedCreateWritingSkillIds,
+    selectedRefinementSkillId,
     selectedRevisionWritingSkillId,
     targetId,
     transport.apiBase,
@@ -249,7 +261,10 @@ export function WritingComposer({
       await apiJson(transport.apiBase, "/api/writing/refinement-requests", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: refinementName }),
+        body: JSON.stringify({
+          name: refinementName,
+          refinerSkillId: selectedRefinementSkillId,
+        }),
       })
       setRefinementName("")
       await onReload()
@@ -265,6 +280,7 @@ export function WritingComposer({
   }, [
     onReload,
     refinementName,
+    selectedRefinementSkillId,
     selectedSourceCount,
     t,
     transport.apiBase,
@@ -288,7 +304,7 @@ export function WritingComposer({
     async (skill: AgentSkillListing) => {
       const payload = await apiJson<{ files?: SkillTextFile[] }>(
         transport.apiBase,
-        `/api/writing/skills/${encodeURIComponent(skill.skill.id)}`
+        `/api/skills/${encodeURIComponent(skill.skill.id)}`
       )
       setSkillFilesDialog({ files: payload.files ?? [], skill })
     },
@@ -300,7 +316,7 @@ export function WritingComposer({
       if (!skillFilesDialog) return
       await apiJson(
         transport.apiBase,
-        `/api/writing/skills/${encodeURIComponent(skillFilesDialog.skill.skill.id)}/file`,
+        `/api/skills/${encodeURIComponent(skillFilesDialog.skill.skill.id)}/file`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
@@ -327,7 +343,7 @@ export function WritingComposer({
     try {
       await apiJson(
         transport.apiBase,
-        `/api/writing/skills/${encodeURIComponent(pendingDeleteSkill.skill.id)}`,
+        `/api/skills/${encodeURIComponent(pendingDeleteSkill.skill.id)}`,
         { method: "DELETE" }
       )
       const deletedId = pendingDeleteSkill.skill.id
@@ -442,6 +458,41 @@ export function WritingComposer({
                 value={refinementName}
               />
             </div>
+            <div className="op-writing-target">
+              <Label className="op-writing-section-title">
+                {t`Refinement Skill`}
+              </Label>
+              <Select
+                aria-label={t`Refinement Skill`}
+                onChange={(key) =>
+                  key && setSelectedRefinementSkillId(String(key))
+                }
+                selectionMode="single"
+                value={selectedRefinementSkillId}
+              >
+                <Select.Trigger>
+                  <Select.Value>
+                    {refinementSkills.find(
+                      (item) => item.skill.id === selectedRefinementSkillId
+                    )?.skill.name ?? t`Refine writing`}
+                  </Select.Value>
+                  <Select.Indicator />
+                </Select.Trigger>
+                <Select.Popover>
+                  <ListBox>
+                    {refinementSkills.map((item) => (
+                      <ListBox.Item
+                        id={item.skill.id}
+                        key={item.skill.id}
+                        textValue={item.skill.name}
+                      >
+                        {item.skill.name}
+                      </ListBox.Item>
+                    ))}
+                  </ListBox>
+                </Select.Popover>
+              </Select>
+            </div>
             <div className="op-writing-refinement__sources">
               <strong className="op-writing-section-title">
                 {t("Selected articles")}: {selectedSourceCount}
@@ -544,7 +595,7 @@ export function WritingComposer({
                 {writingSkills.map((item) => (
                   <div className="op-writing-skill" key={item.skill.id}>
                     <Checkbox
-                      aria-label={`${t`Select Writing Skill`}: ${item.skill.title}`}
+                      aria-label={`${t`Select Writing Skill`}: ${item.skill.name}`}
                       id={`writing-skill-${item.skill.id}`}
                       isSelected={selectedWritingSkillIds.includes(
                         item.skill.id
@@ -552,13 +603,20 @@ export function WritingComposer({
                       onChange={(isSelected) =>
                         toggleWritingSkill(item.skill.id, isSelected)
                       }
-                    />
+                      variant="secondary"
+                    >
+                      <Checkbox.Content>
+                        <Checkbox.Control>
+                          <Checkbox.Indicator />
+                        </Checkbox.Control>
+                      </Checkbox.Content>
+                    </Checkbox>
                     <label
                       className="op-writing-skill__body"
                       htmlFor={`writing-skill-${item.skill.id}`}
                     >
                       <span className="op-writing-skill__title">
-                        <strong>{item.skill.title}</strong>
+                        <strong>{item.skill.name}</strong>
                         <span>
                           {item.source === "builtin"
                             ? t`Built-in`
@@ -571,7 +629,7 @@ export function WritingComposer({
                     </label>
                     <Dropdown>
                       <Button
-                        aria-label={`${t`Writing Skill actions`}: ${item.skill.title}`}
+                        aria-label={`${t`Writing Skill actions`}: ${item.skill.name}`}
                         isIconOnly
                         size="sm"
                         variant="ghost"
@@ -691,7 +749,7 @@ export function WritingComposer({
           onClose={() => setSkillFilesDialog(null)}
           onSave={saveSkillFile}
           readOnly={skillFilesDialog.skill.source === "builtin"}
-          title={skillFilesDialog.skill.skill.title}
+          title={skillFilesDialog.skill.skill.name}
         />
       ) : null}
       {pendingDeleteSkill ? (

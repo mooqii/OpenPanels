@@ -11,10 +11,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-static AGENT_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/skills");
-pub const CANVAS_PANEL_SKILL_ID: &str = "canvas-panel";
-pub const TASK_QUEUE_SKILL_ID: &str = "task-queue";
-pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 6;
+static SYSTEM_SKILLS: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/system-skills");
+static PRESET_SKILLS: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/../../agent-resources/preset-skills");
+static BUILTIN_SKILL_REGISTRY: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../agent-resources/builtin-skill-registry.json"
+));
+pub const CANVAS_PANEL_SKILL_ID: &str = "myopenpanels-canvas-panel";
+pub const TASK_QUEUE_SKILL_ID: &str = "myopenpanels-task-queue";
+pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 8;
 pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -27,7 +34,7 @@ pub struct AgentSkillMetadata {
     pub requires_commands: Vec<String>,
     pub source: String,
     pub task_types: Vec<String>,
-    pub title: String,
+    pub name: String,
     pub tokens: String,
 }
 
@@ -54,6 +61,28 @@ pub struct AgentSkillReadPayload {
     pub local_path: String,
     pub markdown: String,
     pub actions: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuiltinSkillRegistry {
+    schema_version: u32,
+    system_skills: Vec<BuiltinSkillRegistration>,
+    preset_skills: Vec<BuiltinSkillRegistration>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuiltinSkillRegistration {
+    applies_to: Vec<String>,
+    id: String,
+    load_when: Vec<String>,
+    name: String,
+    package_dir: String,
+    requires_commands: Vec<String>,
+    source: String,
+    task_types: Vec<String>,
+    tokens: String,
 }
 
 pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<Value, CliError> {
@@ -114,8 +143,8 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
     let detailed_selection = (bootstrap.active_panel_kind == PanelKind::Canvas)
         .then(|| read_selection(paths, None, false).ok())
         .flatten();
-    let wiki_selection = (bootstrap.active_panel_kind == PanelKind::Wiki)
-        .then(|| read_agent_selection(paths).ok())
+    let wiki_selection = matches!(bootstrap.active_panel_kind, PanelKind::Wiki | PanelKind::Writing)
+        .then(|| selection.as_ref().map(|selection| selection.value.clone()))
         .flatten();
     let mut required_skills = Vec::new();
     let mut required_commands = BTreeSet::new();

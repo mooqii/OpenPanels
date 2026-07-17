@@ -17,6 +17,7 @@ const DEFAULT_PANEL_KINDS: &[PanelKind] = &[
 const DEFAULT_ACTIVE_PANEL_KIND: PanelKind = PanelKind::Wiki;
 const DEFAULT_WIKI_SPACE_ID: &str = "wiki:default";
 const DEFAULT_WRITING_SKILL_ID: &str = "writing-default";
+const DEFAULT_REFINEMENT_SKILL_ID: &str = "writing-skill-refiner";
 
 pub struct BootstrapRequest {
     pub requested_panel_id: Option<String>,
@@ -661,7 +662,7 @@ fn is_typesetting_image_v1(image: &Value) -> bool {
 }
 
 fn resolve_writing_state(state: Option<Value>) -> Result<PanelStateResolution, CliError> {
-    let Some(state) = state else {
+    let Some(mut state) = state else {
         return Ok(PanelStateResolution {
             state: empty_writing_state(),
             changed: true,
@@ -682,9 +683,15 @@ fn resolve_writing_state(state: Option<Value>) -> Result<PanelStateResolution, C
             .get("selectedRevisionWritingSkillId")
             .is_some_and(|id| id.is_null() || id.is_string());
     if valid {
+        let changed = !state
+            .get("selectedRefinementSkillId")
+            .is_some_and(Value::is_string);
+        if changed {
+            state["selectedRefinementSkillId"] = json!(DEFAULT_REFINEMENT_SKILL_ID);
+        }
         Ok(PanelStateResolution {
             state,
-            changed: false,
+            changed,
         })
     } else {
         Err(CliError::new(
@@ -778,6 +785,7 @@ fn empty_writing_state() -> Value {
         "targetGeneratedDocumentId": null,
         "selectedCreateWritingSkillIds": [DEFAULT_WRITING_SKILL_ID],
         "selectedRevisionWritingSkillId": DEFAULT_WRITING_SKILL_ID,
+        "selectedRefinementSkillId": DEFAULT_REFINEMENT_SKILL_ID,
     })
 }
 

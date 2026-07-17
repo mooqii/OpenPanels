@@ -55,9 +55,7 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
         }
         (Some("raw"), Some("list")) => {
             let paths = parsed_current_paths(parsed)?;
-            let result = wiki::wiki_context(&paths)?;
-            let documents = result["state"]["rawDocuments"].clone();
-            let payload = serde_json::json!({ "documents": documents });
+            let payload = wiki::list_raw_documents(&paths)?;
             let count = payload["documents"].as_array().map(Vec::len).unwrap_or(0);
             write_result(parsed, stdout, &payload, &format!("{count} document(s)"))
         }
@@ -202,6 +200,19 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
             let count = result["spaces"].as_array().map(Vec::len).unwrap_or(0);
             write_result(parsed, stdout, &result, &format!("{count} wiki space(s)"))
         }
+        (Some("space"), Some("materialize")) => {
+            let paths = parsed_current_paths(parsed)?;
+            let wiki_space_id = required_flag(parsed, "space-id")?;
+            let result = wiki::materialize_wiki_space(&paths, wiki_space_id)?;
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                result["localAccess"]["rootPath"]
+                    .as_str()
+                    .unwrap_or("Materialized Wiki"),
+            )
+        }
         (Some("page"), Some("read")) => {
             let paths = parsed_current_paths(parsed)?;
             let result = wiki::read_page(
@@ -233,23 +244,29 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
             let paths = parsed_current_paths(parsed)?;
             let wiki_space_id = required_flag(parsed, "space-id")?;
             let page_path = required_flag(parsed, "path")?;
-            let pages = wiki::list_pages(&paths, wiki_space_id)?;
-            let exists = pages["pages"].as_array().is_some_and(|pages| {
-                pages
-                    .iter()
-                    .any(|page| page["path"].as_str() == Some(page_path))
-            });
-            if mode == "create" && exists {
-                return Err(CliError::with_code(
-                    "content_conflict",
-                    format!("Wiki page already exists: {page_path}"),
-                ));
-            }
-            if mode == "update" && !exists {
-                return Err(CliError::with_code(
-                    "wiki_page_not_found",
-                    format!("Wiki page not found: {page_path}"),
-                ));
+            let task_id = string_flag(parsed, "task-id");
+            if should_check_live_page_existence(
+                task_id,
+                crate::content::broker_execution_available(),
+            ) {
+                let pages = wiki::list_pages(&paths, wiki_space_id)?;
+                let exists = pages["pages"].as_array().is_some_and(|pages| {
+                    pages
+                        .iter()
+                        .any(|page| page["path"].as_str() == Some(page_path))
+                });
+                if mode == "create" && exists {
+                    return Err(CliError::with_code(
+                        "content_conflict",
+                        format!("Wiki page already exists: {page_path}"),
+                    ));
+                }
+                if mode == "update" && !exists {
+                    return Err(CliError::with_code(
+                        "wiki_page_not_found",
+                        format!("Wiki page not found: {page_path}"),
+                    ));
+                }
             }
             let file = required_flag(parsed, "content-file")?;
             let content =
@@ -260,7 +277,7 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
                 page_path,
                 &content,
                 string_flag(parsed, "title"),
-                string_flag(parsed, "task-id"),
+                task_id,
             )?;
             write_result(
                 parsed,
@@ -277,4 +294,8 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
         }
         _ => Err(CliError::new("Unknown wiki command.")),
     }
+}
+
+fn should_check_live_page_existence(task_id: Option<&str>, broker_available: bool) -> bool {
+    task_id.is_none() || !broker_available
 }

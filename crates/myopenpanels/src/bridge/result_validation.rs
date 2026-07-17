@@ -233,7 +233,7 @@ fn validate_refinement_execution_result(
         .pointer("/input/skillId")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let skill_title = task
+    let skill_name = task
         .pointer("/input/name")
         .and_then(Value::as_str)
         .unwrap_or("");
@@ -290,41 +290,38 @@ fn validate_refinement_execution_result(
             "Refined Writing Skill must be valid UTF-8.",
         )
     })?;
-    let parsed = crate::agent::parse_skill(skill_source, "SKILL.md").map_err(|error| {
-        CliError::with_code(
-            "invalid_output",
-            format!("Refined Writing Skill is invalid: {}", error.message()),
-        )
-    })?;
-    if parsed.metadata.id != skill_id
-        || parsed.metadata.title != skill_title
-        || parsed.metadata.source != "custom"
-        || parsed.metadata.applies_to != ["writing"]
-        || parsed.metadata.task_types != ["generate_document"]
-        || !parsed.metadata.requires_commands.is_empty()
-        || parsed.metadata.description.trim().is_empty()
-        || parsed.body.trim().is_empty()
-    {
-        return Err(CliError::with_code(
-            "invalid_output",
-            "Refined Writing Skill metadata does not match the Task contract.",
-        ));
-    }
     let manifest: Value = serde_json::from_slice(manifest_bytes).map_err(|_| {
         CliError::with_code(
             "invalid_output",
             "Refined Writing Skill manifest is not valid JSON.",
         )
     })?;
-    if manifest.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+    if manifest.get("schemaVersion").and_then(Value::as_u64) != Some(2)
         || manifest.get("source").and_then(Value::as_str) != Some("custom")
         || manifest.get("taskId").and_then(Value::as_str) != Some(task_id)
         || manifest.get("skillId").and_then(Value::as_str) != Some(skill_id)
-        || manifest.get("title").and_then(Value::as_str) != Some(skill_title)
+        || manifest.get("name").and_then(Value::as_str) != Some(skill_name)
     {
         return Err(CliError::with_code(
             "invalid_output",
             "Refined Writing Skill manifest does not match the Task contract.",
+        ));
+    }
+    let parsed = crate::agent::custom_writing_skill_from_source(
+        skill_source,
+        "SKILL.md",
+        &manifest,
+    )
+    .map_err(|error| {
+        CliError::with_code(
+            "invalid_output",
+            format!("Refined Writing Skill is invalid: {}", error.message()),
+        )
+    })?;
+    if parsed.metadata.id != skill_id || parsed.metadata.name != skill_name {
+        return Err(CliError::with_code(
+            "invalid_output",
+            "Refined Writing Skill metadata does not match the Task contract.",
         ));
     }
     Ok(result)

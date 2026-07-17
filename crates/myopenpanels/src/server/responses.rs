@@ -124,7 +124,12 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "target_not_found"
             | "model_gateway_connection_not_found"
             | "writing_skill_not_found"
-            | "writing_skill_file_not_found",
+            | "writing_refinement_skill_not_found"
+            | "writing_skill_file_not_found"
+            | "skill_not_found"
+            | "device_skill_not_found"
+            | "skill_module_not_found"
+            | "skill_file_not_found",
         ) => StatusCode::NOT_FOUND,
         Some("unauthorized_target" | "invalid_lease" | "lease_expired" | "execution_fenced") => {
             StatusCode::UNAUTHORIZED
@@ -133,14 +138,24 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             "task_not_claimable"
             | "invalid_task_transition"
             | "writing_skill_name_conflict"
+            | "skill_name_conflict"
+            | "skill_reserved_name"
+            | "skill_content_changed"
             | "content_conflict",
         ) => StatusCode::CONFLICT,
         Some("content_not_found") => StatusCode::NOT_FOUND,
-        Some("content_too_large") => StatusCode::PAYLOAD_TOO_LARGE,
+        Some("content_too_large" | "skill_package_too_large") => StatusCode::PAYLOAD_TOO_LARGE,
         Some("broker_unavailable") => StatusCode::SERVICE_UNAVAILABLE,
-        Some("invalid_output" | "invalid_content_path" | "invalid_content_resource") => {
+        Some(
+            "invalid_output"
+            | "invalid_content_path"
+            | "invalid_content_resource"
+            | "skill_file_invalid"
+            | "writing_skill_file_invalid",
+        ) => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
+        Some("skill_read_only" | "writing_skill_read_only") => StatusCode::FORBIDDEN,
         Some(
             "invalid_target"
             | "invalid_dispatch_mode"
@@ -152,9 +167,12 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "writing_refinement_source_not_ready"
             | "writing_skill_name_required"
             | "writing_skill_name_too_long"
-            | "writing_skill_file_invalid"
-            | "writing_skill_read_only",
+            | "invalid_skill_module"
+            | "invalid_skill_package"
+            | "skill_source_ambiguous"
+            | "unsupported_skill_source",
         ) => StatusCode::BAD_REQUEST,
+        Some("skill_source_unavailable") => StatusCode::BAD_GATEWAY,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

@@ -109,6 +109,45 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
             .as_str()
             .is_some_and(|path| Path::new(path).is_file())
     );
+    assert_eq!(
+        selection["value"]["selectedRawDocuments"][0]["markdownAccess"]["status"],
+        "ready"
+    );
+    assert!(selection["value"]["selectedRawDocuments"][0]["markdownFilePath"]
+        .as_str()
+        .is_some_and(|path| Path::new(path).is_file()));
+    assert_eq!(
+        selection["value"]["wiki"]["localAccess"]["status"],
+        "ready"
+    );
+    let wiki_root = selection["value"]["wiki"]["localAccess"]["rootPath"]
+        .as_str()
+        .expect("wiki root");
+    assert!(Path::new(wiki_root)
+        .join("pages/concepts/myopenpanels.md")
+        .is_file());
+    assert!(selection["value"]["wiki"]["localAccess"]["manifestFilePath"]
+        .as_str()
+        .is_some_and(|path| Path::new(path).is_file()));
+    let stale_page = Path::new(wiki_root).join("pages/stale.md");
+    fs::write(&stale_page, "# Stale\n").expect("stale page");
+    let (code, stdout, stderr) = run(&[
+        "wiki",
+        "space",
+        "materialize",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--space-id",
+        "wiki:default",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(!stale_page.exists());
     assert!(selection["value"]["wiki"].get("loadAction").is_none());
     assert_action_parses(&selection["actions"]["suggested"][0]);
     assert!(selection["value"].get("actions").is_none());
@@ -133,13 +172,21 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         1
     );
     assert!(context.get("knowledgeContext").is_none());
+    let loader = fs::read_to_string(
+        context["skills"][0]["contextPath"]
+            .as_str()
+            .expect("Wiki loader path"),
+    )
+    .expect("Wiki loader");
+    assert!(loader.contains("selected raw document: Product brief"));
+    assert!(loader.contains("wiki local access: status=ready"));
 
     let (code, stdout, stderr) = run(&[
         "agent",
         "skill",
         "read",
         "--skill-id",
-        "wiki-panel",
+        "myopenpanels-wiki-panel",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -234,6 +281,18 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
     assert_eq!(
         selection["selectedGeneratedDocuments"][0]["id"],
         document_id
+    );
+    assert_eq!(
+        selection["selectedGeneratedDocuments"][0]["contentAccess"]["status"],
+        "ready"
+    );
+    assert!(selection["selectedGeneratedDocuments"][0]["contentFilePath"]
+        .as_str()
+        .is_some_and(|path| Path::new(path).is_file()));
+    assert_eq!(selection["wiki"]["localAccess"]["status"], "on_demand");
+    assert_eq!(
+        selection["wiki"]["localAccess"]["materializeAction"]["intent"],
+        "wiki.space.materialize"
     );
     let revision_after = Storage::open(&paths)
         .expect("storage")
@@ -712,3 +771,9 @@ fn generic_targets_claim_and_complete_project_tasks() {
     assert_eq!(pending["pendingCount"], 0);
 }
 
+#[test]
+fn broker_page_writes_do_not_read_the_live_wiki_before_staging() {
+    assert!(should_check_live_page_existence(None, false));
+    assert!(should_check_live_page_existence(Some("task:test"), false));
+    assert!(!should_check_live_page_existence(Some("task:test"), true));
+}

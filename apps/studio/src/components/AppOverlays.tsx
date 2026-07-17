@@ -5,7 +5,9 @@ import type {
   MyOpenPanelsUpdateStatus,
 } from "../types"
 import { ModelGatewaySettingsDialog } from "./settings/ModelGatewaySettings"
-import { AgentToggleButton, BuildVersionBadge } from "./trace/TracePanel"
+import { SkillManagerDialog } from "./settings/SkillManager"
+import { AgentToggleButton } from "./trace/AgentToggleButton"
+import { BuildVersionBadge } from "./trace/BuildVersionBadge"
 import {
   type StudioRuntimeState,
   StudioRuntimeStatus,
@@ -15,6 +17,7 @@ import { UpdatePrompt } from "./update/UpdatePrompt"
 export function AppOverlays({
   buildInfo,
   isModelSettingsOpen,
+  isSkillManagerOpen,
   isTraceOpen,
   onCheckUpdate,
   onDismissUpdateError,
@@ -25,6 +28,7 @@ export function AppOverlays({
   pendingTaskCount,
   runtimeState,
   setIsModelSettingsOpen,
+  setIsSkillManagerOpen,
   transport,
   updateAction,
   updateError,
@@ -32,6 +36,7 @@ export function AppOverlays({
 }: {
   buildInfo?: MyOpenPanelsBuildInfo
   isModelSettingsOpen: boolean
+  isSkillManagerOpen: boolean
   isTraceOpen: boolean
   onCheckUpdate: (options?: { refresh?: boolean }) => void
   onDismissUpdateError: () => void
@@ -42,6 +47,7 @@ export function AppOverlays({
   pendingTaskCount: number
   runtimeState: StudioRuntimeState
   setIsModelSettingsOpen: (isOpen: boolean) => void
+  setIsSkillManagerOpen: (isOpen: boolean) => void
   transport: MyOpenPanelsTransport
   updateAction: UpdateAction
   updateError: string | null
@@ -68,6 +74,11 @@ export function AppOverlays({
       <ModelGatewaySettingsDialog
         isOpen={isModelSettingsOpen}
         onOpenChange={setIsModelSettingsOpen}
+        transport={transport}
+      />
+      <SkillManagerDialog
+        isOpen={isSkillManagerOpen}
+        onOpenChange={setIsSkillManagerOpen}
         transport={transport}
       />
       <UpdatePrompt

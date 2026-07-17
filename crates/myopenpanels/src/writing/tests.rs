@@ -106,7 +106,7 @@ mod tests {
 
         let request = read_request(&paths, created["tasks"][0]["id"].as_str().unwrap())
             .expect("read request");
-        assert_eq!(request["writingSkill"]["title"], json!("小红书笔记"));
+        assert_eq!(request["writingSkill"]["name"], json!("小红书笔记"));
         assert_eq!(
             request["actions"]["required"][0]["intent"],
             "agent.skill.read"
@@ -120,6 +120,49 @@ mod tests {
         assert!(loaded
             .markdown
             .contains("writing skill: writing-xiaohongshu-note"));
+    }
+
+    #[test]
+    fn writing_selection_exposes_materialized_document_access() {
+        let (_temp, paths) = test_paths();
+        let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let raw = crate::wiki::add_raw_document(
+            &paths,
+            "reference.md",
+            Some("Reference"),
+            Some("text/markdown"),
+            "user",
+            Some("wiki:default"),
+            b"# Reference\n",
+        )
+        .expect("raw document");
+        let writing = ensure_project_bootstrap(
+            &paths,
+            BootstrapRequest {
+                requested_panel_kind: Some(PanelKind::Writing),
+                requested_panel_id: None,
+                requested_project_id: Some(initial.project.id),
+            },
+        )
+        .expect("writing panel");
+        write_selection(
+            &paths,
+            false,
+            &[raw["document"]["id"].as_str().unwrap().to_owned()],
+            &[],
+        )
+        .expect("selection");
+
+        let selection = panel_selection(&paths, &writing).expect("agent selection");
+        assert_eq!(selection["selectedRawDocuments"][0]["title"], "Reference");
+        assert_eq!(
+            selection["selectedRawDocuments"][0]["markdownAccess"]["status"],
+            "ready"
+        );
+        assert!(selection["selectedRawDocuments"][0]["markdownFilePath"]
+            .as_str()
+            .is_some_and(|path| std::path::Path::new(path).is_file()));
+        assert_eq!(selection["wiki"]["localAccess"]["status"], "on_demand");
     }
 
     #[test]
@@ -743,7 +786,7 @@ mod tests {
         fs::write(
             &skill_file,
             format!(
-                "---\nid: {skill_id}\ntitle: Concise House Style\ndescription: Write with concise, direct paragraphs.\nsource: custom\nappliesTo:\n  - writing\ntaskTypes:\n  - generate_document\nrequiresCommands:\nloadWhen:\n  - The task requests the shared house style.\ntokens: short\n---\n\nUse short, direct paragraphs and remove redundant setup.\n"
+                "---\nname: {skill_id}\ndescription: Write with concise, direct paragraphs.\n---\n\nUse short, direct paragraphs and remove redundant setup.\n"
             ),
         )
         .expect("skill file");
@@ -774,7 +817,7 @@ mod tests {
             crate::agent::writing_agent_skill(&paths, skill_id).expect("custom Writing Skill");
         assert!(Path::new(&custom_skill.local_path)
             .components()
-            .any(|component| component.as_os_str() == "writing-skills"));
+            .any(|component| component.as_os_str() == "skills"));
         create_requests(
             &paths,
             "Write with the extracted method",
@@ -861,5 +904,58 @@ mod tests {
         );
         delete_custom_skill(&paths, skill_id).expect("delete custom skill");
         assert!(crate::agent::writing_agent_skill(&paths, skill_id).is_err());
+    }
+
+    #[test]
+    fn saving_a_legacy_custom_skill_migrates_it_to_a_portable_package() {
+        let (_temp, paths) = test_paths();
+        let bootstrap =
+            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let skill_id = "writing-custom-legacy-style";
+        let skill_dir = crate::agent::custom_writing_skills_dir(&paths).join(skill_id);
+        fs::create_dir_all(&skill_dir).expect("legacy Skill dir");
+        let legacy = format!(
+            "---\nid: {skill_id}\ntitle: Legacy Style\ndescription: Write direct prose.\nsource: custom\nappliesTo:\n  - writing\ntaskTypes:\n  - generate_document\nrequiresCommands:\n---\n\nLead with the main point.\n"
+        );
+        fs::write(skill_dir.join("SKILL.md"), &legacy).expect("legacy Skill");
+        fs::write(
+            skill_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 1,
+                "source": "custom",
+                "originProjectId": bootstrap.project.id,
+                "taskId": "task:legacy",
+                "skillId": skill_id,
+                "title": "Legacy Style",
+                "createdAt": "2026-01-01T00:00:00Z",
+            }))
+            .expect("manifest"),
+        )
+        .expect("legacy manifest");
+
+        let listing = crate::agent::writing_agent_skill(&paths, skill_id).expect("legacy listing");
+        assert_eq!(listing.skill.name, "Legacy Style");
+        let edited = legacy.replace("Legacy Style", "Updated Legacy Style");
+        let saved = write_custom_skill_file(&paths, skill_id, "SKILL.md", &edited)
+            .expect("migrate legacy Skill");
+        assert!(saved["content"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with(&format!("---\nname: {skill_id}\n")));
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(skill_dir.join("manifest.json")).expect("migrated manifest"),
+        )
+        .expect("manifest JSON");
+        assert_eq!(manifest["schemaVersion"], 2);
+        assert_eq!(manifest["name"], "Updated Legacy Style");
+        assert!(manifest.get("title").is_none());
+        assert_eq!(manifest["binding"]["appliesTo"], json!(["writing"]));
+        assert_eq!(
+            crate::agent::writing_agent_skill(&paths, skill_id)
+                .expect("migrated listing")
+                .skill
+                .name,
+            "Updated Legacy Style"
+        );
     }
 }

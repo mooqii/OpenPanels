@@ -95,6 +95,91 @@ pub fn commit_immediate_text(
     )
 }
 
+pub fn rename_active_file(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    kind: ResourceKind,
+    resource_key: &str,
+    current_path: &str,
+    next_path: &str,
+) -> Result<Option<Value>, CliError> {
+    validate_logical_path(current_path)?;
+    validate_logical_path(next_path)?;
+    if current_path == next_path {
+        return active_resource_descriptor(paths, project_id, kind, resource_key);
+    }
+    let storage = Storage::open(paths)?;
+    let tx = storage
+        .connection()
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
+    let current = tx
+        .query_row(
+            "SELECT id, active_revision_id, content_version FROM content_resources WHERE project_id = ? AND resource_kind = ? AND resource_key = ? AND archived_at IS NULL",
+            params![project_id, kind.as_str(), resource_key],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(to_cli_error)?;
+    let Some((resource_id, Some(parent_revision_id), current_version)) = current else {
+        return Ok(None);
+    };
+    let mut manifest = base_manifest(&tx, Some(&parent_revision_id))?;
+    if manifest.contains_key(next_path) {
+        return Err(CliError::with_code(
+            "content_conflict",
+            format!("Active content already contains the destination file: {next_path}"),
+        ));
+    }
+    let entry = manifest.remove(current_path).ok_or_else(|| {
+        CliError::with_code(
+            "content_unavailable",
+            format!("Active content does not contain the file being renamed: {current_path}"),
+        )
+    })?;
+    manifest.insert(next_path.to_owned(), entry);
+    let now = now_iso();
+    tx.execute(
+        "UPDATE content_revisions SET status = 'prunable', prunable_at = ? WHERE id = ? AND status = 'active'",
+        params![now, parent_revision_id],
+    )
+    .map_err(to_cli_error)?;
+    let content_version = current_version + 1;
+    let revision_id = crate::ids::random_id("content-revision");
+    let manifest_json = manifest_value(&manifest);
+    let manifest_text = serde_json::to_string(&manifest_json).map_err(to_cli_error)?;
+    let manifest_hash = format!("{:x}", Sha256::digest(manifest_text.as_bytes()));
+    tx.execute(
+        "INSERT INTO content_revisions (id, content_resource_id, parent_revision_id, revision_number, manifest_json, manifest_hash, status, created_at, activated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+        params![revision_id, resource_id, parent_revision_id, content_version, manifest_text, manifest_hash, now, now],
+    )
+    .map_err(to_cli_error)?;
+    for (path, entry) in &manifest {
+        tx.execute(
+            "INSERT INTO content_revision_files (revision_id, logical_path, object_hash, size_bytes, mime_type) VALUES (?, ?, ?, ?, ?)",
+            params![revision_id, path, entry.object_hash, entry.size_bytes, entry.mime_type],
+        )
+        .map_err(to_cli_error)?;
+    }
+    tx.execute(
+        "UPDATE content_resources SET active_revision_id = ?, content_version = ?, updated_at = ? WHERE id = ?",
+        params![revision_id, content_version, now, resource_id],
+    )
+    .map_err(to_cli_error)?;
+    tx.commit().map_err(to_cli_error)?;
+    Ok(Some(json!({
+        "revisionId": revision_id,
+        "contentVersion": content_version,
+        "manifestHash": manifest_hash,
+    })))
+}
+
 pub fn active_writing_skill_sources(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<(String, String, Value, String)>, CliError> {

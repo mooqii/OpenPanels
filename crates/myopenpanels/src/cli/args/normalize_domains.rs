@@ -10,6 +10,13 @@ fn normalize_wiki(
                 vec!["wiki".into(), "space".into(), "list".into()],
                 "wiki.space.list",
             ),
+            WikiSpaceCommand::Materialize { space_id } => {
+                put(flags, "space-id", Some(space_id));
+                (
+                    vec!["wiki".into(), "space".into(), "materialize".into()],
+                    "wiki.space.materialize",
+                )
+            }
             WikiSpaceCommand::Activate { space_id } => {
                 put(flags, "space-id", Some(space_id));
                 (

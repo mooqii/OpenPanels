@@ -48,13 +48,14 @@ struct WritingDraftBody {
     #[serde(default)]
     selected_create_writing_skill_ids: Vec<String>,
     selected_revision_writing_skill_id: Option<String>,
+    selected_refinement_skill_id: Option<String>,
 }
 
 async fn api_writing_save_draft(
     State(state): State<Arc<AppState>>,
     Json(body): Json<WritingDraftBody>,
 ) -> Response {
-    match crate::writing::save_draft(
+    match crate::writing::save_draft_with_refinement_skill(
         &state.paths,
         &body.draft,
         &body.mode,
@@ -62,6 +63,7 @@ async fn api_writing_save_draft(
         body.target_generated_document_id.as_deref(),
         &body.selected_create_writing_skill_ids,
         body.selected_revision_writing_skill_id.as_deref(),
+        body.selected_refinement_skill_id.as_deref(),
     ) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),
@@ -78,9 +80,16 @@ struct WritingRequestBody {
 }
 
 async fn api_writing_skills(State(state): State<Arc<AppState>>) -> Response {
-    match crate::agent::list_writing_agent_skills(&state.paths) {
-        Ok(skills) => json_response(StatusCode::OK, &json!({ "skills": skills })),
-        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+    match (
+        crate::agent::list_writing_agent_skills(&state.paths),
+        crate::agent::list_writing_refinement_agent_skills(&state.paths),
+    ) {
+        (Ok(skills), Ok(refinement_skills)) => json_response(
+            StatusCode::OK,
+            &json!({ "skills": skills, "refinementSkills": refinement_skills }),
+        ),
+        (Err(error), _) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
+        (_, Err(error)) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
     }
 }
 
@@ -144,15 +153,21 @@ async fn api_writing_create_request(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WritingRefinementRequestBody {
     name: String,
+    refiner_skill_id: Option<String>,
 }
 
 async fn api_writing_create_refinement_request(
     State(state): State<Arc<AppState>>,
     Json(body): Json<WritingRefinementRequestBody>,
 ) -> Response {
-    match crate::writing::create_refinement_request(&state.paths, &body.name) {
+    match crate::writing::create_refinement_request_with_skill(
+        &state.paths,
+        &body.name,
+        body.refiner_skill_id.as_deref(),
+    ) {
         Ok(payload) => json_response(StatusCode::CREATED, &payload),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),
     }

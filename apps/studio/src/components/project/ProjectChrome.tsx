@@ -38,6 +38,7 @@ export function ProjectChrome({
   onCreateProject,
   onDeleteProject,
   onOpenModelSettings,
+  onOpenSkillManager,
   onRenameProject,
   onSwitchProject,
 }: {
@@ -45,13 +46,17 @@ export function ProjectChrome({
   onCreateProject: () => void
   onDeleteProject: (projectId: string) => void
   onOpenModelSettings: () => void
+  onOpenSkillManager: () => void
   onRenameProject: (title: string) => void
   onSwitchProject: (projectId: string) => void
   projects: MyOpenPanelsProject[]
 }) {
   return (
     <>
-      <CanvasMenu onOpenModelSettings={onOpenModelSettings} />
+      <CanvasMenu
+        onOpenModelSettings={onOpenModelSettings}
+        onOpenSkillManager={onOpenSkillManager}
+      />
       <ProjectTitleControl
         currentProject={currentProject}
         onCreateProject={onCreateProject}

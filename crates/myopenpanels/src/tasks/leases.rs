@@ -201,7 +201,22 @@ fn claim_once(
     .map_err(to_cli_error)?;
     crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
     tx.commit().map_err(to_cli_error)?;
+    let execution_batch = if reserved.queue == "wiki" {
+        create_wiki_update_execution_batch(
+            paths,
+            project_id,
+            &reserved.id,
+            target_id,
+            execution_generation,
+        )?
+    } else {
+        None
+    };
     let mut payload = inspect_task(paths, &reserved.id)?;
+    if let Some(batch) = execution_batch {
+        payload["batch"] = batch.clone();
+        payload["task"]["batch"] = batch;
+    }
     payload["leaseToken"] = json!(lease_token);
     payload["target"] = target;
     payload["attemptId"] = json!(attempt_id);
@@ -218,6 +233,139 @@ fn claim_once(
         .unwrap_or(Value::Null);
     payload["inputManifest"] = json!(read_task_inputs(paths, &reserved.id)?);
     Ok(Some(payload))
+}
+
+const MAX_WIKI_UPDATE_BATCH_TASKS: usize = 16;
+
+fn create_wiki_update_execution_batch(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    leader_task_id: &str,
+    target_id: &str,
+    execution_generation: i64,
+) -> Result<Option<Value>, CliError> {
+    let storage = Storage::open(paths)?;
+    let mut tasks = storage.list_tasks(project_id)?;
+    let Some(leader) = tasks
+        .iter()
+        .find(|task| task.get("id").and_then(Value::as_str) == Some(leader_task_id))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    if !is_wiki_update_task(&leader) {
+        return Ok(None);
+    }
+    let Some(mutation_key) = leader.get("mutationKey").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let leader_sequence = leader
+        .get("mutationSequence")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let leader_skill = leader.pointer("/source/agentSkillId").and_then(Value::as_str);
+    let leader_dispatch = leader.get("dispatchMode").and_then(Value::as_str);
+    let leader_connection = leader
+        .get("requestedGatewayConnectionId")
+        .and_then(Value::as_str);
+    let leader_protocol = leader
+        .get("requiredProtocolVersion")
+        .and_then(Value::as_i64);
+
+    tasks.sort_by_key(|task| {
+        task.get("mutationSequence")
+            .and_then(Value::as_i64)
+            .unwrap_or(i64::MAX)
+    });
+    let now = chrono::Utc::now();
+    let mut members = vec![leader.clone()];
+    for task in tasks {
+        let sequence = task
+            .get("mutationSequence")
+            .and_then(Value::as_i64)
+            .unwrap_or(i64::MAX);
+        if sequence <= leader_sequence
+            || task.get("mutationKey").and_then(Value::as_str) != Some(mutation_key)
+        {
+            continue;
+        }
+        if members.len() >= MAX_WIKI_UPDATE_BATCH_TASKS {
+            break;
+        }
+        let status = task.get("status").and_then(Value::as_str).unwrap_or("");
+        if matches!(status, "succeeded" | "cancelled" | "stale" | "superseded") {
+            continue;
+        }
+        let ready = matches!(status, "queued" | "failed")
+            && task.get("attempt").and_then(Value::as_i64).unwrap_or(0)
+                < task.get("maxAttempts").and_then(Value::as_i64).unwrap_or(8)
+            && task
+                .get("retryAfter")
+                .and_then(Value::as_str)
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .is_none_or(|value| value.with_timezone(&chrono::Utc) <= now);
+        let compatible = is_wiki_update_task(&task)
+            && task.pointer("/source/agentSkillId").and_then(Value::as_str) == leader_skill
+            && task.get("dispatchMode").and_then(Value::as_str) == leader_dispatch
+            && task
+                .get("requestedGatewayConnectionId")
+                .and_then(Value::as_str)
+                == leader_connection
+            && task
+                .get("requiredProtocolVersion")
+                .and_then(Value::as_i64)
+                == leader_protocol;
+        if !ready || !compatible {
+            break;
+        }
+        members.push(task);
+    }
+    if members.len() < 2 {
+        return Ok(None);
+    }
+
+    let batch_id = format!("wiki-update-batch:{leader_task_id}:{execution_generation}");
+    let member_task_ids = members
+        .iter()
+        .filter_map(|task| task.get("id").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let batch = json!({
+        "id": batch_id,
+        "kind": "wiki_update",
+        "leaderTaskId": leader_task_id,
+        "memberTaskIds": member_task_ids,
+        "mutationKey": mutation_key,
+        "wikiSpaceId": leader.pointer("/source/wikiSpaceId"),
+        "targetId": target_id,
+        "executionGeneration": execution_generation,
+        "taskCount": members.len(),
+        "tasks": members,
+    });
+    let mut source = leader.get("source").cloned().unwrap_or_else(|| json!({}));
+    source["executionBatch"] = batch.clone();
+    storage
+        .connection()
+        .execute(
+            "UPDATE tasks SET source_json = ?, updated_at = ? WHERE id = ? AND project_id = ? AND execution_generation = ?",
+            params![
+                source.to_string(),
+                crate::control::now_iso(),
+                leader_task_id,
+                project_id,
+                execution_generation,
+            ],
+        )
+        .map_err(to_cli_error)?;
+    Ok(Some(batch))
+}
+
+fn is_wiki_update_task(task: &Value) -> bool {
+    task.get("queue").and_then(Value::as_str) == Some("wiki")
+        && matches!(
+            task.get("type").and_then(Value::as_str),
+            Some("ingest_markdown_into_wiki" | "maintain_wiki")
+        )
 }
 
 pub fn heartbeat_task(
@@ -276,6 +424,19 @@ pub fn complete_task(
     result: Option<Value>,
 ) -> Result<Value, CliError> {
     let lease = verify_lease(paths, task_id, lease_token)?;
+    let task_before_completion = inspect_task_in_session(
+        paths,
+        lease["projectId"].as_str().unwrap_or_default(),
+        task_id,
+    )?["task"]
+        .clone();
+    let execution_batch = task_before_completion
+        .pointer("/source/executionBatch")
+        .cloned();
+    let result = execution_batch
+        .as_ref()
+        .map(|batch| enrich_wiki_batch_result(result.clone(), batch))
+        .unwrap_or(result);
     let prepared_panel_state: Option<(String, Value)> = match lease["queue"].as_str().unwrap_or("")
     {
         "wiki" => Some((
@@ -296,7 +457,7 @@ pub fn complete_task(
         project_id,
         task_id,
         "succeeded",
-        result,
+        result.clone(),
         None,
         None,
         None,
@@ -310,7 +471,118 @@ pub fn complete_task(
         }
         return Err(error);
     }
+    if let Some(batch) = execution_batch.as_ref() {
+        absorb_wiki_update_batch_members(paths, project_id, task_id, batch, result.as_ref())?;
+    }
     inspect_task_in_session(paths, project_id, task_id)
+}
+
+fn enrich_wiki_batch_result(result: Option<Value>, batch: &Value) -> Option<Value> {
+    let mut result = result.unwrap_or_else(|| json!({}));
+    if !result.is_object() {
+        result = json!({ "agentResult": result });
+    }
+    result["batch"] = json!({
+        "id": batch.get("id"),
+        "kind": batch.get("kind"),
+        "leaderTaskId": batch.get("leaderTaskId"),
+        "memberTaskIds": batch.get("memberTaskIds"),
+        "mutationKey": batch.get("mutationKey"),
+        "taskCount": batch.get("taskCount"),
+    });
+    Some(result)
+}
+
+fn absorb_wiki_update_batch_members(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    leader_task_id: &str,
+    batch: &Value,
+    leader_result: Option<&Value>,
+) -> Result<(), CliError> {
+    let batch_id = batch.get("id").and_then(Value::as_str).unwrap_or("");
+    let target_id = batch.get("targetId").and_then(Value::as_str).unwrap_or("");
+    let changed_paths = leader_result
+        .and_then(|result| result.get("changedPaths"))
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    for member_task_id in batch
+        .get("memberTaskIds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|member_task_id| *member_task_id != leader_task_id)
+    {
+        let task = inspect_task_in_session(paths, project_id, member_task_id)?;
+        if !matches!(
+            task["task"]["status"].as_str(),
+            Some("queued" | "failed")
+        ) {
+            continue;
+        }
+        claim_absorbed_wiki_batch_member(paths, project_id, member_task_id, target_id)?;
+        let result = json!({
+            "outcome": "batched",
+            "summary": "Applied as part of a consolidated Wiki update batch.",
+            "changedPaths": changed_paths,
+            "batchId": batch_id,
+            "leaderTaskId": leader_task_id,
+        });
+        let prepared = crate::wiki::prepare_task_completion(
+            paths,
+            member_task_id,
+            Some(result.clone()),
+        )?;
+        let panel_id = task["task"]["panelId"].as_str().unwrap_or_default();
+        finalize_task_runtime(
+            paths,
+            project_id,
+            member_task_id,
+            "succeeded",
+            Some(result),
+            None,
+            None,
+            None,
+            Some((panel_id, &prepared["state"])),
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+fn claim_absorbed_wiki_batch_member(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    task_id: &str,
+    target_id: &str,
+) -> Result<(), CliError> {
+    crate::wiki::claim_task(paths, task_id)?;
+    let storage = Storage::open(paths)?;
+    let tx = storage
+        .connection()
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
+    let now = crate::control::now_iso();
+    let changed = tx
+        .execute(
+            "UPDATE tasks SET status = 'reserved', assigned_agent_id = ?, updated_at = ? WHERE id = ? AND project_id = ? AND status IN ('queued', 'failed')",
+            params![target_id, now, task_id, project_id],
+        )
+        .map_err(to_cli_error)?;
+    if changed != 1 {
+        return Err(CliError::with_code(
+            "task_not_claimable",
+            format!("Wiki batch member is no longer claimable: {task_id}"),
+        ));
+    }
+    tx.execute(
+        "UPDATE tasks SET status = 'claimed', attempts = attempts + 1, updated_at = ? WHERE id = ? AND project_id = ? AND status = 'reserved'",
+        params![now, task_id, project_id],
+    )
+    .map_err(to_cli_error)?;
+    crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
+    tx.commit().map_err(to_cli_error)
 }
 
 pub fn fail_task(
@@ -568,4 +840,3 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
     )?;
     inspect_task_in_session(paths, &project_id, task_id)
 }
-

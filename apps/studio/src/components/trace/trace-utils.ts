@@ -1,15 +1,141 @@
-import type { ProjectTask, TraceCategory } from "../../types"
+import type { MyOpenPanelsLocale } from "../../canvas"
+import type { ProjectTask, TraceCategory, TraceEvent } from "../../types"
 import type { TaskFilter } from "./TracePanel"
 
-export function taskCommand(
-  task: ProjectTask
-): { label: string; value: string } | null {
-  if (task.status !== "queued" && task.status !== "failed") return null
-  if (!task.ready) return null
-  return {
-    label: "Claim with a registered target",
-    value: `myopenpanels task claim --task-id ${shellQuote(task.id)} --target-id <target-id> --format json`,
+export type TraceFilter = "all" | TraceCategory
+
+const WIKI_UPDATE_TASK_TYPES = new Set([
+  "ingest_markdown_into_wiki",
+  "maintain_wiki",
+])
+
+export function groupWikiUpdateTasks(tasks: ProjectTask[]): ProjectTask[] {
+  const grouped = new Map<string, ProjectTask[]>()
+  const output: ProjectTask[] = []
+  for (const task of tasks) {
+    if (
+      task.queue !== "wiki" ||
+      !task.mutationKey ||
+      !WIKI_UPDATE_TASK_TYPES.has(task.type)
+    ) {
+      output.push(task)
+      continue
+    }
+    const group = grouped.get(task.mutationKey) ?? []
+    group.push(task)
+    grouped.set(task.mutationKey, group)
   }
+  for (const [mutationKey, groupTasks] of grouped) {
+    groupTasks.sort(
+      (left, right) =>
+        (left.mutationSequence ?? Number.MAX_SAFE_INTEGER) -
+        (right.mutationSequence ?? Number.MAX_SAFE_INTEGER)
+    )
+    const representative =
+      groupTasks.find(isActiveTask) ??
+      groupTasks.find((task) => taskMatchesFilter(task, "pending")) ??
+      groupTasks.at(-1)!
+    const active = groupTasks.some(isActiveTask)
+    const pending = groupTasks.some((task) =>
+      ["waiting", "queued", "failed"].includes(task.status)
+    )
+    const failed = groupTasks.some((task) => task.status === "failed")
+    const completed = groupTasks.filter(isDoneTask).length
+    const statuses = new Set(groupTasks.map((task) => task.status))
+    const requestedConnections = new Set(
+      groupTasks.map((task) => task.requestedGatewayConnectionId ?? null)
+    )
+    const dispatchModes = new Set(
+      groupTasks.map((task) => task.dispatchMode ?? "auto")
+    )
+    output.push({
+      ...representative,
+      blockedReason: active ? null : representative.blockedReason,
+      capability: "wiki.updateBatch",
+      dispatchMode:
+        dispatchModes.size === 1 ? representative.dispatchMode : "auto",
+      id: `wiki-update-group:${mutationKey}`,
+      ready: active ? false : groupTasks.some((task) => task.ready),
+      requestedGatewayConnectionId:
+        requestedConnections.size === 1
+          ? representative.requestedGatewayConnectionId
+          : null,
+      result: {
+        completedTaskCount: completed,
+        taskCount: groupTasks.length,
+      },
+      status: active
+        ? "running"
+        : pending
+          ? failed
+            ? "failed"
+            : "queued"
+          : statuses.size === 1
+            ? representative.status
+            : "succeeded",
+      targetId:
+        typeof representative.source === "object" && representative.source
+          ? String(
+              (representative.source as Record<string, unknown>).wikiSpaceId ??
+                representative.targetId
+            )
+          : representative.targetId,
+      type: "wiki_update_batch",
+      updatedAt: groupTasks.reduce(
+        (latest, task) =>
+          Date.parse(task.updatedAt) > Date.parse(latest)
+            ? task.updatedAt
+            : latest,
+        groupTasks[0].updatedAt
+      ),
+      wikiUpdateGroup: {
+        mutationKey,
+        taskIds: groupTasks.map((task) => task.id),
+        tasks: groupTasks,
+      },
+    })
+  }
+  return output
+}
+
+export function traceEventMatchesFilter(
+  event: TraceEvent,
+  filter: TraceFilter
+): boolean {
+  if (filter !== "all") return event.category === filter
+  return !isActiveProjectHeartbeat(event)
+}
+
+function isActiveProjectHeartbeat(event: TraceEvent): boolean {
+  if (event.category !== "api") return false
+
+  const detail = event.detail
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const record = detail as Record<string, unknown>
+    if (record.method === "GET" && record.path === "/api/active-project") {
+      return true
+    }
+  }
+
+  return /^GET \/api\/active-project(?:\s|$)/.test(event.summary)
+}
+
+export function manualTaskInstruction(
+  task: ProjectTask,
+  locale: MyOpenPanelsLocale
+): string {
+  const taskIds = task.wikiUpdateGroup?.taskIds ?? [task.id]
+  const commands = taskIds
+    .map(
+      (taskId) =>
+        `myopenpanels task read --task-id ${shellQuote(taskId)} --format json`
+    )
+    .join("\n")
+
+  if (locale === "zh-CN") {
+    return `请处理 MyOpenPanels ${taskIds.length > 1 ? "中的以下任务" : "任务"} ${taskIds.join(", ")}。先执行下面的命令读取任务，再按照返回的任务信息和 actions 完成处理：\n\n${commands}`
+  }
+  return `Process ${taskIds.length > 1 ? "these MyOpenPanels tasks" : "this MyOpenPanels task"}: ${taskIds.join(", ")}. Run the command${taskIds.length > 1 ? "s" : ""} below first, then follow the returned task details and actions to complete the work:\n\n${commands}`
 }
 
 export function compareTasksForDisplay(

@@ -756,7 +756,7 @@ export function WikiPanelView(
                       <span>
                         {agentSkills.find(
                           (item) => item.skill.id === wikiAgentSkillId
-                        )?.skill.title ?? wikiAgentSkillId}
+                        )?.skill.name ?? wikiAgentSkillId}
                       </span>
                       <ChevronDown size={14} />
                     </Button>
@@ -782,10 +782,10 @@ export function WikiPanelView(
                             <Dropdown.Item
                               id={item.skill.id}
                               key={item.skill.id}
-                              textValue={item.skill.title}
+                              textValue={item.skill.name}
                             >
                               <Dropdown.ItemIndicator />
-                              <Label>{item.skill.title}</Label>
+                              <Label>{item.skill.name}</Label>
                             </Dropdown.Item>
                           ))}
                         </Dropdown.Section>

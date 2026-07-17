@@ -565,32 +565,33 @@ pub fn prepare_skill(
         .get("skillId")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let expected_title = context
+    let expected_name = context
         .input
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let parsed = crate::agent::parse_skill(&request.source, "SKILL.md")?;
-    if request.skill_id != expected_id
-        || parsed.metadata.id != expected_id
-        || parsed.metadata.title != expected_title
-        || parsed.metadata.source != "custom"
-        || parsed.metadata.applies_to != ["writing"]
-        || parsed.metadata.task_types != ["generate_document"]
-        || parsed.body.trim().is_empty()
-    {
+    if request.skill_id != expected_id {
         return Err(CliError::with_code(
             "writing_skill_file_invalid",
             "Generated Writing Skill does not match the claimed refinement Task.",
         ));
     }
+    crate::agent::validate_portable_writing_skill(
+        &request.source,
+        "SKILL.md",
+        expected_id,
+    )?;
     let manifest = json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "source": "custom",
         "originProjectId": context.project_id,
         "taskId": context.task_id,
         "skillId": expected_id,
-        "title": expected_title,
+        "name": expected_name,
+        "binding": {
+            "appliesTo": ["writing"],
+            "taskTypes": ["generate_document"],
+        },
         "createdAt": now_iso(),
     });
     let first = stage_file_internal(

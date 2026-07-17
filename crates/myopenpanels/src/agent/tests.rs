@@ -57,4 +57,124 @@ mod tests {
             vec!["operation", "panel", "task", "wiki"]
         );
     }
+
+    #[test]
+    fn portable_skill_parser_separates_package_metadata_from_platform_binding() {
+        let source = "---\nname: concise-writing\ndescription: Write concise prose.\n---\n\nLead with the main point.\n";
+        let portable = parse_portable_skill(source, "SKILL.md").expect("portable Skill");
+        assert_eq!(portable.metadata.id, "concise-writing");
+        assert_eq!(portable.metadata.source, "portable");
+        assert!(portable.metadata.applies_to.is_empty());
+        assert!(portable.metadata.task_types.is_empty());
+        assert!(portable.metadata.requires_commands.is_empty());
+
+        let coupled = "---\nname: concise-writing\ndescription: Write concise prose.\nappliesTo:\n  - writing\n---\n\nLead with the main point.\n";
+        assert!(parse_portable_skill(coupled, "SKILL.md").is_err());
+    }
+
+    #[test]
+    fn custom_writing_skills_read_legacy_and_portable_manifests() {
+        let skill_id = "writing-custom-example";
+        let legacy = format!(
+            "---\nid: {skill_id}\ntitle: Example Style\ndescription: Write concise prose.\nsource: custom\nappliesTo:\n  - writing\ntaskTypes:\n  - generate_document\nrequiresCommands:\n---\n\nLead with the main point.\n"
+        );
+        let legacy_manifest = json!({
+            "schemaVersion": 1,
+            "source": "custom",
+            "skillId": skill_id,
+            "title": "Example Style",
+        });
+        let legacy_skill = custom_writing_skill_from_source(
+            &legacy,
+            "legacy/SKILL.md",
+            &legacy_manifest,
+        )
+        .expect("legacy custom Skill");
+        assert_eq!(legacy_skill.metadata.name, "Example Style");
+
+        let portable = format!(
+            "---\nname: {skill_id}\ndescription: Write concise prose.\n---\n\nLead with the main point.\n"
+        );
+        let portable_manifest = json!({
+            "schemaVersion": 2,
+            "source": "custom",
+            "skillId": skill_id,
+            "name": "Example Style",
+            "binding": {
+                "appliesTo": ["writing"],
+                "taskTypes": ["generate_document"],
+            },
+        });
+        let portable_skill = custom_writing_skill_from_source(
+            &portable,
+            "portable/SKILL.md",
+            &portable_manifest,
+        )
+        .expect("portable custom Skill");
+        assert_eq!(portable_skill.metadata.name, "Example Style");
+        assert_eq!(portable_skill.metadata.applies_to, ["writing"]);
+        assert_eq!(portable_skill.metadata.task_types, ["generate_document"]);
+
+        let incompatible_v2 = json!({
+            "schemaVersion": 2,
+            "source": "custom",
+            "skillId": skill_id,
+            "title": "Example Style",
+            "binding": {
+                "appliesTo": ["writing"],
+                "taskTypes": ["generate_document"],
+            },
+        });
+        assert!(custom_writing_skill_from_source(
+            &portable,
+            "incompatible-v2/SKILL.md",
+            &incompatible_v2,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn registered_builtin_packages_are_standard_and_presets_are_portable() {
+        let registry: BuiltinSkillRegistry =
+            serde_json::from_str(BUILTIN_SKILL_REGISTRY).expect("registry");
+        for registration in registry.system_skills {
+            let directory = SYSTEM_SKILLS
+                .get_dir(&registration.package_dir)
+                .unwrap_or_else(|| panic!("missing package {}", registration.package_dir));
+            let skill_path = directory.path().join("SKILL.md");
+            let source = SYSTEM_SKILLS
+                .get_file(&skill_path)
+                .and_then(|file| std::str::from_utf8(file.contents()).ok())
+                .expect("system SKILL.md");
+            parse_portable_skill(source, &skill_path.display().to_string())
+                .expect("registered standard system Skill");
+        }
+        for registration in registry.preset_skills {
+            let directory = PRESET_SKILLS
+                .get_dir(&registration.package_dir)
+                .unwrap_or_else(|| panic!("missing package {}", registration.package_dir));
+            assert_portable_directory(directory, &registration.id);
+            let skill_path = directory.path().join("SKILL.md");
+            let source = PRESET_SKILLS
+                .get_file(&skill_path)
+                .and_then(|file| std::str::from_utf8(file.contents()).ok())
+                .expect("preset SKILL.md");
+            parse_portable_skill(source, &skill_path.display().to_string())
+                .expect("registered portable preset Skill");
+        }
+    }
+
+    fn assert_portable_directory(directory: &Dir<'_>, skill_id: &str) {
+        for file in directory.files() {
+            let source = std::str::from_utf8(file.contents()).expect("portable text file");
+            assert!(
+                !portable_skill_mentions_platform(source),
+                "portable Skill {skill_id} contains platform text in {}",
+                file.path().display()
+            );
+        }
+        for child in directory.dirs() {
+            assert_portable_directory(child, skill_id);
+        }
+    }
 }

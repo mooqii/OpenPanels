@@ -129,13 +129,20 @@ Adding a provider or adapter therefore requires code and connection data, not a
 schema migration. A migration is reserved for a new persistence relationship,
 database constraint, or queryable/indexed concept.
 
-Local CLI and BYOK configurations share this persistence boundary. Phase one
-implements `codex` and `hermes` Local CLI adapters. Codex models are discovered
-from its structured model catalog; Hermes models are discovered through an ACP
-`initialize` and `session/new` handshake. Both adapters support an isolated
-smoke request before selection and use one-shot execution for claimed Tasks.
-The BYOK branch is part of the stored contract and Studio surface but is not an
-available execution mode yet.
+Local CLI and BYOK configurations share this persistence boundary. The built-in
+Local CLI registry supports Codex, Hermes, Claude Code, OpenCode, Gemini CLI,
+GitHub Copilot CLI, Cursor Agent, Qwen Code, Kimi Code, and Kilo Code. Codex
+models are discovered from its structured model catalog; Hermes models are
+discovered through an ACP `initialize` and `session/new` handshake; OpenCode,
+Cursor, and Kilo Code use their native model-list commands. Providers without a
+stable model-list command expose a small fallback catalog and preserve the
+CLI's configured default. Model and reasoning selections are stored per Local
+CLI connection. Studio only shows reasoning controls when the adapter supports
+a per-invocation setting; OpenCode variants are additionally scoped to the
+selected model. Every adapter supports an isolated smoke request
+before selection and one-shot execution for claimed Tasks. The BYOK branch is
+part of the stored contract and Studio surface but is not an available
+execution mode yet.
 
 Studio reaches this boundary through `/api/model-gateway/settings`,
 `/api/model-gateway/local-clis`, and

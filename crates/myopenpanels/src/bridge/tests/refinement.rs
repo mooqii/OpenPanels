@@ -127,6 +127,9 @@
         assert!(prompt.contains("House Style"));
         assert!(prompt.contains(skill_id));
         assert!(prompt.contains("Create one reusable Writing Skill"));
+        assert!(prompt.contains("captured portable Refiner Skill"));
+        assert!(prompt.contains(&format!("name: {skill_id}")));
+        assert!(!prompt.contains("appliesTo: writing"));
         assert!(prompt.contains("# Raw style"));
         assert!(prompt.contains("# Generated style"));
         assert!(prompt.contains("writing skill install --task-id"));
@@ -255,7 +258,7 @@
         assert_eq!(unstaged.code(), Some("invalid_output"));
 
         let skill_source = format!(
-            "---\nid: {skill_id}\ntitle: Concise House Style\ndescription: Write concise documents with direct structure.\nsource: custom\nappliesTo:\n  - writing\ntaskTypes:\n  - generate_document\nrequiresCommands:\nloadWhen:\n  - The task requests the concise house style.\ntokens: short\n---\n\nUse short, direct paragraphs. Lead with the main point and remove redundant setup.\n"
+            "---\nname: {skill_id}\ndescription: Write concise documents with direct structure.\n---\n\nUse short, direct paragraphs. Lead with the main point and remove redundant setup.\n"
         );
         crate::content::prepare_skill(
             &paths,
@@ -291,6 +294,5 @@
         .expect("complete Task");
         let installed =
             crate::agent::writing_agent_skill(&paths, skill_id).expect("installed Writing Skill");
-        assert_eq!(installed.skill.title, "Concise House Style");
+        assert_eq!(installed.skill.name, "Concise House Style");
     }
-

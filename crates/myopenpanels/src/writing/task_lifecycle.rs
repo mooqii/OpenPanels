@@ -2,6 +2,7 @@ pub fn panel_selection(
     paths: &MyOpenPanelsPaths,
     bootstrap: &ProjectBootstrap,
 ) -> Result<Value, CliError> {
+    crate::wiki::reject_live_content_access_for_task()?;
     writing_selection_value(paths, bootstrap)
 }
 

@@ -195,6 +195,10 @@ fn build_router(
         .route("/api/tasks/{task_id}/fail", post(api_task_fail))
         .route("/api/tasks/{task_id}/release", post(api_task_release))
         .route("/api/tasks/{task_id}/retry", post(api_task_retry))
+        .route(
+            "/api/tasks/wiki-update-groups/dispatch",
+            put(api_wiki_update_group_dispatch),
+        )
         .route("/api/tasks/{task_id}/dispatch", put(api_task_dispatch))
         .route("/api/tasks/{task_id}/cancel", post(api_task_cancel))
         .route("/api/tasks/{task_id}/archive", post(api_task_archive))
@@ -223,6 +227,30 @@ fn build_router(
             delete(api_remove_agent_route),
         )
         .route("/api/agent/skills", get(api_agent_skills))
+        .route("/api/skills", get(api_skills))
+        .route("/api/skills/import", post(api_import_skill))
+        .route(
+            "/api/skills/{skill_id}",
+            get(api_skill_files).delete(api_delete_skill),
+        )
+        .route(
+            "/api/skills/{skill_id}/file",
+            axum::routing::put(api_write_skill_file),
+        )
+        .route("/api/device/skills", get(api_device_skills))
+        .route("/api/device/skills/install", post(api_install_device_skill))
+        .route(
+            "/api/skills/{skill_id}/modules/{module_kind}",
+            delete(api_remove_skill_module),
+        )
+        .route(
+            "/api/skills/{skill_id}/source",
+            put(api_replace_skill_source),
+        )
+        .route(
+            "/api/skills/{skill_id}/mismatch-ignore",
+            put(api_ignore_skill_mismatch),
+        )
         .route("/api/agent/bridge/status", get(api_bridge_status))
         .route(
             "/api/model-gateway/settings",

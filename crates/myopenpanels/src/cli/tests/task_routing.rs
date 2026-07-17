@@ -94,7 +94,7 @@ fn agent_bootstrap_delivers_entry_skill_update_until_the_context_acknowledges_it
     assert_eq!(code, 0, "{stderr}{stdout}");
     let normal = serde_json::from_str::<Value>(&stdout).expect("normal bootstrap");
     assert!(normal.get("entrySkillUpdate").is_none());
-    assert_eq!(normal["skills"][0]["id"], "wiki-panel");
+    assert_eq!(normal["skills"][0]["id"], "myopenpanels-wiki-panel");
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn agent_bootstrap_prepares_panel_and_wiki_task_authoring_skills() {
     let payload = &envelope["data"];
     let required_skills = payload["skills"].as_array().unwrap();
     assert_eq!(required_skills.len(), 2);
-    assert_eq!(required_skills[0]["id"], "wiki-panel");
+    assert_eq!(required_skills[0]["id"], "myopenpanels-wiki-panel");
     assert_eq!(required_skills[1]["id"], "karpathy-llm-wiki");
     assert_eq!(required_skills[1]["taskId"], task_id);
     for skill in required_skills {
@@ -386,4 +386,3 @@ fn canvas_write_commands_insert_and_replace_shapes() {
     );
     assert!(state["store"][fallback_insert["shapeId"].as_str().unwrap()].is_object());
 }
-

@@ -75,16 +75,20 @@ export interface ModelGatewaySettings {
     enabledProviderIds: string[]
     executablePaths: Record<string, string>
     model: string | null
+    providerModels: Record<string, string>
     providerOrder: string[]
     providerId: string | null
+    providerReasoning: Record<string, string>
     reasoning: string | null
   }
+  maxConcurrency: number
   mode: "localCli" | "byok"
 }
 
 export interface LocalCliModelOption {
   id: string
   label: string
+  reasoningOptions?: LocalCliModelOption[]
 }
 
 export interface LocalCliInfo {
@@ -243,6 +247,11 @@ export interface ProjectTask {
   terminalReason?: unknown
   type: string
   updatedAt: string
+  wikiUpdateGroup?: {
+    mutationKey: string
+    taskIds: string[]
+    tasks: ProjectTask[]
+  }
   workflowId?: string
 }
 
@@ -271,6 +280,7 @@ export interface WritingState {
   refinementName: string
   schemaVersion: 5
   selectedCreateWritingSkillIds: string[]
+  selectedRefinementSkillId: string
   selectedRevisionWritingSkillId: string | null
   targetGeneratedDocumentId: string | null
 }
@@ -355,10 +365,52 @@ export interface AgentSkillListing {
     requiresCapabilities: string[]
     source: string
     taskTypes: string[]
-    title: string
+    name: string
     tokens: string
   }
   source: string
+}
+
+export type ManagedSkillKind = "system" | "preset" | "custom"
+
+export interface ManagedProjectSkill {
+  canDelete: boolean
+  canEdit: boolean
+  description: string
+  id: string
+  kind: ManagedSkillKind
+  localDir: string
+  moduleKinds: string[]
+  name: string
+}
+
+export interface ManagedSkillModule {
+  kind: string
+  skills: ManagedProjectSkill[]
+}
+
+export interface DeviceSkillLocation {
+  agents: string[]
+  comparison: "same" | "different" | "ignored" | "not-installed"
+  contentHash: string
+  description: string
+  path: string
+  scope: "global" | "project"
+  skillPath: string
+}
+
+export interface DeviceSkillGroup {
+  description: string
+  installed: {
+    canManageAssociations: boolean
+    contentHash: string
+    id: string
+    kind: ManagedSkillKind
+    moduleKinds: string[]
+  } | null
+  key: string
+  locations: DeviceSkillLocation[]
+  name: string
 }
 
 export interface WikiRawDocument {

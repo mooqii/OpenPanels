@@ -17,25 +17,23 @@ pub fn read_markdown(paths: &MyOpenPanelsPaths, document_id: &str) -> Result<Val
     crate::content::require_broker_for_task_execution()?;
     let wiki = get_wiki_bootstrap(paths)?;
     let document = find_document(&wiki.state, document_id)?.clone();
-    let markdown = if let Some(markdown) = crate::content::read_active_text(
-        paths,
-        &wiki.project.id,
-        crate::content::ResourceKind::WikiMarkdown,
-        document_id,
-        "source.md",
-    )? {
-        markdown
-    } else if let Some(markdown_ref) = document.get("markdownRef").and_then(Value::as_str) {
-        let storage = Storage::open(paths)?;
-        let path = wiki_panel_path(
-            &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
-            markdown_ref,
-        )?;
-        fs::read_to_string(path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    Ok(json!({ "document": document, "markdown": markdown }))
+    let panel_dir = Storage::open(paths)?.panel_dir(&wiki.project.id, &wiki.panel.id);
+    let (original_path, original_access) = raw_original_access(&panel_dir, &document);
+    let (markdown_path, markdown_access) = materialize_raw_markdown(paths, &wiki, &document);
+    let markdown = markdown_path
+        .as_ref()
+        .map(fs::read_to_string)
+        .transpose()
+        .map_err(to_cli_error)?
+        .unwrap_or_default();
+    Ok(json!({
+        "document": document,
+        "markdown": markdown,
+        "originalFilePath": original_path,
+        "markdownFilePath": markdown_path,
+        "originalAccess": original_access,
+        "markdownAccess": markdown_access,
+    }))
 }
 
 pub fn write_markdown(
@@ -416,4 +414,3 @@ fn active_conversion_task_id(tasks: &[Value], document_id: &str) -> Option<Strin
         .and_then(|task| task.get("id").and_then(Value::as_str))
         .map(str::to_owned)
 }
-

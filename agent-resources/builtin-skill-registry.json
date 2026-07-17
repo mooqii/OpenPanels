@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 1,
+  "systemSkills": [
+    {
+      "packageDir": "myopenpanels-canvas-panel",
+      "id": "myopenpanels-canvas-panel",
+      "name": "MyOpenPanels Canvas Panel",
+      "source": "builtin",
+      "appliesTo": ["canvas"],
+      "taskTypes": [],
+      "requiresCommands": [
+        "panel.read",
+        "panel.selection.read",
+        "canvas.image.generate",
+        "operation.complete",
+        "canvas.image.create",
+        "agent.skill.read"
+      ],
+      "loadWhen": [
+        "Before beginning a new operation that targets a MyOpenPanels Canvas panel."
+      ],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "myopenpanels-task-queue",
+      "id": "myopenpanels-task-queue",
+      "name": "MyOpenPanels Task Queue",
+      "source": "builtin",
+      "appliesTo": ["any"],
+      "taskTypes": [],
+      "requiresCommands": [
+        "task.list",
+        "task.next",
+        "task.read",
+        "task.claim-next",
+        "task.heartbeat",
+        "task.complete",
+        "task.fail",
+        "task.events",
+        "task.attempts",
+        "workflow.read",
+        "agent.target.register",
+        "agent.bridge.run"
+      ],
+      "loadWhen": [
+        "When the request handles work from the generic project Task queue."
+      ],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "myopenpanels-wiki-panel",
+      "id": "myopenpanels-wiki-panel",
+      "name": "MyOpenPanels Wiki Panel",
+      "source": "builtin",
+      "appliesTo": ["wiki"],
+      "taskTypes": [],
+      "requiresCommands": [
+        "panel.selection.read",
+        "task.claim",
+        "task.heartbeat",
+        "task.complete",
+        "task.fail",
+        "wiki.raw.list",
+        "wiki.raw.read",
+        "wiki.raw.update",
+        "wiki.document.read",
+        "wiki.document.generate",
+        "operation.complete",
+        "wiki.space.materialize",
+        "wiki.page.search",
+        "wiki.page.list",
+        "wiki.page.read",
+        "wiki.page.create",
+        "wiki.page.update",
+        "agent.skill.read"
+      ],
+      "loadWhen": [
+        "Before beginning a new operation that targets a MyOpenPanels Wiki panel."
+      ],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "myopenpanels-writing-panel",
+      "id": "myopenpanels-writing-panel",
+      "name": "MyOpenPanels Writing Panel",
+      "source": "builtin",
+      "appliesTo": ["writing"],
+      "taskTypes": [],
+      "requiresCommands": [
+        "writing.request.read",
+        "writing.refinement.read",
+        "writing.skill.install",
+        "writing.generate",
+        "wiki.raw.read",
+        "wiki.document.read",
+        "wiki.space.materialize",
+        "wiki.page.search",
+        "wiki.page.read",
+        "operation.complete",
+        "task.complete",
+        "task.fail"
+      ],
+      "loadWhen": [
+        "Before reading Writing context or executing a submitted Writing request."
+      ],
+      "tokens": "short"
+    }
+  ],
+  "presetSkills": [
+    {
+      "packageDir": "karpathy-llm-wiki",
+      "id": "karpathy-llm-wiki",
+      "name": "Karpathy LLM Wiki",
+      "source": "builtin",
+      "appliesTo": ["wiki"],
+      "taskTypes": ["ingest_markdown_into_wiki", "maintain_wiki"],
+      "requiresCommands": [],
+      "loadWhen": [
+        "The current wiki work should maintain a Karpathy-style generated wiki."
+      ],
+      "tokens": "medium"
+    },
+    {
+      "packageDir": "karpathy-llm-wiki-zh",
+      "id": "karpathy-llm-wiki-zh",
+      "name": "Karpathy LLM Wiki 中文",
+      "source": "builtin",
+      "appliesTo": ["wiki"],
+      "taskTypes": ["ingest_markdown_into_wiki", "maintain_wiki"],
+      "requiresCommands": [],
+      "loadWhen": ["当前工作需要用中文维护 Karpathy 风格的生成式 Wiki。"],
+      "tokens": "medium"
+    },
+    {
+      "packageDir": "writing-skill-refiner",
+      "id": "writing-skill-refiner",
+      "name": "提炼写作",
+      "source": "builtin",
+      "appliesTo": ["writing"],
+      "taskTypes": ["refine_writing_skill"],
+      "requiresCommands": [],
+      "loadWhen": [
+        "The writing work derives a reusable Skill from selected examples."
+      ],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "writing-default",
+      "id": "writing-default",
+      "name": "默认写作",
+      "source": "builtin",
+      "appliesTo": ["writing"],
+      "taskTypes": ["generate_document"],
+      "requiresCommands": [],
+      "loadWhen": ["The writing request selected the default writing method."],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "writing-long-article",
+      "id": "writing-long-article",
+      "name": "长文章",
+      "source": "builtin",
+      "appliesTo": ["writing"],
+      "taskTypes": ["generate_document"],
+      "requiresCommands": [],
+      "loadWhen": ["The writing request selected a long-form article."],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "writing-xiaohongshu-note",
+      "id": "writing-xiaohongshu-note",
+      "name": "小红书笔记",
+      "source": "builtin",
+      "appliesTo": ["writing"],
+      "taskTypes": ["generate_document"],
+      "requiresCommands": [],
+      "loadWhen": ["The writing request selected a Xiaohongshu-style note."],
+      "tokens": "short"
+    }
+  ]
+}
