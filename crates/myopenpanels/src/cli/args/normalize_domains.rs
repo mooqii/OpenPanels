@@ -215,16 +215,20 @@ fn normalize_task(
             task_id(flags, args);
             ("read", "task.read")
         }
-        TaskCommand::ClaimNext {
-            target_id,
-            capability,
-            wait_ms,
-        } => {
-            put(flags, "target-id", Some(target_id));
-            put_many(flags, "capability", capability);
-            put_num(flags, "wait-ms", wait_ms);
-            ("claim-next", "task.claim-next")
-        }
+        TaskCommand::Scope(args) => match args.command {
+            TaskScopeCommand::Read(selector) => {
+                task_scope_selector(flags, selector);
+                ("scope-read", "task.scope.read")
+            }
+            TaskScopeCommand::Claim {
+                selector,
+                target_id,
+            } => {
+                task_scope_selector(flags, selector);
+                put(flags, "target-id", Some(target_id));
+                ("scope-claim", "task.scope.claim")
+            }
+        },
         TaskCommand::Claim { task, target_id } => {
             task_id(flags, task);
             put(flags, "target-id", Some(target_id));
@@ -327,10 +331,13 @@ fn normalize_agent(
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
     match command {
-        AgentCommand::Bootstrap => (
-            vec!["agent".into(), "bootstrap".into()],
-            "agent.bootstrap.read",
-        ),
+        AgentCommand::Bootstrap { workflow } => {
+            put(flags, "workflow", workflow);
+            (
+                vec!["agent".into(), "bootstrap".into()],
+                "agent.bootstrap.read",
+            )
+        }
         AgentCommand::Catalog { domain } => {
             put(flags, "domain", domain);
             (vec!["agent".into(), "catalog".into()], "agent.catalog")
@@ -397,7 +404,7 @@ fn normalize_agent(
             AgentTargetCommand::Register {
                 name,
                 host,
-                transport,
+                project_id,
                 capability,
                 priority,
                 protocol_version,
@@ -405,7 +412,7 @@ fn normalize_agent(
             } => {
                 put(flags, "name", Some(name));
                 put(flags, "host", host);
-                put(flags, "transport", Some(transport));
+                put(flags, "project-id", project_id);
                 put_many(flags, "capability", capability);
                 put_num(flags, "priority", Some(priority));
                 put_num(flags, "protocol-version", Some(protocol_version));
@@ -413,13 +420,6 @@ fn normalize_agent(
                 (
                     vec!["agent".into(), "target".into(), "register".into()],
                     "agent.target.register",
-                )
-            }
-            AgentTargetCommand::Heartbeat { target_id } => {
-                put(flags, "target-id", Some(target_id));
-                (
-                    vec!["agent".into(), "target".into(), "heartbeat".into()],
-                    "agent.target.heartbeat",
                 )
             }
             AgentTargetCommand::Remove { target_id } => {
@@ -461,6 +461,16 @@ fn task_filter(flags: &mut BTreeMap<String, FlagValue>, args: TaskFilterArgs) {
     put_bool(flags, "pending", args.pending);
     put(flags, "queue", args.queue);
     put(flags, "status", args.status);
+}
+
+fn task_scope_selector(
+    flags: &mut BTreeMap<String, FlagValue>,
+    selector: TaskScopeSelectorArgs,
+) {
+    put(flags, "scope", Some(selector.scope));
+    put(flags, "project-id", selector.project_id);
+    put(flags, "task-id", selector.task_id);
+    put(flags, "mutation-key", selector.mutation_key);
 }
 
 fn task_id(flags: &mut BTreeMap<String, FlagValue>, args: TaskIdArgs) {

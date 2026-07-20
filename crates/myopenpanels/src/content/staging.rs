@@ -115,7 +115,6 @@ struct ExecutionContext {
     project_id: String,
     panel_id: String,
     task_type: String,
-    capability: String,
     generation: i64,
     input: Value,
     source: Value,
@@ -156,8 +155,17 @@ pub fn create_execution_context_in_transaction(
         params![staging_id, task_id, attempt_id, generation, now, now, expires_at],
     )
     .map_err(to_cli_error)?;
-    seed_existing_output_resource(tx, task_id, &staging_id)?;
-    tx.execute(
+    seed_declared_output_resource(tx, task_id, &staging_id)?;
+    pin_task_inputs_in_transaction(tx, task_id, &now)?;
+    Ok((token, staging_id))
+}
+
+pub(crate) fn pin_task_inputs_in_transaction(
+    connection: &rusqlite::Connection,
+    task_id: &str,
+    now: &str,
+) -> Result<(), CliError> {
+    connection.execute(
         r#"
         INSERT OR IGNORE INTO content_pins (task_id, revision_id, created_at)
         SELECT ti.task_id, r.active_revision_id, ?
@@ -171,11 +179,29 @@ pub fn create_execution_context_in_transaction(
             WHEN 'writing.skill' THEN 'writing_skill'
             ELSE '' END
         WHERE ti.task_id = ?
+          AND (
+            ti.content_hash IS NULL OR EXISTS (
+              SELECT 1 FROM content_revision_files input_file
+              WHERE input_file.revision_id = r.active_revision_id
+                AND input_file.object_hash = ti.content_hash
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM content_pins existing_pin
+            JOIN content_revisions existing_revision
+              ON existing_revision.id = existing_pin.revision_id
+            JOIN content_resources existing_resource
+              ON existing_resource.id = existing_revision.content_resource_id
+            WHERE existing_pin.task_id = ti.task_id
+              AND existing_resource.resource_kind = r.resource_kind
+              AND existing_resource.resource_key = r.resource_key
+          )
         "#,
         params![now, task_id],
     )
     .map_err(to_cli_error)?;
-    Ok((token, staging_id))
+    Ok(())
 }
 
 pub fn abandon_task_staging_in_transaction(
@@ -243,9 +269,15 @@ fn stage_file_internal(
         CliError::with_code("invalid_output", "Staged content must be valid UTF-8 text.")
     })?;
     let context = authorize(paths, execution_token)?;
-    validate_resource_scope(&context, kind, &request.resource_key, true)?;
-    let object = write_object(paths, &bytes)?;
     let mut storage = Storage::open(paths)?;
+    validate_resource_access(
+        storage.connection(),
+        &context,
+        kind,
+        &request.resource_key,
+        true,
+    )?;
+    let object = write_object(paths, &bytes)?;
     let tx = storage
         .connection_mut()
         .transaction()
@@ -334,8 +366,14 @@ pub fn read_file(
     let kind = ResourceKind::parse(&request.resource_kind)?;
     validate_logical_path(&request.logical_path)?;
     let context = authorize(paths, execution_token)?;
-    validate_resource_scope(&context, kind, &request.resource_key, false)?;
     let storage = Storage::open(paths)?;
+    let access = validate_resource_access(
+        storage.connection(),
+        &context,
+        kind,
+        &request.resource_key,
+        false,
+    )?;
     let staged = storage
         .connection()
         .query_row(
@@ -355,25 +393,22 @@ pub fn read_file(
         )
         .optional()
         .map_err(to_cli_error)?;
-    let entry = if kind == ResourceKind::WikiSpace && context.task_type == "generate_document" {
-        pinned_task_file_entry(
+    let entry = match staged {
+        Some(value) => Some(value),
+        None if access == ResourceAccess::Input => pinned_task_file_entry(
             storage.connection(),
             &context.task_id,
             kind,
             &request.resource_key,
             &request.logical_path,
-        )?
-    } else {
-        match staged {
-            Some(value) => Some(value),
-            None => active_file_entry(
-                storage.connection(),
-                &context.project_id,
-                kind,
-                &request.resource_key,
-                &request.logical_path,
-            )?,
-        }
+        )?,
+        None => staged_output_base_file_entry(
+            storage.connection(),
+            &context.staging_session_id,
+            kind,
+            &request.resource_key,
+            &request.logical_path,
+        )?,
     };
     let Some((object_hash, mime_type)) = entry else {
         return Err(CliError::with_code(

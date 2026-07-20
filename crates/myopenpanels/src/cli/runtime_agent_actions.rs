@@ -3,8 +3,16 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
     match subcommand {
         Some("bootstrap") => {
             let paths = parsed_bootstrap_paths(parsed)?;
-            let payload = agent_bootstrap(&paths, VERSION)?;
-            write_result(parsed, stdout, &payload, "MyOpenPanels agent protocol v6 bootstrap")
+            let payload = agent_bootstrap(&paths, VERSION, string_flag(parsed, "workflow"))?;
+            write_result(
+                parsed,
+                stdout,
+                &payload,
+                &format!(
+                    "MyOpenPanels agent protocol v{} bootstrap",
+                    crate::agent::AGENT_GUIDANCE_PROTOCOL_VERSION
+                ),
+            )
         }
         Some("entry-skill") => match parsed.positionals.get(2).map(String::as_str) {
             Some("acknowledge") => {
@@ -109,7 +117,7 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
                         tasks::TargetRegistration {
                             name: required_flag(parsed, "name")?,
                             host: string_flag(parsed, "host"),
-                            transport: required_flag(parsed, "transport")?,
+                            project_id: string_flag(parsed, "project-id"),
                             capabilities: string_list_flag(parsed, "capability"),
                             priority,
                             protocol_version,
@@ -124,18 +132,13 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
                         result["target"]["id"].as_str().unwrap_or("Registered target"),
                     )
                 }
-                Some("heartbeat") => {
-                    let target_id = required_flag(parsed, "target-id")?;
-                    let result = tasks::heartbeat_target(&paths, target_id)?;
-                    write_result(parsed, stdout, &result, &format!("Heartbeat {target_id}"))
-                }
                 Some("remove") => {
                     let target_id = required_flag(parsed, "target-id")?;
                     let result = tasks::remove_target(&paths, target_id)?;
                     write_result(parsed, stdout, &result, &format!("Removed {target_id}"))
                 }
                 _ => Err(CliError::new(
-                    "Expected agent target subcommand: list, register, heartbeat, or remove.",
+                    "Expected agent target subcommand: list, register, or remove.",
                 )),
             }
         }
@@ -291,6 +294,143 @@ fn with_task_actions(mut payload: Value, list_mode: bool) -> Value {
         }
     }
     payload["actions"] = serde_json::json!({ "required": [], "suggested": actions });
+    payload
+}
+
+fn with_task_scope_actions(mut payload: Value, target_id: Option<&str>) -> Value {
+    let mut required = Vec::new();
+    let mut load_skill = registry::command_action(
+        registry::CommandId::registered("agent.skill.read"),
+        vec![
+            "--skill-id".to_owned(),
+            crate::agent::TASK_QUEUE_SKILL_ID.to_owned(),
+            "--format".to_owned(),
+            "json".to_owned(),
+        ],
+    )
+    .expect("registered Task queue Skill action");
+    load_skill["skillId"] = serde_json::json!(crate::agent::TASK_QUEUE_SKILL_ID);
+    required.push(load_skill);
+
+    if let Some(task) = payload.get("task").filter(|task| !task.is_null()) {
+        let task_id = task.get("id").and_then(Value::as_str).unwrap_or_default();
+        let mut skill_ids = Vec::new();
+        match task.get("queue").and_then(Value::as_str) {
+            Some("wiki") => {
+                skill_ids.push(crate::wiki::WIKI_PANEL_SKILL_ID);
+                if let Some(skill_id) = task.pointer("/source/agentSkillId").and_then(Value::as_str)
+                {
+                    if skill_id != crate::wiki::WIKI_PANEL_SKILL_ID {
+                        skill_ids.push(skill_id);
+                    }
+                }
+            }
+            Some("writing") => {
+                skill_ids.push(crate::writing::WRITING_PANEL_SKILL_ID);
+                if let Some(skill_id) = task
+                    .pointer("/input/writingSkillId")
+                    .or_else(|| task.pointer("/input/refinerSkillId"))
+                    .and_then(Value::as_str)
+                {
+                    if skill_id != crate::writing::WRITING_PANEL_SKILL_ID {
+                        skill_ids.push(skill_id);
+                    }
+                }
+            }
+            _ => {}
+        }
+        for skill_id in skill_ids {
+            let mut load = registry::command_action(
+                registry::CommandId::registered("agent.skill.read"),
+                vec![
+                    "--skill-id".to_owned(),
+                    skill_id.to_owned(),
+                    "--task-id".to_owned(),
+                    task_id.to_owned(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            )
+            .expect("registered claimed Task Skill action");
+            load["skillId"] = serde_json::json!(skill_id);
+            load["taskId"] = serde_json::json!(task_id);
+            required.push(load);
+        }
+    }
+
+    let scope_state = payload
+        .get("scopeState")
+        .and_then(Value::as_str)
+        .unwrap_or("blocked");
+    if scope_state == "ready" && target_id.is_none() {
+        let project_id = payload
+            .pointer("/scope/projectId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let mut argv = vec![
+            "--name".to_owned(),
+            crate::ids::random_id("manual-task-scope"),
+            "--host".to_owned(),
+            "manual-agent".to_owned(),
+            "--project-id".to_owned(),
+            project_id.to_owned(),
+        ];
+        for capability in payload["requiredCapabilities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            argv.extend(["--capability".to_owned(), capability.to_owned()]);
+        }
+        argv.extend([
+            "--protocol-version".to_owned(),
+            crate::content::EXECUTION_PROTOCOL_VERSION.to_string(),
+            "--max-concurrency".to_owned(),
+            "1".to_owned(),
+            "--format".to_owned(),
+            "json".to_owned(),
+        ]);
+        let mut register = registry::command_action(
+            registry::CommandId::registered("agent.target.register"),
+            argv,
+        )
+        .expect("registered one-shot target action");
+        register["purpose"] = serde_json::json!("Register the one-shot target for this scope.");
+        required.push(register);
+    } else if matches!(scope_state, "complete" | "blocked") {
+        if let Some(target_id) = target_id {
+            let mut remove = registry::command_action(
+                registry::CommandId::registered("agent.target.remove"),
+                vec![
+                    "--target-id".to_owned(),
+                    target_id.to_owned(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                ],
+            )
+            .expect("registered one-shot target cleanup action");
+            remove["purpose"] = serde_json::json!("Remove the completed one-shot target.");
+            required.push(remove);
+        }
+    }
+
+    let mut suggested = vec![
+        catalog_domain_action("agent", "Register and remove the one-shot Agent target."),
+        catalog_domain_action("task", "Read and advance the Task execution scope."),
+    ];
+    if let Some(domain @ ("wiki" | "writing")) =
+        payload.pointer("/task/queue").and_then(Value::as_str)
+    {
+        suggested.push(catalog_domain_action(
+            domain,
+            "The claimed Task requires this command domain.",
+        ));
+    }
+    payload["actions"] = serde_json::json!({
+        "required": required,
+        "suggested": suggested,
+    });
     payload
 }
 

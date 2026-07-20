@@ -6,8 +6,9 @@ import type {
   LocalCliInfo,
   ModelGatewaySettings,
   ProjectTask,
+  TaskExecutionScope,
 } from "../../types"
-import { formatTaskError } from "./trace-utils"
+import { formatTaskError, taskExecutionScope } from "./trace-utils"
 
 export function TaskDispatchControl({
   apiBase,
@@ -16,7 +17,7 @@ export function TaskDispatchControl({
   task,
 }: {
   apiBase: string
-  onOpenManualTask: (task: ProjectTask) => void
+  onOpenManualTask: (scope: TaskExecutionScope) => void
   showManualInstruction: boolean
   task: ProjectTask
 }) {
@@ -142,7 +143,7 @@ export function TaskDispatchControl({
             <Button
               aria-label={t`Copy task instruction`}
               isIconOnly
-              onPress={() => onOpenManualTask(task)}
+              onPress={() => onOpenManualTask(taskExecutionScope(task))}
               size="sm"
               variant="secondary"
             >

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { ProjectTask, TraceCategory, TraceEvent } from "../../types"
 import {
   groupWikiUpdateTasks,
+  manualAgentScopeCandidates,
   manualTaskInstruction,
   traceEventMatchesFilter,
 } from "./trace-utils"
@@ -93,14 +94,64 @@ describe("Wiki update task groups", () => {
 })
 
 describe("manual task instructions", () => {
-  it("includes the exact task command in the current language", () => {
-    const task = projectTask({ id: "task:manual" })
+  it("includes the exact scope command in the current language", () => {
+    const scope = { kind: "exact-task", taskId: "task:manual" } as const
 
-    expect(manualTaskInstruction(task, "en")).toContain(
-      "myopenpanels task read --task-id task:manual --format json"
+    expect(manualTaskInstruction(scope, "en")).toContain(
+      "myopenpanels task scope read --scope exact-task --task-id task:manual --format json"
     )
-    expect(manualTaskInstruction(task, "zh-CN")).toContain(
-      "请处理 MyOpenPanels 任务 task:manual"
+    expect(manualTaskInstruction(scope, "zh-CN")).toContain(
+      "只处理任务 task:manual"
     )
+  })
+
+  it("uses one mutation scope without enumerating historical Task ids", () => {
+    const instruction = manualTaskInstruction(
+      {
+        kind: "wiki-mutation-drain",
+        mutationKey: "wiki:project:panel:default",
+        projectId: "project:test",
+      },
+      "en"
+    )
+
+    expect(instruction).toContain("--scope wiki-mutation-drain")
+    expect(instruction).toContain("--mutation-key wiki:project:panel:default")
+    expect(instruction).not.toContain("--task-id")
+  })
+
+  it("folds conversion prerequisites into one ready Wiki mutation scope", () => {
+    const conversion = projectTask({
+      id: "task:convert",
+      mutationKey: null,
+      ready: true,
+      type: "convert_document_to_markdown",
+    })
+    const ingest = projectTask({
+      dependencies: [
+        {
+          failurePolicy: "cancel",
+          prerequisiteTaskId: conversion.id,
+          status: "queued",
+          successCondition: "succeeded",
+        },
+      ],
+      id: "task:ingest",
+      mutationKey: "wiki:project:panel:default",
+      ready: false,
+      status: "waiting",
+    })
+
+    expect(manualAgentScopeCandidates([conversion, ingest])).toEqual([
+      {
+        isReady: true,
+        key: "wiki-mutation-drain:project:test:wiki:project:panel:default",
+        scope: {
+          kind: "wiki-mutation-drain",
+          mutationKey: "wiki:project:panel:default",
+          projectId: "project:test",
+        },
+      },
+    ])
   })
 })

@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  manualAgentScopeCandidates,
+  taskExecutionScopeKey,
+} from "../components/trace/trace-utils"
 import { MODEL_GATEWAY_SETTINGS_CHANGED_EVENT } from "../constants"
 import { hasUsableAgentCli } from "../lib/agent-cli"
 import { apiJson } from "../lib/api"
@@ -7,6 +11,7 @@ import type {
   ModelGatewaySettings,
   MyOpenPanelsTransport,
   ProjectTask,
+  TaskExecutionScope,
 } from "../types"
 
 const EMPTY_TASKS: ProjectTask[] = []
@@ -25,12 +30,13 @@ export function useManualTaskInstructions({
     checkKey: string
     hasUsableCli: boolean
   } | null>(null)
-  const [queue, setQueue] = useState<ProjectTask[]>([])
-  const [awaitingCheck, setAwaitingCheck] = useState<ProjectTask[]>([])
+  const [queue, setQueue] = useState<TaskExecutionScope[]>([])
+  const [awaitingCheck, setAwaitingCheck] = useState<TaskExecutionScope[]>([])
   const observedRef = useRef<{
     ids: Set<string>
     projectId: string
   } | null>(null)
+  const candidates = useMemo(() => manualAgentScopeCandidates(tasks), [tasks])
   const taskIdsKey = useMemo(
     () =>
       `${projectId ?? ""}:${tasks
@@ -95,9 +101,7 @@ export function useManualTaskInstructions({
     const observed = observedRef.current
     if (!observed || observed.projectId !== projectId) {
       observedRef.current = {
-        ids: new Set(
-          tasks.filter(isTaskReadyForManualAgent).map((task) => task.id)
-        ),
+        ids: new Set(candidates.map((candidate) => candidate.key)),
         projectId,
       }
       setQueue([])
@@ -105,13 +109,15 @@ export function useManualTaskInstructions({
       return
     }
 
-    const newTasks = tasks.filter(
-      (task) => isTaskReadyForManualAgent(task) && !observed.ids.has(task.id)
-    )
-    for (const task of newTasks) observed.ids.add(task.id)
-    if (!newTasks.length) return
-    setAwaitingCheck((current) => appendUniqueTasks(current, newTasks))
-  }, [projectId, tasks])
+    const newScopes = candidates
+      .filter(
+        (candidate) => candidate.isReady && !observed.ids.has(candidate.key)
+      )
+      .map((candidate) => candidate.scope)
+    observed.ids = new Set(candidates.map((candidate) => candidate.key))
+    if (!newScopes.length) return
+    setAwaitingCheck((current) => appendUniqueScopes(current, newScopes))
+  }, [candidates, projectId])
 
   useEffect(() => {
     if (hasUsableCli === null) return
@@ -121,7 +127,7 @@ export function useManualTaskInstructions({
       return
     }
     if (!awaitingCheck.length) return
-    setQueue((current) => appendUniqueTasks(current, awaitingCheck))
+    setQueue((current) => appendUniqueScopes(current, awaitingCheck))
     setAwaitingCheck([])
   }, [awaitingCheck, hasUsableCli])
 
@@ -132,8 +138,8 @@ export function useManualTaskInstructions({
       setAwaitingCheck([])
     }, []),
     hasUsableCli,
-    open: useCallback((task: ProjectTask) => setQueue([task]), []),
-    task: queue[0] ?? null,
+    open: useCallback((scope: TaskExecutionScope) => setQueue([scope]), []),
+    scope: queue[0] ?? null,
   }
 }
 
@@ -141,25 +147,21 @@ export type ManualTaskInstructionsController = ReturnType<
   typeof useManualTaskInstructions
 >
 
-export function clearTasksIfNeeded(tasks: ProjectTask[]): ProjectTask[] {
+export function clearTasksIfNeeded<T>(tasks: T[]): T[] {
   return tasks.length ? [] : tasks
 }
 
-function appendUniqueTasks(
-  current: ProjectTask[],
-  incoming: ProjectTask[]
-): ProjectTask[] {
+function appendUniqueScopes(
+  current: TaskExecutionScope[],
+  incoming: TaskExecutionScope[]
+): TaskExecutionScope[] {
   return [
     ...current,
-    ...incoming.filter(
-      (task) => !current.some((candidate) => candidate.id === task.id)
-    ),
+    ...incoming.filter((scope) => {
+      const key = taskExecutionScopeKey(scope)
+      return !current.some(
+        (candidate) => taskExecutionScopeKey(candidate) === key
+      )
+    }),
   ]
-}
-
-function isTaskReadyForManualAgent(task: ProjectTask): boolean {
-  return (
-    Boolean(task.ready) &&
-    (task.status === "queued" || task.status === "failed")
-  )
 }

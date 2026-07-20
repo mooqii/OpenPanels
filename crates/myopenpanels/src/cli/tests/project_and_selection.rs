@@ -659,9 +659,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
         "--context-id",
         "ctx",
         "--name",
-        "test-poller",
-        "--transport",
-        "poll",
+        "manual-command-target",
         "--capability",
         "wiki.ingestMarkdown",
         "--format",
@@ -670,7 +668,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
     assert_eq!(code, 0, "{stderr}");
     let registered = serde_json::from_str::<Value>(&stdout).expect("target json");
     let target_id = registered["target"]["id"].as_str().unwrap();
-    assert!(registered["token"].is_string());
+    assert!(registered.get("token").is_none());
 
     let (code, _, stderr) = run(&[
         "project",
@@ -729,7 +727,7 @@ fn generic_targets_claim_and_complete_project_tasks() {
     assert_eq!(code, 3);
 
     let result_file = temp.path().join("result.json");
-    fs::write(&result_file, r#"{"executor":"test-poller"}"#).expect("result file");
+    fs::write(&result_file, r#"{"executor":"manual-command-target"}"#).expect("result file");
     let (code, stdout, stderr) = run(&[
         "task",
         "complete",
@@ -751,7 +749,29 @@ fn generic_targets_claim_and_complete_project_tasks() {
     assert_eq!(code, 0, "{stderr}");
     let completed = serde_json::from_str::<Value>(&stdout).expect("complete json");
     assert_eq!(completed["task"]["status"], "succeeded");
-    assert_eq!(completed["task"]["result"]["executor"], "test-poller");
+    assert_eq!(
+        completed["task"]["result"]["executor"],
+        "manual-command-target"
+    );
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "target",
+        "remove",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--target-id",
+        target_id,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let removed = serde_json::from_str::<Value>(&stdout).expect("remove json");
+    assert_eq!(removed["removed"], true);
 
     let (code, stdout, stderr) = run(&[
         "task",

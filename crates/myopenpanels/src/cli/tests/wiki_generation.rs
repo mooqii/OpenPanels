@@ -719,8 +719,6 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "ctx",
         "--name",
         "wiki-converter",
-        "--transport",
-        "poll",
         "--capability",
         "wiki.*",
         "--priority",

@@ -127,7 +127,6 @@ export interface AgentTarget {
   name: string
   priority: number
   status: string
-  transport: "poll" | "command"
 }
 
 export interface MyOpenPanelsBuildInfo {
@@ -254,6 +253,21 @@ export interface ProjectTask {
   }
   workflowId?: string
 }
+
+export type TaskExecutionScope =
+  | {
+      kind: "project-drain"
+      projectId: string
+    }
+  | {
+      kind: "exact-task"
+      taskId: string
+    }
+  | {
+      kind: "wiki-mutation-drain"
+      mutationKey: string
+      projectId: string
+    }
 
 export interface PanelStateSnapshot {
   panel: MyOpenPanelsPanel

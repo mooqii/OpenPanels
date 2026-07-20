@@ -74,15 +74,7 @@ enum TaskCommand {
     List(TaskFilterArgs),
     Next(TaskFilterArgs),
     Read(TaskIdArgs),
-    #[command(name = "claim-next")]
-    ClaimNext {
-        #[arg(long)]
-        target_id: String,
-        #[arg(long)]
-        capability: Vec<String>,
-        #[arg(long)]
-        wait_ms: Option<u64>,
-    },
+    Scope(TaskScopeArgs),
     Claim {
         #[command(flatten)]
         task: TaskIdArgs,
@@ -112,6 +104,35 @@ enum TaskCommand {
     Archive(TaskIdArgs),
     Events(TaskIdArgs),
     Attempts(TaskIdArgs),
+}
+
+#[derive(Debug, Args)]
+struct TaskScopeArgs {
+    #[command(subcommand)]
+    command: TaskScopeCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum TaskScopeCommand {
+    Read(TaskScopeSelectorArgs),
+    Claim {
+        #[command(flatten)]
+        selector: TaskScopeSelectorArgs,
+        #[arg(long)]
+        target_id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct TaskScopeSelectorArgs {
+    #[arg(long, value_parser = ["project-drain", "exact-task", "wiki-mutation-drain"])]
+    scope: String,
+    #[arg(long)]
+    project_id: Option<String>,
+    #[arg(long)]
+    task_id: Option<String>,
+    #[arg(long)]
+    mutation_key: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -197,7 +218,10 @@ struct AgentArgs {
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
-    Bootstrap,
+    Bootstrap {
+        #[arg(long)]
+        workflow: Option<String>,
+    },
     Catalog {
         #[arg(long)]
         domain: Option<String>,
@@ -314,8 +338,8 @@ enum AgentTargetCommand {
         name: String,
         #[arg(long)]
         host: Option<String>,
-        #[arg(long, value_parser = ["poll", "command"])]
-        transport: String,
+        #[arg(long)]
+        project_id: Option<String>,
         #[arg(long)]
         capability: Vec<String>,
         #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
@@ -324,10 +348,6 @@ enum AgentTargetCommand {
         protocol_version: i64,
         #[arg(long, default_value_t = 1)]
         max_concurrency: i64,
-    },
-    Heartbeat {
-        #[arg(long)]
-        target_id: String,
     },
     Remove {
         #[arg(long)]

@@ -1,41 +1,42 @@
-pub fn claim_next(
-    paths: &MyOpenPanelsPaths,
-    target_id: &str,
-    capability: Option<&str>,
-    wait_ms: Option<u64>,
-) -> Result<Value, CliError> {
-    claim_next_filtered(paths, target_id, capability, None, wait_ms)
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WikiBatchPolicy {
+    CompatibleWindow,
+    Exact,
 }
 
-pub fn claim_next_filtered(
+pub(crate) fn claim_for_worker(
     paths: &MyOpenPanelsPaths,
     target_id: &str,
     capability: Option<&str>,
     queue: Option<&str>,
-    wait_ms: Option<u64>,
 ) -> Result<Value, CliError> {
-    let wait_ms = wait_ms
-        .unwrap_or(DEFAULT_LONG_POLL_MS)
-        .min(DEFAULT_LONG_POLL_MS);
-    let started = Instant::now();
     let project_id = read_project_bootstrap(paths, BootstrapRequest::new())?
         .project
         .id;
-    loop {
-        match claim_once(paths, &project_id, target_id, None, capability, queue) {
-            Ok(Some(payload)) => return Ok(payload),
-            Ok(None) => {}
-            Err(error) if is_database_locked(&error) => {}
+    for attempt in 0..3 {
+        match claim_once(
+            paths,
+            &project_id,
+            target_id,
+            None,
+            capability,
+            queue,
+            WikiBatchPolicy::CompatibleWindow,
+        ) {
+            Ok(payload) => {
+                return Ok(payload
+                    .unwrap_or_else(|| json!({ "task": Value::Null, "leaseToken": Value::Null })))
+            }
+            Err(error) if attempt < 2 && task_database_locked(&error) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             Err(error) => return Err(error),
         }
-        if started.elapsed() >= Duration::from_millis(wait_ms) {
-            return Ok(json!({ "task": Value::Null, "leaseToken": Value::Null }));
-        }
-        thread::sleep(Duration::from_millis(100));
     }
+    unreachable!("worker claim retry loop always returns")
 }
 
-fn is_database_locked(error: &CliError) -> bool {
+fn task_database_locked(error: &CliError) -> bool {
     error
         .message()
         .to_ascii_lowercase()
@@ -48,7 +49,16 @@ pub fn claim_task(
     target_id: &str,
 ) -> Result<Value, CliError> {
     let project_id = task_project_id(paths, task_id)?;
-    claim_once(paths, &project_id, target_id, Some(task_id), None, None)?.ok_or_else(|| {
+    claim_once(
+        paths,
+        &project_id,
+        target_id,
+        Some(task_id),
+        None,
+        None,
+        WikiBatchPolicy::CompatibleWindow,
+    )?
+    .ok_or_else(|| {
         CliError::with_code(
             "task_not_claimable",
             format!("Project task is not claimable: {task_id}"),
@@ -63,6 +73,7 @@ fn claim_once(
     task_id: Option<&str>,
     requested_capability: Option<&str>,
     requested_queue: Option<&str>,
+    wiki_batch_policy: WikiBatchPolicy,
 ) -> Result<Option<Value>, CliError> {
     recover_expired_tasks_in_session(paths, project_id)?;
     heartbeat_target_in_session(paths, project_id, target_id)?;
@@ -152,7 +163,6 @@ fn claim_once(
         "targetId": target_id,
         "targetName": target.get("name"),
         "host": target.get("host"),
-        "transport": target.get("transport"),
         "modelGatewayConnectionId": model_gateway_connection_id,
     });
     let workflow_id = tx
@@ -201,7 +211,9 @@ fn claim_once(
     .map_err(to_cli_error)?;
     crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
     tx.commit().map_err(to_cli_error)?;
-    let execution_batch = if reserved.queue == "wiki" {
+    let execution_batch = if reserved.queue == "wiki"
+        && wiki_batch_policy == WikiBatchPolicy::CompatibleWindow
+    {
         create_wiki_update_execution_batch(
             paths,
             project_id,
@@ -212,6 +224,14 @@ fn claim_once(
     } else {
         None
     };
+    if reserved.queue == "wiki" && execution_batch.is_none() {
+        clear_wiki_update_execution_batch(
+            paths,
+            project_id,
+            &reserved.id,
+            execution_generation,
+        )?;
+    }
     let mut payload = inspect_task(paths, &reserved.id)?;
     if let Some(batch) = execution_batch {
         payload["batch"] = batch.clone();
@@ -235,7 +255,23 @@ fn claim_once(
     Ok(Some(payload))
 }
 
-const MAX_WIKI_UPDATE_BATCH_TASKS: usize = 16;
+const MAX_WIKI_UPDATE_WINDOW_BYTES: usize = 256 * 1024;
+
+fn clear_wiki_update_execution_batch(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    task_id: &str,
+    execution_generation: i64,
+) -> Result<(), CliError> {
+    Storage::open(paths)?
+        .connection()
+        .execute(
+            "UPDATE tasks SET source_json = json_remove(source_json, '$.executionBatch') WHERE id = ? AND project_id = ? AND execution_generation = ?",
+            params![task_id, project_id, execution_generation],
+        )
+        .map_err(to_cli_error)?;
+    Ok(())
+}
 
 fn create_wiki_update_execution_batch(
     paths: &MyOpenPanelsPaths,
@@ -278,6 +314,7 @@ fn create_wiki_update_execution_batch(
             .unwrap_or(i64::MAX)
     });
     let now = chrono::Utc::now();
+    let mut window_bytes = wiki_update_window_bytes(paths, &leader);
     let mut members = vec![leader.clone()];
     for task in tasks {
         let sequence = task
@@ -288,9 +325,6 @@ fn create_wiki_update_execution_batch(
             || task.get("mutationKey").and_then(Value::as_str) != Some(mutation_key)
         {
             continue;
-        }
-        if members.len() >= MAX_WIKI_UPDATE_BATCH_TASKS {
-            break;
         }
         let status = task.get("status").and_then(Value::as_str).unwrap_or("");
         if matches!(status, "succeeded" | "cancelled" | "stale" | "superseded") {
@@ -318,6 +352,11 @@ fn create_wiki_update_execution_batch(
         if !ready || !compatible {
             break;
         }
+        let task_bytes = wiki_update_window_bytes(paths, &task);
+        if window_bytes.saturating_add(task_bytes) > MAX_WIKI_UPDATE_WINDOW_BYTES {
+            break;
+        }
+        window_bytes = window_bytes.saturating_add(task_bytes);
         members.push(task);
     }
     if members.len() < 2 {
@@ -344,20 +383,70 @@ fn create_wiki_update_execution_batch(
     });
     let mut source = leader.get("source").cloned().unwrap_or_else(|| json!({}));
     source["executionBatch"] = batch.clone();
-    storage
+    let tx = storage
         .connection()
-        .execute(
+        .unchecked_transaction()
+        .map_err(to_cli_error)?;
+    let now = crate::control::now_iso();
+    for member_task_id in batch["memberTaskIds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        crate::content::pin_task_inputs_in_transaction(&tx, member_task_id, &now)?;
+    }
+    tx.execute(
             "UPDATE tasks SET source_json = ?, updated_at = ? WHERE id = ? AND project_id = ? AND execution_generation = ?",
             params![
                 source.to_string(),
-                crate::control::now_iso(),
+                now,
                 leader_task_id,
                 project_id,
                 execution_generation,
             ],
         )
         .map_err(to_cli_error)?;
+    tx.commit().map_err(to_cli_error)?;
     Ok(Some(batch))
+}
+
+fn wiki_update_window_bytes(paths: &MyOpenPanelsPaths, task: &Value) -> usize {
+    let metadata_bytes = serde_json::to_vec(task).map_or(0, |bytes| bytes.len());
+    let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
+    let source_bytes = match task.get("type").and_then(Value::as_str) {
+        Some("ingest_markdown_into_wiki") => task
+            .pointer("/input/documentId")
+            .and_then(Value::as_str)
+            .and_then(|document_id| {
+                crate::content::pinned_task_input_text(
+                    paths,
+                    task_id,
+                    crate::content::ResourceKind::WikiMarkdown,
+                    document_id,
+                    "source.md",
+                )
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    crate::wiki::read_markdown(paths, document_id)
+                        .ok()
+                        .and_then(|payload| {
+                            payload
+                                .get("markdown")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                })
+            })
+            .map_or(0, |source| source.len()),
+        Some("maintain_wiki") => task
+            .pointer("/input/changeEvents")
+            .and_then(|events| serde_json::to_vec(events).ok())
+            .map_or(0, |bytes| bytes.len()),
+        _ => 0,
+    };
+    metadata_bytes.saturating_add(source_bytes)
 }
 
 fn is_wiki_update_task(task: &Value) -> bool {

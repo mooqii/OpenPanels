@@ -9,10 +9,16 @@ does not define an artistic style or prompt-writing method.
 
 Intent routing:
 
-- When selected Canvas content or a visual reference matters, read
+- To read selected Canvas content or use it as a reference, read
   `references/selection.md`.
-- When generating, redrawing, restyling, or editing a bitmap for the Canvas,
-  read `references/image-generation.md`.
+- To export an explicitly selected Canvas item, read
+  `references/selection-export.md`.
+- To insert an existing bitmap without generation, read
+  `references/image-insert.md`.
+- To generate a new bitmap without requiring selection, read
+  `references/image-generation.md`.
+- To redraw, restyle, or edit an explicitly selected bitmap, read
+  `references/image-edit.md`.
 - Before invoking an image model, read `references/workflow-skill-routing.md` to
   determine whether a separate drawing workflow skill was selected.
 

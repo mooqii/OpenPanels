@@ -130,7 +130,7 @@
             crate::tasks::TargetRegistration {
                 name: "writing-wiki-reader",
                 host: Some("test"),
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["writing.generateDocument".to_owned()],
                 priority: 0,
                 protocol_version: 3,

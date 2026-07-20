@@ -105,8 +105,7 @@ fn reserve_task(
                         AND predecessor.mutation_key = candidate.mutation_key
                         AND predecessor.mutation_sequence < candidate.mutation_sequence
                         AND (
-                          predecessor.status IN ('waiting', 'queued', 'reserved', 'running', 'claimed', 'converting', 'indexing')
-                          OR (predecessor.status = 'failed' AND predecessor.attempts < predecessor.max_attempts)
+                          predecessor.status IN ('waiting', 'queued', 'reserved', 'running', 'claimed', 'converting', 'indexing', 'failed')
                         )
                     )
                   )
@@ -541,4 +540,3 @@ pub(crate) fn supersede_task_for_content_conflict(
     tx.commit().map_err(to_cli_error)?;
     inspect_task_in_session(paths, &project_id, task_id)
 }
-

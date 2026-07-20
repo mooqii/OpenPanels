@@ -126,15 +126,25 @@ pub fn set_wiki_update_group_dispatch(
         let mut statement = tx
             .prepare(
                 r#"
-                SELECT id, workflow_id, status FROM tasks
-                WHERE project_id = ? AND queue = 'wiki' AND mutation_key = ?
-                  AND type IN ('ingest_markdown_into_wiki', 'maintain_wiki')
-                  AND status IN ('waiting', 'queued', 'failed')
+                WITH RECURSIVE scoped(id) AS (
+                  SELECT id FROM tasks
+                  WHERE project_id = ? AND queue = 'wiki' AND mutation_key = ?
+                    AND type IN ('ingest_markdown_into_wiki', 'maintain_wiki')
+                    AND status IN ('waiting', 'queued', 'failed')
+                  UNION
+                  SELECT dependencies.prerequisite_task_id
+                  FROM task_dependencies dependencies
+                  JOIN scoped ON scoped.id = dependencies.task_id
+                )
+                SELECT tasks.id, tasks.workflow_id, tasks.status FROM tasks
+                JOIN scoped ON scoped.id = tasks.id
+                WHERE tasks.project_id = ?
+                  AND tasks.status IN ('waiting', 'queued', 'failed')
                 "#,
             )
             .map_err(to_cli_error)?;
         let rows = statement
-            .query_map(params![project_id, mutation_key], |row| {
+            .query_map(params![project_id, mutation_key, project_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -155,13 +165,29 @@ pub fn set_wiki_update_group_dispatch(
     let changed = tx
         .execute(
             r#"
+            WITH RECURSIVE scoped(id) AS (
+              SELECT id FROM tasks
+              WHERE project_id = ? AND queue = 'wiki' AND mutation_key = ?
+                AND type IN ('ingest_markdown_into_wiki', 'maintain_wiki')
+                AND status IN ('waiting', 'queued', 'failed')
+              UNION
+              SELECT dependencies.prerequisite_task_id
+              FROM task_dependencies dependencies
+              JOIN scoped ON scoped.id = dependencies.task_id
+            )
             UPDATE tasks
             SET dispatch_mode = ?, requested_gateway_connection_id = ?, updated_at = ?
-            WHERE project_id = ? AND queue = 'wiki' AND mutation_key = ?
-              AND type IN ('ingest_markdown_into_wiki', 'maintain_wiki')
+            WHERE project_id = ? AND id IN (SELECT id FROM scoped)
               AND status IN ('waiting', 'queued', 'failed')
             "#,
-            params![mode, requested_connection_id, now, project_id, mutation_key],
+            params![
+                project_id,
+                mutation_key,
+                mode,
+                requested_connection_id,
+                now,
+                project_id
+            ],
         )
         .map_err(to_cli_error)?;
     let reason = json!({
@@ -403,7 +429,7 @@ pub fn list_agent_routes(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     let mut statement = storage.connection().prepare(
         r#"SELECT r.capability, r.agent_target_id, r.position, t.name, t.status, t.protocol_version, t.max_concurrency
            FROM agent_routes r JOIN agent_targets t ON t.id = r.agent_target_id
-           WHERE r.project_id = ? AND t.transport IN ('poll', 'command')
+           WHERE r.project_id = ? AND t.transport = 'command'
            ORDER BY r.capability, r.position"#,
     ).map_err(to_cli_error)?;
     let routes = statement
@@ -452,7 +478,7 @@ pub fn set_agent_route(
     for (position, target_id) in target_ids.iter().enumerate() {
         let exists = tx
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM agent_targets WHERE project_id = ? AND id = ? AND transport IN ('poll', 'command'))",
+                "SELECT EXISTS(SELECT 1 FROM agent_targets WHERE project_id = ? AND id = ? AND transport = 'command')",
                 params![project_id, target_id],
                 |row| row.get::<_, bool>(0),
             )

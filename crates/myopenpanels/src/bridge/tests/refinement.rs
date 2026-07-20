@@ -221,7 +221,7 @@
             crate::tasks::TargetRegistration {
                 name: "refinement-validator",
                 host: Some("test"),
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["writing.refineSkill".to_owned()],
                 priority: 0,
                 protocol_version: 3,

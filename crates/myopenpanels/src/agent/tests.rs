@@ -137,6 +137,7 @@ mod tests {
     fn registered_builtin_packages_are_standard_and_presets_are_portable() {
         let registry: BuiltinSkillRegistry =
             serde_json::from_str(BUILTIN_SKILL_REGISTRY).expect("registry");
+        assert_eq!(registry.schema_version, 2);
         for registration in registry.system_skills {
             let directory = SYSTEM_SKILLS
                 .get_dir(&registration.package_dir)
@@ -161,6 +162,27 @@ mod tests {
                 .expect("preset SKILL.md");
             parse_portable_skill(source, &skill_path.display().to_string())
                 .expect("registered portable preset Skill");
+        }
+    }
+
+    #[test]
+    fn registered_agent_workflows_are_unique_valid_and_indexed_by_entry_skill() {
+        let workflows = load_agent_workflows().expect("Agent Workflows");
+        let entry_skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
+        assert_eq!(workflows.len(), 23);
+        assert_eq!(
+            workflows
+                .iter()
+                .filter(|workflow| workflow.registration.execution_mode == "bootstrap")
+                .count(),
+            18
+        );
+        for workflow in workflows {
+            assert!(
+                entry_skill.contains(&format!("`{}`", workflow.registration.key)),
+                "Entry Skill is missing {}",
+                workflow.registration.key
+            );
         }
     }
 

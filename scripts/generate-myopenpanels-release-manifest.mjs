@@ -24,7 +24,7 @@ const tag =
 const repo = args.repo ?? process.env.GITHUB_REPOSITORY ?? "mooqii/OpenPanels"
 const channel =
   args.channel ?? (version.includes("-") ? "prerelease" : "stable")
-const entrySkillVersion = readEntrySkillVersion()
+const entrySkill = readEntrySkillMetadata()
 const archivePattern = /^myopenpanels-(.+)\.(tar\.gz|zip)$/
 
 if (!existsSync(outDir))
@@ -60,8 +60,8 @@ const manifest = {
   channel,
   entrySkill: {
     id: "myopenpanels",
-    version: entrySkillVersion,
-    source: `https://github.com/${repo}/tree/${tag}/skills/myopenpanels`,
+    version: entrySkill.version,
+    source: entrySkill.source,
   },
   assets,
 }
@@ -100,12 +100,14 @@ function readCargoVersion() {
   return match[1]
 }
 
-function readEntrySkillVersion() {
+function readEntrySkillMetadata() {
   const content = readFileSync(
     new URL("../skills/myopenpanels/SKILL.md", import.meta.url),
     "utf8"
   )
-  const match = content.match(/^\s+version:\s*["']([^"']+)["']/m)
-  if (!match) throw new Error("Missing MyOpenPanels entry Skill version")
-  return match[1]
+  const version = content.match(/^\s+version:\s*["']([^"']+)["']/m)?.[1]
+  const source = content.match(/^\s+source:\s*["']([^"']+)["']/m)?.[1]
+  if (!version) throw new Error("Missing MyOpenPanels entry Skill version")
+  if (!source) throw new Error("Missing MyOpenPanels entry Skill source")
+  return { source, version }
 }

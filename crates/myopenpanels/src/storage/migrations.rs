@@ -8,6 +8,7 @@ CREATE TABLE schema_migrations (
 "#;
 
 const MIGRATION_0001_SQL: &str = include_str!("../../migrations/0001_initial.sql");
+const MIGRATION_0002_SQL: &str = include_str!("../../migrations/0002_remove_poll_targets.sql");
 
 struct Migration {
     id: &'static str,
@@ -22,15 +23,23 @@ struct AppliedMigration {
 }
 
 fn migrations() -> &'static [Migration] {
-    &[Migration {
-        id: "0001_initial",
-        description: "Create the initial MyOpenPanels storage schema",
-        checksum_material: MIGRATION_0001_SQL,
-        up: migration_0001,
-    }]
+    &[
+        Migration {
+            id: "0001_initial",
+            description: "Create the initial MyOpenPanels storage schema",
+            checksum_material: MIGRATION_0001_SQL,
+            up: migration_0001,
+        },
+        Migration {
+            id: "0002_remove_poll_targets",
+            description: "Remove external poll targets",
+            checksum_material: MIGRATION_0002_SQL,
+            up: migration_0002,
+        },
+    ]
 }
 
-fn migrate(connection: &mut Connection) -> Result<(), CliError> {
+fn migrate(connection: &mut Connection) -> Result<bool, CliError> {
     let migration_table_exists = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'schema_migrations')",
@@ -55,7 +64,7 @@ fn migrate(connection: &mut Connection) -> Result<(), CliError> {
             .map_err(to_cli_error)?;
     } else if application_table_count > 0 {
         let applied = read_applied_migrations(connection)?;
-        if applied.len() != 1 || !applied.contains_key("0001_initial") {
+        if applied.is_empty() {
             return Err(incompatible_storage_baseline());
         }
     }
@@ -99,20 +108,28 @@ fn preflight_existing_database(database_path: &std::path::Path) -> Result<(), Cl
     if applied.is_empty() && application_table_count == 0 {
         return Ok(());
     }
-    let migration = &migrations()[0];
-    if applied.len() != 1
-        || applied
-            .get(migration.id)
-            .is_none_or(|entry| entry.checksum != migration_checksum(migration))
-    {
-        return Err(incompatible_storage_baseline());
-    }
-    Ok(())
+    validate_applied_history(&applied, migrations())
 }
 
-fn run_migrations(connection: &mut Connection, migrations: &[Migration]) -> Result<(), CliError> {
+fn run_migrations(connection: &mut Connection, migrations: &[Migration]) -> Result<bool, CliError> {
     validate_registry(migrations)?;
     let applied = read_applied_migrations(connection)?;
+    validate_applied_history(&applied, migrations)?;
+
+    let mut removed_poll_targets = false;
+    for migration in migrations {
+        if !applied.contains_key(migration.id) {
+            apply_migration(connection, migration)?;
+            removed_poll_targets |= migration.id == "0002_remove_poll_targets";
+        }
+    }
+    Ok(removed_poll_targets)
+}
+
+fn validate_applied_history(
+    applied: &HashMap<String, AppliedMigration>,
+    migrations: &[Migration],
+) -> Result<(), CliError> {
     let registry_ids = migrations
         .iter()
         .map(|migration| migration.id)
@@ -130,18 +147,14 @@ fn run_migrations(connection: &mut Connection, migrations: &[Migration]) -> Resu
                     migration.id
                 )));
             }
-        } else {
-            saw_missing = true;
-        }
-    }
-
-    for migration in migrations {
-        if let Some(applied_migration) = applied.get(migration.id) {
-            if applied_migration.checksum != migration_checksum(migration) {
+            if applied
+                .get(migration.id)
+                .is_some_and(|entry| entry.checksum != migration_checksum(migration))
+            {
                 return Err(incompatible_storage_baseline());
             }
         } else {
-            apply_migration(connection, migration)?;
+            saw_missing = true;
         }
     }
     Ok(())
@@ -205,6 +218,10 @@ fn migration_checksum(migration: &Migration) -> String {
 
 fn migration_0001(tx: &Transaction<'_>) -> Result<(), CliError> {
     tx.execute_batch(MIGRATION_0001_SQL).map_err(to_cli_error)
+}
+
+fn migration_0002(tx: &Transaction<'_>) -> Result<(), CliError> {
+    tx.execute_batch(MIGRATION_0002_SQL).map_err(to_cli_error)
 }
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {

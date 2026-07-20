@@ -2,6 +2,8 @@
 mod tests {
     use super::*;
     use crate::paths::resolve_myopenpanels_paths;
+    use axum::http::Request;
+    use tower::ServiceExt;
 
     #[test]
     fn update_status_query_can_bypass_cached_checks() {
@@ -18,15 +20,62 @@ mod tests {
         .bypass_cache());
     }
 
-    #[test]
-    fn agent_target_registration_rejects_removed_endpoint_field() {
-        let body = serde_json::from_value::<AgentTargetRegistrationBody>(json!({
-            "name": "poll-worker",
-            "transport": "poll",
-            "endpoint": "http://localhost/wake",
-            "capabilities": ["*"]
-        }));
-        assert!(body.is_err());
+    #[tokio::test]
+    async fn removed_external_worker_routes_return_not_found() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("removed-worker-routes"),
+        )
+        .expect("paths");
+        ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let router = build_router(
+            "127.0.0.1".to_owned(),
+            0,
+            paths,
+            None,
+            current_build_info(),
+        );
+
+        for (method, uri) in [
+            (Method::POST, "/api/agent/targets"),
+            (Method::POST, "/api/agent/targets/legacy/heartbeat"),
+            (Method::DELETE, "/api/agent/targets/legacy"),
+            (Method::POST, "/api/tasks/claim-next"),
+            (Method::POST, "/api/tasks/legacy/claim"),
+            (Method::POST, "/api/tasks/legacy/heartbeat"),
+            (Method::POST, "/api/tasks/legacy/complete"),
+            (Method::POST, "/api/tasks/legacy/fail"),
+            (Method::POST, "/api/tasks/legacy/release"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agent/targets")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

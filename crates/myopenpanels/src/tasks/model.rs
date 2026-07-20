@@ -57,15 +57,7 @@ pub(crate) struct AgentTarget {
     pub(crate) project_id: String,
     pub(crate) name: String,
     pub(crate) host: String,
-    pub(crate) transport: AgentTargetTransport,
     pub(crate) capabilities: Vec<String>,
     pub(crate) priority: i64,
     pub(crate) status: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum AgentTargetTransport {
-    Poll,
-    Command,
 }

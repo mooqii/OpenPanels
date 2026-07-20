@@ -63,7 +63,9 @@ impl Storage {
                 "#,
             )
             .map_err(to_cli_error)?;
-        migrate(&mut connection)?;
+        if migrate(&mut connection)? {
+            remove_legacy_target_secrets(&paths.storage_dir)?;
+        }
         Ok(Self {
             connection,
             root_dir: paths.storage_dir.clone(),
@@ -494,4 +496,19 @@ impl Storage {
             .map_err(to_cli_error)?;
         rows.map(|row| row.map_err(to_cli_error)).collect()
     }
+}
+
+fn remove_legacy_target_secrets(storage_dir: &std::path::Path) -> Result<(), CliError> {
+    let contexts_dir = storage_dir.join("contexts");
+    if !contexts_dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(contexts_dir).map_err(to_cli_error)? {
+        let context_dir = entry.map_err(to_cli_error)?.path();
+        let secrets_dir = context_dir.join("agent-target-secrets");
+        if secrets_dir.exists() {
+            fs::remove_dir_all(secrets_dir).map_err(to_cli_error)?;
+        }
+    }
+    Ok(())
 }

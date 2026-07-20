@@ -226,14 +226,17 @@
             )
             .expect("raw document");
         }
-        let mutation_key = crate::storage::Storage::open(&paths)
+        let tasks = crate::storage::Storage::open(&paths)
             .expect("storage")
             .list_tasks(&bootstrap.project.id)
-            .expect("tasks")
-            .into_iter()
-            .find(|task| task["type"] == "ingest_markdown_into_wiki")
-            .and_then(|task| task["mutationKey"].as_str().map(str::to_owned))
-            .expect("mutation key");
+            .expect("tasks");
+        let first_task = tasks
+            .iter()
+            .filter(|task| task["type"] == "ingest_markdown_into_wiki")
+            .min_by_key(|task| task["mutationSequence"].as_i64().unwrap_or(i64::MAX))
+            .expect("wiki task");
+        let first_task_id = first_task["id"].as_str().expect("task id");
+        let mutation_key = first_task["mutationKey"].as_str().expect("mutation key");
         let dispatch = crate::tasks::set_wiki_update_group_dispatch(
             &paths,
             &mutation_key,
@@ -247,7 +250,7 @@
             crate::tasks::TargetRegistration {
                 name: "wiki-batch-target",
                 host: Some("test"),
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["*".to_owned()],
                 priority: 0,
                 protocol_version: 3,
@@ -257,11 +260,10 @@
         )
         .expect("target");
         let _broker = crate::content::enable_test_task_broker();
-        let claim = crate::tasks::claim_next(
+        let claim = crate::tasks::claim_task(
             &paths,
+            first_task_id,
             target["target"]["id"].as_str().expect("target id"),
-            None,
-            Some(0),
         )
         .expect("claim");
 

@@ -95,8 +95,7 @@ fn mutation_task_blocked(
                       AND predecessor.mutation_key = candidate.mutation_key
                       AND predecessor.mutation_sequence < candidate.mutation_sequence
                       AND (
-                        predecessor.status IN ('waiting', 'queued', 'reserved', 'running', 'claimed', 'converting', 'indexing')
-                        OR (predecessor.status = 'failed' AND predecessor.attempts < predecessor.max_attempts)
+                        predecessor.status IN ('waiting', 'queued', 'reserved', 'running', 'claimed', 'converting', 'indexing', 'failed')
                       )
                   )
                 )
@@ -120,7 +119,7 @@ fn read_targets_from_connection(
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, name, host, transport, capabilities_json,
+            SELECT id, name, host, capabilities_json,
                    priority, status, last_error, last_heartbeat_at, created_at, updated_at,
                    protocol_version, max_concurrency,
                    (SELECT COUNT(*) FROM tasks active
@@ -128,7 +127,7 @@ fn read_targets_from_connection(
                       AND active.status IN ('reserved', 'running', 'claimed', 'converting', 'indexing')),
                    model_gateway_connection_id
             FROM agent_targets
-            WHERE project_id = ? AND transport IN ('poll', 'command')
+            WHERE project_id = ? AND transport = 'command'
             ORDER BY priority DESC, last_heartbeat_at DESC, id ASC
             "#,
         )
@@ -148,7 +147,7 @@ fn read_target_value(
     connection
         .query_row(
             r#"
-            SELECT id, name, host, transport, capabilities_json,
+            SELECT id, name, host, capabilities_json,
                    priority, status, last_error, last_heartbeat_at, created_at, updated_at,
                    protocol_version, max_concurrency,
                    (SELECT COUNT(*) FROM tasks active
@@ -156,7 +155,7 @@ fn read_target_value(
                       AND active.status IN ('reserved', 'running', 'claimed', 'converting', 'indexing')),
                    model_gateway_connection_id
             FROM agent_targets
-            WHERE project_id = ? AND id = ? AND transport IN ('poll', 'command')
+            WHERE project_id = ? AND id = ? AND transport = 'command'
             "#,
             params![project_id, target_id],
             target_from_row,
@@ -167,25 +166,24 @@ fn read_target_value(
 }
 
 fn target_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
-    let capabilities_json = row.get::<_, String>(4)?;
+    let capabilities_json = row.get::<_, String>(3)?;
     let capabilities =
         serde_json::from_str::<Value>(&capabilities_json).unwrap_or_else(|_| json!([]));
     Ok(json!({
         "id": row.get::<_, String>(0)?,
         "name": row.get::<_, String>(1)?,
         "host": row.get::<_, String>(2)?,
-        "transport": row.get::<_, String>(3)?,
         "capabilities": capabilities,
-        "priority": row.get::<_, i64>(5)?,
-        "status": row.get::<_, String>(6)?,
-        "lastError": row.get::<_, Option<String>>(7)?,
-        "lastHeartbeatAt": row.get::<_, String>(8)?,
-        "createdAt": row.get::<_, String>(9)?,
-        "updatedAt": row.get::<_, String>(10)?,
-        "protocolVersion": row.get::<_, i64>(11)?,
-        "maxConcurrency": row.get::<_, i64>(12)?,
-        "activeAttempts": row.get::<_, i64>(13)?,
-        "modelGatewayConnectionId": row.get::<_, Option<String>>(14)?,
+        "priority": row.get::<_, i64>(4)?,
+        "status": row.get::<_, String>(5)?,
+        "lastError": row.get::<_, Option<String>>(6)?,
+        "lastHeartbeatAt": row.get::<_, String>(7)?,
+        "createdAt": row.get::<_, String>(8)?,
+        "updatedAt": row.get::<_, String>(9)?,
+        "protocolVersion": row.get::<_, i64>(10)?,
+        "maxConcurrency": row.get::<_, i64>(11)?,
+        "activeAttempts": row.get::<_, i64>(12)?,
+        "modelGatewayConnectionId": row.get::<_, Option<String>>(13)?,
     }))
 }
 
@@ -537,4 +535,3 @@ fn workflow_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value>
         "progress": if total == 0 { 0.0 } else { succeeded as f64 / total as f64 },
     }))
 }
-

@@ -216,6 +216,7 @@ fn insert_task_created_records(
             )
             .map_err(to_cli_error)?;
     }
+    crate::content::pin_task_inputs_in_transaction(connection, task_id, now)?;
     let _ = project_id;
     Ok(())
 }

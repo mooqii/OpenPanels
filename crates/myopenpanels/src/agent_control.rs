@@ -12,6 +12,7 @@ const ENTRY_SKILL_ACK_PREFIX: &str = "entry_skill_ack:";
 
 pub const ENTRY_SKILL_ID: &str = "myopenpanels";
 pub const ENTRY_SKILL_VERSION: &str = env!("MYOPENPANELS_ENTRY_SKILL_VERSION");
+pub const ENTRY_SKILL_SOURCE: &str = env!("MYOPENPANELS_ENTRY_SKILL_SOURCE");
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,18 +34,16 @@ struct EntrySkillAcknowledgement {
 
 pub fn pending_entry_skill_update(
     paths: &MyOpenPanelsPaths,
-    cli_version: &str,
 ) -> Result<Option<EntrySkillUpdate>, CliError> {
     let storage = Storage::open(paths)?;
-    pending_entry_skill_update_with_storage(paths, &storage, cli_version)
+    pending_entry_skill_update_with_storage(paths, &storage)
 }
 
 pub(crate) fn pending_entry_skill_update_with_storage(
     paths: &MyOpenPanelsPaths,
     storage: &Storage,
-    cli_version: &str,
 ) -> Result<Option<EntrySkillUpdate>, CliError> {
-    let required = ensure_entry_skill_requirement(storage, cli_version)?;
+    let required = ensure_entry_skill_requirement(storage)?;
     let acknowledgement = read_value::<EntrySkillAcknowledgement>(
         storage,
         &format!("{ENTRY_SKILL_ACK_PREFIX}{}", paths.context_id),
@@ -109,12 +108,8 @@ pub fn acknowledge_entry_skill_update(
     }))
 }
 
-fn ensure_entry_skill_requirement(
-    storage: &Storage,
-    cli_version: &str,
-) -> Result<EntrySkillUpdate, CliError> {
-    let source =
-        format!("https://github.com/mooqii/OpenPanels/tree/v{cli_version}/skills/myopenpanels");
+fn ensure_entry_skill_requirement(storage: &Storage) -> Result<EntrySkillUpdate, CliError> {
+    let source = ENTRY_SKILL_SOURCE.to_owned();
     if let Some(mut existing) =
         read_value::<EntrySkillUpdate>(storage, ENTRY_SKILL_REQUIREMENT_KEY)?
     {
@@ -186,6 +181,31 @@ mod tests {
     }
 
     #[test]
+    fn entry_skill_requirement_uses_source_declared_by_the_skill() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join("storage");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("agent"),
+        )
+        .expect("paths");
+
+        let pending = pending_entry_skill_update(&paths)
+            .expect("pending update")
+            .expect("requirement");
+
+        assert_eq!(pending.required_version, ENTRY_SKILL_VERSION);
+        assert_eq!(pending.source, ENTRY_SKILL_SOURCE);
+        assert_eq!(
+            pending.source,
+            "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels"
+        );
+    }
+
+    #[test]
     fn entry_skill_acknowledgement_remains_agent_context_scoped() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
@@ -203,17 +223,17 @@ mod tests {
             Some("agent-b"),
         )
         .expect("agent b");
-        let pending = pending_entry_skill_update(&paths_a, "1.0.0")
+        let pending = pending_entry_skill_update(&paths_a)
             .expect("pending a")
             .expect("requirement");
 
         acknowledge_entry_skill_update(&paths_a, &pending.event_id, ENTRY_SKILL_VERSION)
             .expect("acknowledge a");
 
-        assert!(pending_entry_skill_update(&paths_a, "1.0.0")
+        assert!(pending_entry_skill_update(&paths_a)
             .expect("pending a after ack")
             .is_none());
-        assert!(pending_entry_skill_update(&paths_b, "1.0.0")
+        assert!(pending_entry_skill_update(&paths_b)
             .expect("pending b")
             .is_some());
     }

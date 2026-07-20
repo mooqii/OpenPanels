@@ -4,8 +4,8 @@ import { useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import type { ManualTaskInstructionsController } from "../../hooks/use-manual-task-instructions"
 import { copyTextToClipboard } from "../../lib/clipboard"
-import type { ProjectTask } from "../../types"
-import { manualTaskInstruction } from "./trace-utils"
+import type { TaskExecutionScope } from "../../types"
+import { manualTaskInstruction, taskExecutionScopeKey } from "./trace-utils"
 
 export function ManualTaskInstructionPrompt({
   controller,
@@ -21,7 +21,7 @@ export function ManualTaskInstructionPrompt({
         controller.dismissAll()
         onConfigureCli()
       }}
-      task={controller.task}
+      scope={controller.scope}
     />
   )
 }
@@ -29,24 +29,26 @@ export function ManualTaskInstructionPrompt({
 export function ManualTaskInstructionDialog({
   onClose,
   onConfigureCli,
-  task,
+  scope,
 }: {
   onClose: () => void
   onConfigureCli: () => void
-  task: ProjectTask | null
+  scope: TaskExecutionScope | null
 }) {
   const { locale, t } = useMyOpenPanelsI18n()
   const [copyResult, setCopyResult] = useState<{
     status: "copied" | "failed"
-    taskId: string
+    scopeKey: string
   } | null>(null)
-  const instruction = task ? manualTaskInstruction(task, locale) : ""
+  const instruction = scope ? manualTaskInstruction(scope, locale) : ""
 
-  if (!task) return null
-  const copyStatus = copyResult?.taskId === task.id ? copyResult.status : null
+  if (!scope) return null
+  const scopeKey = taskExecutionScopeKey(scope)
+  const copyStatus =
+    copyResult?.scopeKey === scopeKey ? copyResult.status : null
   const copyInstruction = async () => {
     const copied = await copyTextToClipboard(instruction)
-    setCopyResult({ status: copied ? "copied" : "failed", taskId: task.id })
+    setCopyResult({ scopeKey, status: copied ? "copied" : "failed" })
   }
 
   return (
@@ -61,14 +63,14 @@ export function ManualTaskInstructionDialog({
             <Modal.Icon>
               <Terminal size={20} />
             </Modal.Icon>
-            <Modal.Heading>{t`Send task to an Agent`}</Modal.Heading>
+            <Modal.Heading>{t`Send task scope to an Agent`}</Modal.Heading>
           </Modal.Header>
           <Modal.Body>
             <p>
-              {t`No active and usable Agent CLI is available. Copy the instruction below and send it to an Agent to process this task.`}
+              {t`No active and usable Agent CLI is available. Copy the instruction below and send it to an Agent to process this task scope.`}
             </p>
             <div className="op-manual-task-dialog__instruction">
-              <span>{t`Task instruction`}</span>
+              <span>{t`Task scope instruction`}</span>
               <pre>{instruction}</pre>
             </div>
           </Modal.Body>

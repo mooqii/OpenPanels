@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "myopenpanels"
-version = "0.4.13"
+version = "0.4.14"
 dependencies = [
  "axum",
  "base64",
@@ -872,6 +872,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tower",
  "tower-http",
  "ureq",
  "zip",

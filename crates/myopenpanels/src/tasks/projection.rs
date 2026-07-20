@@ -40,31 +40,6 @@ fn hash_secret(secret: &str) -> String {
     format!("{:x}", Sha256::digest(secret.as_bytes()))
 }
 
-fn target_secret_path(paths: &MyOpenPanelsPaths, target_id: &str) -> std::path::PathBuf {
-    paths.context_dir.join("agent-target-secrets").join(format!(
-        "{}.token",
-        crate::paths::sanitize_path_part(target_id)
-    ))
-}
-
-fn write_target_secret(
-    paths: &MyOpenPanelsPaths,
-    target_id: &str,
-    token: &str,
-) -> Result<(), CliError> {
-    let path = target_secret_path(paths, target_id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(&path, format!("{token}\n")).map_err(to_cli_error)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(to_cli_error)?;
-    }
-    Ok(())
-}
-
 fn lease_expires_at() -> String {
     (chrono::Utc::now() + chrono::Duration::minutes(DEFAULT_LEASE_MINUTES))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)

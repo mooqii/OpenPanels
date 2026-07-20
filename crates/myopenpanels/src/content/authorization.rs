@@ -27,7 +27,7 @@ fn execution_context(
         .query_row(
             r#"
         SELECT t.id, a.id, a.staging_session_id, t.project_id, t.panel_id,
-               t.type, t.capability, a.execution_generation, t.input_json, t.source_json
+               t.type, a.execution_generation, t.input_json, t.source_json
         FROM task_attempts a JOIN tasks t ON t.id = a.task_id
         JOIN task_staging_sessions ss ON ss.id = a.staging_session_id
         WHERE a.execution_token_hash = ? AND a.status = 'leased'
@@ -38,8 +38,8 @@ fn execution_context(
         "#,
             params![hash_secret(token), now, now],
             |row| {
-                let input: String = row.get(8)?;
-                let source: String = row.get(9)?;
+                let input: String = row.get(7)?;
+                let source: String = row.get(8)?;
                 Ok(ExecutionContext {
                     task_id: row.get(0)?,
                     attempt_id: row.get(1)?,
@@ -47,8 +47,7 @@ fn execution_context(
                     project_id: row.get(3)?,
                     panel_id: row.get(4)?,
                     task_type: row.get(5)?,
-                    capability: row.get(6)?,
-                    generation: row.get(7)?,
+                    generation: row.get(6)?,
                     input: serde_json::from_str(&input).unwrap_or_else(|_| json!({})),
                     source: serde_json::from_str(&source).unwrap_or_else(|_| json!({})),
                 })
@@ -64,68 +63,118 @@ fn execution_context(
         })
 }
 
-fn validate_resource_scope(
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ResourceAccess {
+    Input,
+    Output,
+}
+
+fn task_input_kinds(kind: ResourceKind) -> &'static [&'static str] {
+    match kind {
+        ResourceKind::WikiMarkdown => &["wiki.rawDocument"],
+        ResourceKind::WikiSpace => &["wiki.space"],
+        ResourceKind::GeneratedDocument => {
+            &["wiki.generatedDocument", "writing.targetDocument"]
+        }
+        ResourceKind::WritingSkill => &["writing.skill"],
+    }
+}
+
+fn is_declared_input(
+    connection: &rusqlite::Connection,
+    context: &ExecutionContext,
+    kind: ResourceKind,
+    key: &str,
+) -> Result<bool, CliError> {
+    let kinds = task_input_kinds(kind);
+    connection
+        .query_row(
+            r#"
+            SELECT EXISTS(
+              SELECT 1 FROM task_inputs
+              WHERE task_id = ? AND resource_id = ?
+                AND resource_kind IN (?3, ?4)
+            )
+            "#,
+            params![
+                context.task_id,
+                key,
+                kinds[0],
+                kinds.get(1).copied().unwrap_or(kinds[0]),
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(to_cli_error)
+}
+
+fn is_declared_output(
+    context: &ExecutionContext,
+    kind: ResourceKind,
+    key: &str,
+) -> bool {
+    declared_output(&context.task_type, &context.input, &context.source)
+        .is_some_and(|(declared_kind, declared_key)| declared_kind == kind && declared_key == key)
+}
+
+fn declared_output<'a>(
+    task_type: &str,
+    input: &'a Value,
+    source: &'a Value,
+) -> Option<(ResourceKind, &'a str)> {
+    match task_type {
+        "convert_document_to_markdown" => {
+            input
+                .get("documentId")
+                .and_then(Value::as_str)
+                .map(|key| (ResourceKind::WikiMarkdown, key))
+        }
+        "ingest_markdown_into_wiki" | "maintain_wiki" => {
+            source
+                .get("wikiSpaceId")
+                .and_then(Value::as_str)
+                .map(|key| (ResourceKind::WikiSpace, key))
+        }
+        "generate_document" => {
+            input
+                .get("targetGeneratedDocumentId")
+                .and_then(Value::as_str)
+                .map(|key| (ResourceKind::GeneratedDocument, key))
+        }
+        "refine_writing_skill" => {
+            input
+                .get("skillId")
+                .and_then(Value::as_str)
+                .map(|key| (ResourceKind::WritingSkill, key))
+        }
+        _ => None,
+    }
+}
+
+fn validate_resource_access(
+    connection: &rusqlite::Connection,
     context: &ExecutionContext,
     kind: ResourceKind,
     key: &str,
     write: bool,
-) -> Result<(), CliError> {
-    let capability_allows_kind = match kind {
-        ResourceKind::WikiMarkdown => {
-            context.capability == "wiki.convertDocument"
-                || (!write && context.capability == "wiki.ingestMarkdown")
-        }
-        ResourceKind::WikiSpace => {
-            matches!(
-                context.capability.as_str(),
-                "wiki.ingestMarkdown" | "wiki.maintain"
-            ) || (!write
-                && context.capability == "writing.generateDocument"
-                && context
-                    .input
-                    .pointer("/contextSnapshot/wikiSelection/selected")
-                    .and_then(Value::as_bool)
-                    == Some(true))
-        }
-        ResourceKind::GeneratedDocument => context.capability == "writing.generateDocument",
-        ResourceKind::WritingSkill => context.capability == "writing.refineSkill",
-    };
-    let allowed = match kind {
-        ResourceKind::WikiMarkdown => {
-            context.input.get("documentId").and_then(Value::as_str) == Some(key)
-        }
-        ResourceKind::WikiSpace => {
-            context
-                .source
-                .get("wikiSpaceId")
-                .or_else(|| context.input.get("wikiSpaceId"))
-                .or_else(|| {
-                    context
-                        .input
-                        .pointer("/contextSnapshot/wikiSelection/wikiSpaceId")
-                })
-                .and_then(Value::as_str)
-                == Some(key)
-        }
-        ResourceKind::GeneratedDocument => {
-            context
-                .input
-                .get("targetGeneratedDocumentId")
-                .and_then(Value::as_str)
-                == Some(key)
-                || context.task_type == "generate_document"
-        }
-        ResourceKind::WritingSkill => {
-            context.input.get("skillId").and_then(Value::as_str) == Some(key)
-        }
-    };
-    if !allowed || !capability_allows_kind {
-        return Err(CliError::with_code(
-            "execution_fenced",
-            "The execution token is not scoped to this content resource.",
-        ));
+) -> Result<ResourceAccess, CliError> {
+    let output = is_declared_output(context, kind, key);
+    if write {
+        return output.then_some(ResourceAccess::Output).ok_or_else(|| {
+            CliError::with_code(
+                "execution_fenced",
+                "The content resource is not a declared output of this Attempt.",
+            )
+        });
     }
-    Ok(())
+    if is_declared_input(connection, context, kind, key)? {
+        return Ok(ResourceAccess::Input);
+    }
+    output.then_some(ResourceAccess::Output).ok_or_else(|| {
+        CliError::with_code(
+            "execution_fenced",
+            "The content resource is not a declared input or output of this Attempt.",
+        )
+    })
 }
 
 fn ensure_staging_resource(
@@ -155,52 +204,35 @@ fn ensure_staging_resource(
         "INSERT OR IGNORE INTO task_staging_resources (staging_session_id, resource_kind, resource_key, content_resource_id, base_revision_id, base_content_version, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
         params![context.staging_session_id, kind.as_str(), key, resource_id, revision_id, version, combined.to_string()],
     ).map_err(to_cli_error)?;
+    tx.execute(
+        "UPDATE task_staging_resources SET metadata_json = json_patch(metadata_json, ?) WHERE staging_session_id = ? AND resource_kind = ? AND resource_key = ?",
+        params![combined.to_string(), context.staging_session_id, kind.as_str(), key],
+    ).map_err(to_cli_error)?;
     Ok(())
 }
 
-fn seed_existing_output_resource(
+fn seed_declared_output_resource(
     tx: &Transaction<'_>,
     task_id: &str,
     staging_id: &str,
 ) -> Result<(), CliError> {
-    let (project_id, panel_id, capability, input_json, source_json) = tx.query_row(
-        "SELECT project_id, panel_id, capability, input_json, source_json FROM tasks WHERE id = ?",
+    let (project_id, panel_id, task_type, input_json, source_json) = tx.query_row(
+        "SELECT project_id, panel_id, type, input_json, source_json FROM tasks WHERE id = ?",
         [task_id],
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)),
     ).map_err(to_cli_error)?;
     let input: Value = serde_json::from_str(&input_json).unwrap_or_else(|_| json!({}));
     let source: Value = serde_json::from_str(&source_json).unwrap_or_else(|_| json!({}));
-    let output = match capability.as_str() {
-        "wiki.convertDocument" => input
-            .get("documentId")
-            .and_then(Value::as_str)
-            .map(|key| (ResourceKind::WikiMarkdown, key, panel_id.as_str())),
-        "wiki.ingestMarkdown" | "wiki.maintain" => source
-            .get("wikiSpaceId")
-            .or_else(|| input.get("wikiSpaceId"))
-            .and_then(Value::as_str)
-            .map(|key| (ResourceKind::WikiSpace, key, panel_id.as_str())),
-        "writing.generateDocument" => input
-            .get("targetGeneratedDocumentId")
-            .and_then(Value::as_str)
-            .map(|key| {
-                (
-                    ResourceKind::GeneratedDocument,
-                    key,
-                    source
-                        .get("wikiPanelId")
-                        .and_then(Value::as_str)
-                        .unwrap_or(panel_id.as_str()),
-                )
-            }),
-        "writing.refineSkill" => input
-            .get("skillId")
-            .and_then(Value::as_str)
-            .map(|key| (ResourceKind::WritingSkill, key, panel_id.as_str())),
-        _ => None,
-    };
-    let Some((kind, key, target_panel_id)) = output else {
+    let Some((kind, key)) = declared_output(&task_type, &input, &source) else {
         return Ok(());
+    };
+    let target_panel_id = if kind == ResourceKind::GeneratedDocument {
+        source
+            .get("wikiPanelId")
+            .and_then(Value::as_str)
+            .unwrap_or(panel_id.as_str())
+    } else {
+        panel_id.as_str()
     };
     let current = tx.query_row(
         "SELECT id, active_revision_id, content_version FROM content_resources WHERE project_id = ? AND resource_kind = ? AND resource_key = ? AND archived_at IS NULL",
@@ -215,6 +247,29 @@ fn seed_existing_output_resource(
         params![staging_id, kind.as_str(), key, resource_id, revision_id, version, json!({ "targetPanelId": target_panel_id }).to_string()],
     ).map_err(to_cli_error)?;
     Ok(())
+}
+
+fn staged_output_base_file_entry(
+    connection: &rusqlite::Connection,
+    staging_session_id: &str,
+    kind: ResourceKind,
+    resource_key: &str,
+    logical_path: &str,
+) -> Result<Option<(String, String)>, CliError> {
+    connection
+        .query_row(
+            r#"
+            SELECT file.object_hash, file.mime_type
+            FROM task_staging_resources output
+            JOIN content_revision_files file ON file.revision_id = output.base_revision_id
+            WHERE output.staging_session_id = ? AND output.resource_kind = ?
+              AND output.resource_key = ? AND file.logical_path = ?
+            "#,
+            params![staging_session_id, kind.as_str(), resource_key, logical_path],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(to_cli_error)
 }
 
 fn validate_manifest(

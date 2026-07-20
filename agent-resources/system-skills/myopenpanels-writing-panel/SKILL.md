@@ -19,27 +19,14 @@ use the local path for oversized content or file-oriented tools. Read a Wiki
 root only when its `localAccess.status` is `ready`, materializing it first when
 the status is `on_demand`.
 
-Route `generate_document` tasks through the document workflow below. Route
-`refine_writing_skill` tasks through the task-selected `提炼写作` Skill; those
-tasks may read selected raw and generated documents but must never read the
-selected Wiki.
+Intent routing:
 
-Workflow:
-
-1. Read the claimed task with `writing request read`. Treat its instruction,
-   mode, target, selected Writing Skill, and captured context as immutable.
-2. Load the task-selected Writing Skill using the returned required action and
-   follow that Skill's authoring rules for the complete result.
-3. Read every explicitly selected raw or generated document that is relevant.
-   When the Wiki itself is selected, search it and read only relevant pages.
-4. In revision mode, read the captured target document before drafting.
-5. Begin the task-bound Writing generation Operation before producing the
-   document. Derive a concise title from the instruction. Use Markdown unless
-   the user explicitly requests plain text.
-6. Write in the language requested by the user; otherwise follow the language
-   of the submitted instruction.
-7. Complete the Operation with the UTF-8 result file, then complete the Task.
-   Fail the Task explicitly after model, file, target, or version conflicts.
+- To inspect the source and Wiki context currently selected in Writing, read
+  `references/knowledge-context.md`.
+- To execute a claimed `generate_document` request, read
+  `references/execute-writing-request.md`.
+- To execute a claimed `refine_writing_skill` request, read
+  `references/refine-writing-skill.md`.
 
 Never replace a newer revision after `content_conflict`. Do not read the whole
 Wiki when a targeted search is sufficient. The generated result must remain

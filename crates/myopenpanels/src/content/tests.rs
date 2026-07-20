@@ -53,7 +53,7 @@ mod tests {
             crate::tasks::TargetRegistration {
                 name: "v3-converter",
                 host: Some("test"),
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["wiki.convertDocument".to_owned()],
                 priority: 0,
                 protocol_version: 3,
@@ -181,7 +181,7 @@ mod tests {
             crate::tasks::TargetRegistration {
                 name: "v3-wiki-maintainer",
                 host: Some("test"),
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["wiki.maintain".to_owned()],
                 priority: 0,
                 protocol_version: 3,
@@ -196,6 +196,23 @@ mod tests {
             target["target"]["id"].as_str().expect("target id"),
         )
         .expect("claim");
+
+        let base_page = read_file(
+            &paths,
+            claim["executionToken"].as_str().expect("execution token"),
+            &ReadFileRequest {
+                resource_kind: ResourceKind::WikiSpace.as_str().to_owned(),
+                resource_key: "wiki:default".to_owned(),
+                logical_path: "notes/user-page.md".to_owned(),
+            },
+        )
+        .expect("read declared output base");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(base_page["contentBase64"].as_str().expect("page content"))
+                .expect("base64"),
+            b"# User page\n"
+        );
 
         let completed = crate::tasks::complete_task(
             &paths,
@@ -272,7 +289,7 @@ mod tests {
             crate::tasks::TargetRegistration {
                 name: "v3-writer",
                 host: Some("test"),
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["writing.generateDocument".to_owned()],
                 priority: 0,
                 protocol_version: 3,
@@ -327,5 +344,198 @@ mod tests {
         assert!(after["contentFilePath"]
             .as_str()
             .is_some_and(|path| Path::new(path).is_file()));
+    }
+
+    #[test]
+    fn writing_attempt_reads_only_its_pinned_manifest_inputs() {
+        let _env_lock = crate::TASK_BROKER_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().expect("temp");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join("storage");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("writing-input-broker-test"),
+        )
+        .expect("paths");
+        ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let selected = crate::wiki::add_raw_document(
+            &paths,
+            "selected.md",
+            Some("Selected"),
+            Some("text/markdown"),
+            "user",
+            Some("wiki:default"),
+            b"# Captured source\n",
+        )
+        .expect("selected raw document");
+        let unselected = crate::wiki::add_raw_document(
+            &paths,
+            "unselected.md",
+            Some("Unselected"),
+            Some("text/markdown"),
+            "user",
+            Some("wiki:default"),
+            b"# Private source\n",
+        )
+        .expect("unselected raw document");
+        let selected_id = selected["document"]["id"].as_str().expect("selected id");
+        let unselected_id = unselected["document"]["id"]
+            .as_str()
+            .expect("unselected id");
+        let selected_generated = crate::wiki::create_generated_document(
+            &paths,
+            "selected-generated.md",
+            Some("Selected generated"),
+            Some("text/markdown"),
+            None,
+            None,
+            b"# Captured generated source\n",
+        )
+        .expect("selected generated document");
+        let unselected_generated = crate::wiki::create_generated_document(
+            &paths,
+            "unselected-generated.md",
+            Some("Unselected generated"),
+            Some("text/markdown"),
+            None,
+            None,
+            b"# Private generated source\n",
+        )
+        .expect("unselected generated document");
+        let selected_generated_id = selected_generated["document"]["id"]
+            .as_str()
+            .expect("selected generated id");
+        let unselected_generated_id = unselected_generated["document"]["id"]
+            .as_str()
+            .expect("unselected generated id");
+        crate::writing::write_selection(
+            &paths,
+            false,
+            &[selected_id.to_owned()],
+            &[selected_generated_id.to_owned()],
+        )
+        .expect("writing selection");
+        let created = crate::writing::create_requests(
+            &paths,
+            "Use the captured source",
+            "create",
+            None,
+            &["writing-default".to_owned()],
+        )
+        .expect("request");
+        let task_id = created["tasks"][0]["id"].as_str().expect("task id");
+        crate::wiki::write_markdown(&paths, selected_id, "# Newer source\n", None)
+            .expect("update selected source");
+        crate::wiki::write_generated_document(
+            &paths,
+            selected_generated_id,
+            "selected-generated.md",
+            Some("text/markdown"),
+            b"# Newer generated source\n",
+        )
+        .expect("update selected generated source");
+        let _broker = crate::content::enable_test_task_broker();
+        let target = crate::tasks::register_target(
+            &paths,
+            crate::tasks::TargetRegistration {
+                name: "v3-writer-with-input",
+                host: Some("test"),
+                project_id: None,
+                capabilities: vec!["writing.generateDocument".to_owned()],
+                priority: 0,
+                protocol_version: 3,
+                max_concurrency: 1,
+                model_gateway_connection_id: None,
+            },
+        )
+        .expect("target");
+        let claim = crate::tasks::claim_task(
+            &paths,
+            task_id,
+            target["target"]["id"].as_str().expect("target id"),
+        )
+        .expect("claim");
+        let execution_token = claim["executionToken"].as_str().expect("execution token");
+        let captured = read_file(
+            &paths,
+            execution_token,
+            &ReadFileRequest {
+                resource_kind: ResourceKind::WikiMarkdown.as_str().to_owned(),
+                resource_key: selected_id.to_owned(),
+                logical_path: "source.md".to_owned(),
+            },
+        )
+        .expect("read captured source");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(captured["contentBase64"].as_str().expect("content"))
+                .expect("base64"),
+            b"# Captured source\n"
+        );
+
+        let denied_read = read_file(
+            &paths,
+            execution_token,
+            &ReadFileRequest {
+                resource_kind: ResourceKind::WikiMarkdown.as_str().to_owned(),
+                resource_key: unselected_id.to_owned(),
+                logical_path: "source.md".to_owned(),
+            },
+        )
+        .expect_err("unselected source must be fenced");
+        assert_eq!(denied_read.code(), Some("execution_fenced"));
+
+        let captured_generated = read_file(
+            &paths,
+            execution_token,
+            &ReadFileRequest {
+                resource_kind: ResourceKind::GeneratedDocument.as_str().to_owned(),
+                resource_key: selected_generated_id.to_owned(),
+                logical_path: "content.md".to_owned(),
+            },
+        )
+        .expect("read captured generated source");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(
+                    captured_generated["contentBase64"]
+                        .as_str()
+                        .expect("generated content"),
+                )
+                .expect("base64"),
+            b"# Captured generated source\n"
+        );
+
+        let denied_generated_read = read_file(
+            &paths,
+            execution_token,
+            &ReadFileRequest {
+                resource_kind: ResourceKind::GeneratedDocument.as_str().to_owned(),
+                resource_key: unselected_generated_id.to_owned(),
+                logical_path: "content.md".to_owned(),
+            },
+        )
+        .expect_err("unselected generated source must be fenced");
+        assert_eq!(denied_generated_read.code(), Some("execution_fenced"));
+
+        let denied_write = stage_file(
+            &paths,
+            execution_token,
+            &StageFileRequest {
+                resource_kind: ResourceKind::WikiMarkdown.as_str().to_owned(),
+                resource_key: selected_id.to_owned(),
+                logical_path: "source.md".to_owned(),
+                content_base64: base64::engine::general_purpose::STANDARD
+                    .encode(b"# Forbidden write\n"),
+                mime_type: "text/markdown".to_owned(),
+                metadata: json!({}),
+            },
+        )
+        .expect_err("captured input must remain read-only");
+        assert_eq!(denied_write.code(), Some("execution_fenced"));
     }
 }

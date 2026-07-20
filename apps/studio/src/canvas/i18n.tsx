@@ -192,13 +192,14 @@ const zhCNMessages: Record<string, string> = {
   "Connection needs attention": "连接异常",
   "No task-processing model is available. Send each task's instructions to an Agent manually.":
     "没有可用的任务处理模型，你需要手动将每个任务的指令发送给 Agent 处理。",
-  "Send task to an Agent": "发送任务给 Agent",
-  "No active and usable Agent CLI is available. Copy the instruction below and send it to an Agent to process this task.":
-    "当前没有已启用且可正常运行的 Agent CLI。请复制下面的指令并发送给 Agent 来处理这个任务。",
-  "Task instruction": "任务指令",
+  "Send task scope to an Agent": "发送任务范围给 Agent",
+  "No active and usable Agent CLI is available. Copy the instruction below and send it to an Agent to process this task scope.":
+    "当前没有已启用且可正常运行的 Agent CLI。请复制下面的指令并发送给 Agent 来处理这个任务范围。",
+  "Task scope instruction": "任务范围指令",
   "Configure CLI": "配置 CLI",
   "Copy instruction": "复制指令",
   "Copy task instruction": "复制任务指令",
+  "Copy Project drain instruction": "复制 Project 排空指令",
   Copied: "已复制",
   "Copy failed": "复制失败",
   "Execution mode": "执行方式",

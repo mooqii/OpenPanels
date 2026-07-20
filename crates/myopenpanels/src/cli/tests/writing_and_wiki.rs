@@ -43,7 +43,7 @@ fn retryable_failure_falls_through_ordered_model_channels() {
             tasks::TargetRegistration {
                 name,
                 host: Some("test"),
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["wiki.maintain".to_owned()],
                 priority,
                 protocol_version: 3,
@@ -179,7 +179,7 @@ fn studio_restart_recovers_only_builtin_attempts_without_spending_retry_budget()
             tasks::TargetRegistration {
                 name,
                 host: Some("test"),
-                transport: "command",
+                project_id: None,
                 capabilities: vec!["wiki.maintain".to_owned()],
                 priority: 10,
                 protocol_version: 3,
@@ -293,7 +293,7 @@ fn preferred_task_dispatch_falls_back_to_other_channels() {
             tasks::TargetRegistration {
                 name,
                 host: Some("test"),
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["wiki.maintain".to_owned()],
                 priority,
                 protocol_version: 3,

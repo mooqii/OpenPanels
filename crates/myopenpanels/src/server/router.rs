@@ -187,13 +187,7 @@ fn build_router(
         .route("/api/events", get(api_project_events))
         .route("/api/tasks", get(api_tasks))
         .route("/api/tasks/next", get(api_next_task))
-        .route("/api/tasks/claim-next", post(api_claim_next_task))
         .route("/api/tasks/{task_id}", get(api_inspect_task))
-        .route("/api/tasks/{task_id}/claim", post(api_claim_task))
-        .route("/api/tasks/{task_id}/heartbeat", post(api_task_heartbeat))
-        .route("/api/tasks/{task_id}/complete", post(api_task_complete))
-        .route("/api/tasks/{task_id}/fail", post(api_task_fail))
-        .route("/api/tasks/{task_id}/release", post(api_task_release))
         .route("/api/tasks/{task_id}/retry", post(api_task_retry))
         .route(
             "/api/tasks/wiki-update-groups/dispatch",
@@ -206,18 +200,7 @@ fn build_router(
         .route("/api/tasks/{task_id}/attempts", get(api_task_attempts))
         .route("/api/workflows", get(api_workflows))
         .route("/api/workflows/{workflow_id}", get(api_workflow))
-        .route(
-            "/api/agent/targets",
-            get(api_agent_targets).post(api_register_agent_target),
-        )
-        .route(
-            "/api/agent/targets/{target_id}",
-            delete(api_remove_agent_target),
-        )
-        .route(
-            "/api/agent/targets/{target_id}/heartbeat",
-            post(api_agent_target_heartbeat),
-        )
+        .route("/api/agent/targets", get(api_agent_targets))
         .route(
             "/api/agent/routes",
             get(api_agent_routes).put(api_set_agent_route),
@@ -411,6 +394,7 @@ fn build_router(
         )
         .route("/", get(index))
         .route("/{*path}", get(static_asset))
+        .method_not_allowed_fallback(|| async { StatusCode::NOT_FOUND })
         .layer(cors);
     let broker = Router::new()
         .route("/api/task-broker/v3/stage", post(api_broker_stage))

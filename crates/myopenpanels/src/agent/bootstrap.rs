@@ -21,7 +21,8 @@ static BUILTIN_SKILL_REGISTRY: &str = include_str!(concat!(
 ));
 pub const CANVAS_PANEL_SKILL_ID: &str = "myopenpanels-canvas-panel";
 pub const TASK_QUEUE_SKILL_ID: &str = "myopenpanels-task-queue";
-pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 8;
+pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 9;
+pub const AGENT_WORKFLOW_CATALOG_VERSION: u32 = 1;
 pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -83,13 +84,31 @@ struct BuiltinSkillRegistration {
     source: String,
     task_types: Vec<String>,
     tokens: String,
+    #[serde(default)]
+    workflows: Vec<AgentWorkflowRegistration>,
 }
 
-pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<Value, CliError> {
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentWorkflowRegistration {
+    command_intents: Vec<String>,
+    description: String,
+    execution_mode: String,
+    key: String,
+    panel_kind: Option<String>,
+    reference: String,
+    selection_policy: String,
+}
+
+pub fn agent_bootstrap(
+    paths: &MyOpenPanelsPaths,
+    cli_version: &str,
+    workflow: Option<&str>,
+) -> Result<Value, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let storage = crate::storage::Storage::open(paths)?;
     if let Some(update) =
-        crate::agent_control::pending_entry_skill_update_with_storage(paths, &storage, cli_version)?
+        crate::agent_control::pending_entry_skill_update_with_storage(paths, &storage)?
     {
         return Ok(entry_skill_update_bootstrap(
             paths,
@@ -97,6 +116,9 @@ pub fn agent_bootstrap(paths: &MyOpenPanelsPaths, cli_version: &str) -> Result<V
             cli_version,
             &update,
         ));
+    }
+    if let Some(workflow) = workflow {
+        return agent_workflow_bootstrap(paths, cli_version, &bootstrap, workflow);
     }
     sync_builtin_agent_skills(paths)?;
     let skills = load_agent_skills(paths, &bootstrap.project.id)?;

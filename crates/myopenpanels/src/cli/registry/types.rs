@@ -1,8 +1,9 @@
 use clap::{ArgAction, Command};
+use crate::error::CliError;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const COMMAND_CATALOG_VERSION: u32 = 2;
+pub(crate) const COMMAND_CATALOG_VERSION: u32 = 3;
 const COMMAND_CATALOG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

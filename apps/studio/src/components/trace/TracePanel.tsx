@@ -20,6 +20,7 @@ import type {
   MyOpenPanelsBuildInfo,
   MyOpenPanelsTransport,
   ProjectTask,
+  TaskExecutionScope,
   TraceCategory,
   TraceEvent,
 } from "../../types"
@@ -82,7 +83,7 @@ export function AgentPanel({
   onClearFocusedTasks: () => void
   onClose: () => void
   onOpenModelSettings: () => void
-  onOpenManualTask: (task: ProjectTask) => void
+  onOpenManualTask: (scope: TaskExecutionScope) => void
   onTabChange: (tab: AgentPanelTab) => void
   onTaskFilterChange: (filter: TaskFilter) => void
   taskFilter: TaskFilter
@@ -90,6 +91,7 @@ export function AgentPanel({
   transport: MyOpenPanelsTransport
   workerStatus?: AgentWorkerStatus
 }) {
+  const { t } = useMyOpenPanelsI18n()
   const isDevelopment = buildInfo?.channel === "development"
   const displayedTab = isDevelopment ? activeTab : "tasks"
   const [traceFilter, setTraceFilter] = useState<TraceFilter>("all")
@@ -188,6 +190,29 @@ export function AgentPanel({
             )}
           </div>
           <div className="op-trace-panel__actions">
+            {displayedTab === "tasks" &&
+            hasUsableAgentCli === false &&
+            tasks[0] ? (
+              <Tooltip closeDelay={0} delay={300}>
+                <Button
+                  aria-label={t`Copy Project drain instruction`}
+                  isIconOnly
+                  onPress={() =>
+                    onOpenManualTask({
+                      kind: "project-drain",
+                      projectId: tasks[0].projectId,
+                    })
+                  }
+                  size="sm"
+                  variant="ghost"
+                >
+                  <Copy size={15} />
+                </Button>
+                <Tooltip.Content placement="bottom">
+                  {t`Copy Project drain instruction`}
+                </Tooltip.Content>
+              </Tooltip>
+            ) : null}
             {displayedTab === "communication" ? (
               <Button
                 aria-label="Clear communication view"
@@ -319,7 +344,7 @@ function TaskList({
   onExpandTask: (taskId: string | null) => void
   onFilterChange: (filter: TaskFilter) => void
   onOpenModelSettings: () => void
-  onOpenManualTask: (task: ProjectTask) => void
+  onOpenManualTask: (scope: TaskExecutionScope) => void
   tasks: ProjectTask[]
   workerStatus?: AgentWorkerStatus
 }) {

@@ -56,7 +56,7 @@ pub fn run_bridge(
     let command = options.command.ok_or_else(|| {
         CliError::with_code(
             "invalid_argument",
-            "Task bridge requires --command <command>. Register polling targets with agent target register.",
+            "Task bridge requires --command <command>.",
         )
         .with_param("--command")
     })?;
@@ -66,7 +66,7 @@ pub fn run_bridge(
         tasks::TargetRegistration {
             name: options.name.unwrap_or(&default_name),
             host: options.host.or(Some("command-bridge")),
-            transport: "command",
+            project_id: None,
             capabilities: if options.capabilities.is_empty() {
                 vec!["*".to_owned()]
             } else {
@@ -87,7 +87,7 @@ pub fn run_bridge(
     loop {
         write_bridge_status(paths, "idle", None, None, None)?;
         tasks::heartbeat_target(paths, &target_id)?;
-        let payload = tasks::claim_next_filtered(paths, &target_id, None, options.queue, Some(0))?;
+        let payload = tasks::claim_for_worker(paths, &target_id, None, options.queue)?;
         let Some(task) = payload.get("task").filter(|value| !value.is_null()) else {
             if options.once {
                 return Ok(json!({ "ran": false, "task": null }));
@@ -303,7 +303,7 @@ fn run_model_gateway_loop(paths: MyOpenPanelsPaths, shutdown: Arc<AtomicBool>) {
                 tasks::TargetRegistration {
                     name: &format!("model-gateway:{}:{}", paths.context_id, spec.connection_id),
                     host: Some(&spec.host),
-                    transport: "command",
+                    project_id: None,
                     capabilities: vec!["*".to_owned()],
                     priority: 1000 - position as i64,
                     protocol_version: 3,
@@ -348,7 +348,7 @@ fn run_model_gateway_loop(paths: MyOpenPanelsPaths, shutdown: Arc<AtomicBool>) {
         }
         let mut claimed = None;
         for (spec, target_id) in candidates {
-            match tasks::claim_next_filtered(&paths, &target_id, None, None, Some(0)) {
+            match tasks::claim_for_worker(&paths, &target_id, None, None) {
                 Ok(payload) if payload.get("task").is_some_and(|task| !task.is_null()) => {
                     claimed = Some((spec, target_id, payload));
                     break;

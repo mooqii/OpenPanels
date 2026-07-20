@@ -398,11 +398,19 @@ const SPECS: &[CommandDefinition] = &[
         false
     ),
     spec!(
-        "task.claim-next",
-        ["task", "claim-next"],
-        "Claim the next Task",
+        "task.scope.read",
+        ["task", "scope", "read"],
+        "Read a Task execution scope",
         "task",
-        "current-project",
+        "task-scope",
+        false
+    ),
+    spec!(
+        "task.scope.claim",
+        ["task", "scope", "claim"],
+        "Claim the next Task in an execution scope",
+        "task",
+        "task-scope",
         true
     ),
     spec!(
@@ -614,14 +622,6 @@ const SPECS: &[CommandDefinition] = &[
         true
     ),
     spec!(
-        "agent.target.heartbeat",
-        ["agent", "target", "heartbeat"],
-        "Heartbeat an Agent Target",
-        "agent",
-        "current-project",
-        true
-    ),
-    spec!(
         "agent.target.remove",
         ["agent", "target", "remove"],
         "Remove an Agent Target",
@@ -706,6 +706,24 @@ pub(crate) fn catalog_domain_for_intent(intent: &str) -> Option<&'static str> {
         .iter()
         .find(|spec| spec.intent == intent)
         .and_then(catalog_domain)
+}
+
+pub(crate) fn descriptors_for_intents(intents: &[String]) -> Result<Vec<Value>, CliError> {
+    intents
+        .iter()
+        .map(|intent| {
+            let spec = SPECS
+                .iter()
+                .find(|spec| spec.intent == intent)
+                .ok_or_else(|| {
+                    CliError::with_code(
+                        "agent_workflow_command_not_found",
+                        format!("Agent Workflow command intent is not registered: {intent}"),
+                    )
+                })?;
+            Ok(descriptor(spec))
+        })
+        .collect()
 }
 
 pub(crate) fn validate() -> Result<(), String> {

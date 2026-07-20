@@ -94,7 +94,7 @@ The manifest schema is:
   "entrySkill": {
     "id": "myopenpanels",
     "version": "3.1",
-    "source": "https://github.com/mooqii/OpenPanels/tree/v0.1.9/skills/myopenpanels"
+    "source": "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels"
   },
   "assets": {
     "aarch64-apple-darwin": {
@@ -107,6 +107,9 @@ The manifest schema is:
 ```
 
 The manifest `version` must not include the leading `v`.
+The Entry Skill `version` and `source` are read together from
+`skills/myopenpanels/SKILL.md`. The canonical `main` URL always resolves the
+latest published Skill package, independently of the CLI release tag.
 
 ## Updater Behavior
 

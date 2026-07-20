@@ -139,7 +139,7 @@
             crate::tasks::TargetRegistration {
                 name: "conversion-validator",
                 host: Some("test"),
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["wiki.convertDocument".to_owned()],
                 priority: 0,
                 protocol_version: 3,
@@ -347,7 +347,7 @@
             crate::tasks::TargetRegistration {
                 name: "generation-validator",
                 host: Some("test"),
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["writing.generateDocument".to_owned()],
                 priority: 0,
                 protocol_version: 3,

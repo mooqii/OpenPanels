@@ -187,7 +187,7 @@ fn agent_bootstrap_without_project_dir_uses_user_visible_studio() {
         None,
     )
     .expect("caller paths");
-    let pending = crate::agent_control::pending_entry_skill_update(&caller_paths, VERSION)
+    let pending = crate::agent_control::pending_entry_skill_update(&caller_paths)
         .expect("entry skill requirement")
         .expect("pending update");
     crate::agent_control::acknowledge_entry_skill_update(
@@ -487,8 +487,8 @@ fn project_read_commands_bootstrap_project() {
     ]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(bootstrap["protocolVersion"], 8);
-    assert_eq!(bootstrap["commandCatalogVersion"], 2);
+    assert_eq!(bootstrap["protocolVersion"], 9);
+    assert_eq!(bootstrap["commandCatalogVersion"], 3);
     assert_eq!(bootstrap["panel"]["context"]["panelKind"], "canvas");
     assert_eq!(bootstrap["panel"]["selection"]["supported"], true);
     assert!(bootstrap.get("capabilities").is_none());
@@ -688,10 +688,10 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert_eq!(envelope["intent"], "agent.bootstrap.read");
     let payload = &envelope["data"];
     let actions = &envelope["actions"];
-    assert_eq!(payload["protocolVersion"], 8);
+    assert_eq!(payload["protocolVersion"], 9);
     assert!(payload.get("supportedProtocolVersions").is_none());
     assert_eq!(payload["cliVersion"], VERSION);
-    assert_eq!(payload["commandCatalogVersion"], 2);
+    assert_eq!(payload["commandCatalogVersion"], 3);
     assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
     assert!(payload.get("entrySkill").is_none());
     assert!(payload.get("entrySkillUpdate").is_none());
@@ -738,7 +738,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     let (code, stdout, stderr) = run(&["agent", "catalog", "--format", "json"]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let index = serde_json::from_str::<Value>(&stdout).expect("catalog index");
-    assert_eq!(index["catalogVersion"], 2);
+    assert_eq!(index["catalogVersion"], 3);
     assert!(index["domains"]
         .as_array()
         .unwrap()
@@ -775,4 +775,182 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
             );
         }
     }
+}
+
+#[test]
+fn workflow_bootstrap_targets_without_changing_focus_and_returns_scoped_commands() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+
+    let args = [
+        "agent",
+        "bootstrap",
+        "--workflow",
+        "panel.canvas.image.insert",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ];
+    let (code, stdout, stderr) = run_raw(&args);
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    assert!(stdout.len() <= crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES);
+    let envelope = serde_json::from_str::<Value>(&stdout).expect("workflow bootstrap");
+    let payload = &envelope["data"];
+    assert_eq!(payload["protocolVersion"], 9);
+    assert_eq!(payload["workflowCatalogVersion"], 1);
+    assert_eq!(payload["agentWorkflow"]["key"], "panel.canvas.image.insert");
+    assert_eq!(payload["focus"]["panelKind"], "wiki");
+    assert_eq!(payload["target"]["panelKind"], "canvas");
+    assert_eq!(payload["readiness"], "ready");
+    assert_eq!(payload["commands"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        payload["commands"]["items"][0]["intent"],
+        "canvas.image.create"
+    );
+    assert_eq!(envelope["actions"]["required"].as_array().unwrap().len(), 2);
+    assert!(envelope["actions"]["suggested"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|action| action["intent"] != "agent.catalog"));
+
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    assert_eq!(
+        crate::control::read_active_panel_value(&paths)
+            .expect("active panel")
+            .expect("active panel value")["kind"],
+        "wiki"
+    );
+
+    for workflow in [
+        "panel.canvas.selection.read",
+        "panel.canvas.selection.export",
+        "panel.canvas.image.insert",
+        "panel.canvas.image.generate",
+        "panel.canvas.image.edit",
+        "panel.wiki.knowledge.query",
+        "panel.wiki.raw.import",
+        "panel.wiki.document.read",
+        "panel.wiki.document.generate",
+        "panel.wiki.document.revise",
+        "panel.wiki.document.publish",
+        "panel.wiki.document.delete",
+        "panel.wiki.space.manage",
+        "panel.writing.context.read",
+        "task.queue.inspect",
+        "task.queue.retry",
+        "task.queue.cancel",
+        "task.queue.archive",
+    ] {
+        let (code, stdout, stderr) = run_raw(&[
+            "agent",
+            "bootstrap",
+            "--workflow",
+            workflow,
+            "--project-dir",
+            project_dir.to_str().unwrap(),
+            "--storage-dir",
+            storage_dir.to_str().unwrap(),
+            "--context-id",
+            "ctx",
+            "--format",
+            "json",
+        ]);
+        assert_eq!(code, 0, "{workflow}: {stderr}{stdout}");
+        assert!(
+            stdout.len() <= crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES,
+            "{workflow} Bootstrap was {} bytes",
+            stdout.len()
+        );
+        let envelope = serde_json::from_str::<Value>(&stdout).expect("workflow envelope");
+        assert_eq!(envelope["data"]["agentWorkflow"]["key"], workflow);
+        if workflow == "panel.wiki.knowledge.query" {
+            let selected_skill = envelope["data"]["skills"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|skill| skill["role"] == "selected-portable")
+                .expect("selected portable Skill");
+            assert_eq!(selected_skill["id"], "karpathy-llm-wiki");
+            assert!(envelope["actions"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action["id"] == "skill.karpathy-llm-wiki.body"));
+        }
+        assert!(envelope["actions"]["suggested"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|action| action["intent"] != "agent.catalog"));
+    }
+}
+
+#[test]
+fn workflow_bootstrap_blocks_when_its_target_panel_is_missing() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let bootstrap = crate::control::read_project_bootstrap(&paths, BootstrapRequest::new())
+        .expect("bootstrap");
+    let canvas_panel_id = bootstrap
+        .panels
+        .iter()
+        .find(|snapshot| snapshot.panel.kind == PanelKind::Canvas)
+        .expect("canvas panel")
+        .panel
+        .id
+        .clone();
+    let storage = crate::storage::Storage::open(&paths).expect("storage");
+    storage
+        .connection()
+        .execute(
+            "DELETE FROM panels WHERE project_id = ? AND id = ?",
+            rusqlite::params![bootstrap.project.id, canvas_panel_id],
+        )
+        .expect("remove canvas panel");
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bootstrap",
+        "--workflow",
+        "panel.canvas.image.insert",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let payload = serde_json::from_str::<Value>(&stdout).expect("blocked workflow");
+    assert_eq!(payload["readiness"], "blocked");
+    assert_eq!(payload["blockers"][0]["code"], "target_panel_required");
+    assert_eq!(payload["focus"]["panelKind"], "wiki");
+    assert_eq!(payload["target"]["panelKind"], "canvas");
+    assert_eq!(payload["target"]["panelId"], Value::Null);
 }

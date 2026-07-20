@@ -25,25 +25,24 @@ fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             let result = with_task_actions(tasks::inspect_task(&paths, task_id)?, false);
             write_result(parsed, stdout, &result, task_id)
         }
-        Some("claim-next") => {
+        Some("scope-read") => {
             let paths = parsed_current_paths(parsed)?;
+            let scope = task_execution_scope(parsed)?;
+            let result = with_task_scope_actions(tasks::read_task_scope(&paths, &scope)?, None);
+            let text = result["scopeState"].as_str().unwrap_or("unknown");
+            write_result(parsed, stdout, &result, text)
+        }
+        Some("scope-claim") => {
+            let paths = parsed_current_paths(parsed)?;
+            let scope = task_execution_scope(parsed)?;
             let target_id = required_flag(parsed, "target-id")?;
-            let wait_ms = string_flag(parsed, "wait-ms")
-                .map(|value| {
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| CliError::new("Expected --wait-ms to be a number."))
-                })
-                .transpose()?;
-            let result = tasks::claim_next(
-                &paths,
-                target_id,
-                string_flag(parsed, "capability"),
-                wait_ms,
-            )?;
+            let result = with_task_scope_actions(
+                tasks::claim_task_scope(&paths, &scope, target_id)?,
+                Some(target_id),
+            );
             let text = result["task"]["id"]
                 .as_str()
-                .unwrap_or("No matching task");
+                .unwrap_or_else(|| result["scopeState"].as_str().unwrap_or("unknown"));
             write_result(parsed, stdout, &result, text)
         }
         Some("claim") => {
@@ -142,8 +141,40 @@ fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             write_result(parsed, stdout, &result, &format!("{count} attempt(s)"))
         }
         _ => Err(CliError::new(
-            "Expected task subcommand: list, next, read, claim-next, claim, heartbeat, complete, fail, release, retry, cancel, archive, events, or attempts.",
+            "Expected task subcommand: list, next, read, scope, claim, heartbeat, complete, fail, release, retry, cancel, archive, events, or attempts.",
         )),
+    }
+}
+
+fn task_execution_scope(parsed: &Invocation) -> Result<tasks::TaskExecutionScope, CliError> {
+    let scope = required_flag(parsed, "scope")?;
+    let project_id = string_flag(parsed, "project-id");
+    let task_id = string_flag(parsed, "task-id");
+    let mutation_key = string_flag(parsed, "mutation-key");
+    let invalid = || {
+        CliError::with_code(
+            "invalid_task_scope",
+            "Task scope selectors must match the selected scope kind.",
+        )
+    };
+    match scope {
+        "project-drain" if task_id.is_none() && mutation_key.is_none() => {
+            Ok(tasks::TaskExecutionScope::ProjectDrain {
+                project_id: project_id.ok_or_else(invalid)?.to_owned(),
+            })
+        }
+        "exact-task" if project_id.is_none() && mutation_key.is_none() => {
+            Ok(tasks::TaskExecutionScope::ExactTask {
+                task_id: task_id.ok_or_else(invalid)?.to_owned(),
+            })
+        }
+        "wiki-mutation-drain" if task_id.is_none() => {
+            Ok(tasks::TaskExecutionScope::WikiMutationDrain {
+                project_id: project_id.ok_or_else(invalid)?.to_owned(),
+                mutation_key: mutation_key.ok_or_else(invalid)?.to_owned(),
+            })
+        }
+        _ => Err(invalid()),
     }
 }
 

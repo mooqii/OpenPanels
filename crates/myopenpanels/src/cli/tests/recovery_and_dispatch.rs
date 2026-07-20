@@ -1,103 +1,4 @@
 #[test]
-fn claim_next_respects_target_priority() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let project_dir = temp.path().join("project");
-    let storage_dir = temp.path().join(".myopenpanels");
-    fs::create_dir_all(&project_dir).expect("project dir");
-    create_cli_project(&project_dir, &storage_dir);
-    let common = [
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--format",
-        "json",
-    ];
-    let (code, _, stderr) = run(&[
-        "wiki",
-        "raw",
-        "create",
-        "--title",
-        "Priority",
-        "--content",
-        "# Priority",
-        "--space-id",
-        "wiki:default",
-        common[0],
-        common[1],
-        common[2],
-        common[3],
-        common[4],
-        common[5],
-        common[6],
-        common[7],
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-
-    let register = |name: &str, priority: &str| {
-        run(&[
-            "agent",
-            "target",
-            "register",
-            "--name",
-            name,
-            "--transport",
-            "poll",
-            "--capability",
-            "wiki.ingestMarkdown",
-            "--priority",
-            priority,
-            common[0],
-            common[1],
-            common[2],
-            common[3],
-            common[4],
-            common[5],
-            common[6],
-            common[7],
-        ])
-    };
-    let (code, stdout, stderr) = register("fallback", "-100");
-    assert_eq!(code, 0, "{stderr}");
-    let fallback = serde_json::from_str::<Value>(&stdout).expect("fallback target");
-    let fallback_id = fallback["target"]["id"].as_str().unwrap();
-    let (code, stdout, stderr) = register("preferred", "10");
-    assert_eq!(code, 0, "{stderr}");
-    let preferred = serde_json::from_str::<Value>(&stdout).expect("preferred target");
-    let preferred_id = preferred["target"]["id"].as_str().unwrap();
-
-    let claim = |target_id: &str| {
-        run(&[
-            "task",
-            "claim-next",
-            "--target-id",
-            target_id,
-            "--wait-ms",
-            "0",
-            common[0],
-            common[1],
-            common[2],
-            common[3],
-            common[4],
-            common[5],
-            common[6],
-            common[7],
-        ])
-    };
-    let (code, stdout, stderr) = claim(fallback_id);
-    assert_eq!(code, 0, "{stderr}");
-    let fallback_claim = serde_json::from_str::<Value>(&stdout).expect("fallback claim");
-    assert!(fallback_claim["task"].is_null());
-
-    let (code, stdout, stderr) = claim(preferred_id);
-    assert_eq!(code, 0, "{stderr}");
-    let preferred_claim = serde_json::from_str::<Value>(&stdout).expect("preferred claim");
-    assert_eq!(preferred_claim["task"]["capability"], "wiki.ingestMarkdown");
-}
-
-#[test]
 fn command_bridge_rejects_completion_without_staged_content() {
     let _broker = crate::content::enable_test_task_broker();
     let temp = tempfile::tempdir().expect("temp dir");
@@ -153,7 +54,7 @@ fn command_bridge_rejects_completion_without_staged_content() {
 }
 
 #[test]
-fn target_registration_rejects_removed_webhook_transport_and_old_protocols() {
+fn target_registration_rejects_transport_flag_and_old_protocols() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -186,29 +87,13 @@ fn target_registration_rejects_removed_webhook_transport_and_old_protocols() {
         Some("ctx"),
     )
     .expect("paths");
-    let error = crate::tasks::register_target(
-        &paths,
-        crate::tasks::TargetRegistration {
-            name: "legacy-webhook",
-            host: None,
-            transport: "webhook",
-            capabilities: vec!["*".to_owned()],
-            priority: 0,
-            protocol_version: 3,
-            max_concurrency: 1,
-            model_gateway_connection_id: None,
-        },
-    )
-    .expect_err("webhook transport must be rejected");
-    assert_eq!(error.code(), Some("invalid_target"));
-
     for protocol_version in [1, 2] {
         let error = crate::tasks::register_target(
             &paths,
             crate::tasks::TargetRegistration {
                 name: "old-protocol",
                 host: None,
-                transport: "poll",
+                project_id: None,
                 capabilities: vec!["*".to_owned()],
                 priority: 0,
                 protocol_version,
@@ -222,7 +107,7 @@ fn target_registration_rejects_removed_webhook_transport_and_old_protocols() {
 }
 
 #[test]
-fn concurrent_claim_next_assigns_a_task_once() {
+fn concurrent_worker_claim_assigns_a_task_once() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -257,9 +142,9 @@ fn concurrent_claim_next_assigns_a_task_once() {
     let registered = crate::tasks::register_target(
         &paths,
         crate::tasks::TargetRegistration {
-            name: "concurrent-poller",
+            name: "concurrent-command-target",
             host: Some("test"),
-            transport: "poll",
+            project_id: None,
             capabilities: vec!["wiki.ingestMarkdown".to_owned()],
             priority: 0,
             protocol_version: 3,
@@ -277,7 +162,7 @@ fn concurrent_claim_next_assigns_a_task_once() {
         let barrier = barrier.clone();
         workers.push(thread::spawn(move || {
             barrier.wait();
-            crate::tasks::claim_next(&paths, &target_id, None, Some(0)).expect("claim")
+            crate::tasks::claim_for_worker(&paths, &target_id, None, None).expect("claim")
         }));
     }
     barrier.wait();
@@ -739,4 +624,3 @@ fn bootstrap_writer_rejects_an_oversized_success_envelope() {
     assert_eq!(error.code(), Some("bootstrap_budget_exceeded"));
     assert!(stdout.is_empty());
 }
-

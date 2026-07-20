@@ -150,9 +150,9 @@ fn panel_targeted_commands_do_not_change_focus_and_selection_remains_focus_bound
 fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     let skill = include_str!("../../../../../skills/myopenpanels/SKILL.md").replace("\r\n", "\n");
     let install = include_str!("../../../../../skills/myopenpanels/references/install.md");
-    assert!(skill.contains("version: \"5.1\""));
-    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "5.1");
-    assert!(skill.lines().count() <= 80);
+    assert!(skill.contains("version: \"5.3\""));
+    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "5.3");
+    assert!(skill.lines().count() <= 150);
     assert!(skill.contains("references/install.md"));
     assert!(!skill.contains("curl -fsSL"));
     assert!(install.contains("failed `PATH` lookup does not"));
@@ -169,8 +169,16 @@ fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     assert!(skill
         .contains("myopenpanels studio start --local-only --project-dir \"$PWD\" --format json"));
     assert!(skill.contains("myopenpanels agent bootstrap --format json"));
+    assert!(skill.contains(
+        "myopenpanels agent bootstrap --workflow <workflow-key> --format json"
+    ));
+    assert!(skill.contains("`panel.canvas.image.edit`"));
+    assert!(skill.contains("`panel.wiki.knowledge.query`"));
+    assert!(skill.contains("`panel.writing.context.read`"));
+    assert!(skill.contains("`task.queue.inspect`"));
+    assert!(skill.contains("handoff-only"));
     assert!(!skill.contains("agent bootstrap --project-dir"));
-    assert!(skill.contains("Before every request that may read, use, or modify"));
+    assert!(skill.contains("When intent is ambiguous"));
     assert!(!skill.contains("myopenpanels studio open-system-browser"));
     assert!(!skill.contains("myopenpanels agent capability"));
     assert!(!skill.contains("myopenpanels panel "));
@@ -191,10 +199,10 @@ fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     assert!(skill.contains("Do not initialize browser automation"));
     assert!(skill.contains("is not an embedded-open success"));
     assert!(skill.contains("For an open-only request, stop after an opener succeeds"));
-    assert!(skill.contains("run a fresh `myopenpanels agent bootstrap"));
+    assert!(skill.contains("run a fresh Workflow"));
     assert!(skill.contains("work clearly unrelated to MyOpenPanels"));
     assert!(skill.contains("Never reuse an earlier Bootstrap result"));
-    assert!(skill.contains("`agent catalog --domain <domain>` actions"));
+    assert!(skill.contains("`agent catalog --domain <domain>` discovery actions"));
     assert!(skill.contains("typed file, URL, Skill, or host"));
     assert!(skill.contains("If a required action updates the"));
     assert!(skill.contains("--local-only"));
@@ -363,7 +371,7 @@ fn non_text_upload_creates_a_workflow_dag_and_delete_fences_the_attempt() {
         tasks::TargetRegistration {
             name: "converter",
             host: Some("test"),
-            transport: "poll",
+            project_id: None,
             capabilities: vec!["wiki.convertDocument".to_owned()],
             priority: 10,
             protocol_version: 3,
@@ -492,7 +500,7 @@ fn agent_routing_handles_saturated_targets() {
         tasks::TargetRegistration {
             name: "primary",
             host: Some("test"),
-            transport: "poll",
+            project_id: None,
             capabilities: vec!["wiki.maintain".to_owned()],
             priority: 50,
             protocol_version: 3,
@@ -506,7 +514,7 @@ fn agent_routing_handles_saturated_targets() {
         tasks::TargetRegistration {
             name: "fallback",
             host: Some("test"),
-            transport: "poll",
+            project_id: None,
             capabilities: vec!["wiki.maintain".to_owned()],
             priority: 10,
             protocol_version: 3,

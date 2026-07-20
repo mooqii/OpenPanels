@@ -11,9 +11,21 @@ Intent routing:
 
 - To answer from Wiki knowledge, selected raw documents, or selected generated
   documents, read `references/knowledge-context.md`.
-- To create or revise a standalone report, plan, proposal, research summary, or
-  specification in the generated-document area, read
+- To import a source into the raw-document layer, read
+  `references/import-raw-document.md`.
+- To read a standalone generated document, read
+  `references/generated-document-read.md`.
+- To create a standalone report, plan, proposal, research summary, or
+  specification, read
   `references/generated-documents.md`.
+- To revise an existing standalone document, read
+  `references/revise-generated-document.md`.
+- To publish a generated document into raw Wiki sources, read
+  `references/publish-generated-document.md`.
+- To delete a generated document, read
+  `references/delete-generated-document.md`.
+- To list, activate, or materialize Wiki spaces, read
+  `references/wiki-space-management.md`.
 - To convert a raw document, read `references/convert-document.md`.
 - To synthesize Markdown into Wiki pages or maintain generated Wiki content,
   read `references/authoring-skill-routing.md`, then load the selected Wiki

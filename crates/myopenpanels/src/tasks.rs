@@ -5,3 +5,4 @@ include!("tasks/reservation.rs");
 include!("tasks/workflows.rs");
 include!("tasks/routing.rs");
 include!("tasks/projection.rs");
+include!("tasks/scopes.rs");

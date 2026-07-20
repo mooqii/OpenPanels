@@ -386,7 +386,7 @@ mod tests {
             crate::tasks::TargetRegistration {
                 name: "writer",
                 host: None,
-                transport: "poll",
+                project_id: None,
                 capabilities: vec![WRITING_CAPABILITY.to_owned()],
                 priority: 0,
                 protocol_version: 3,
@@ -571,7 +571,7 @@ mod tests {
             crate::tasks::TargetRegistration {
                 name: "writer",
                 host: None,
-                transport: "poll",
+                project_id: None,
                 capabilities: vec![WRITING_CAPABILITY.to_owned()],
                 priority: 0,
                 protocol_version: 3,
@@ -761,7 +761,7 @@ mod tests {
             crate::tasks::TargetRegistration {
                 name: "refiner",
                 host: None,
-                transport: "poll",
+                project_id: None,
                 capabilities: vec![WRITING_REFINEMENT_CAPABILITY.to_owned()],
                 priority: 0,
                 protocol_version: 3,
@@ -831,7 +831,7 @@ mod tests {
             crate::tasks::TargetRegistration {
                 name: "writer",
                 host: None,
-                transport: "poll",
+                project_id: None,
                 capabilities: vec![WRITING_CAPABILITY.to_owned()],
                 priority: 0,
                 protocol_version: 3,
@@ -841,7 +841,7 @@ mod tests {
         )
         .expect("writer target");
         let pending =
-            crate::agent_control::pending_entry_skill_update(&paths, env!("CARGO_PKG_VERSION"))
+            crate::agent_control::pending_entry_skill_update(&paths)
                 .expect("entry skill requirement")
                 .expect("pending entry skill update");
         crate::agent_control::acknowledge_entry_skill_update(
@@ -850,7 +850,11 @@ mod tests {
             crate::agent_control::ENTRY_SKILL_VERSION,
         )
         .expect("acknowledge entry skill");
-        let agent_bootstrap = crate::agent::agent_bootstrap(&paths, env!("CARGO_PKG_VERSION"))
+        let agent_bootstrap = crate::agent::agent_bootstrap(
+            &paths,
+            env!("CARGO_PKG_VERSION"),
+            None,
+        )
             .expect("agent bootstrap");
         let bootstrap_loads_custom_skill = agent_bootstrap["skills"]
             .as_array()

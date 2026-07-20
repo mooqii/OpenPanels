@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 
 const ROOT = new URL("..", import.meta.url)
 const RELEASE_TARGETS = [
@@ -60,6 +60,9 @@ const entrySkillInstall = readFileSync(
 const entrySkillVersion = entrySkill.match(
   /^\s+version:\s*["']([^"']+)["']/m
 )?.[1]
+const entrySkillSource = entrySkill.match(
+  /^\s+source:\s*["']([^"']+)["']/m
+)?.[1]
 const cliSource = readFileSync(
   new URL("crates/myopenpanels/src/cli.rs", ROOT),
   "utf8"
@@ -71,6 +74,15 @@ assert(
 assert(
   entrySkillVersion,
   "MyOpenPanels entry skill must declare metadata.version."
+)
+assert(
+  entrySkillSource,
+  "MyOpenPanels entry skill must declare metadata.source."
+)
+assert(
+  entrySkillSource ===
+    "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels",
+  `MyOpenPanels entry skill source must target the canonical latest package; got ${entrySkillSource}.`
 )
 for (const required of [
   "agent bootstrap",
@@ -96,9 +108,10 @@ for (const required of [
   )
 }
 for (const forbidden of [
-  "canvas selection",
-  "canvas generation",
-  "wiki generation",
+  "myopenpanels canvas ",
+  "myopenpanels wiki ",
+  "myopenpanels task ",
+  "myopenpanels operation ",
   "--context-id",
   "--protocol-version",
   "minCliVersion",
@@ -117,8 +130,8 @@ assert(
 
 const builtinRegistry = readJson("agent-resources/builtin-skill-registry.json")
 assert(
-  builtinRegistry.schemaVersion === 1,
-  "Built-in Skill registry must use schemaVersion 1."
+  builtinRegistry.schemaVersion === 2,
+  "Built-in Skill registry must use schemaVersion 2."
 )
 const forbiddenPortableSkillText = [
   "myopenpanels",
@@ -135,6 +148,7 @@ const forbiddenPortableSkillText = [
   "bridge-managed",
 ]
 const builtinSkillIds = new Set()
+const agentWorkflowKeys = new Set()
 for (const [group, registrations] of [
   ["system-skills", builtinRegistry.systemSkills],
   ["preset-skills", builtinRegistry.presetSkills],
@@ -190,6 +204,40 @@ for (const [group, registrations] of [
           )
         }
       }
+    } else {
+      assert(
+        Array.isArray(registration.workflows),
+        `System Skill must declare Workflows: ${registration.id}`
+      )
+      for (const workflow of registration.workflows) {
+        assert(
+          !agentWorkflowKeys.has(workflow.key),
+          `Duplicate Agent Workflow key: ${workflow.key}`
+        )
+        agentWorkflowKeys.add(workflow.key)
+        assert(
+          ["bootstrap", "handoff-only"].includes(workflow.executionMode),
+          `Invalid Agent Workflow executionMode: ${workflow.key}`
+        )
+        assert(
+          [
+            "none",
+            "summary",
+            "optional-detail",
+            "active-detail",
+            "explicit-detail",
+          ].includes(workflow.selectionPolicy),
+          `Invalid Agent Workflow selectionPolicy: ${workflow.key}`
+        )
+        assert(
+          existsSync(new URL(`${packagePath}/${workflow.reference}`, ROOT)),
+          `Agent Workflow reference is missing: ${workflow.key}`
+        )
+        assert(
+          entrySkill.includes(`\`${workflow.key}\``),
+          `Entry Skill is missing Agent Workflow route: ${workflow.key}`
+        )
+      }
     }
   }
 }
@@ -202,7 +250,7 @@ const manifest = {
   entrySkill: {
     id: "myopenpanels",
     version: entrySkillVersion,
-    source: `https://github.com/mooqii/OpenPanels/tree/${tag}/skills/myopenpanels`,
+    source: entrySkillSource,
   },
   assets: Object.fromEntries(
     RELEASE_TARGETS.map((target) => {

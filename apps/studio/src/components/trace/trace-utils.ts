@@ -1,5 +1,10 @@
 import type { MyOpenPanelsLocale } from "../../canvas"
-import type { ProjectTask, TraceCategory, TraceEvent } from "../../types"
+import type {
+  ProjectTask,
+  TaskExecutionScope,
+  TraceCategory,
+  TraceEvent,
+} from "../../types"
 import type { TaskFilter } from "./TracePanel"
 
 export type TraceFilter = "all" | TraceCategory
@@ -120,22 +125,119 @@ function isActiveProjectHeartbeat(event: TraceEvent): boolean {
   return /^GET \/api\/active-project(?:\s|$)/.test(event.summary)
 }
 
+export function taskExecutionScope(task: ProjectTask): TaskExecutionScope {
+  if (task.wikiUpdateGroup) {
+    return {
+      kind: "wiki-mutation-drain",
+      mutationKey: task.wikiUpdateGroup.mutationKey,
+      projectId: task.projectId,
+    }
+  }
+  return { kind: "exact-task", taskId: task.id }
+}
+
+export interface ManualAgentScopeCandidate {
+  isReady: boolean
+  key: string
+  scope: TaskExecutionScope
+}
+
+export function manualAgentScopeCandidates(
+  tasks: ProjectTask[]
+): ManualAgentScopeCandidate[] {
+  const byId = new Map(tasks.map((task) => [task.id, task]))
+  const coveredTaskIds = new Set<string>()
+  const candidates: ManualAgentScopeCandidate[] = []
+  const mutationGroups = new Map<string, ProjectTask[]>()
+
+  for (const task of tasks) {
+    if (
+      task.queue === "wiki" &&
+      task.mutationKey &&
+      WIKI_UPDATE_TASK_TYPES.has(task.type) &&
+      !isDoneTask(task)
+    ) {
+      const group = mutationGroups.get(task.mutationKey) ?? []
+      group.push(task)
+      mutationGroups.set(task.mutationKey, group)
+    }
+  }
+
+  for (const [mutationKey, mutationTasks] of mutationGroups) {
+    const scopedTasks = [...mutationTasks]
+    const visitPrerequisites = (task: ProjectTask) => {
+      for (const dependency of task.dependencies ?? []) {
+        const prerequisite = byId.get(dependency.prerequisiteTaskId)
+        if (!prerequisite || coveredTaskIds.has(prerequisite.id)) continue
+        coveredTaskIds.add(prerequisite.id)
+        scopedTasks.push(prerequisite)
+        visitPrerequisites(prerequisite)
+      }
+    }
+    for (const task of mutationTasks) {
+      coveredTaskIds.add(task.id)
+      visitPrerequisites(task)
+    }
+    const projectId = mutationTasks[0].projectId
+    candidates.push({
+      isReady: scopedTasks.some(isTaskReadyForManualAgent),
+      key: `wiki-mutation-drain:${projectId}:${mutationKey}`,
+      scope: { kind: "wiki-mutation-drain", mutationKey, projectId },
+    })
+  }
+
+  for (const task of tasks) {
+    if (coveredTaskIds.has(task.id) || isDoneTask(task)) continue
+    candidates.push({
+      isReady: isTaskReadyForManualAgent(task),
+      key: `exact-task:${task.id}`,
+      scope: { kind: "exact-task", taskId: task.id },
+    })
+  }
+  return candidates
+}
+
+export function taskExecutionScopeKey(scope: TaskExecutionScope): string {
+  switch (scope.kind) {
+    case "project-drain":
+      return `project-drain:${scope.projectId}`
+    case "wiki-mutation-drain":
+      return `wiki-mutation-drain:${scope.projectId}:${scope.mutationKey}`
+    case "exact-task":
+      return `exact-task:${scope.taskId}`
+    default:
+      throw new Error("Unknown Task execution scope")
+  }
+}
+
 export function manualTaskInstruction(
-  task: ProjectTask,
+  scope: TaskExecutionScope,
   locale: MyOpenPanelsLocale
 ): string {
-  const taskIds = task.wikiUpdateGroup?.taskIds ?? [task.id]
-  const commands = taskIds
-    .map(
-      (taskId) =>
-        `myopenpanels task read --task-id ${shellQuote(taskId)} --format json`
-    )
-    .join("\n")
+  const selector =
+    scope.kind === "project-drain"
+      ? `--scope project-drain --project-id ${shellQuote(scope.projectId)}`
+      : scope.kind === "wiki-mutation-drain"
+        ? `--scope wiki-mutation-drain --project-id ${shellQuote(scope.projectId)} --mutation-key ${shellQuote(scope.mutationKey)}`
+        : `--scope exact-task --task-id ${shellQuote(scope.taskId)}`
+  const command = `myopenpanels task scope read ${selector} --format json`
 
   if (locale === "zh-CN") {
-    return `请处理 MyOpenPanels ${taskIds.length > 1 ? "中的以下任务" : "任务"} ${taskIds.join(", ")}。先执行下面的命令读取任务，再按照返回的任务信息和 actions 完成处理：\n\n${commands}`
+    const objective =
+      scope.kind === "project-drain"
+        ? `排空 Project ${scope.projectId} 中的任务`
+        : scope.kind === "wiki-mutation-drain"
+          ? `排空 Project ${scope.projectId} 中 Wiki mutation ${scope.mutationKey} 的串行更新队列`
+          : `只处理任务 ${scope.taskId}`
+    return `请通过 MyOpenPanels ${objective}。先执行下面的 scope 命令，按照返回的 required actions 工作，并重复 scope claim，直到 scopeState 为 complete 或 blocked 后再退出：\n\n${command}`
   }
-  return `Process ${taskIds.length > 1 ? "these MyOpenPanels tasks" : "this MyOpenPanels task"}: ${taskIds.join(", ")}. Run the command${taskIds.length > 1 ? "s" : ""} below first, then follow the returned task details and actions to complete the work:\n\n${commands}`
+  const objective =
+    scope.kind === "project-drain"
+      ? `drain tasks in Project ${scope.projectId}`
+      : scope.kind === "wiki-mutation-drain"
+        ? `drain the serial Wiki mutation queue ${scope.mutationKey} in Project ${scope.projectId}`
+        : `process only Task ${scope.taskId}`
+  return `Use MyOpenPanels to ${objective}. Run the scope command below first, follow its required actions, and repeat scope claim until scopeState is complete or blocked before exiting:\n\n${command}`
 }
 
 export function compareTasksForDisplay(
@@ -213,6 +315,13 @@ export function isActiveTask(task: ProjectTask): boolean {
 
 export function isDoneTask(task: ProjectTask): boolean {
   return ["succeeded", "cancelled", "stale", "superseded"].includes(task.status)
+}
+
+function isTaskReadyForManualAgent(task: ProjectTask): boolean {
+  return (
+    Boolean(task.ready) &&
+    (task.status === "queued" || task.status === "failed")
+  )
 }
 
 export function pendingTaskCount(tasks: ProjectTask[]): number {

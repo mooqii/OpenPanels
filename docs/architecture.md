@@ -56,7 +56,7 @@ and must match the current baseline.
 | --- | --- | --- |
 | `studio start`, `agent bootstrap` | Stable | Clap command and CLI envelope |
 | Task lifecycle | Stable | `tasks` and `/api/tasks/*` |
-| Agent targets | Stable | `agent_targets` and `/api/agent/targets/*` |
+| Agent target status | Stable | `agent_targets` and read-only `/api/agent/targets` |
 | Agent guidance | Skill-only | `agent skill list/read` |
 | Panel kinds | Wiki, Writing, Canvas, Typesetting, and Publishing | `panels.kind` constraint |
 | CLI self-update | Release-critical | Previously installed CLI updater |
@@ -90,9 +90,27 @@ generation before another Attempt can begin. Completion records the result,
 Attempt, Event, dependent activation, Workflow status, and `change_scopes`
 notification together.
 
-Task transport is pull-based. Poll Targets actively call `claim-next`, while
-Command Targets are local CLI bridges that claim work before starting a
-one-shot process. The only target transports are `poll` and `command`.
+Task execution is command-target-only. The Studio Worker atomically claims work
+before starting a one-shot local CLI or BYOK process; `agent bridge run` uses the
+same command-target lifecycle. External Workers cannot register or pull Tasks.
+
+### Task Execution Scopes
+
+Manual Agent handoffs use non-persistent execution scopes over the existing Task,
+Workflow, lease, and mutation records. `exact-task` claims only its selected
+Task. `project-drain` keeps claiming independent work in one explicit Project
+until a live empty check succeeds or only blockers remain.
+`wiki-mutation-drain` follows one Project-local `mutation_key`, first claims the
+non-terminal prerequisites needed to unlock its head, and then advances Wiki
+updates in `mutation_sequence` order. Compatible Wiki updates may share a
+consolidated execution window bounded by 256 KiB of Task metadata and source
+inputs; windowing does not create a stored Task group or impose a file count
+limit.
+
+Scope reads and claims return the immutable selector, aggregate state and counts,
+structured blockers, required capabilities, actions, and the ordinary lease and
+Broker claim contract when work is acquired. One-shot Agent targets can bind an
+explicit Project so a copied handoff never follows later Studio focus changes.
 
 ## Model Gateway
 
@@ -196,6 +214,14 @@ objects, Attempt staging sessions, and execution-token fencing. All Tasks use
 execution protocol v3. The Agent-facing CLI forwards task-scoped reads and
 writes to the Studio Task Broker; it never receives the SQLite path or global
 storage write access.
+
+Content access is manifest-based rather than capability-based. A leased
+Attempt may read only resources recorded in its immutable `task_inputs` plus
+the pinned base revision of its declared output, and may write only that
+declared output through its staging session. Task capabilities select an Agent
+route, while the Task type declares the output contract; capabilities do not
+maintain a second resource-permission matrix. This keeps routing, input
+capture, and content authorization from drifting apart.
 
 Broker writes create invisible staging records. Task completion validates the
 candidate manifest, then activates the content revision together with panel

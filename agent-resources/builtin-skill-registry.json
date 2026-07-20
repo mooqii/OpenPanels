@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "systemSkills": [
     {
       "packageDir": "myopenpanels-canvas-panel",
@@ -15,6 +15,66 @@
         "operation.complete",
         "canvas.image.create",
         "agent.skill.read"
+      ],
+      "workflows": [
+        {
+          "key": "panel.canvas.selection.read",
+          "description": "Read the current explicit Canvas selection or its empty state.",
+          "executionMode": "bootstrap",
+          "panelKind": "canvas",
+          "reference": "references/selection.md",
+          "selectionPolicy": "active-detail",
+          "commandIntents": ["panel.selection.read"]
+        },
+        {
+          "key": "panel.canvas.selection.export",
+          "description": "Export the explicit Canvas selection to a user-requested file.",
+          "executionMode": "bootstrap",
+          "panelKind": "canvas",
+          "reference": "references/selection-export.md",
+          "selectionPolicy": "explicit-detail",
+          "commandIntents": ["panel.selection.read", "canvas.selection.export"]
+        },
+        {
+          "key": "panel.canvas.image.insert",
+          "description": "Insert an existing bitmap file into the Project Canvas.",
+          "executionMode": "bootstrap",
+          "panelKind": "canvas",
+          "reference": "references/image-insert.md",
+          "selectionPolicy": "none",
+          "commandIntents": ["canvas.image.create"]
+        },
+        {
+          "key": "panel.canvas.image.generate",
+          "description": "Generate a new bitmap and place it into the Project Canvas.",
+          "executionMode": "bootstrap",
+          "panelKind": "canvas",
+          "reference": "references/image-generation.md",
+          "selectionPolicy": "optional-detail",
+          "commandIntents": [
+            "canvas.image.generate",
+            "operation.complete",
+            "operation.fail",
+            "operation.cancel",
+            "agent.skill.read"
+          ]
+        },
+        {
+          "key": "panel.canvas.image.edit",
+          "description": "Edit, restyle, or redraw an explicitly selected Canvas image.",
+          "executionMode": "bootstrap",
+          "panelKind": "canvas",
+          "reference": "references/image-edit.md",
+          "selectionPolicy": "explicit-detail",
+          "commandIntents": [
+            "panel.selection.read",
+            "canvas.image.generate",
+            "operation.complete",
+            "operation.fail",
+            "operation.cancel",
+            "agent.skill.read"
+          ]
+        }
       ],
       "loadWhen": [
         "Before beginning a new operation that targets a MyOpenPanels Canvas panel."
@@ -32,7 +92,9 @@
         "task.list",
         "task.next",
         "task.read",
-        "task.claim-next",
+        "task.scope.read",
+        "task.scope.claim",
+        "task.claim",
         "task.heartbeat",
         "task.complete",
         "task.fail",
@@ -40,7 +102,73 @@
         "task.attempts",
         "workflow.read",
         "agent.target.register",
+        "agent.target.remove",
         "agent.bridge.run"
+      ],
+      "workflows": [
+        {
+          "key": "task.queue.inspect",
+          "description": "Inspect queued work, Task state, attempts, events, and its persisted Workflow.",
+          "executionMode": "bootstrap",
+          "panelKind": null,
+          "reference": "references/inspect.md",
+          "selectionPolicy": "none",
+          "commandIntents": [
+            "task.list",
+            "task.next",
+            "task.read",
+            "task.events",
+            "task.attempts",
+            "workflow.read"
+          ]
+        },
+        {
+          "key": "task.queue.retry",
+          "description": "Retry an explicitly identified failed Task.",
+          "executionMode": "bootstrap",
+          "panelKind": null,
+          "reference": "references/retry.md",
+          "selectionPolicy": "none",
+          "commandIntents": ["task.read", "task.retry"]
+        },
+        {
+          "key": "task.queue.cancel",
+          "description": "Cancel an explicitly identified Task.",
+          "executionMode": "bootstrap",
+          "panelKind": null,
+          "reference": "references/cancel.md",
+          "selectionPolicy": "none",
+          "commandIntents": ["task.read", "task.cancel"]
+        },
+        {
+          "key": "task.queue.archive",
+          "description": "Archive an explicitly identified terminal Task.",
+          "executionMode": "bootstrap",
+          "panelKind": null,
+          "reference": "references/archive.md",
+          "selectionPolicy": "none",
+          "commandIntents": ["task.read", "task.archive"]
+        },
+        {
+          "key": "task.scope.execute",
+          "description": "Execute the exact Task scope supplied by a Studio handoff.",
+          "executionMode": "handoff-only",
+          "panelKind": null,
+          "reference": "references/execute-scope.md",
+          "selectionPolicy": "none",
+          "commandIntents": [
+            "task.scope.read",
+            "task.scope.claim",
+            "task.claim",
+            "task.heartbeat",
+            "task.complete",
+            "task.fail",
+            "task.release",
+            "agent.skill.read",
+            "agent.target.register",
+            "agent.target.remove"
+          ]
+        }
       ],
       "loadWhen": [
         "When the request handles work from the generic project Task queue."
@@ -74,6 +202,152 @@
         "wiki.page.update",
         "agent.skill.read"
       ],
+      "workflows": [
+        {
+          "key": "panel.wiki.knowledge.query",
+          "description": "Answer from selected Wiki knowledge or selected Wiki documents.",
+          "executionMode": "bootstrap",
+          "panelKind": "wiki",
+          "reference": "references/knowledge-context.md",
+          "selectionPolicy": "optional-detail",
+          "commandIntents": [
+            "panel.selection.read",
+            "wiki.space.materialize",
+            "wiki.page.search",
+            "wiki.page.list",
+            "wiki.page.read",
+            "wiki.raw.read",
+            "wiki.document.read"
+          ]
+        },
+        {
+          "key": "panel.wiki.raw.import",
+          "description": "Import a source file or Markdown text as a Wiki Raw Document.",
+          "executionMode": "bootstrap",
+          "panelKind": "wiki",
+          "reference": "references/import-raw-document.md",
+          "selectionPolicy": "none",
+          "commandIntents": ["wiki.raw.create"]
+        },
+        {
+          "key": "panel.wiki.raw.convert",
+          "description": "Convert an immutable raw source into faithful Markdown inside a claimed Task.",
+          "executionMode": "handoff-only",
+          "panelKind": "wiki",
+          "reference": "references/convert-document.md",
+          "selectionPolicy": "none",
+          "commandIntents": [
+            "wiki.raw.read",
+            "wiki.raw.update",
+            "task.heartbeat",
+            "task.complete",
+            "task.fail"
+          ]
+        },
+        {
+          "key": "panel.wiki.document.read",
+          "description": "Read a generated document selected or named by the user.",
+          "executionMode": "bootstrap",
+          "panelKind": "wiki",
+          "reference": "references/generated-document-read.md",
+          "selectionPolicy": "optional-detail",
+          "commandIntents": [
+            "panel.selection.read",
+            "wiki.document.list",
+            "wiki.document.read"
+          ]
+        },
+        {
+          "key": "panel.wiki.document.generate",
+          "description": "Generate a new standalone Wiki document through a target-bound Operation.",
+          "executionMode": "bootstrap",
+          "panelKind": "wiki",
+          "reference": "references/generated-documents.md",
+          "selectionPolicy": "optional-detail",
+          "commandIntents": [
+            "wiki.document.generate",
+            "operation.complete",
+            "operation.fail",
+            "operation.cancel"
+          ]
+        },
+        {
+          "key": "panel.wiki.document.revise",
+          "description": "Revise an existing generated Wiki document through a target-bound Operation.",
+          "executionMode": "bootstrap",
+          "panelKind": "wiki",
+          "reference": "references/revise-generated-document.md",
+          "selectionPolicy": "optional-detail",
+          "commandIntents": [
+            "panel.selection.read",
+            "wiki.document.read",
+            "wiki.document.generate",
+            "operation.complete",
+            "operation.fail",
+            "operation.cancel"
+          ]
+        },
+        {
+          "key": "panel.wiki.document.publish",
+          "description": "Publish an explicitly identified generated document into Wiki raw sources.",
+          "executionMode": "bootstrap",
+          "panelKind": "wiki",
+          "reference": "references/publish-generated-document.md",
+          "selectionPolicy": "optional-detail",
+          "commandIntents": [
+            "panel.selection.read",
+            "wiki.document.read",
+            "wiki.document.publish"
+          ]
+        },
+        {
+          "key": "panel.wiki.document.delete",
+          "description": "Delete an explicitly identified generated Wiki document.",
+          "executionMode": "bootstrap",
+          "panelKind": "wiki",
+          "reference": "references/delete-generated-document.md",
+          "selectionPolicy": "optional-detail",
+          "commandIntents": [
+            "panel.selection.read",
+            "wiki.document.list",
+            "wiki.document.read",
+            "wiki.document.delete"
+          ]
+        },
+        {
+          "key": "panel.wiki.space.manage",
+          "description": "List, activate, or materialize a Wiki space.",
+          "executionMode": "bootstrap",
+          "panelKind": "wiki",
+          "reference": "references/wiki-space-management.md",
+          "selectionPolicy": "none",
+          "commandIntents": [
+            "wiki.space.list",
+            "wiki.space.activate",
+            "wiki.space.materialize"
+          ]
+        },
+        {
+          "key": "panel.wiki.pages.maintain",
+          "description": "Maintain generated Wiki pages inside an exact claimed Task.",
+          "executionMode": "handoff-only",
+          "panelKind": "wiki",
+          "reference": "references/authoring-skill-routing.md",
+          "selectionPolicy": "none",
+          "commandIntents": [
+            "agent.skill.read",
+            "wiki.space.materialize",
+            "wiki.page.search",
+            "wiki.page.list",
+            "wiki.page.read",
+            "wiki.page.create",
+            "wiki.page.update",
+            "task.heartbeat",
+            "task.complete",
+            "task.fail"
+          ]
+        }
+      ],
       "loadWhen": [
         "Before beginning a new operation that targets a MyOpenPanels Wiki panel."
       ],
@@ -99,6 +373,55 @@
         "operation.complete",
         "task.complete",
         "task.fail"
+      ],
+      "workflows": [
+        {
+          "key": "panel.writing.context.read",
+          "description": "Read the Writing panel's selected source and Wiki context.",
+          "executionMode": "bootstrap",
+          "panelKind": "writing",
+          "reference": "references/knowledge-context.md",
+          "selectionPolicy": "active-detail",
+          "commandIntents": [
+            "panel.selection.read",
+            "wiki.raw.read",
+            "wiki.document.read",
+            "wiki.space.materialize",
+            "wiki.page.search",
+            "wiki.page.read"
+          ]
+        },
+        {
+          "key": "panel.writing.request.execute",
+          "description": "Execute a submitted Writing request inside its claimed Task.",
+          "executionMode": "handoff-only",
+          "panelKind": "writing",
+          "reference": "references/execute-writing-request.md",
+          "selectionPolicy": "none",
+          "commandIntents": [
+            "writing.request.read",
+            "agent.skill.read",
+            "writing.generate",
+            "operation.complete",
+            "task.complete",
+            "task.fail"
+          ]
+        },
+        {
+          "key": "panel.writing.skill.refine",
+          "description": "Refine selected examples into a reusable Writing Skill inside its claimed Task.",
+          "executionMode": "handoff-only",
+          "panelKind": "writing",
+          "reference": "references/refine-writing-skill.md",
+          "selectionPolicy": "none",
+          "commandIntents": [
+            "writing.refinement.read",
+            "agent.skill.read",
+            "writing.skill.install",
+            "task.complete",
+            "task.fail"
+          ]
+        }
       ],
       "loadWhen": [
         "Before reading Writing context or executing a submitted Writing request."

@@ -7,9 +7,6 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::fs;
-use std::thread;
-use std::time::{Duration, Instant};
 
 pub(crate) mod model;
 
@@ -17,7 +14,6 @@ const BLOCKED_REASON_ATTEMPTS_EXCEEDED: &str = "attemptsExceeded";
 const BLOCKED_REASON_LEASED: &str = "leased";
 const BLOCKED_REASON_RETRY_LATER: &str = "retryLater";
 const DEFAULT_LEASE_MINUTES: i64 = 15;
-const DEFAULT_LONG_POLL_MS: u64 = 25_000;
 const TARGET_ONLINE_WINDOW_SECONDS: i64 = 90;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -52,7 +48,7 @@ impl TaskFailureClass {
 pub struct TargetRegistration<'a> {
     pub name: &'a str,
     pub host: Option<&'a str>,
-    pub transport: &'a str,
+    pub project_id: Option<&'a str>,
     pub capabilities: Vec<String>,
     pub priority: i64,
     pub protocol_version: i64,
@@ -199,13 +195,6 @@ pub fn register_target(
     paths: &MyOpenPanelsPaths,
     registration: TargetRegistration<'_>,
 ) -> Result<Value, CliError> {
-    let transport = registration.transport.trim();
-    if !matches!(transport, "poll" | "command") {
-        return Err(CliError::with_code(
-            "invalid_target",
-            "Expected target transport to be one of: poll, command.",
-        ));
-    }
     if registration.protocol_version != crate::content::EXECUTION_PROTOCOL_VERSION
         || registration.max_concurrency < 1
     {
@@ -222,8 +211,21 @@ pub fn register_target(
         ));
     }
 
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let mut storage = Storage::open(paths)?;
+    let project_id = match registration.project_id {
+        Some(project_id) => {
+            if storage.read_project(project_id)?.is_none() {
+                return Err(CliError::with_code(
+                    "project_not_found",
+                    format!("Project not found: {project_id}"),
+                ));
+            }
+            project_id.to_owned()
+        }
+        None => read_project_bootstrap(paths, BootstrapRequest::new())?
+            .project
+            .id,
+    };
     if let Some(connection_id) = registration.model_gateway_connection_id {
         crate::model_gateway::sync_builtin_local_cli_registry(&mut storage)?;
         let connection_exists = storage
@@ -242,14 +244,12 @@ pub fn register_target(
         }
     }
     let now = crate::control::now_iso();
-    let token = random_secret("opt");
-    let token_hash = hash_secret(&token);
     let existing_id = storage
         .connection()
         .query_row(
             r#"
             SELECT id FROM agent_targets
-            WHERE project_id = ? AND transport = ?
+            WHERE project_id = ? AND transport = 'command'
               AND (
                 (? IS NOT NULL AND model_gateway_connection_id = ?)
                 OR (? IS NULL AND name = ?)
@@ -257,8 +257,7 @@ pub fn register_target(
             ORDER BY updated_at DESC LIMIT 1
             "#,
             params![
-                bootstrap.project.id,
-                transport,
+                project_id,
                 registration.model_gateway_connection_id,
                 registration.model_gateway_connection_id,
                 registration.model_gateway_connection_id,
@@ -281,11 +280,10 @@ pub fn register_target(
               created_at, updated_at, protocol_version, max_concurrency,
               model_gateway_connection_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'online', ?, NULL, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, 'command', ?, ?, 'online', 'command-only', NULL, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               name = excluded.name,
               host = excluded.host,
-              transport = excluded.transport,
               capabilities_json = excluded.capabilities_json,
               priority = excluded.priority,
               status = 'online',
@@ -299,13 +297,11 @@ pub fn register_target(
             "#,
         params![
             target_id,
-            bootstrap.project.id,
+            project_id,
             registration.name,
             registration.host.unwrap_or(registration.name),
-            transport,
             serde_json::to_string(&capabilities).map_err(to_cli_error)?,
             registration.priority,
-            token_hash,
             now,
             now,
             now,
@@ -315,12 +311,11 @@ pub fn register_target(
         ],
     )
     .map_err(to_cli_error)?;
-    write_target_secret(paths, &target_id, &token)?;
-    crate::storage::record_scope(&tx, "agent_targets", Some(&bootstrap.project.id), None)?;
-    let target = read_target_value(&tx, &bootstrap.project.id, &target_id)?
+    crate::storage::record_scope(&tx, "agent_targets", Some(&project_id), None)?;
+    let target = read_target_value(&tx, &project_id, &target_id)?
         .ok_or_else(|| CliError::new("Registered target could not be read."))?;
     tx.commit().map_err(to_cli_error)?;
-    Ok(json!({ "target": target, "token": token }))
+    Ok(json!({ "target": target }))
 }
 
 pub fn heartbeat_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value, CliError> {
@@ -342,7 +337,7 @@ pub fn deactivate_target(
     let now = crate::control::now_iso();
     let changed = tx
         .execute(
-            "UPDATE agent_targets SET status = 'offline', last_error = ?, updated_at = ? WHERE id = ? AND project_id = ? AND transport IN ('poll', 'command') AND (status <> 'offline' OR last_error IS NOT ?)",
+            "UPDATE agent_targets SET status = 'offline', last_error = ?, updated_at = ? WHERE id = ? AND project_id = ? AND transport = 'command' AND (status <> 'offline' OR last_error IS NOT ?)",
             params![reason, now, target_id, bootstrap.project.id, reason],
         )
         .map_err(to_cli_error)?;
@@ -371,7 +366,7 @@ fn heartbeat_target_in_session(
         .map_err(to_cli_error)?;
     let now = crate::control::now_iso();
     let previous = tx.query_row(
-        "SELECT status, last_error, last_heartbeat_at FROM agent_targets WHERE id = ? AND project_id = ? AND transport IN ('poll', 'command')",
+        "SELECT status, last_error, last_heartbeat_at FROM agent_targets WHERE id = ? AND project_id = ? AND transport = 'command'",
         params![target_id, project_id],
         |row| Ok((
             row.get::<_, String>(0)?,
@@ -380,7 +375,7 @@ fn heartbeat_target_in_session(
         )),
     ).optional().map_err(to_cli_error)?;
     let changed = tx.execute(
-            "UPDATE agent_targets SET status = 'online', last_error = NULL, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND project_id = ? AND transport IN ('poll', 'command')",
+            "UPDATE agent_targets SET status = 'online', last_error = NULL, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND project_id = ? AND transport = 'command'",
             params![now, now, target_id, project_id],
         )
         .map_err(to_cli_error)?;
@@ -410,8 +405,22 @@ fn heartbeat_target_in_session(
 }
 
 pub fn remove_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value, CliError> {
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
     let storage = Storage::open(paths)?;
+    let project_id = storage
+        .connection()
+        .query_row(
+            "SELECT project_id FROM agent_targets WHERE id = ? AND transport = 'command'",
+            [target_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(to_cli_error)?
+        .ok_or_else(|| {
+            CliError::with_code(
+                "target_not_found",
+                format!("Agent target not found: {target_id}"),
+            )
+        })?;
     let tx = storage
         .connection()
         .unchecked_transaction()
@@ -421,7 +430,7 @@ pub fn remove_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value
             "SELECT id, queue, workflow_id, status FROM tasks WHERE project_id = ? AND assigned_agent_id = ? AND status IN ('reserved', 'running', 'claimed', 'converting', 'indexing')"
         ).map_err(to_cli_error)?;
         let rows = statement
-            .query_map(params![bootstrap.project.id, target_id], |row| {
+            .query_map(params![project_id, target_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -449,8 +458,8 @@ pub fn remove_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value
     }
     let changed = tx
         .execute(
-            "DELETE FROM agent_targets WHERE id = ? AND project_id = ? AND transport IN ('poll', 'command')",
-            params![target_id, bootstrap.project.id],
+            "DELETE FROM agent_targets WHERE id = ? AND project_id = ? AND transport = 'command'",
+            params![target_id, project_id],
         )
         .map_err(to_cli_error)?;
     if changed == 0 {
@@ -459,8 +468,7 @@ pub fn remove_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value
             format!("Agent target not found: {target_id}"),
         ));
     }
-    let _ = fs::remove_file(target_secret_path(paths, target_id));
-    crate::storage::record_scope(&tx, "agent_targets", Some(&bootstrap.project.id), None)?;
+    crate::storage::record_scope(&tx, "agent_targets", Some(&project_id), None)?;
     tx.commit().map_err(to_cli_error)?;
     for (task_id, queue, _, _) in &interrupted {
         if queue == "wiki" {
@@ -476,35 +484,3 @@ pub fn remove_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value
     }
     Ok(json!({ "removed": true, "targetId": target_id }))
 }
-
-pub fn verify_target_token(
-    paths: &MyOpenPanelsPaths,
-    target_id: &str,
-    token: &str,
-) -> Result<(), CliError> {
-    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-    let storage = Storage::open(paths)?;
-    let expected = storage
-        .connection()
-        .query_row(
-            "SELECT token_hash FROM agent_targets WHERE id = ? AND project_id = ? AND transport IN ('poll', 'command')",
-            params![target_id, bootstrap.project.id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(to_cli_error)?
-        .ok_or_else(|| {
-            CliError::with_code(
-                "target_not_found",
-                format!("Agent target not found: {target_id}"),
-            )
-        })?;
-    if expected != hash_secret(token) {
-        return Err(CliError::with_code(
-            "unauthorized_target",
-            "Agent target token is invalid.",
-        ));
-    }
-    Ok(())
-}
-

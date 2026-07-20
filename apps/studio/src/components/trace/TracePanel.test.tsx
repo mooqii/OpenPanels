@@ -140,6 +140,8 @@ describe("AgentPanel release UI", () => {
     )
 
     expect(manualMarkup).toContain("Copy task instruction")
+    expect(manualMarkup).toContain("Copy Project drain instruction")
     expect(automaticMarkup).not.toContain("Copy task instruction")
+    expect(automaticMarkup).not.toContain("Copy Project drain instruction")
   })
 })

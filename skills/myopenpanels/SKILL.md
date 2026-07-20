@@ -1,8 +1,9 @@
 ---
 name: myopenpanels
-description: "Use MyOpenPanels for persistent visual, knowledge, or writing work in its Canvas, Wiki, or Writing panel, including drawing, image work, diagrams, moodboards, brainstorming, organizing, research, drafting, and writing. Also use when the user asks to open or launch MyOpenPanels (including 打开面板) or refers to its current panel, selection, or content. After Studio is open, run a fresh `myopenpanels agent bootstrap --format json` before every panel-related request. Skip Bootstrap only for an open-only request or work clearly unrelated to MyOpenPanels."
+description: "Use MyOpenPanels for persistent visual, knowledge, or writing work in its Canvas, Wiki, or Writing panel, including drawing, image work, diagrams, moodboards, brainstorming, organizing, research, drafting, and writing. Also use when the user asks to open or launch MyOpenPanels (including 打开面板) or refers to its current panel, selection, or content. After Studio is open, use the matching Agent Workflow Bootstrap when intent is clear and generic Agent Bootstrap only as fallback. Skip Bootstrap only for an open-only request or work clearly unrelated to MyOpenPanels."
 metadata:
-  version: "5.1"
+  version: "5.3"
+  source: "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels"
 ---
 
 # MyOpenPanels
@@ -59,7 +60,49 @@ inspect Studio, or search the repository.
 When `MYOPENPANELS_TASK_ID`, `MYOPENPANELS_TASK_BROKER_URL`, and
 `MYOPENPANELS_TASK_TOKEN` are present, this is an isolated claimed Task: do not
 start Studio or Bootstrap; follow its prompt and task-id-bound broker commands.
-Before every request that may read, use, or modify a panel, run a fresh:
+For a Studio-generated `task scope read` handoff, run that exact command instead
+of Bootstrap; load its required Task Queue Skill and preserve the selector.
+When the request clearly matches one entry below, run a fresh Workflow
+Bootstrap directly:
+
+```bash
+myopenpanels agent bootstrap --workflow <workflow-key> --format json
+```
+
+Canvas:
+
+- `panel.canvas.selection.read`: read the current Canvas selection.
+- `panel.canvas.selection.export`: export an explicit selection to a requested path.
+- `panel.canvas.image.insert`: insert an existing bitmap.
+- `panel.canvas.image.generate`: generate a new bitmap without requiring selection.
+- `panel.canvas.image.edit`: edit or restyle an explicit selected image.
+
+Wiki:
+
+- `panel.wiki.knowledge.query`: answer from Wiki or selected document knowledge.
+- `panel.wiki.raw.import`: import a source into raw documents.
+- `panel.wiki.document.read`: read a standalone generated document.
+- `panel.wiki.document.generate`: generate a new standalone document.
+- `panel.wiki.document.revise`: revise an existing standalone document.
+- `panel.wiki.document.publish`: publish a generated document into raw sources.
+- `panel.wiki.document.delete`: delete a generated document.
+- `panel.wiki.space.manage`: list, activate, or materialize Wiki spaces.
+
+Writing and Task queue:
+
+- `panel.writing.context.read`: inspect selected Writing source context.
+- `task.queue.inspect`: inspect Tasks, attempts, events, or persisted Workflows.
+- `task.queue.retry`: retry an explicitly identified failed Task.
+- `task.queue.cancel`: cancel an explicitly identified Task.
+- `task.queue.archive`: archive an explicitly identified terminal Task.
+
+The following routes are handoff-only and must never be passed to Bootstrap:
+`task.scope.execute`, `panel.wiki.raw.convert`, `panel.wiki.pages.maintain`,
+`panel.writing.request.execute`, and `panel.writing.skill.refine`. Execute their
+exact Studio or claimed Task handoff instead.
+
+When intent is ambiguous, no Workflow matches, or the CLI reports
+`agent_workflow_not_found`, run the generic fallback:
 
 ```bash
 myopenpanels agent bootstrap --format json
@@ -70,9 +113,11 @@ resolved executable to the returned `argv`; for typed file, URL, Skill, or host
 actions, use the matching executor without translating the action into a shell
 command. If a required action updates the Entry Skill, Bootstrap again. Only
 after required actions finish, choose applicable `actions.suggested` entries by
-their structured conditions. Use `agent catalog --domain <domain>` actions to
-load complete command descriptions for the domains needed by the selected
-Skills.
+their structured conditions. Workflow Bootstrap returns only its relevant
+command descriptions in `commands.items`; retain each returned command path and
+flags, replace required placeholders with request values, and add only optional
+flags declared by that descriptor. Generic Bootstrap may still return scoped
+`agent catalog --domain <domain>` discovery actions.
 
 Never reuse an earlier Bootstrap result, execute display text, or reconstruct
 panel commands from memory.

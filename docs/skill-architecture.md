@@ -22,9 +22,17 @@ Bootstrap, Bridge lifecycle, or host storage.
 Built-in portable presets live under `agent-resources/preset-skills`. Both
 system and preset packages use standard `name` and `description` frontmatter.
 They are associated with panels, task types, command intents, and user-visible
-names through `agent-resources/builtin-skill-registry.json`. That registry is
-platform data; it is not part of any Skill package. Custom Writing Skills use
-the same separation through their platform-owned `manifest.json`.
+names through `agent-resources/builtin-skill-registry.json`. That platform
+registry uses schema v2 to also bind stable Agent Workflow keys to one system
+Skill reference, selection policy, execution mode, and the minimum command
+intents required for that user-level capability. It is not part of any Skill
+package. Custom Writing Skills use the same separation through their
+platform-owned `manifest.json`.
+
+The independently installed Entry Skill contains the compact Workflow intent
+index. System Panel Skills and their references ship inside the CLI. Workflow
+Bootstrap resolves those synchronized packages and command registrations at
+runtime, while unknown Entry Skill keys fall back to generic Bootstrap.
 
 At execution time the host composes a Runtime Contract, a Task objective, the
 selected portable Skill, and captured source material. The Runtime Contract is
