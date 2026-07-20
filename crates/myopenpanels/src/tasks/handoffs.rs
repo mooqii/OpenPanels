@@ -592,13 +592,24 @@ fn handoff_directory(paths: &MyOpenPanelsPaths, handoff_id: &str) -> std::path::
 }
 
 fn control_path(paths: &MyOpenPanelsPaths, handoff_id: &str) -> Result<std::path::PathBuf, CliError> {
-    if crate::paths::sanitize_path_part(handoff_id) != handoff_id {
+    if !is_valid_handoff_id(handoff_id) {
         return Err(CliError::with_code(
             "task_handoff_not_found",
             "Task Handoff id is invalid.",
         ));
     }
     Ok(handoff_directory(paths, handoff_id).join("control.json"))
+}
+
+fn is_valid_handoff_id(handoff_id: &str) -> bool {
+    handoff_id
+        .strip_prefix("task-handoff:")
+        .is_some_and(|suffix| {
+            suffix.len() == 16
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
 }
 
 fn read_handoff_control(
@@ -677,5 +688,17 @@ fn remove_handoff_directory(
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(to_cli_error(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_valid_handoff_id;
+
+    #[test]
+    fn handoff_ids_allow_the_colon_used_by_generated_ids() {
+        assert!(is_valid_handoff_id("task-handoff:AbCdEf0123-_xYz9"));
+        assert!(!is_valid_handoff_id("task-handoff-AbCdEf0123-_xYz9"));
+        assert!(!is_valid_handoff_id("task-handoff:../../escape"));
     }
 }

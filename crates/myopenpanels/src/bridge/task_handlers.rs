@@ -296,8 +296,7 @@ pub(crate) fn prepare_execution_bundle(
     let output_contract = output_contract(handler, workspace);
     let mut hash = Sha256::new();
     hash.update(handler.key.as_bytes());
-    let workspace_prefix = workspace.display().to_string();
-    let stable_instructions = instructions.replace(&workspace_prefix, "<execution-workspace>");
+    let stable_instructions = stabilize_workspace_text(&instructions, workspace);
     hash.update(stable_instructions.as_bytes());
     hash.update(serde_json::to_vec(&execution_unit).map_err(to_cli_error)?);
     hash.update(serde_json::to_vec(&objective).map_err(to_cli_error)?);
@@ -305,10 +304,7 @@ pub(crate) fn prepare_execution_bundle(
         hash.update(file.relative_path.as_bytes());
         let bytes = fs::read(&file.absolute_path).map_err(to_cli_error)?;
         let stable_bytes = std::str::from_utf8(&bytes)
-            .map(|text| {
-                text.replace(&workspace_prefix, "<execution-workspace>")
-                    .into_bytes()
-            })
+            .map(|text| stabilize_workspace_text(text, workspace).into_bytes())
             .unwrap_or(bytes);
         hash.update(Sha256::digest(stable_bytes));
     }
@@ -345,6 +341,23 @@ pub(crate) fn prepare_execution_bundle(
             output_contract,
         },
     })
+}
+
+fn stabilize_workspace_text(text: &str, workspace: &Path) -> String {
+    const TOKEN: &str = "<execution-workspace>";
+    let native = workspace.display().to_string();
+    let mut variants = vec![native.clone(), native.replace('\\', "/")];
+    for path in variants.clone() {
+        if let Ok(encoded) = serde_json::to_string(&path) {
+            variants.push(encoded[1..encoded.len() - 1].to_owned());
+        }
+    }
+    variants.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    variants.dedup();
+    variants
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .fold(text.to_owned(), |stable, value| stable.replace(&value, TOKEN))
 }
 
 pub(crate) fn prepare_task_output_plan(
@@ -653,6 +666,21 @@ mod task_handler_registry_tests {
             "unknown.run",
             "content.read"
         ));
+    }
+
+    #[test]
+    fn workspace_text_stabilization_handles_windows_json_paths() {
+        let workspace = Path::new(r"C:\Users\runner\automatic-workspace");
+        let raw = workspace.display().to_string();
+        let escaped = serde_json::to_string(&raw).unwrap();
+        let text = format!(r#"raw={raw}; json={{"filePath":{escaped}}}"#);
+
+        let stable = stabilize_workspace_text(&text, workspace);
+
+        assert_eq!(
+            stable,
+            r#"raw=<execution-workspace>; json={"filePath":"<execution-workspace>"}"#
+        );
     }
 
     #[test]

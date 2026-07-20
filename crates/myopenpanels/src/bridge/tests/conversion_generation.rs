@@ -142,7 +142,10 @@
             target["target"]["id"].as_str().unwrap(),
         )
         .expect("claim");
-        let command = r#"mkdir -p outputs && printf '# Automatic Runtime\n' > outputs/source.md && printf '%s' '{"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#;
+        #[cfg(unix)]
+        let command = r#"printf '# Automatic Runtime\n' > outputs/source.md && printf '%s' '{"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#;
+        #[cfg(windows)]
+        let command = r#"> outputs\source.md echo # Automatic Runtime && > execution-result.json echo {"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}"#;
         let result = run_task_command(
             &paths,
             command,
@@ -169,8 +172,9 @@
             result["runtimeFinalization"]["result"]["runtimeFinalization"]["phase"],
             "completed"
         );
+        let markdown = crate::wiki::read_markdown(&paths, document_id).unwrap();
         assert_eq!(
-            crate::wiki::read_markdown(&paths, document_id).unwrap()["markdown"],
+            markdown["markdown"].as_str().unwrap().replace("\r\n", "\n"),
             "# Automatic Runtime\n"
         );
     }
