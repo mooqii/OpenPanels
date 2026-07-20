@@ -145,7 +145,7 @@
         #[cfg(unix)]
         let command = r#"printf '# Automatic Runtime\n' > outputs/source.md && printf '%s' '{"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#;
         #[cfg(windows)]
-        let command = r#"> outputs\source.md echo # Automatic Runtime && > execution-result.json echo {"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}"#;
+        let command = r#"> outputs\source.md echo # Automatic Runtime && > execution-result.json echo {^"schemaVersion^":2,^"outcome^":^"converted^",^"summary^":^"Converted automatically.^",^"artifacts^":[{^"role^":^"source-markdown^",^"relativePath^":^"outputs/source.md^"}]}"#;
         let result = run_task_command(
             &paths,
             command,
