@@ -143,12 +143,22 @@
         )
         .expect("claim");
         #[cfg(unix)]
-        let command = r#"printf '# Automatic Runtime\n' > outputs/source.md && printf '%s' '{"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#;
+        let command = r#"printf '# Automatic Runtime\n' > outputs/source.md && printf '%s' '{"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#.to_owned();
         #[cfg(windows)]
-        let command = r#"> outputs\source.md echo # Automatic Runtime && > execution-result.json echo {^"schemaVersion^":2,^"outcome^":^"converted^",^"summary^":^"Converted automatically.^",^"artifacts^":[{^"role^":^"source-markdown^",^"relativePath^":^"outputs/source.md^"}]}"#;
+        let command = {
+            use base64::Engine as _;
+
+            let script = r##"[IO.File]::WriteAllText('outputs/source.md', "# Automatic Runtime`n"); [IO.File]::WriteAllText('execution-result.json', '{"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}')"##;
+            let utf16 = script
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>();
+            let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+            format!("powershell.exe -NoProfile -NonInteractive -EncodedCommand {encoded}")
+        };
         let result = run_task_command(
             &paths,
-            command,
+            &command,
             10_000,
             &claim["task"],
             target["target"]["id"].as_str().unwrap(),
