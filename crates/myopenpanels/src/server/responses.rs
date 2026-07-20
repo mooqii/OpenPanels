@@ -121,10 +121,15 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "panel_not_found"
             | "project_not_found"
             | "task_not_found"
+            | "workflow_run_not_found"
             | "target_not_found"
             | "model_gateway_connection_not_found"
             | "writing_skill_not_found"
             | "writing_refinement_skill_not_found"
+            | "publishing_skill_not_found"
+            | "publishing_release_not_found"
+            | "publishing_attempt_not_found"
+            | "publishing_source_not_found"
             | "writing_skill_file_not_found"
             | "skill_not_found"
             | "device_skill_not_found"
@@ -139,6 +144,7 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "invalid_task_transition"
             | "writing_skill_name_conflict"
             | "skill_name_conflict"
+            | "publishing_unknown_unacknowledged"
             | "skill_reserved_name"
             | "skill_content_changed"
             | "content_conflict",
@@ -148,6 +154,7 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
         Some("broker_unavailable") => StatusCode::SERVICE_UNAVAILABLE,
         Some(
             "invalid_output"
+            | "publishing_snapshot_corrupt"
             | "invalid_content_path"
             | "invalid_content_resource"
             | "skill_file_invalid"
@@ -169,6 +176,9 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "writing_skill_name_too_long"
             | "invalid_skill_module"
             | "invalid_skill_package"
+            | "invalid_publishing_request"
+            | "publishing_source_incomplete"
+            | "invalid_publishing_phase"
             | "skill_source_ambiguous"
             | "unsupported_skill_source",
         ) => StatusCode::BAD_REQUEST,

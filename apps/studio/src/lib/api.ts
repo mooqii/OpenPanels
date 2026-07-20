@@ -135,6 +135,22 @@ export function typesettingRevisionFromAppState(appState: AppState): number {
   )
 }
 
+export function publishingStateFromAppState(
+  appState: AppState
+): PublishingState {
+  const state = appState.panels.find(
+    ({ panel }) => panel.kind === "publishing"
+  )?.state
+  return normalizePublishingState(state)
+}
+
+export function publishingRevisionFromAppState(appState: AppState): number {
+  return (
+    appState.panels.find(({ panel }) => panel.kind === "publishing")
+      ?.revision ?? 0
+  )
+}
+
 export function emptyTypesettingState(): TypesettingState {
   return {
     schemaVersion: 1,
@@ -143,15 +159,34 @@ export function emptyTypesettingState(): TypesettingState {
 }
 
 export function emptyPublishingState(): PublishingState {
-  return { schemaVersion: 1 }
+  return {
+    releases: [],
+    schemaVersion: 1,
+    selectedPublicationId: null,
+    selectedSkillIds: { xiaohongshu: "publishing-xiaohongshu" },
+  }
 }
 
 export function isPublishingState(state: unknown): state is PublishingState {
   return (
     typeof state === "object" &&
     state !== null &&
-    (state as { schemaVersion?: unknown }).schemaVersion === 1
+    (state as { schemaVersion?: unknown }).schemaVersion === 1 &&
+    Array.isArray((state as { releases?: unknown }).releases) &&
+    typeof (state as PublishingState).selectedSkillIds?.xiaohongshu === "string"
   )
+}
+
+function normalizePublishingState(state: unknown): PublishingState {
+  if (isPublishingState(state)) return state
+  if (
+    typeof state === "object" &&
+    state !== null &&
+    (state as { schemaVersion?: unknown }).schemaVersion === 1
+  ) {
+    return emptyPublishingState()
+  }
+  return emptyPublishingState()
 }
 
 export function isTypesettingState(state: unknown): state is TypesettingState {

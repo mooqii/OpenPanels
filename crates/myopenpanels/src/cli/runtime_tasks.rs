@@ -25,25 +25,70 @@ fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             let result = with_task_actions(tasks::inspect_task(&paths, task_id)?, false);
             write_result(parsed, stdout, &result, task_id)
         }
-        Some("scope-read") => {
+        Some("handoff-start") => {
             let paths = parsed_current_paths(parsed)?;
             let scope = task_execution_scope(parsed)?;
-            let result = with_task_scope_actions(tasks::read_task_scope(&paths, &scope)?, None);
+            let result = tasks::start_task_handoff(&paths, &scope)?;
             let text = result["scopeState"].as_str().unwrap_or("unknown");
             write_result(parsed, stdout, &result, text)
         }
-        Some("scope-claim") => {
+        Some("handoff-exec") => {
             let paths = parsed_current_paths(parsed)?;
-            let scope = task_execution_scope(parsed)?;
-            let target_id = required_flag(parsed, "target-id")?;
-            let result = with_task_scope_actions(
-                tasks::claim_task_scope(&paths, &scope, target_id)?,
-                Some(target_id),
-            );
-            let text = result["task"]["id"]
-                .as_str()
-                .unwrap_or_else(|| result["scopeState"].as_str().unwrap_or("unknown"));
+            let handoff_id = required_flag(parsed, "handoff-id")?;
+            let command = serde_json::from_str::<Vec<String>>(required_flag(
+                parsed,
+                "command-json",
+            )?)
+            .map_err(|error| CliError::with_code("invalid_argument", error.to_string()))?;
+            let result = tasks::execute_task_handoff_command(
+                &paths,
+                handoff_id,
+                &command,
+            )?;
+            write_result(parsed, stdout, &result, result["commandIntent"].as_str().unwrap_or("Task Handoff command ran"))
+        }
+        Some("handoff-heartbeat") => {
+            let paths = parsed_current_paths(parsed)?;
+            let handoff_id = required_flag(parsed, "handoff-id")?;
+            let result = tasks::heartbeat_task_handoff(&paths, handoff_id)?;
+            write_result(parsed, stdout, &result, &format!("Heartbeat {handoff_id}"))
+        }
+        Some("handoff-complete") => {
+            let paths = parsed_current_paths(parsed)?;
+            let handoff_id = required_flag(parsed, "handoff-id")?;
+            let result = tasks::complete_task_handoff(&paths, handoff_id)?;
+            let text = result["scopeState"].as_str().unwrap_or("unknown");
             write_result(parsed, stdout, &result, text)
+        }
+        Some("handoff-fail") => {
+            let paths = parsed_current_paths(parsed)?;
+            let handoff_id = required_flag(parsed, "handoff-id")?;
+            let failure_class = string_flag(parsed, "failure-class")
+                .map(|value| {
+                    tasks::TaskFailureClass::parse(value).ok_or_else(|| {
+                        CliError::with_code(
+                            "invalid_argument",
+                            "--failure-class must be retryable_channel, retryable_output, or terminal_task.",
+                        )
+                        .with_param("--failure-class")
+                    })
+                })
+                .transpose()?
+                .unwrap_or(tasks::TaskFailureClass::RetryableChannel);
+            let result = tasks::fail_task_handoff(
+                &paths,
+                handoff_id,
+                required_flag(parsed, "message")?,
+                failure_class,
+            )?;
+            let text = result["scopeState"].as_str().unwrap_or("unknown");
+            write_result(parsed, stdout, &result, text)
+        }
+        Some("handoff-stop") => {
+            let paths = parsed_current_paths(parsed)?;
+            let handoff_id = required_flag(parsed, "handoff-id")?;
+            let result = tasks::stop_task_handoff(&paths, handoff_id)?;
+            write_result(parsed, stdout, &result, &format!("Stopped {handoff_id}"))
         }
         Some("claim") => {
             let paths = parsed_current_paths(parsed)?;
@@ -141,7 +186,7 @@ fn run_tasks_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             write_result(parsed, stdout, &result, &format!("{count} attempt(s)"))
         }
         _ => Err(CliError::new(
-            "Expected task subcommand: list, next, read, scope, claim, heartbeat, complete, fail, release, retry, cancel, archive, events, or attempts.",
+            "Expected task subcommand: list, next, read, handoff, claim, heartbeat, complete, fail, release, retry, cancel, archive, events, or attempts.",
         )),
     }
 }
@@ -178,20 +223,27 @@ fn task_execution_scope(parsed: &Invocation) -> Result<tasks::TaskExecutionScope
     }
 }
 
-fn run_workflows_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
+fn run_workflow_runs_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), CliError> {
     let paths = parsed_current_paths(parsed)?;
-    match parsed.positionals.get(1).map(String::as_str) {
+    match parsed.positionals.get(2).map(String::as_str) {
         Some("list") => {
-            let result = tasks::list_workflows(&paths)?;
-            let count = result["workflows"].as_array().map(Vec::len).unwrap_or(0);
-            write_result(parsed, stdout, &result, &format!("{count} workflow(s)"))
+            let result = tasks::list_workflow_runs(&paths)?;
+            let count = result["workflowRuns"].as_array().map(Vec::len).unwrap_or(0);
+            write_result(
+                parsed,
+                stdout,
+                &result,
+                &format!("{count} Workflow Run(s)"),
+            )
         }
         Some("read") => {
-            let workflow_id = required_flag(parsed, "workflow-id")?;
-            let result = tasks::read_workflow(&paths, workflow_id)?;
-            write_result(parsed, stdout, &result, workflow_id)
+            let workflow_run_id = required_flag(parsed, "workflow-run-id")?;
+            let result = tasks::read_workflow_run(&paths, workflow_run_id)?;
+            write_result(parsed, stdout, &result, workflow_run_id)
         }
-        _ => Err(CliError::new("Expected workflow subcommand: list or read.")),
+        _ => Err(CliError::new(
+            "Expected workflow run subcommand: list or read.",
+        )),
     }
 }
 

@@ -94,13 +94,22 @@ async fn api_save_panel_state(
     Json(body): Json<Value>,
 ) -> Response {
     let base_revision = body.get("baseRevision").and_then(Value::as_i64);
-    let panel_state = body.get("state").cloned().unwrap_or_else(|| body.clone());
+    let mut panel_state = body.get("state").cloned().unwrap_or_else(|| body.clone());
     let result = Storage::open(&state.paths).and_then(|storage| {
         let panel = storage.read_panel(&project_id, &panel_id)?.ok_or_else(|| {
             CliError::with_code("panel_not_found", format!("Panel not found: {panel_id}"))
         })?;
         if panel.kind == PanelKind::Typesetting {
             validate_typesetting_state(&panel_state)?;
+        }
+        if panel.kind == PanelKind::Publishing {
+            panel_state = crate::publishing::normalize_state(panel_state.clone());
+            if !crate::publishing::validate_state(&panel_state) {
+                return Err(CliError::with_code(
+                    "invalid_target",
+                    "Publishing state is malformed.",
+                ));
+            }
         }
         storage
             .write_panel_state_if_current(&project_id, &panel_id, &panel_state, base_revision)

@@ -21,7 +21,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removed_external_worker_routes_return_not_found() {
+    async fn removed_routes_return_not_found_and_workflow_run_route_is_available() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -51,6 +51,8 @@ mod tests {
             (Method::POST, "/api/tasks/legacy/complete"),
             (Method::POST, "/api/tasks/legacy/fail"),
             (Method::POST, "/api/tasks/legacy/release"),
+            (Method::GET, "/api/workflows"),
+            (Method::GET, "/api/workflows/workflow:legacy"),
         ] {
             let response = router
                 .clone()
@@ -67,6 +69,7 @@ mod tests {
         }
 
         let response = router
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/api/agent/targets")
@@ -76,6 +79,29 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::OK);
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow-runs")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow-runs/workflow-run:missing")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]

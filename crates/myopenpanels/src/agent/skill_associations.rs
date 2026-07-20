@@ -1,4 +1,9 @@
-const MANAGED_CUSTOM_MODULES: [&str; 3] = ["wiki-update", "writing", "writing-refinement"];
+const MANAGED_CUSTOM_MODULES: [&str; 4] = [
+    "wiki-update",
+    "writing",
+    "writing-refinement",
+    "publishing-xiaohongshu",
+];
 
 pub fn install_device_skill(
     paths: &MyOpenPanelsPaths,
@@ -216,7 +221,40 @@ fn clear_removed_skill_module_selections(paths: &MyOpenPanelsPaths, skill_id: &s
         "writing-refinement" => {
             clear_writing_skill_module_selections(paths, skill_id, false, true)?;
         }
+        "publishing-xiaohongshu" => clear_publishing_skill_selections(paths, skill_id)?,
         _ => {}
+    }
+    Ok(())
+}
+
+fn clear_publishing_skill_selections(
+    paths: &MyOpenPanelsPaths,
+    skill_id: &str,
+) -> Result<(), CliError> {
+    let storage = crate::storage::Storage::open(paths)?;
+    for project in storage.list_projects()? {
+        for panel_id in &project.panel_ids {
+            let Some(panel) = storage.read_panel(&project.id, panel_id)? else {
+                continue;
+            };
+            if panel.kind != crate::types::PanelKind::Publishing {
+                continue;
+            }
+            let Some(state) = storage.read_panel_state(&project.id, panel_id)? else {
+                continue;
+            };
+            if state
+                .pointer("/selectedSkillIds/xiaohongshu")
+                .and_then(Value::as_str)
+                != Some(skill_id)
+            {
+                continue;
+            }
+            let mut next = crate::publishing::normalize_state(state);
+            next["selectedSkillIds"]["xiaohongshu"] =
+                json!(crate::publishing::DEFAULT_XIAOHONGSHU_SKILL_ID);
+            storage.write_panel_state(&project.id, panel_id, &next)?;
+        }
     }
     Ok(())
 }

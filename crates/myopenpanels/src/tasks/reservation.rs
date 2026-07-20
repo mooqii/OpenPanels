@@ -260,6 +260,14 @@ fn verify_lease(
     Ok(lease)
 }
 
+pub(crate) fn verify_task_lease(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+    lease_token: &str,
+) -> Result<Value, CliError> {
+    verify_lease(paths, task_id, lease_token)
+}
+
 pub(crate) fn verify_task_write_access(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
@@ -315,7 +323,7 @@ pub(crate) fn cancel_tasks_for_resource(
     let tasks = {
         let mut statement = tx.prepare(
             r#"
-            SELECT DISTINCT t.id, t.workflow_id, t.status
+            SELECT DISTINCT t.id, t.workflow_run_id, t.status
             FROM tasks t
             LEFT JOIN task_inputs i ON i.task_id = t.id
             WHERE t.project_id = ?
@@ -341,7 +349,7 @@ pub(crate) fn cancel_tasks_for_resource(
     let reason =
         json!({ "code": reason_code, "resourceKind": resource_kind, "resourceId": resource_id });
     let mut cancelled = Vec::with_capacity(tasks.len());
-    for (task_id, workflow_id, previous_status) in tasks {
+    for (task_id, workflow_run_id, previous_status) in tasks {
         tx.execute(
             r#"UPDATE tasks SET status = 'cancelled', assigned_agent_id = NULL,
                lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL,
@@ -356,11 +364,11 @@ pub(crate) fn cancel_tasks_for_resource(
             params![now, reason.to_string(), task_id],
         ).map_err(to_cli_error)?;
         tx.execute(
-            "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'input_missing', ?, 'cancelled', ?, ?)",
-            params![task_id, workflow_id, previous_status, reason.to_string(), now],
+            "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'input_missing', ?, 'cancelled', ?, ?)",
+            params![task_id, workflow_run_id, previous_status, reason.to_string(), now],
         ).map_err(to_cli_error)?;
         propagate_prerequisite_failure(&tx, &task_id, "cancelled", &now)?;
-        refresh_workflow_status(&tx, &workflow_id, &now)?;
+        refresh_workflow_run_status(&tx, &workflow_run_id, &now)?;
         cancelled.push(task_id);
     }
     if !cancelled.is_empty() {
@@ -383,7 +391,7 @@ pub(crate) fn supersede_tasks_for_changed_resource(
     let now = crate::control::now_iso();
     let tasks = {
         let mut statement = tx.prepare(
-            r#"SELECT id, workflow_id, status FROM tasks
+            r#"SELECT id, workflow_run_id, status FROM tasks
                WHERE project_id = ? AND capability = 'wiki.ingestMarkdown'
                  AND json_extract(input_json, '$.documentId') = ?
                  AND status IN ('waiting', 'queued', 'failed', 'reserved', 'running', 'claimed', 'indexing')"#,
@@ -401,7 +409,7 @@ pub(crate) fn supersede_tasks_for_changed_resource(
     };
     let reason = json!({ "code": "content_conflict", "resourceId": resource_id });
     let mut superseded = Vec::new();
-    for (task_id, workflow_id, previous_status) in tasks {
+    for (task_id, workflow_run_id, previous_status) in tasks {
         tx.execute(
             r#"UPDATE tasks SET status = 'superseded', assigned_agent_id = NULL, lease_owner = NULL,
                lease_token_hash = NULL, lease_expires_at = NULL, last_heartbeat_at = NULL,
@@ -411,8 +419,8 @@ pub(crate) fn supersede_tasks_for_changed_resource(
         )
         .map_err(to_cli_error)?;
         tx.execute("UPDATE task_attempts SET status = 'cancelled', finished_at = ?, error_json = ? WHERE task_id = ? AND status = 'leased'", params![now, reason.to_string(), task_id]).map_err(to_cli_error)?;
-        tx.execute("INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'input_changed', ?, 'superseded', ?, ?)", params![task_id, workflow_id, previous_status, reason.to_string(), now]).map_err(to_cli_error)?;
-        refresh_workflow_status(&tx, &workflow_id, &now)?;
+        tx.execute("INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'input_changed', ?, 'superseded', ?, ?)", params![task_id, workflow_run_id, previous_status, reason.to_string(), now]).map_err(to_cli_error)?;
+        refresh_workflow_run_status(&tx, &workflow_run_id, &now)?;
         superseded.push(task_id);
     }
     if !superseded.is_empty() {
@@ -436,7 +444,7 @@ pub(crate) fn supersede_active_wiki_mutations(
     let tasks = {
         let mut statement = tx
             .prepare(
-                r#"SELECT id, workflow_id, status FROM tasks
+                r#"SELECT id, workflow_run_id, status FROM tasks
                    WHERE project_id = ? AND mutation_key = ?
                      AND status IN ('reserved', 'running', 'claimed', 'indexing')"#,
             )
@@ -454,7 +462,7 @@ pub(crate) fn supersede_active_wiki_mutations(
     };
     let reason = json!({ "code": "content_conflict", "mutationKey": mutation_key });
     let mut superseded = Vec::new();
-    for (task_id, workflow_id, previous_status) in tasks {
+    for (task_id, workflow_run_id, previous_status) in tasks {
         tx.execute(
             r#"UPDATE tasks SET status = 'superseded', assigned_agent_id = NULL,
                lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL,
@@ -470,11 +478,11 @@ pub(crate) fn supersede_active_wiki_mutations(
         .map_err(to_cli_error)?;
         crate::content::abandon_task_staging_in_transaction(&tx, &task_id, &now)?;
         tx.execute(
-            "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'content_conflict', ?, 'superseded', ?, ?)",
-            params![task_id, workflow_id, previous_status, reason.to_string(), now],
+            "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'content_conflict', ?, 'superseded', ?, ?)",
+            params![task_id, workflow_run_id, previous_status, reason.to_string(), now],
         )
         .map_err(to_cli_error)?;
-        refresh_workflow_status(&tx, &workflow_id, &now)?;
+        refresh_workflow_run_status(&tx, &workflow_run_id, &now)?;
         superseded.push(task_id);
     }
     if !superseded.is_empty() {
@@ -494,7 +502,7 @@ pub(crate) fn supersede_task_for_content_conflict(
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    let workflow_id = task["task"]["workflowId"]
+    let workflow_run_id = task["task"]["workflowRunId"]
         .as_str()
         .unwrap_or_default()
         .to_owned();
@@ -530,12 +538,12 @@ pub(crate) fn supersede_task_for_content_conflict(
     )
     .map_err(to_cli_error)?;
     tx.execute(
-        "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'input_changed', ?, 'superseded', ?, ?)",
-        params![task_id, workflow_id, previous_status, reason.to_string(), now],
+        "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'input_changed', ?, 'superseded', ?, ?)",
+        params![task_id, workflow_run_id, previous_status, reason.to_string(), now],
     )
     .map_err(to_cli_error)?;
     propagate_prerequisite_failure(&tx, task_id, "superseded", &now)?;
-    refresh_workflow_status(&tx, &workflow_id, &now)?;
+    refresh_workflow_run_status(&tx, &workflow_run_id, &now)?;
     crate::storage::record_scope(&tx, "tasks", Some(&project_id), None)?;
     tx.commit().map_err(to_cli_error)?;
     inspect_task_in_session(paths, &project_id, task_id)

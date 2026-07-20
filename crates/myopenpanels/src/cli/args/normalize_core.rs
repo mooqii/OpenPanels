@@ -47,13 +47,31 @@ fn normalize_command(
         RootCommand::Canvas(args) => normalize_canvas(args.command, flags),
         RootCommand::Wiki(args) => normalize_wiki(args.command, flags),
         RootCommand::Writing(args) => normalize_writing(args.command, flags),
+        RootCommand::Publishing(args) => match args.command {
+            PublishingCommand::Checkpoint { task_id, phase } => {
+                put(flags, "task-id", Some(task_id));
+                put(flags, "phase", Some(phase));
+                (
+                    vec!["publishing".into(), "checkpoint".into()],
+                    "publishing.checkpoint",
+                )
+            }
+        },
         RootCommand::Task(args) => normalize_task(args.command, flags),
         RootCommand::Workflow(args) => match args.command {
-            WorkflowCommand::List => (vec!["workflow".into(), "list".into()], "workflow.list"),
-            WorkflowCommand::Read { workflow_id } => {
-                put(flags, "workflow-id", Some(workflow_id));
-                (vec!["workflow".into(), "read".into()], "workflow.read")
-            }
+            WorkflowCommand::Run(args) => match args.command {
+                WorkflowRunCommand::List => (
+                    vec!["workflow".into(), "run".into(), "list".into()],
+                    "workflow.run.list",
+                ),
+                WorkflowRunCommand::Read { workflow_run_id } => {
+                    put(flags, "workflow-run-id", Some(workflow_run_id));
+                    (
+                        vec!["workflow".into(), "run".into(), "read".into()],
+                        "workflow.run.read",
+                    )
+                }
+            },
         },
         RootCommand::Operation(args) => normalize_operation(args.command, flags),
         RootCommand::Agent(args) => normalize_agent(args.command, flags),
@@ -231,4 +249,3 @@ fn normalize_canvas(
         },
     }
 }
-

@@ -116,7 +116,7 @@
         let created = crate::writing::create_refinement_request(&paths, "House Style")
             .expect("refinement request");
         let mut task = created["task"].clone();
-        task["workflowId"] = json!("workflow:noise");
+        task["workflowRunId"] = json!("workflow:noise");
         task["executionGeneration"] = json!(23);
         let workspace = temp.path().join("execution");
         fs::create_dir_all(&workspace).expect("workspace");
@@ -132,7 +132,9 @@
         assert!(!prompt.contains("appliesTo: writing"));
         assert!(prompt.contains("# Raw style"));
         assert!(prompt.contains("# Generated style"));
-        assert!(prompt.contains("writing skill install --task-id"));
+        assert!(!prompt.contains("writing skill install --task-id"));
+        assert!(prompt.contains("outputs/SKILL.md"));
+        assert!(prompt.contains("\"schemaVersion\": 2"));
         assert!(!prompt.contains("private/wiki-page.md"));
         assert!(!prompt.contains("Must not be exposed"));
         assert!(!prompt.contains("workflow:noise"));

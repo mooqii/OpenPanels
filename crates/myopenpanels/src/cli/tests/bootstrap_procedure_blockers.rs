@@ -1,5 +1,5 @@
 #[test]
-fn workflow_bootstrap_reports_selection_blockers_and_structured_fallbacks() {
+fn procedure_bootstrap_reports_selection_blockers_and_structured_fallbacks() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -19,13 +19,13 @@ fn workflow_bootstrap_reports_selection_blockers_and_structured_fallbacks() {
     let mut edit = vec![
         "agent",
         "bootstrap",
-        "--workflow",
+        "--procedure",
         "panel.canvas.image.edit",
     ];
     edit.extend(base);
     let (code, stdout, stderr) = run(&edit);
     assert_eq!(code, 0, "{stderr}{stdout}");
-    let payload = serde_json::from_str::<Value>(&stdout).expect("blocked workflow");
+    let payload = serde_json::from_str::<Value>(&stdout).expect("blocked procedure");
     assert_eq!(payload["readiness"], "blocked");
     assert_eq!(payload["blockers"][0]["code"], "active_panel_required");
     assert_eq!(payload["panel"]["selection"]["value"], Value::Null);
@@ -55,12 +55,12 @@ fn workflow_bootstrap_reports_selection_blockers_and_structured_fallbacks() {
     );
     assert_eq!(payload["panel"]["selection"]["value"], Value::Null);
 
-    let mut unknown = vec!["agent", "bootstrap", "--workflow", "panel.unknown"];
+    let mut unknown = vec!["agent", "bootstrap", "--procedure", "panel.unknown"];
     unknown.extend(base);
     let (code, stdout, stderr) = run_raw(&unknown);
     assert_eq!(code, 1, "{stdout}{stderr}");
-    let error = serde_json::from_str::<Value>(&stderr).expect("unknown workflow error");
-    assert_eq!(error["error"]["subtype"], "agent_workflow_not_found");
+    let error = serde_json::from_str::<Value>(&stderr).expect("unknown procedure error");
+    assert_eq!(error["error"]["subtype"], "agent_procedure_not_found");
     assert_eq!(error["actions"]["suggested"][0]["intent"], "agent.bootstrap.read");
     assert_eq!(
         &error["actions"]["suggested"][0]["argv"]
@@ -69,12 +69,23 @@ fn workflow_bootstrap_reports_selection_blockers_and_structured_fallbacks() {
         &[json!("agent"), json!("bootstrap")]
     );
 
-    let mut handoff = vec!["agent", "bootstrap", "--workflow", "task.scope.execute"];
+    let mut handoff = vec!["agent", "bootstrap", "--procedure", "task.scope.execute"];
     handoff.extend(base);
     let (code, stdout, stderr) = run_raw(&handoff);
     assert_eq!(code, 1, "{stdout}{stderr}");
     assert_eq!(
         serde_json::from_str::<Value>(&stderr).expect("handoff error")["error"]["subtype"],
-        "agent_workflow_not_bootstrappable"
+        "task_handoff_required"
     );
+
+    let mut removed_flag = vec![
+        "agent",
+        "bootstrap",
+        "--workflow",
+        "panel.canvas.image.edit",
+    ];
+    removed_flag.extend(base);
+    let (code, stdout, stderr) = run_raw(&removed_flag);
+    assert_ne!(code, 0, "{stdout}{stderr}");
+    assert!(stderr.contains("--workflow"), "{stderr}");
 }

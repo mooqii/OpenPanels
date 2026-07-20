@@ -2,7 +2,7 @@
 
 Use this reference when selected Canvas content is relevant to the task.
 
-Workflow:
+Execution Steps:
 
 1. Read selection metadata from the CLI.
 2. Use returned shapes, bounds, shape ids, and image metadata. Do not infer

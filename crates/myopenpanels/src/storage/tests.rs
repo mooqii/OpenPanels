@@ -210,7 +210,7 @@ mod tests {
             .expect("migration rows")
             .collect::<Result<_, _>>()
             .expect("migrations");
-        assert_eq!(migrations, ["0001_initial", "0002_remove_poll_targets"]);
+        assert_eq!(migrations, ["0001_initial"]);
 
         for removed in [
             "task_deliveries",
@@ -279,7 +279,8 @@ mod tests {
             .expect("task schema");
         assert!(task_schema.contains("max_attempts INTEGER NOT NULL DEFAULT 8"));
         assert!(task_schema.contains("required_protocol_version = 3"));
-        assert!(task_schema.contains("dispatch_mode IN ('auto', 'prefer')"));
+        assert!(task_schema.contains("dispatch_mode IN ('auto', 'prefer', 'manual')"));
+        assert!(!task_schema.contains("dispatch_mode_v2"));
 
         let foreign_key_errors: i64 = storage
             .connection
@@ -288,149 +289,6 @@ mod tests {
             })
             .expect("foreign key check");
         assert_eq!(foreign_key_errors, 0);
-    }
-
-    #[test]
-    fn poll_target_migration_cancels_active_work_and_preserves_audit_history() {
-        let temp = tempdir().expect("tempdir");
-        let paths = paths_for(temp.path().join(".myopenpanels"));
-        fs::create_dir_all(&paths.storage_dir).expect("storage dir");
-        let database_path = paths.storage_dir.join(DATABASE_FILE_NAME);
-        let mut connection = Connection::open(&database_path).expect("legacy database");
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .expect("foreign keys");
-        connection
-            .execute_batch(SCHEMA_MIGRATIONS_SQL)
-            .expect("migration table");
-        let initial = &migrations()[0];
-        let tx = connection.transaction().expect("initial transaction");
-        migration_0001(&tx).expect("initial schema");
-        tx.execute(
-            "INSERT INTO schema_migrations (id, description, checksum, applied_at) VALUES (?, ?, ?, ?)",
-            params![
-                initial.id,
-                initial.description,
-                migration_checksum(initial),
-                "2026-01-01T00:00:00Z"
-            ],
-        )
-        .expect("initial migration record");
-        tx.commit().expect("initial migration commit");
-        connection
-            .execute_batch(
-                r#"
-                INSERT INTO projects VALUES (
-                  'project:legacy', 'Legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
-                );
-                INSERT INTO panels VALUES (
-                  'project:legacy', 'panel:wiki', 'wiki', 'Wiki',
-                  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
-                );
-                INSERT INTO workflows (
-                  id, project_id, panel_id, type, status, source_json, created_at, updated_at
-                ) VALUES (
-                  'workflow:legacy', 'project:legacy', 'panel:wiki', 'wiki_update', 'active', '{}',
-                  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
-                );
-                INSERT INTO agent_targets (
-                  id, project_id, name, host, transport, capabilities_json, priority,
-                  status, token_hash, last_heartbeat_at, created_at, updated_at
-                ) VALUES (
-                  'agent-target:poll', 'project:legacy', 'Legacy Poll', 'remote', 'poll', '["*"]',
-                  0, 'online', 'secret', '2026-01-01T00:00:00Z',
-                  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
-                );
-                INSERT INTO tasks (
-                  id, project_id, panel_id, queue, type, capability, status, target_ref,
-                  input_json, source_json, attempts, assigned_agent_id, lease_owner,
-                  lease_token_hash, lease_expires_at, last_heartbeat_at, created_at,
-                  updated_at, workflow_id, execution_generation
-                ) VALUES (
-                  'task:legacy', 'project:legacy', 'panel:wiki', 'wiki', 'maintain_wiki',
-                  'wiki.maintain', 'running', 'wiki', '{}', '{}', 1, 'agent-target:poll',
-                  'agent-target:poll', 'lease', '2026-01-01T00:15:00Z',
-                  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
-                  '2026-01-01T00:00:00Z', 'workflow:legacy', 1
-                );
-                INSERT INTO task_attempts (
-                  id, task_id, attempt_number, execution_generation, agent_target_id,
-                  status, started_at
-                ) VALUES (
-                  'attempt:legacy', 'task:legacy', 1, 1, 'agent-target:poll',
-                  'leased', '2026-01-01T00:00:00Z'
-                );
-                INSERT INTO agent_routes VALUES (
-                  'project:legacy', 'wiki.maintain', 'agent-target:poll', 0,
-                  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
-                );
-                "#,
-            )
-            .expect("legacy poll fixture");
-        drop(connection);
-        let legacy_secrets = paths.context_dir.join("agent-target-secrets");
-        fs::create_dir_all(&legacy_secrets).expect("legacy secrets dir");
-        fs::write(legacy_secrets.join("agent-target-poll.token"), "secret\n")
-            .expect("legacy secret");
-
-        let storage = Storage::open(&paths).expect("upgrade storage");
-        assert!(!legacy_secrets.exists());
-        let (status, assigned_agent_id, lease_owner, terminal_reason): (
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-        ) = storage
-            .connection
-            .query_row(
-                "SELECT status, assigned_agent_id, lease_owner, terminal_reason_json FROM tasks WHERE id = 'task:legacy'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .expect("migrated task");
-        assert_eq!(status, "cancelled");
-        assert!(assigned_agent_id.is_none());
-        assert!(lease_owner.is_none());
-        assert_eq!(
-            serde_json::from_str::<Value>(&terminal_reason).expect("terminal reason")["code"],
-            "poll_transport_removed"
-        );
-        let attempt_status: String = storage
-            .connection
-            .query_row(
-                "SELECT status FROM task_attempts WHERE id = 'attempt:legacy'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("attempt status");
-        assert_eq!(attempt_status, "cancelled");
-        let workflow_status: String = storage
-            .connection
-            .query_row(
-                "SELECT status FROM workflows WHERE id = 'workflow:legacy'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("workflow status");
-        assert_eq!(workflow_status, "cancelled");
-        let poll_artifacts: i64 = storage
-            .connection
-            .query_row(
-                "SELECT (SELECT COUNT(*) FROM agent_targets WHERE transport = 'poll') + (SELECT COUNT(*) FROM agent_routes WHERE agent_target_id = 'agent-target:poll')",
-                [],
-                |row| row.get(0),
-            )
-            .expect("poll artifacts");
-        assert_eq!(poll_artifacts, 0);
-        let audit_events: i64 = storage
-            .connection
-            .query_row(
-                "SELECT COUNT(*) FROM task_events WHERE task_id = 'task:legacy' AND event_type = 'poll_transport_removed' AND json_extract(reason_json, '$.code') = 'poll_transport_removed'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("audit event");
-        assert_eq!(audit_events, 1);
     }
 
     #[test]

@@ -4,8 +4,8 @@ description: Use before reading, generating, editing, importing, or maintaining 
 ---
 
 Use this skill as the required operating contract for an MyOpenPanels Wiki panel.
-It defines how to select the right workflow and use the panel reliably. It does
-not define how an authoring workflow structures or writes generated Wiki pages.
+It defines how to select the right Procedure and use the panel reliably. It does
+not define how an authoring Skill structures or writes generated Wiki pages.
 
 Intent routing:
 

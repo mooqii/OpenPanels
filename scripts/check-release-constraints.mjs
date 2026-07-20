@@ -91,6 +91,9 @@ for (const required of [
   "writing",
   "open or launch MyOpenPanels",
   "打开面板",
+  "--procedure",
+  "Task Handoff",
+  "Workflow Runs",
 ]) {
   assert(
     entrySkill.includes(required),
@@ -117,10 +120,11 @@ for (const forbidden of [
   "minCliVersion",
   "Do not use package-manager",
   "Node-based fallback",
+  "--workflow",
 ]) {
   assert(
     !entrySkill.includes(forbidden),
-    `MyOpenPanels entry skill must not embed panel workflow detail: ${forbidden}.`
+    `MyOpenPanels entry skill must not embed Panel Procedure detail: ${forbidden}.`
   )
 }
 assert(
@@ -130,8 +134,8 @@ assert(
 
 const builtinRegistry = readJson("agent-resources/builtin-skill-registry.json")
 assert(
-  builtinRegistry.schemaVersion === 2,
-  "Built-in Skill registry must use schemaVersion 2."
+  builtinRegistry.schemaVersion === 3,
+  "Built-in Skill registry must use schemaVersion 3."
 )
 const forbiddenPortableSkillText = [
   "myopenpanels",
@@ -148,7 +152,9 @@ const forbiddenPortableSkillText = [
   "bridge-managed",
 ]
 const builtinSkillIds = new Set()
-const agentWorkflowKeys = new Set()
+const agentRouteKeys = new Set()
+let agentProcedureCount = 0
+let taskHandoffCount = 0
 for (const [group, registrations] of [
   ["system-skills", builtinRegistry.systemSkills],
   ["preset-skills", builtinRegistry.presetSkills],
@@ -206,18 +212,27 @@ for (const [group, registrations] of [
       }
     } else {
       assert(
-        Array.isArray(registration.workflows),
-        `System Skill must declare Workflows: ${registration.id}`
+        !("workflows" in registration),
+        `System Skill must not declare legacy Workflows: ${registration.id}`
       )
-      for (const workflow of registration.workflows) {
+      assert(
+        Array.isArray(registration.procedures),
+        `System Skill must declare Procedures: ${registration.id}`
+      )
+      assert(
+        Array.isArray(registration.taskHandoffs),
+        `System Skill must declare Task Handoffs: ${registration.id}`
+      )
+      for (const procedure of registration.procedures) {
         assert(
-          !agentWorkflowKeys.has(workflow.key),
-          `Duplicate Agent Workflow key: ${workflow.key}`
+          !agentRouteKeys.has(procedure.key),
+          `Duplicate Agent Procedure key: ${procedure.key}`
         )
-        agentWorkflowKeys.add(workflow.key)
+        agentRouteKeys.add(procedure.key)
+        agentProcedureCount += 1
         assert(
-          ["bootstrap", "handoff-only"].includes(workflow.executionMode),
-          `Invalid Agent Workflow executionMode: ${workflow.key}`
+          !("executionMode" in procedure),
+          `Agent Procedure must not declare executionMode: ${procedure.key}`
         )
         assert(
           [
@@ -226,21 +241,59 @@ for (const [group, registrations] of [
             "optional-detail",
             "active-detail",
             "explicit-detail",
-          ].includes(workflow.selectionPolicy),
-          `Invalid Agent Workflow selectionPolicy: ${workflow.key}`
+          ].includes(procedure.selectionPolicy),
+          `Invalid Agent Procedure selectionPolicy: ${procedure.key}`
         )
         assert(
-          existsSync(new URL(`${packagePath}/${workflow.reference}`, ROOT)),
-          `Agent Workflow reference is missing: ${workflow.key}`
+          Array.isArray(procedure.commandIntents) &&
+            procedure.commandIntents.length > 0,
+          `Agent Procedure command intents are missing: ${procedure.key}`
         )
         assert(
-          entrySkill.includes(`\`${workflow.key}\``),
-          `Entry Skill is missing Agent Workflow route: ${workflow.key}`
+          existsSync(new URL(`${packagePath}/${procedure.reference}`, ROOT)),
+          `Agent Procedure reference is missing: ${procedure.key}`
+        )
+        assert(
+          entrySkill.includes(`\`${procedure.key}\``),
+          `Entry Skill is missing Agent Procedure route: ${procedure.key}`
+        )
+      }
+      for (const handoff of registration.taskHandoffs) {
+        assert(
+          !agentRouteKeys.has(handoff.key),
+          `Duplicate Agent route key: ${handoff.key}`
+        )
+        agentRouteKeys.add(handoff.key)
+        taskHandoffCount += 1
+        assert(
+          !("executionMode" in handoff || "selectionPolicy" in handoff),
+          `Task Handoff must not declare Procedure fields: ${handoff.key}`
+        )
+        assert(
+          Array.isArray(handoff.commandIntents) &&
+            handoff.commandIntents.length > 0,
+          `Task Handoff command intents are missing: ${handoff.key}`
+        )
+        assert(
+          existsSync(new URL(`${packagePath}/${handoff.reference}`, ROOT)),
+          `Task Handoff reference is missing: ${handoff.key}`
+        )
+        assert(
+          entrySkill.includes(`\`${handoff.key}\``),
+          `Entry Skill is missing Task Handoff route: ${handoff.key}`
         )
       }
     }
   }
 }
+assert(
+  agentProcedureCount === 18,
+  `Expected 18 Agent Procedures; got ${agentProcedureCount}.`
+)
+assert(
+  taskHandoffCount === 5,
+  `Expected 5 Task Handoffs; got ${taskHandoffCount}.`
+)
 
 const manifest = {
   schemaVersion: 1,

@@ -33,6 +33,7 @@ enum RootCommand {
     Canvas(CanvasArgs),
     Wiki(WikiArgs),
     Writing(WritingArgs),
+    Publishing(PublishingArgs),
     Task(TaskArgs),
     Workflow(WorkflowArgs),
     Operation(OperationArgs),

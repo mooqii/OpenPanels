@@ -215,18 +215,44 @@ fn normalize_task(
             task_id(flags, args);
             ("read", "task.read")
         }
-        TaskCommand::Scope(args) => match args.command {
-            TaskScopeCommand::Read(selector) => {
+        TaskCommand::Handoff(args) => match args.command {
+            TaskHandoffCommand::Start(selector) => {
                 task_scope_selector(flags, selector);
-                ("scope-read", "task.scope.read")
+                ("handoff-start", "task.handoff.start")
             }
-            TaskScopeCommand::Claim {
-                selector,
-                target_id,
+            TaskHandoffCommand::Exec {
+                handoff_id,
+                command,
             } => {
-                task_scope_selector(flags, selector);
-                put(flags, "target-id", Some(target_id));
-                ("scope-claim", "task.scope.claim")
+                put(flags, "handoff-id", Some(handoff_id));
+                put(
+                    flags,
+                    "command-json",
+                    Some(serde_json::to_string(&command).expect("serialize handoff command")),
+                );
+                ("handoff-exec", "task.handoff.exec")
+            }
+            TaskHandoffCommand::Heartbeat { handoff_id } => {
+                put(flags, "handoff-id", Some(handoff_id));
+                ("handoff-heartbeat", "task.handoff.heartbeat")
+            }
+            TaskHandoffCommand::Complete { handoff_id } => {
+                put(flags, "handoff-id", Some(handoff_id));
+                ("handoff-complete", "task.handoff.complete")
+            }
+            TaskHandoffCommand::Fail {
+                handoff_id,
+                message,
+                failure_class,
+            } => {
+                put(flags, "handoff-id", Some(handoff_id));
+                put(flags, "message", Some(message));
+                put(flags, "failure-class", failure_class);
+                ("handoff-fail", "task.handoff.fail")
+            }
+            TaskHandoffCommand::Stop { handoff_id } => {
+                put(flags, "handoff-id", Some(handoff_id));
+                ("handoff-stop", "task.handoff.stop")
             }
         },
         TaskCommand::Claim { task, target_id } => {
@@ -331,8 +357,8 @@ fn normalize_agent(
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
     match command {
-        AgentCommand::Bootstrap { workflow } => {
-            put(flags, "workflow", workflow);
+        AgentCommand::Bootstrap { procedure } => {
+            put(flags, "procedure", procedure);
             (
                 vec!["agent".into(), "bootstrap".into()],
                 "agent.bootstrap.read",

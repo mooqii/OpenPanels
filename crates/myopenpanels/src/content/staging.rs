@@ -107,6 +107,13 @@ pub struct SkillReadRequest {
     pub skill_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishingCheckpointRequest {
+    pub task_id: String,
+    pub phase: String,
+}
+
 #[derive(Debug, Clone)]
 struct ExecutionContext {
     task_id: String,
@@ -114,7 +121,9 @@ struct ExecutionContext {
     staging_session_id: String,
     project_id: String,
     panel_id: String,
+    queue: String,
     task_type: String,
+    task_capability: String,
     generation: i64,
     input: Value,
     source: Value,
@@ -129,6 +138,29 @@ struct FileEntry {
 
 pub fn hash_secret(secret: &str) -> String {
     format!("{:x}", Sha256::digest(secret.as_bytes()))
+}
+
+pub fn authorize_agent_broker_capability(
+    paths: &MyOpenPanelsPaths,
+    execution_token: &str,
+    capability: &str,
+) -> Result<(), CliError> {
+    let context = authorize(paths, execution_token)?;
+    if crate::bridge::task_handler_allows_agent_broker_capability(
+        &context.queue,
+        &context.task_type,
+        &context.task_capability,
+        capability,
+    ) {
+        Ok(())
+    } else {
+        Err(CliError::with_code(
+            "task_handler_command_not_allowed",
+            format!(
+                "Task Handler does not allow Agent-side Broker capability {capability}."
+            ),
+        ))
+    }
 }
 
 pub fn create_execution_context_in_transaction(
@@ -479,6 +511,7 @@ pub fn prepare_operation(
                 "operationId": request.operation_id,
                 "fileName": sanitize_path_part(&request.file_name),
                 "baseContentVersion": operation.pointer("/target/baseContentVersion").cloned().unwrap_or(Value::Null),
+                "runtimeOutputPlanHash": operation.pointer("/input/runtimeOutputPlanHash").cloned().unwrap_or(Value::Null),
             }),
         },
         true,
@@ -545,6 +578,23 @@ pub fn begin_operation(
         &request.title,
         &request.document_format,
     )
+}
+
+pub fn publishing_checkpoint(
+    paths: &MyOpenPanelsPaths,
+    execution_token: &str,
+    request: &PublishingCheckpointRequest,
+) -> Result<Value, CliError> {
+    let context = authorize(paths, execution_token)?;
+    if context.task_id != request.task_id
+        || context.task_type != crate::publishing::XIAOHONGSHU_TASK_TYPE
+    {
+        return Err(CliError::with_code(
+            "execution_fenced",
+            "The execution token cannot checkpoint this Publishing Task.",
+        ));
+    }
+    crate::publishing::checkpoint_attempt_for_broker(paths, &request.task_id, &request.phase)
 }
 
 pub fn read_task_context(
@@ -616,7 +666,7 @@ pub fn prepare_skill(
         "SKILL.md",
         expected_id,
     )?;
-    let manifest = json!({
+    let mut manifest = json!({
         "schemaVersion": 2,
         "source": "custom",
         "originProjectId": context.project_id,
@@ -629,6 +679,13 @@ pub fn prepare_skill(
         },
         "createdAt": now_iso(),
     });
+    if let Some(output_plan_hash) = request
+        .manifest
+        .get("runtimeOutputPlanHash")
+        .and_then(Value::as_str)
+    {
+        manifest["runtimeOutputPlanHash"] = json!(output_plan_hash);
+    }
     let first = stage_file_internal(
         paths,
         execution_token,

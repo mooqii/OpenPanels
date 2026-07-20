@@ -1,5 +1,5 @@
 include!("agent/bootstrap.rs");
-include!("agent/workflows.rs");
+include!("agent/procedures.rs");
 include!("agent/skill_parsing.rs");
 include!("agent/skill_registry.rs");
 include!("agent/skills_context.rs");

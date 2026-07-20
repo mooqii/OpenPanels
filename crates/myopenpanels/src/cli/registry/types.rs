@@ -3,7 +3,7 @@ use crate::error::CliError;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const COMMAND_CATALOG_VERSION: u32 = 3;
+pub(crate) const COMMAND_CATALOG_VERSION: u32 = 5;
 const COMMAND_CATALOG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +23,7 @@ pub(crate) enum CommandGroup {
     Canvas,
     Wiki,
     Writing,
+    Publishing,
     Task,
     Workflow,
     Operation,
@@ -70,6 +71,7 @@ impl CommandId {
                 "canvas" => CommandGroup::Canvas,
                 "wiki" => CommandGroup::Wiki,
                 "writing" => CommandGroup::Writing,
+                "publishing" => CommandGroup::Publishing,
                 "task" => CommandGroup::Task,
                 "workflow" => CommandGroup::Workflow,
                 "operation" => CommandGroup::Operation,

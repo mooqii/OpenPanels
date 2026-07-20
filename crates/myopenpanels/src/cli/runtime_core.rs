@@ -297,9 +297,10 @@ fn run_parsed_cli(
         CommandGroup::Canvas => run_canvas_command(parsed, stdout),
         CommandGroup::Wiki => run_wiki_command(parsed, stdout),
         CommandGroup::Writing => run_writing_command(parsed, stdout),
+        CommandGroup::Publishing => run_publishing_command(parsed, stdout),
         CommandGroup::Operation => run_operation_command(parsed, stdout),
         CommandGroup::Task => run_tasks_command(parsed, stdout),
-        CommandGroup::Workflow => run_workflows_command(parsed, stdout),
+        CommandGroup::Workflow => run_workflow_runs_command(parsed, stdout),
         CommandGroup::InternalStudioServe => {
             let storage_dir =
                 redirect_deprecated_default_storage_dir(string_flag(parsed, "storage-dir"))?;

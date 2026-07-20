@@ -36,18 +36,18 @@ impl Storage {
                 "wikiSpaceId": task.get("wikiSpaceId"),
                 "agentSkillId": task.get("agentSkillId"),
             });
-            let workflow_id = task
-                .get("workflowId")
+            let workflow_run_id = task
+                .get("workflowRunId")
                 .and_then(Value::as_str)
                 .map(str::to_owned)
-                .unwrap_or_else(|| workflow_id_for_task(id));
-            insert_workflow_if_missing(
+                .unwrap_or_else(|| workflow_run_id_for_task(id));
+            insert_workflow_run_if_missing(
                 &tx,
-                &workflow_id,
+                &workflow_run_id,
                 project_id,
                 panel_id,
                 &format!("{queue}.{task_type}"),
-                task.get("sourceWorkflowId").and_then(Value::as_str),
+                task.get("sourceWorkflowRunId").and_then(Value::as_str),
                 &source,
                 &created_at,
             )?;
@@ -64,7 +64,7 @@ impl Storage {
                     INSERT INTO tasks (
                       id, project_id, panel_id, queue, type, capability, status, target_ref,
                       input_json, source_json, attempts, max_attempts, created_at, updated_at,
-                      workflow_id, idempotency_key, available_at, required_protocol_version,
+                      workflow_run_id, idempotency_key, available_at, required_protocol_version,
                       mutation_key, mutation_sequence
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
@@ -102,7 +102,7 @@ impl Storage {
                         task.get("maxAttempts").and_then(Value::as_i64).unwrap_or(8),
                         created_at,
                         updated_at,
-                        workflow_id,
+                        workflow_run_id,
                         task.get("idempotencyKey").and_then(Value::as_str),
                         task.get("availableAt")
                             .and_then(Value::as_str)
@@ -117,7 +117,7 @@ impl Storage {
                 insert_task_created_records(
                     &tx,
                     id,
-                    &workflow_id,
+                    &workflow_run_id,
                     project_id,
                     task.get("status")
                         .and_then(Value::as_str)
@@ -160,13 +160,13 @@ impl Storage {
         source: &Value,
     ) -> Result<Value, CliError> {
         let id = crate::ids::random_id("task");
-        let workflow_id = workflow_id_for_task(&id);
+        let workflow_run_id = workflow_run_id_for_task(&id);
         let now = crate::control::now_iso();
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
-        insert_workflow_if_missing(
+        insert_workflow_run_if_missing(
             &tx,
-            &workflow_id,
+            &workflow_run_id,
             project_id,
             panel_id,
             &format!("{queue}.{task_type}"),
@@ -176,11 +176,12 @@ impl Storage {
         )?;
         tx.execute(
             r#"
-            INSERT INTO tasks (
-              id, project_id, panel_id, queue, type, capability, status, target_ref,
-              input_json, source_json, attempts, max_attempts, created_at, updated_at,
-              workflow_id, available_at, required_protocol_version
-            ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, 8, ?, ?, ?, ?, ?)
+                INSERT INTO tasks (
+                  id, project_id, panel_id, queue, type, capability, status, target_ref,
+                  input_json, source_json, attempts, max_attempts, created_at, updated_at,
+                  workflow_run_id, idempotency_key, available_at, required_protocol_version,
+                  dispatch_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, 8, ?, ?, ?, NULL, ?, ?, 'auto')
             "#,
             params![
                 id,
@@ -194,7 +195,7 @@ impl Storage {
                 serde_json::to_string(source).map_err(to_cli_error)?,
                 now,
                 now,
-                workflow_id,
+                workflow_run_id,
                 now,
                 crate::content::EXECUTION_PROTOCOL_VERSION,
             ],
@@ -203,7 +204,7 @@ impl Storage {
         insert_task_created_records(
             &tx,
             &id,
-            &workflow_id,
+            &workflow_run_id,
             project_id,
             "queued",
             capability,
@@ -218,36 +219,36 @@ impl Storage {
             .ok_or_else(|| CliError::new(format!("Created task was not found: {id}")))
     }
 
-    pub(crate) fn ensure_workflow(
+    pub(crate) fn ensure_workflow_run(
         &self,
         project_id: &str,
         panel_id: &str,
-        workflow_id: &str,
-        workflow_type: &str,
+        workflow_run_id: &str,
+        definition_key: &str,
         status: &str,
         source: &Value,
     ) -> Result<(), CliError> {
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
         let now = crate::control::now_iso();
-        insert_workflow_if_missing(
+        insert_workflow_run_if_missing(
             &tx,
-            workflow_id,
+            workflow_run_id,
             project_id,
             panel_id,
-            workflow_type,
+            definition_key,
             None,
             source,
             &now,
         )?;
         tx.execute(
-            "UPDATE workflows SET type = ?, status = ?, source_json = ?, updated_at = ? WHERE id = ?",
+            "UPDATE workflow_runs SET definition_key = ?, status = ?, source_json = ?, updated_at = ? WHERE id = ?",
             params![
-                workflow_type,
+                definition_key,
                 status,
                 serde_json::to_string(source).map_err(to_cli_error)?,
                 now,
-                workflow_id
+                workflow_run_id
             ],
         )
         .map_err(to_cli_error)?;
@@ -266,12 +267,12 @@ impl Storage {
         }
         let now = crate::control::now_iso();
         let task_ids = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
-        let workflow_id = crate::ids::random_id("workflow");
+        let workflow_run_id = crate::ids::random_id("workflow-run");
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
-        insert_workflow_if_missing(
+        insert_workflow_run_if_missing(
             &tx,
-            &workflow_id,
+            &workflow_run_id,
             project_id,
             panel_id,
             tasks
@@ -288,8 +289,9 @@ impl Storage {
                 INSERT INTO tasks (
                   id, project_id, panel_id, queue, type, capability, status, target_ref,
                   input_json, source_json, attempts, max_attempts, created_at, updated_at,
-                  workflow_id, available_at, required_protocol_version
-                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, 8, ?, ?, ?, ?, ?)
+                  workflow_run_id, idempotency_key, available_at, required_protocol_version,
+                  dispatch_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
                 params![
                     id,
@@ -301,18 +303,21 @@ impl Storage {
                     &task.target_ref,
                     serde_json::to_string(&task.input).map_err(to_cli_error)?,
                     serde_json::to_string(&task.source).map_err(to_cli_error)?,
+                    task.max_attempts,
                     now,
                     now,
-                    workflow_id,
+                    workflow_run_id,
+                    task.idempotency_key,
                     now,
                     crate::content::EXECUTION_PROTOCOL_VERSION,
+                    &task.dispatch_mode,
                 ],
             )
             .map_err(to_cli_error)?;
             insert_task_created_records(
                 &tx,
                 id,
-                &workflow_id,
+                &workflow_run_id,
                 project_id,
                 "queued",
                 &task.capability,
@@ -358,7 +363,7 @@ impl Storage {
                   t.target_ref, t.created_at, t.updated_at, t.attempts, t.max_attempts,
                   lease_owner, lease_expires_at, last_heartbeat_at, retry_after,
                   t.capability, t.assigned_agent_id, t.result_json, t.error_json, t.completed_at,
-                  t.input_json, t.source_json, t.workflow_id, t.execution_generation,
+                  t.input_json, t.source_json, t.workflow_run_id, t.execution_generation,
                   t.available_at, t.archived_at, t.terminal_reason_json,
                   t.required_protocol_version, t.dispatch_mode,
                   t.requested_gateway_connection_id,
@@ -409,7 +414,7 @@ impl Storage {
                     .unwrap_or(Value::Null);
                 Ok(TaskRecord {
                     id: row.get(0)?,
-                    workflow_id: row.get(23)?,
+                    workflow_run_id: row.get(23)?,
                     queue: queue.clone(),
                     project_id: row.get(2)?,
                     panel_id: row.get(3)?,

@@ -27,7 +27,8 @@ fn execution_context(
         .query_row(
             r#"
         SELECT t.id, a.id, a.staging_session_id, t.project_id, t.panel_id,
-               t.type, a.execution_generation, t.input_json, t.source_json
+               t.queue, t.type, t.capability, a.execution_generation,
+               t.input_json, t.source_json
         FROM task_attempts a JOIN tasks t ON t.id = a.task_id
         JOIN task_staging_sessions ss ON ss.id = a.staging_session_id
         WHERE a.execution_token_hash = ? AND a.status = 'leased'
@@ -38,16 +39,18 @@ fn execution_context(
         "#,
             params![hash_secret(token), now, now],
             |row| {
-                let input: String = row.get(7)?;
-                let source: String = row.get(8)?;
+                let input: String = row.get(9)?;
+                let source: String = row.get(10)?;
                 Ok(ExecutionContext {
                     task_id: row.get(0)?,
                     attempt_id: row.get(1)?,
                     staging_session_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     project_id: row.get(3)?,
                     panel_id: row.get(4)?,
-                    task_type: row.get(5)?,
-                    generation: row.get(6)?,
+                    queue: row.get(5)?,
+                    task_type: row.get(6)?,
+                    task_capability: row.get(7)?,
+                    generation: row.get(8)?,
                     input: serde_json::from_str(&input).unwrap_or_else(|_| json!({})),
                     source: serde_json::from_str(&source).unwrap_or_else(|_| json!({})),
                 })

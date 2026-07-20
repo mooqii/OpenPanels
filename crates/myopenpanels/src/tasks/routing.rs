@@ -218,7 +218,7 @@ fn preferred_target_id(
     capability: &str,
     required_protocol_version: i64,
 ) -> Result<Option<String>, CliError> {
-    let eligible = matching_targets(targets, capability)
+    let mut eligible = matching_targets(targets, capability)
         .into_iter()
         .filter(|target| {
             target
@@ -245,6 +245,11 @@ fn preferred_target_id(
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
         )
         .map_err(to_cli_error)?;
+    if dispatch_mode == "manual" {
+        eligible.retain(|target| {
+            target.get("host").and_then(Value::as_str) == Some("agent-message")
+        });
+    }
     let mut ordered = Vec::new();
     let routed_ids = route_target_ids(connection, project_id, capability)?;
     for routed_id in routed_ids {
@@ -474,7 +479,7 @@ fn task_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     Ok(json!({
         "id": row.get::<_, i64>(0)?,
         "taskId": row.get::<_, String>(1)?,
-        "workflowId": row.get::<_, String>(2)?,
+        "workflowRunId": row.get::<_, String>(2)?,
         "eventType": row.get::<_, String>(3)?,
         "fromStatus": row.get::<_, Option<String>>(4)?,
         "toStatus": row.get::<_, Option<String>>(5)?,
@@ -513,19 +518,19 @@ fn task_attempt_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     }))
 }
 
-fn workflow_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+fn workflow_run_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let source = row
         .get::<_, String>(4)
         .ok()
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .unwrap_or_else(|| json!({}));
     let total = row.get::<_, i64>(8)?;
-    let succeeded = row.get::<_, i64>(9)?;
+    let succeeded = row.get::<_, Option<i64>>(9)?.unwrap_or(0);
     Ok(json!({
-        "id": row.get::<_, String>(0)?,
-        "type": row.get::<_, String>(1)?,
+        "workflowRunId": row.get::<_, String>(0)?,
+        "definitionKey": row.get::<_, String>(1)?,
         "status": row.get::<_, String>(2)?,
-        "sourceWorkflowId": row.get::<_, Option<String>>(3)?,
+        "sourceWorkflowRunId": row.get::<_, Option<String>>(3)?,
         "source": source,
         "createdAt": row.get::<_, String>(5)?,
         "updatedAt": row.get::<_, String>(6)?,

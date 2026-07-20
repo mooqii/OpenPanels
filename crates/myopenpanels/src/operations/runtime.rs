@@ -12,6 +12,7 @@ use crate::types::PanelKind;
 use crate::wiki;
 use base64::Engine;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 
@@ -195,7 +196,7 @@ pub fn begin_canvas(
             "bounds": placeholder.bounds,
             "reference": reference,
         },
-        "input": { "displayWidth": width, "displayHeight": height, "useSelection": use_selection, "workflowSkillId": null },
+        "input": { "displayWidth": width, "displayHeight": height, "useSelection": use_selection },
         "result": null,
         "error": null,
         "createdAt": now,
@@ -398,6 +399,95 @@ pub(crate) fn begin_writing_for_broker(
     title: &str,
     format: &str,
 ) -> Result<Value, CliError> {
+    begin_writing_internal(paths, task_id, title, format, None)
+}
+
+pub(crate) fn ensure_writing_for_task_output(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+    title: &str,
+    format: &str,
+    attempt_id: &str,
+    execution_generation: i64,
+    output_plan_hash: &str,
+) -> Result<Value, CliError> {
+    let identity = format!("{task_id}:{attempt_id}:{execution_generation}");
+    let digest = format!("{:x}", Sha256::digest(identity.as_bytes()));
+    let id = format!("operation:task-output:{}", &digest[..32]);
+    let storage = Storage::open(paths)?;
+    let conflicting_operation = storage
+        .list_agent_operations(None, None)?
+        .into_iter()
+        .find(|operation| {
+            operation.get("id").and_then(Value::as_str) != Some(id.as_str())
+                && operation
+                    .pointer("/target/writingTaskId")
+                    .and_then(Value::as_str)
+                    == Some(task_id)
+                && operation
+                    .pointer("/input/runtimeAttemptId")
+                    .and_then(Value::as_str)
+                    == Some(attempt_id)
+                && operation
+                    .pointer("/input/runtimeExecutionGeneration")
+                    .and_then(Value::as_i64)
+                    == Some(execution_generation)
+        });
+    if conflicting_operation.is_some() {
+        return Err(CliError::with_code(
+            "task_output_plan_conflict",
+            "The current Task Attempt has multiple Runtime Writing Operations.",
+        ));
+    }
+    if let Some(operation) = storage.read_agent_operation(&id)? {
+        let matches_plan = operation.get("intent").and_then(Value::as_str)
+            == Some("wiki.document.generate")
+            && operation
+                .pointer("/target/writingTaskId")
+                .and_then(Value::as_str)
+                == Some(task_id)
+            && operation.pointer("/input/title").and_then(Value::as_str) == Some(title)
+            && operation.pointer("/input/format").and_then(Value::as_str) == Some(format)
+            && operation
+                .pointer("/input/runtimeAttemptId")
+                .and_then(Value::as_str)
+                == Some(attempt_id)
+            && operation
+                .pointer("/input/runtimeExecutionGeneration")
+                .and_then(Value::as_i64)
+                == Some(execution_generation)
+            && operation
+                .pointer("/input/runtimeOutputPlanHash")
+                .and_then(Value::as_str)
+                == Some(output_plan_hash)
+            && matches!(
+                operation.get("status").and_then(Value::as_str),
+                Some("active" | "prepared" | "completed")
+            );
+        if !matches_plan {
+            return Err(CliError::with_code(
+                "task_output_plan_conflict",
+                "The current Writing Operation does not match this Task Output Plan.",
+            ));
+        }
+        return Ok(json!({ "operation": operation, "reused": true }));
+    }
+    begin_writing_internal(
+        paths,
+        task_id,
+        title,
+        format,
+        Some((&id, attempt_id, execution_generation, output_plan_hash)),
+    )
+}
+
+fn begin_writing_internal(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+    title: &str,
+    format: &str,
+    runtime_identity: Option<(&str, &str, i64, &str)>,
+) -> Result<Value, CliError> {
     let request = crate::writing::read_request(paths, task_id)?;
     let task = &request["task"];
     if !matches!(
@@ -465,7 +555,9 @@ pub(crate) fn begin_writing_for_broker(
             ));
         }
     }
-    let id = operation_id();
+    let id = runtime_identity
+        .map(|(id, _, _, _)| id.to_owned())
+        .unwrap_or_else(operation_id);
     let started = wiki::begin_generated_document_for_target(
         paths,
         project_id,
@@ -479,7 +571,7 @@ pub(crate) fn begin_writing_for_broker(
     let generated_id = started["document"]["id"].as_str().unwrap_or_default();
     let now = now_iso();
     let panel_skill = read_agent_skill(paths, crate::writing::WRITING_PANEL_SKILL_ID, None)?;
-    let operation = json!({
+    let mut operation = json!({
         "id": id,
         "ownerContextId": paths.context_id,
         "intent": "wiki.document.generate",
@@ -504,6 +596,11 @@ pub(crate) fn begin_writing_for_broker(
         "updatedAt": now,
         "completedAt": null,
     });
+    if let Some((_, attempt_id, execution_generation, output_plan_hash)) = runtime_identity {
+        operation["input"]["runtimeAttemptId"] = json!(attempt_id);
+        operation["input"]["runtimeExecutionGeneration"] = json!(execution_generation);
+        operation["input"]["runtimeOutputPlanHash"] = json!(output_plan_hash);
+    }
     save(paths, &operation)?;
     Ok(json!({
         "operation": operation,

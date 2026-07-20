@@ -549,10 +549,16 @@ fn resolve_publishing_state(state: Option<Value>) -> Result<PanelStateResolution
         });
     };
     match state.get("schemaVersion").and_then(Value::as_i64) {
-        Some(1) if state.as_object().is_some() => Ok(PanelStateResolution {
-            state,
-            changed: false,
-        }),
+        Some(1) if state.as_object().is_some() => {
+            let normalized = crate::publishing::normalize_state(state.clone());
+            if !crate::publishing::validate_state(&normalized) {
+                return Err(CliError::new("Malformed publishing panel state."));
+            }
+            Ok(PanelStateResolution {
+                changed: normalized != state,
+                state: normalized,
+            })
+        }
         Some(1) => Err(CliError::new("Malformed publishing panel state.")),
         Some(version) => Err(CliError::new(format!(
             "Unsupported future publishing panel state schemaVersion: {version}"
@@ -766,7 +772,7 @@ fn initial_panel_state(kind: PanelKind) -> Value {
 }
 
 fn empty_publishing_state() -> Value {
-    json!({ "schemaVersion": 1 })
+    crate::publishing::empty_state()
 }
 
 fn empty_typesetting_state() -> Value {

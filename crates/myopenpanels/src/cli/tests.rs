@@ -200,7 +200,8 @@ fn create_cli_project_unacknowledged(project_dir: &Path, storage_dir: &Path) {
 }
 
 include!("tests/bootstrap_and_parsing.rs");
-include!("tests/bootstrap_workflow_blockers.rs");
+include!("tests/bootstrap_procedure_blockers.rs");
+include!("tests/workflow_runs.rs");
 include!("tests/task_routing.rs");
 include!("tests/wiki_generation.rs");
 include!("tests/project_and_selection.rs");

@@ -64,6 +64,22 @@ enum WritingSkillCommand {
 }
 
 #[derive(Debug, Args)]
+struct PublishingArgs {
+    #[command(subcommand)]
+    command: PublishingCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum PublishingCommand {
+    Checkpoint {
+        #[arg(long)]
+        task_id: String,
+        #[arg(long, value_parser = ["prepared", "committing"])]
+        phase: String,
+    },
+}
+
+#[derive(Debug, Args)]
 struct TaskArgs {
     #[command(subcommand)]
     command: TaskCommand,
@@ -74,7 +90,7 @@ enum TaskCommand {
     List(TaskFilterArgs),
     Next(TaskFilterArgs),
     Read(TaskIdArgs),
-    Scope(TaskScopeArgs),
+    Handoff(TaskHandoffArgs),
     Claim {
         #[command(flatten)]
         task: TaskIdArgs,
@@ -107,19 +123,39 @@ enum TaskCommand {
 }
 
 #[derive(Debug, Args)]
-struct TaskScopeArgs {
+struct TaskHandoffArgs {
     #[command(subcommand)]
-    command: TaskScopeCommand,
+    command: TaskHandoffCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum TaskScopeCommand {
-    Read(TaskScopeSelectorArgs),
-    Claim {
-        #[command(flatten)]
-        selector: TaskScopeSelectorArgs,
+enum TaskHandoffCommand {
+    Start(TaskScopeSelectorArgs),
+    Exec {
         #[arg(long)]
-        target_id: String,
+        handoff_id: String,
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    Heartbeat {
+        #[arg(long)]
+        handoff_id: String,
+    },
+    Complete {
+        #[arg(long)]
+        handoff_id: String,
+    },
+    Fail {
+        #[arg(long)]
+        handoff_id: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        failure_class: Option<String>,
+    },
+    Stop {
+        #[arg(long)]
+        handoff_id: String,
     },
 }
 
@@ -143,10 +179,21 @@ struct WorkflowArgs {
 
 #[derive(Debug, Subcommand)]
 enum WorkflowCommand {
+    Run(WorkflowRunArgs),
+}
+
+#[derive(Debug, Args)]
+struct WorkflowRunArgs {
+    #[command(subcommand)]
+    command: WorkflowRunCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkflowRunCommand {
     List,
     Read {
         #[arg(long)]
-        workflow_id: String,
+        workflow_run_id: String,
     },
 }
 
@@ -220,7 +267,7 @@ struct AgentArgs {
 enum AgentCommand {
     Bootstrap {
         #[arg(long)]
-        workflow: Option<String>,
+        procedure: Option<String>,
     },
     Catalog {
         #[arg(long)]

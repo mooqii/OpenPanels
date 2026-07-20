@@ -30,6 +30,7 @@ const ASSOCIATION_MODULES = [
   "wiki-update",
   "writing",
   "writing-refinement",
+  "publishing-xiaohongshu",
 ] as const
 
 export function managedSkillActionIds(skill: ManagedProjectSkill) {
@@ -307,6 +308,7 @@ export function moduleLabel(
   if (kind === "wiki-update") return t`Wiki updates`
   if (kind === "writing") return t`Writing`
   if (kind === "writing-refinement") return t`Writing refinement`
+  if (kind === "publishing-xiaohongshu") return t`Xiaohongshu publishing`
   if (kind === "wiki") return t`Wiki`
   if (kind === "canvas") return t`Canvas`
   if (kind === "typesetting") return t`Typesetting`

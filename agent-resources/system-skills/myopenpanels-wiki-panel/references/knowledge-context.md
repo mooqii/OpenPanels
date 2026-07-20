@@ -15,7 +15,7 @@ Rules:
 - Do not modify Wiki content while answering a read-only query unless the user
   explicitly asks to preserve the result.
 
-Workflow:
+Execution Steps:
 
 1. Read Wiki selection when Wiki or document context may matter.
 2. Decide whether the request needs the whole Wiki, selected raw documents,

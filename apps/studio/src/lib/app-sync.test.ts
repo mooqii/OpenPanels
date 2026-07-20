@@ -9,6 +9,7 @@ import type {
   BootstrapResponse,
   PanelStateSnapshot,
   ProjectTask,
+  PublishingState,
   TypesettingState,
   WikiState,
   WritingState,
@@ -280,7 +281,7 @@ function appState({
   const publishingSnapshot: PanelStateSnapshot = {
     panel: publishingPanel,
     revision: 1,
-    state: { schemaVersion: 1 },
+    state: publishingState(),
   }
   return {
     activePanelId: canvasPanel.id,
@@ -319,6 +320,15 @@ function typesettingState(): TypesettingState {
   return {
     publications: [],
     schemaVersion: 1,
+  }
+}
+
+function publishingState(): PublishingState {
+  return {
+    releases: [],
+    schemaVersion: 1,
+    selectedPublicationId: null,
+    selectedSkillIds: { xiaohongshu: "publishing-xiaohongshu" },
   }
 }
 

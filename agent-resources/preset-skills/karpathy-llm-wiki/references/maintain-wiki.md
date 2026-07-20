@@ -3,7 +3,7 @@
 Use this reference when wiki navigation, summaries, indexes, or related pages
 need maintenance.
 
-Workflow:
+Execution Steps:
 
 1. Read `wiki-conventions.md` and review the available wiki paths.
 2. Read `SCHEMA.md`, `index.md`, `log.md`, and pages that affect navigation or

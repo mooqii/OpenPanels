@@ -17,7 +17,7 @@ pub(crate) struct TaskLease {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskRecord {
     pub(crate) id: String,
-    pub(crate) workflow_id: String,
+    pub(crate) workflow_run_id: String,
     pub(crate) queue: String,
     pub(crate) project_id: String,
     pub(crate) panel_id: String,

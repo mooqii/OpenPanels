@@ -12,6 +12,7 @@ pub mod model_gateway;
 pub mod operations;
 pub mod panel;
 pub mod paths;
+pub mod publishing;
 pub mod selection;
 pub mod server;
 pub mod storage;

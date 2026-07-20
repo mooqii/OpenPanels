@@ -3,7 +3,7 @@
 Use this reference when integrating one source markdown document into the
 structured wiki.
 
-Workflow:
+Execution Steps:
 
 1. Read the source Markdown.
 2. Read `wiki-conventions.md`, review the available wiki paths, and inspect
@@ -40,4 +40,4 @@ Completion criteria:
 - Source Markdown has been synthesized into the wiki where useful.
 - Related wiki pages reflect the new evidence.
 - `SCHEMA.md`, `index.md`, and `log.md` are present and consistent whenever this
-  workflow initializes or materially changes the wiki.
+  execution initializes or materially changes the wiki.

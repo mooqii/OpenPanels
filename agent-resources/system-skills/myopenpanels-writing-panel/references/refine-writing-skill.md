@@ -11,4 +11,4 @@ handoff.
    Task. Fail explicitly when the examples are insufficient or validation
    rejects the Skill.
 
-The selected Wiki is intentionally unavailable to this workflow.
+The selected Wiki is intentionally unavailable to this Task Handoff.

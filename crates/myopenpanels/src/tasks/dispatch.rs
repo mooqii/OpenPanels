@@ -4,10 +4,10 @@ pub fn set_task_dispatch(
     mode: &str,
     requested_connection_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    if !matches!(mode, "auto" | "prefer") {
+    if !matches!(mode, "auto" | "prefer" | "manual") {
         return Err(CliError::with_code(
             "invalid_dispatch_mode",
-            "Dispatch mode must be auto or prefer.",
+            "Dispatch mode must be auto, prefer, or manual.",
         ));
     }
     let requested_connection_id = requested_connection_id.filter(|value| !value.trim().is_empty());
@@ -21,6 +21,12 @@ pub fn set_task_dispatch(
         return Err(CliError::with_code(
             "invalid_dispatch_mode",
             "Preferred dispatch requires a model gateway connection.",
+        ));
+    }
+    if mode == "manual" && requested_connection_id.is_some() {
+        return Err(CliError::with_code(
+            "invalid_dispatch_mode",
+            "Manual dispatch cannot pin a model gateway connection.",
         ));
     }
     let project_id = task_project_id(paths, task_id)?;
@@ -44,9 +50,9 @@ pub fn set_task_dispatch(
             ));
         }
     }
-    let (status, workflow_id) = tx
+    let (status, workflow_run_id) = tx
         .query_row(
-            "SELECT status, workflow_id FROM tasks WHERE id = ? AND project_id = ?",
+            "SELECT status, workflow_run_id FROM tasks WHERE id = ? AND project_id = ?",
             params![task_id, project_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
@@ -68,8 +74,8 @@ pub fn set_task_dispatch(
         "requestedModelGatewayConnectionId": requested_connection_id,
     });
     tx.execute(
-        "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'dispatch_updated', ?, ?, ?, ?)",
-        params![task_id, workflow_id, status, status, reason.to_string(), now],
+        "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'dispatch_updated', ?, ?, ?, ?)",
+        params![task_id, workflow_run_id, status, status, reason.to_string(), now],
     )
     .map_err(to_cli_error)?;
     crate::storage::record_scope(&tx, "tasks", Some(&project_id), None)?;
@@ -136,7 +142,7 @@ pub fn set_wiki_update_group_dispatch(
                   FROM task_dependencies dependencies
                   JOIN scoped ON scoped.id = dependencies.task_id
                 )
-                SELECT tasks.id, tasks.workflow_id, tasks.status FROM tasks
+                SELECT tasks.id, tasks.workflow_run_id, tasks.status FROM tasks
                 JOIN scoped ON scoped.id = tasks.id
                 WHERE tasks.project_id = ?
                   AND tasks.status IN ('waiting', 'queued', 'failed')
@@ -195,10 +201,10 @@ pub fn set_wiki_update_group_dispatch(
         "requestedModelGatewayConnectionId": requested_connection_id,
         "mutationKey": mutation_key,
     });
-    for (task_id, workflow_id, status) in member_tasks {
+    for (task_id, workflow_run_id, status) in member_tasks {
         tx.execute(
-            "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'dispatch_updated', ?, ?, ?, ?)",
-            params![task_id, workflow_id, status, status, reason.to_string(), now],
+            "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'dispatch_updated', ?, ?, ?, ?)",
+            params![task_id, workflow_run_id, status, status, reason.to_string(), now],
         )
         .map_err(to_cli_error)?;
     }
@@ -228,8 +234,13 @@ pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cl
         .unwrap_or_default()
         .to_owned();
     match task["task"]["queue"].as_str().unwrap_or("") {
-        "wiki" => crate::wiki::cancel_task(paths, task_id)?,
-        "writing" => crate::writing::cancel_task(paths, task_id)?,
+        "wiki" => {
+            crate::wiki::cancel_task(paths, task_id)?;
+        }
+        "writing" => {
+            crate::writing::cancel_task(paths, task_id)?;
+        }
+        "publishing" => {}
         queue => {
             return Err(CliError::with_code(
                 "queue_adapter_missing",
@@ -259,7 +270,7 @@ pub fn list_task_events(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Valu
         .connection()
         .prepare(
             r#"
-            SELECT id, task_id, workflow_id, event_type, from_status, to_status,
+            SELECT id, task_id, workflow_run_id, event_type, from_status, to_status,
                    reason_json, attempt_id, agent_target_id, created_at
             FROM task_events WHERE task_id = ? ORDER BY id ASC
             "#,
@@ -296,7 +307,7 @@ pub fn list_task_attempts(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Va
     Ok(json!({ "projectId": project_id, "attempts": attempts }))
 }
 
-pub fn list_workflows(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
+pub fn list_workflow_runs(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     let project_id = read_project_bootstrap(paths, BootstrapRequest::new())?
         .project
         .id;
@@ -305,12 +316,12 @@ pub fn list_workflows(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
         .connection()
         .prepare(
             r#"
-            SELECT w.id, w.type, w.status, w.source_workflow_id, w.source_json,
+            SELECT w.id, w.definition_key, w.status, w.source_workflow_run_id, w.source_json,
                    w.created_at, w.updated_at, w.archived_at,
                    COUNT(t.id),
                    SUM(CASE WHEN t.status = 'succeeded' THEN 1 ELSE 0 END)
-            FROM workflows w
-            LEFT JOIN tasks t ON t.workflow_id = w.id
+            FROM workflow_runs w
+            LEFT JOIN tasks t ON t.workflow_run_id = w.id
             WHERE w.project_id = ? AND w.archived_at IS NULL
             GROUP BY w.id
             ORDER BY w.updated_at DESC, w.id
@@ -318,48 +329,48 @@ pub fn list_workflows(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
         )
         .map_err(to_cli_error)?;
     let rows = statement
-        .query_map([&project_id], workflow_summary_from_row)
+        .query_map([&project_id], workflow_run_summary_from_row)
         .map_err(to_cli_error)?;
-    let workflows = rows.collect::<Result<Vec<_>, _>>().map_err(to_cli_error)?;
-    Ok(json!({ "projectId": project_id, "workflows": workflows }))
+    let workflow_runs = rows.collect::<Result<Vec<_>, _>>().map_err(to_cli_error)?;
+    Ok(json!({ "projectId": project_id, "workflowRuns": workflow_runs }))
 }
 
-pub fn read_workflow(paths: &MyOpenPanelsPaths, workflow_id: &str) -> Result<Value, CliError> {
+pub fn read_workflow_run(paths: &MyOpenPanelsPaths, workflow_run_id: &str) -> Result<Value, CliError> {
     let project_id = read_project_bootstrap(paths, BootstrapRequest::new())?
         .project
         .id;
     let storage = Storage::open(paths)?;
-    let workflow = storage
+    let workflow_run = storage
         .connection()
         .query_row(
             r#"
-            SELECT w.id, w.type, w.status, w.source_workflow_id, w.source_json,
+            SELECT w.id, w.definition_key, w.status, w.source_workflow_run_id, w.source_json,
                    w.created_at, w.updated_at, w.archived_at,
                    COUNT(t.id), SUM(CASE WHEN t.status = 'succeeded' THEN 1 ELSE 0 END)
-            FROM workflows w LEFT JOIN tasks t ON t.workflow_id = w.id
+            FROM workflow_runs w LEFT JOIN tasks t ON t.workflow_run_id = w.id
             WHERE w.project_id = ? AND w.id = ? GROUP BY w.id
             "#,
-            params![project_id, workflow_id],
-            workflow_summary_from_row,
+            params![project_id, workflow_run_id],
+            workflow_run_summary_from_row,
         )
         .optional()
         .map_err(to_cli_error)?
         .ok_or_else(|| {
             CliError::with_code(
-                "workflow_not_found",
-                format!("Workflow not found: {workflow_id}"),
+                "workflow_run_not_found",
+                format!("Workflow Run not found: {workflow_run_id}"),
             )
         })?;
     let tasks = storage
         .list_tasks(&project_id)?
         .into_iter()
-        .filter(|task| task.get("workflowId").and_then(Value::as_str) == Some(workflow_id))
+        .filter(|task| task.get("workflowRunId").and_then(Value::as_str) == Some(workflow_run_id))
         .collect::<Vec<_>>();
     let mut dependencies = storage.connection().prepare(
-        "SELECT task_id, prerequisite_task_id, success_condition, failure_policy, created_at FROM task_dependencies WHERE task_id IN (SELECT id FROM tasks WHERE workflow_id = ?) ORDER BY task_id, prerequisite_task_id"
+        "SELECT task_id, prerequisite_task_id, success_condition, failure_policy, created_at FROM task_dependencies WHERE task_id IN (SELECT id FROM tasks WHERE workflow_run_id = ?) ORDER BY task_id, prerequisite_task_id"
     ).map_err(to_cli_error)?;
     let dependencies = dependencies
-        .query_map([workflow_id], |row| {
+        .query_map([workflow_run_id], |row| {
             Ok(json!({
                 "taskId": row.get::<_, String>(0)?,
                 "prerequisiteTaskId": row.get::<_, String>(1)?,
@@ -371,7 +382,7 @@ pub fn read_workflow(paths: &MyOpenPanelsPaths, workflow_id: &str) -> Result<Val
         .map_err(to_cli_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(to_cli_error)?;
-    Ok(json!({ "workflow": workflow, "tasks": tasks, "dependencies": dependencies }))
+    Ok(json!({ "workflowRun": workflow_run, "tasks": tasks, "dependencies": dependencies }))
 }
 
 pub fn archive_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
@@ -388,7 +399,7 @@ pub fn archive_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, C
         ));
     }
     let project_id = task["task"]["projectId"].as_str().unwrap_or_default();
-    let workflow_id = task["task"]["workflowId"].as_str().unwrap_or_default();
+    let workflow_run_id = task["task"]["workflowRunId"].as_str().unwrap_or_default();
     let storage = Storage::open(paths)?;
     let tx = storage
         .connection()
@@ -400,20 +411,20 @@ pub fn archive_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, C
         params![now, now, task_id],
     )
     .map_err(to_cli_error)?;
-    tx.execute("INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, created_at) VALUES (?, ?, 'archived', ?, 'archived', ?)", params![task_id, workflow_id, status, now]).map_err(to_cli_error)?;
+    tx.execute("INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, created_at) VALUES (?, ?, 'archived', ?, 'archived', ?)", params![task_id, workflow_run_id, status, now]).map_err(to_cli_error)?;
     tx.execute(
-        r#"UPDATE workflows SET status = 'archived', archived_at = ?, updated_at = ?
+        r#"UPDATE workflow_runs SET status = 'archived', archived_at = ?, updated_at = ?
            WHERE id = ? AND NOT EXISTS (
-             SELECT 1 FROM tasks WHERE workflow_id = ? AND archived_at IS NULL
+             SELECT 1 FROM tasks WHERE workflow_run_id = ? AND archived_at IS NULL
            )"#,
-        params![now, now, workflow_id, workflow_id],
+        params![now, now, workflow_run_id, workflow_run_id],
     )
     .map_err(to_cli_error)?;
     tx.execute(
         r#"DELETE FROM content_pins
-           WHERE task_id IN (SELECT id FROM tasks WHERE workflow_id = ?)
-             AND NOT EXISTS (SELECT 1 FROM tasks WHERE workflow_id = ? AND archived_at IS NULL)"#,
-        params![workflow_id, workflow_id],
+           WHERE task_id IN (SELECT id FROM tasks WHERE workflow_run_id = ?)
+             AND NOT EXISTS (SELECT 1 FROM tasks WHERE workflow_run_id = ? AND archived_at IS NULL)"#,
+        params![workflow_run_id, workflow_run_id],
     )
     .map_err(to_cli_error)?;
     crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;

@@ -15,7 +15,7 @@ This is a wiki-authoring skill only. It defines how the generated wiki is
 created and maintained; reading or using a completed wiki belongs in a separate
 skill.
 
-Workflow routing:
+Reference routing:
 
 - When integrating a new source, read
   `references/ingest-markdown-into-wiki.md`.
@@ -44,5 +44,5 @@ Core rules:
 
 Completion criteria:
 
-- The relevant reference workflow has been followed.
+- The relevant reference steps have been followed.
 - The wiki remains navigable through index pages and cross-links.

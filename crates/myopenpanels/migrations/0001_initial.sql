@@ -121,7 +121,7 @@ CREATE TABLE agent_targets (
   project_id TEXT NOT NULL,
   name TEXT NOT NULL,
   host TEXT NOT NULL,
-  transport TEXT NOT NULL CHECK (transport IN ('poll', 'command')),
+  transport TEXT NOT NULL DEFAULT 'command' CHECK (transport = 'command'),
   capabilities_json TEXT NOT NULL CHECK (json_valid(capabilities_json)),
   priority INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'online',
@@ -138,20 +138,20 @@ CREATE TABLE agent_targets (
   FOREIGN KEY (model_gateway_connection_id) REFERENCES model_gateway_connections(id) ON DELETE SET NULL
 );
 
-CREATE TABLE workflows (
+CREATE TABLE workflow_runs (
   id TEXT PRIMARY KEY NOT NULL,
   project_id TEXT NOT NULL,
   panel_id TEXT NOT NULL,
-  type TEXT NOT NULL,
+  definition_key TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active'
     CHECK (status IN ('active', 'succeeded', 'failed', 'cancelled', 'archived')),
-  source_workflow_id TEXT,
+  source_workflow_run_id TEXT,
   source_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(source_json)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   archived_at TEXT,
   FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (source_workflow_id) REFERENCES workflows(id) ON DELETE SET NULL
+  FOREIGN KEY (source_workflow_run_id) REFERENCES workflow_runs(id) ON DELETE SET NULL
 );
 
 CREATE TABLE tasks (
@@ -178,19 +178,19 @@ CREATE TABLE tasks (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   completed_at TEXT,
-  workflow_id TEXT NOT NULL,
+  workflow_run_id TEXT NOT NULL,
   idempotency_key TEXT,
   execution_generation INTEGER NOT NULL DEFAULT 0 CHECK (execution_generation >= 0),
   available_at TEXT,
   archived_at TEXT,
   terminal_reason_json TEXT CHECK (terminal_reason_json IS NULL OR json_valid(terminal_reason_json)),
   required_protocol_version INTEGER NOT NULL DEFAULT 3 CHECK (required_protocol_version = 3),
-  dispatch_mode TEXT NOT NULL DEFAULT 'auto' CHECK (dispatch_mode IN ('auto', 'prefer')),
+  dispatch_mode TEXT NOT NULL DEFAULT 'auto' CHECK (dispatch_mode IN ('auto', 'prefer', 'manual')),
   requested_gateway_connection_id TEXT,
   mutation_key TEXT,
   mutation_sequence INTEGER,
   FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+  FOREIGN KEY (workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE,
   FOREIGN KEY (assigned_agent_id) REFERENCES agent_targets(id) ON DELETE SET NULL,
   FOREIGN KEY (requested_gateway_connection_id) REFERENCES model_gateway_connections(id) ON DELETE SET NULL
 );
@@ -258,7 +258,7 @@ CREATE TABLE task_attempts (
 CREATE TABLE task_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id TEXT NOT NULL,
-  workflow_id TEXT NOT NULL,
+  workflow_run_id TEXT NOT NULL,
   event_type TEXT NOT NULL,
   from_status TEXT,
   to_status TEXT,
@@ -267,7 +267,7 @@ CREATE TABLE task_events (
   agent_target_id TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-  FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+  FOREIGN KEY (workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE,
   FOREIGN KEY (attempt_id) REFERENCES task_attempts(id) ON DELETE SET NULL,
   FOREIGN KEY (agent_target_id) REFERENCES agent_targets(id) ON DELETE SET NULL
 );
@@ -432,7 +432,8 @@ CREATE INDEX agent_targets_project_status_idx
 CREATE UNIQUE INDEX agent_targets_gateway_connection_unique_idx
   ON agent_targets(project_id, model_gateway_connection_id)
   WHERE model_gateway_connection_id IS NOT NULL;
-CREATE INDEX workflows_project_updated_idx ON workflows(project_id, updated_at DESC, id);
+CREATE INDEX workflow_runs_project_updated_idx
+  ON workflow_runs(project_id, updated_at DESC, id);
 CREATE INDEX tasks_project_status_idx ON tasks(project_id, status, updated_at DESC);
 CREATE INDEX tasks_project_capability_idx ON tasks(project_id, capability, status, retry_after);
 CREATE INDEX tasks_lease_idx ON tasks(lease_expires_at, status);
@@ -440,7 +441,7 @@ CREATE UNIQUE INDEX tasks_active_idempotency_idx
   ON tasks(project_id, idempotency_key)
   WHERE idempotency_key IS NOT NULL AND archived_at IS NULL
     AND status IN ('waiting', 'queued', 'reserved', 'running', 'claimed', 'converting', 'indexing');
-CREATE INDEX tasks_workflow_idx ON tasks(workflow_id, created_at, id);
+CREATE INDEX tasks_workflow_run_idx ON tasks(workflow_run_id, created_at, id);
 CREATE INDEX tasks_ready_idx ON tasks(project_id, status, available_at, archived_at);
 CREATE INDEX tasks_requested_gateway_connection_idx
   ON tasks(project_id, requested_gateway_connection_id, status);
@@ -453,7 +454,8 @@ CREATE INDEX task_attempts_task_started_idx ON task_attempts(task_id, started_at
 CREATE INDEX task_attempts_task_channel_idx
   ON task_attempts(task_id, model_gateway_connection_id, attempt_number);
 CREATE INDEX task_events_task_created_idx ON task_events(task_id, id DESC);
-CREATE INDEX task_events_workflow_created_idx ON task_events(workflow_id, id DESC);
+CREATE INDEX task_events_workflow_run_created_idx
+  ON task_events(workflow_run_id, id DESC);
 CREATE INDEX agent_routes_target_idx ON agent_routes(agent_target_id);
 CREATE INDEX agent_operations_owner_status_idx
   ON agent_operations(owner_context_id, status, updated_at DESC);
@@ -468,6 +470,20 @@ CREATE INDEX content_revision_files_object_idx ON content_revision_files(object_
 CREATE INDEX task_staging_sessions_cleanup_idx
   ON task_staging_sessions(status, updated_at);
 CREATE INDEX task_staged_files_object_idx ON task_staged_files(object_hash);
+
+CREATE TRIGGER agent_targets_command_only_insert
+BEFORE INSERT ON agent_targets
+WHEN NEW.transport <> 'command'
+BEGIN
+  SELECT RAISE(ABORT, 'agent target transport must be command');
+END;
+
+CREATE TRIGGER agent_targets_command_only_update
+BEFORE UPDATE OF transport ON agent_targets
+WHEN NEW.transport <> 'command'
+BEGIN
+  SELECT RAISE(ABORT, 'agent target transport must be command');
+END;
 
 CREATE TRIGGER tasks_status_insert_guard
 BEFORE INSERT ON tasks

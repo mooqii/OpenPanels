@@ -22,7 +22,7 @@ fn finalize_task_runtime(
         .map(serde_json::to_string)
         .transpose()
         .map_err(to_cli_error)?;
-    let (previous_status, workflow_id, attempt_id, attempts, max_attempts, execution_generation): (
+    let (previous_status, workflow_run_id, attempt_id, attempts, max_attempts, execution_generation): (
         String,
         String,
         Option<String>,
@@ -32,7 +32,7 @@ fn finalize_task_runtime(
     ) = tx
         .query_row(
             r#"
-            SELECT t.status, t.workflow_id,
+            SELECT t.status, t.workflow_run_id,
                    (SELECT id FROM task_attempts a
                     WHERE a.task_id = t.id AND a.execution_generation = t.execution_generation),
                    t.attempts, t.max_attempts, t.execution_generation
@@ -166,8 +166,8 @@ fn finalize_task_runtime(
         .map_err(to_cli_error)?;
     }
     tx.execute(
-        "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, attempt_id, created_at) VALUES (?, ?, 'status_changed', ?, ?, ?, ?, ?)",
-        params![task_id, workflow_id, previous_status, status, terminal_reason_json.or(error_json), attempt_id, now],
+        "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, attempt_id, created_at) VALUES (?, ?, 'status_changed', ?, ?, ?, ?, ?)",
+        params![task_id, workflow_run_id, previous_status, status, terminal_reason_json.or(error_json), attempt_id, now],
     )
     .map_err(to_cli_error)?;
     if status == "succeeded" {
@@ -180,7 +180,7 @@ fn finalize_task_runtime(
     } else if matches!(status, "cancelled" | "stale" | "superseded") {
         propagate_prerequisite_failure(&tx, task_id, status, &now)?;
     }
-    refresh_workflow_status(&tx, &workflow_id, &now)?;
+    refresh_workflow_run_status(&tx, &workflow_run_id, &now)?;
     if let Some((panel_id, state)) = panel_state {
         Storage::write_panel_state_in_transaction(&tx, project_id, panel_id, state)?;
     }
@@ -197,7 +197,7 @@ fn activate_ready_dependents(
         let mut statement = connection
             .prepare(
                 r#"
-                SELECT t.id, t.workflow_id, t.capability
+                SELECT t.id, t.workflow_run_id, t.capability
                 FROM tasks t
                 JOIN task_dependencies d ON d.task_id = t.id
                 WHERE d.prerequisite_task_id = ? AND t.status = 'waiting'
@@ -221,7 +221,7 @@ fn activate_ready_dependents(
             .map_err(to_cli_error)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(to_cli_error)?
     };
-    for (task_id, workflow_id, _) in dependents {
+    for (task_id, workflow_run_id, _) in dependents {
         connection
             .execute(
                 "UPDATE tasks SET status = 'queued', available_at = ?, updated_at = ? WHERE id = ? AND status = 'waiting'",
@@ -230,8 +230,8 @@ fn activate_ready_dependents(
             .map_err(to_cli_error)?;
         connection
             .execute(
-                "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'dependency_satisfied', 'waiting', 'queued', ?, ?)",
-                params![task_id, workflow_id, json!({ "prerequisiteTaskId": prerequisite_task_id }).to_string(), now],
+                "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'dependency_satisfied', 'waiting', 'queued', ?, ?)",
+                params![task_id, workflow_run_id, json!({ "prerequisiteTaskId": prerequisite_task_id }).to_string(), now],
             )
             .map_err(to_cli_error)?;
     }
@@ -248,7 +248,7 @@ fn propagate_prerequisite_failure(
         let mut statement = connection
             .prepare(
                 r#"
-                SELECT t.id, t.workflow_id, t.status, d.failure_policy
+                SELECT t.id, t.workflow_run_id, t.status, d.failure_policy
                 FROM tasks t
                 JOIN task_dependencies d ON d.task_id = t.id
                 WHERE d.prerequisite_task_id = ?
@@ -269,7 +269,7 @@ fn propagate_prerequisite_failure(
             .map_err(to_cli_error)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(to_cli_error)?
     };
-    for (task_id, workflow_id, previous_status, policy) in dependents {
+    for (task_id, workflow_run_id, previous_status, policy) in dependents {
         let next_status = if policy == "supersede" {
             "superseded"
         } else {
@@ -300,36 +300,36 @@ fn propagate_prerequisite_failure(
             .map_err(to_cli_error)?;
         connection
             .execute(
-                "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'prerequisite_propagated', ?, ?, ?, ?)",
-                params![task_id, workflow_id, previous_status, next_status, reason.to_string(), now],
+                "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'prerequisite_propagated', ?, ?, ?, ?)",
+                params![task_id, workflow_run_id, previous_status, next_status, reason.to_string(), now],
             )
             .map_err(to_cli_error)?;
     }
     Ok(())
 }
 
-fn refresh_workflow_status(
+fn refresh_workflow_run_status(
     connection: &rusqlite::Connection,
-    workflow_id: &str,
+    workflow_run_id: &str,
     now: &str,
 ) -> Result<(), CliError> {
     connection
         .execute(
             r#"
-            UPDATE workflows
+            UPDATE workflow_runs
             SET status = CASE
-                  WHEN EXISTS (SELECT 1 FROM tasks WHERE workflow_id = ?
+                  WHEN EXISTS (SELECT 1 FROM tasks WHERE workflow_run_id = ?
                     AND status NOT IN ('succeeded', 'cancelled', 'stale', 'superseded')
                     AND NOT (status = 'failed' AND attempts >= max_attempts)) THEN 'active'
-                  WHEN EXISTS (SELECT 1 FROM tasks WHERE workflow_id = ? AND status = 'succeeded')
-                       AND NOT EXISTS (SELECT 1 FROM tasks WHERE workflow_id = ? AND status IN ('cancelled', 'stale', 'superseded')) THEN 'succeeded'
-                  WHEN EXISTS (SELECT 1 FROM tasks WHERE workflow_id = ? AND status IN ('cancelled', 'stale', 'superseded')) THEN 'cancelled'
+                  WHEN EXISTS (SELECT 1 FROM tasks WHERE workflow_run_id = ? AND status = 'succeeded')
+                       AND NOT EXISTS (SELECT 1 FROM tasks WHERE workflow_run_id = ? AND status IN ('cancelled', 'stale', 'superseded')) THEN 'succeeded'
+                  WHEN EXISTS (SELECT 1 FROM tasks WHERE workflow_run_id = ? AND status IN ('cancelled', 'stale', 'superseded')) THEN 'cancelled'
                   ELSE 'failed'
                 END,
                 updated_at = ?
             WHERE id = ?
             "#,
-            params![workflow_id, workflow_id, workflow_id, workflow_id, now, workflow_id],
+            params![workflow_run_id, workflow_run_id, workflow_run_id, workflow_run_id, now, workflow_run_id],
         )
         .map_err(to_cli_error)?;
     Ok(())
@@ -484,4 +484,3 @@ fn recover_expired_tasks_in_session(
     }
     Ok(())
 }
-

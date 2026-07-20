@@ -1,15 +1,15 @@
 ---
 name: myopenpanels
-description: "Use MyOpenPanels for persistent visual, knowledge, or writing work in its Canvas, Wiki, or Writing panel, including drawing, image work, diagrams, moodboards, brainstorming, organizing, research, drafting, and writing. Also use when the user asks to open or launch MyOpenPanels (including 打开面板) or refers to its current panel, selection, or content. After Studio is open, use the matching Agent Workflow Bootstrap when intent is clear and generic Agent Bootstrap only as fallback. Skip Bootstrap only for an open-only request or work clearly unrelated to MyOpenPanels."
+description: "Use MyOpenPanels for persistent visual, knowledge, or writing work in its Canvas, Wiki, or Writing panel, including drawing, image work, diagrams, moodboards, brainstorming, organizing, research, drafting, and writing. Also use when the user asks to open or launch MyOpenPanels (including 打开面板) or refers to its current panel, selection, or content. After Studio is open, use the matching Agent Procedure Bootstrap when intent is clear and generic Agent Bootstrap only as fallback. Skip Bootstrap only for an open-only request or work clearly unrelated to MyOpenPanels."
 metadata:
-  version: "5.3"
+  version: "5.6"
   source: "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels"
 ---
 
 # MyOpenPanels
 
 The installed CLI is the sole authority for current panels, command catalogs,
-Skills, commands, and workflows.
+Skills, commands, Procedures, Task Handoffs, and Workflow Runs.
 
 ## Resolve The CLI
 
@@ -60,13 +60,16 @@ inspect Studio, or search the repository.
 When `MYOPENPANELS_TASK_ID`, `MYOPENPANELS_TASK_BROKER_URL`, and
 `MYOPENPANELS_TASK_TOKEN` are present, this is an isolated claimed Task: do not
 start Studio or Bootstrap; follow its prompt and task-id-bound broker commands.
-For a Studio-generated `task scope read` handoff, run that exact command instead
-of Bootstrap; load its required Task Queue Skill and preserve the selector.
-When the request clearly matches one entry below, run a fresh Workflow
+For a Studio-generated `task handoff start` command, run that exact command
+instead of Bootstrap. Follow its ExecutionBundle and Delivery Contract; create
+only the declared workspace artifacts and execution result. The Runtime owns
+Operation creation, output staging, and Task completion. Do not perform
+separate Catalog or Skill discovery.
+When the request clearly matches one entry below, run a fresh Procedure
 Bootstrap directly:
 
 ```bash
-myopenpanels agent bootstrap --workflow <workflow-key> --format json
+myopenpanels agent bootstrap --procedure <procedure-key> --format json
 ```
 
 Canvas:
@@ -91,18 +94,18 @@ Wiki:
 Writing and Task queue:
 
 - `panel.writing.context.read`: inspect selected Writing source context.
-- `task.queue.inspect`: inspect Tasks, attempts, events, or persisted Workflows.
+- `task.queue.inspect`: inspect Tasks, attempts, events, or persisted Workflow Runs.
 - `task.queue.retry`: retry an explicitly identified failed Task.
 - `task.queue.cancel`: cancel an explicitly identified Task.
 - `task.queue.archive`: archive an explicitly identified terminal Task.
 
-The following routes are handoff-only and must never be passed to Bootstrap:
+Task Handoffs must never be passed to Procedure Bootstrap:
 `task.scope.execute`, `panel.wiki.raw.convert`, `panel.wiki.pages.maintain`,
 `panel.writing.request.execute`, and `panel.writing.skill.refine`. Execute their
 exact Studio or claimed Task handoff instead.
 
-When intent is ambiguous, no Workflow matches, or the CLI reports
-`agent_workflow_not_found`, run the generic fallback:
+When intent is ambiguous, no Procedure matches, or the CLI reports
+`agent_procedure_not_found`, run the generic fallback:
 
 ```bash
 myopenpanels agent bootstrap --format json
@@ -113,7 +116,7 @@ resolved executable to the returned `argv`; for typed file, URL, Skill, or host
 actions, use the matching executor without translating the action into a shell
 command. If a required action updates the Entry Skill, Bootstrap again. Only
 after required actions finish, choose applicable `actions.suggested` entries by
-their structured conditions. Workflow Bootstrap returns only its relevant
+their structured conditions. Procedure Bootstrap returns only its relevant
 command descriptions in `commands.items`; retain each returned command path and
 flags, replace required placeholders with request values, and add only optional
 flags declared by that descriptor. Generic Bootstrap may still return scoped

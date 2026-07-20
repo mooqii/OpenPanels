@@ -220,7 +220,7 @@ export function manualTaskInstruction(
       : scope.kind === "wiki-mutation-drain"
         ? `--scope wiki-mutation-drain --project-id ${shellQuote(scope.projectId)} --mutation-key ${shellQuote(scope.mutationKey)}`
         : `--scope exact-task --task-id ${shellQuote(scope.taskId)}`
-  const command = `myopenpanels task scope read ${selector} --format json`
+  const command = `myopenpanels task handoff start ${selector} --format json`
 
   if (locale === "zh-CN") {
     const objective =
@@ -229,7 +229,7 @@ export function manualTaskInstruction(
         : scope.kind === "wiki-mutation-drain"
           ? `排空 Project ${scope.projectId} 中 Wiki mutation ${scope.mutationKey} 的串行更新队列`
           : `只处理任务 ${scope.taskId}`
-    return `请通过 MyOpenPanels ${objective}。先执行下面的 scope 命令，按照返回的 required actions 工作，并重复 scope claim，直到 scopeState 为 complete 或 blocked 后再退出：\n\n${command}`
+    return `请通过 MyOpenPanels ${objective}。执行下面的 Task Handoff 命令，按照返回的 ExecutionBundle 和 Delivery Contract 工作；每次完成后 Runtime 会返回下一项，直到 scopeState 为 complete 或 blocked：\n\n${command}`
   }
   const objective =
     scope.kind === "project-drain"
@@ -237,7 +237,7 @@ export function manualTaskInstruction(
       : scope.kind === "wiki-mutation-drain"
         ? `drain the serial Wiki mutation queue ${scope.mutationKey} in Project ${scope.projectId}`
         : `process only Task ${scope.taskId}`
-  return `Use MyOpenPanels to ${objective}. Run the scope command below first, follow its required actions, and repeat scope claim until scopeState is complete or blocked before exiting:\n\n${command}`
+  return `Use MyOpenPanels to ${objective}. Run the Task Handoff command below, follow its ExecutionBundle and Delivery Contract, and continue with each Bundle returned by the Runtime until scopeState is complete or blocked:\n\n${command}`
 }
 
 export function compareTasksForDisplay(

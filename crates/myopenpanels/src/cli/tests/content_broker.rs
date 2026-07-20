@@ -150,8 +150,8 @@ fn panel_targeted_commands_do_not_change_focus_and_selection_remains_focus_bound
 fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     let skill = include_str!("../../../../../skills/myopenpanels/SKILL.md").replace("\r\n", "\n");
     let install = include_str!("../../../../../skills/myopenpanels/references/install.md");
-    assert!(skill.contains("version: \"5.3\""));
-    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "5.3");
+    assert!(skill.contains("version: \"5.6\""));
+    assert_eq!(crate::agent_control::ENTRY_SKILL_VERSION, "5.6");
     assert!(skill.lines().count() <= 150);
     assert!(skill.contains("references/install.md"));
     assert!(!skill.contains("curl -fsSL"));
@@ -170,13 +170,13 @@ fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
         .contains("myopenpanels studio start --local-only --project-dir \"$PWD\" --format json"));
     assert!(skill.contains("myopenpanels agent bootstrap --format json"));
     assert!(skill.contains(
-        "myopenpanels agent bootstrap --workflow <workflow-key> --format json"
+        "myopenpanels agent bootstrap --procedure <procedure-key> --format json"
     ));
     assert!(skill.contains("`panel.canvas.image.edit`"));
     assert!(skill.contains("`panel.wiki.knowledge.query`"));
     assert!(skill.contains("`panel.writing.context.read`"));
     assert!(skill.contains("`task.queue.inspect`"));
-    assert!(skill.contains("handoff-only"));
+    assert!(skill.contains("Task Handoff"));
     assert!(!skill.contains("agent bootstrap --project-dir"));
     assert!(skill.contains("When intent is ambiguous"));
     assert!(!skill.contains("myopenpanels studio open-system-browser"));
@@ -199,7 +199,7 @@ fn entry_skill_requires_verified_open_and_refreshes_bootstrap_for_panel_work() {
     assert!(skill.contains("Do not initialize browser automation"));
     assert!(skill.contains("is not an embedded-open success"));
     assert!(skill.contains("For an open-only request, stop after an opener succeeds"));
-    assert!(skill.contains("run a fresh Workflow"));
+    assert!(skill.contains("run a fresh Procedure"));
     assert!(skill.contains("work clearly unrelated to MyOpenPanels"));
     assert!(skill.contains("Never reuse an earlier Bootstrap result"));
     assert!(skill.contains("`agent catalog --domain <domain>` discovery actions"));
@@ -317,7 +317,7 @@ fn tiny_png() -> Vec<u8> {
 }
 
 #[test]
-fn non_text_upload_creates_a_workflow_dag_and_delete_fences_the_attempt() {
+fn non_text_upload_creates_a_workflow_run_dag_and_delete_fences_the_attempt() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -358,7 +358,7 @@ fn non_text_upload_creates_a_workflow_dag_and_delete_fences_the_attempt() {
         .expect("ingest");
     assert_eq!(conversion["status"], "queued");
     assert_eq!(ingest["status"], "waiting");
-    assert_eq!(conversion["workflowId"], ingest["workflowId"]);
+    assert_eq!(conversion["workflowRunId"], ingest["workflowRunId"]);
     let inspected_ingest =
         tasks::inspect_task(&paths, ingest["id"].as_str().unwrap()).expect("inspect ingest");
     assert_eq!(
@@ -438,17 +438,20 @@ fn non_text_upload_creates_a_workflow_dag_and_delete_fences_the_attempt() {
             .any(|event| event["eventType"] == "archived")
     );
     tasks::archive_task(&paths, ingest["id"].as_str().unwrap()).expect("archive dependent");
-    let workflows = tasks::list_workflows(&paths).expect("workflows");
-    assert!(!workflows["workflows"]
+    let workflow_runs = tasks::list_workflow_runs(&paths).expect("Workflow Runs");
+    assert!(!workflow_runs["workflowRuns"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|workflow| workflow["id"] == conversion["workflowId"]));
-    let archived_workflow =
-        tasks::read_workflow(&paths, conversion["workflowId"].as_str().unwrap())
-            .expect("archived workflow history");
-    assert_eq!(archived_workflow["workflow"]["status"], "archived");
-    assert_eq!(archived_workflow["tasks"].as_array().unwrap().len(), 2);
+        .any(|workflow_run| workflow_run["workflowRunId"] == conversion["workflowRunId"]));
+    let archived_workflow_run =
+        tasks::read_workflow_run(&paths, conversion["workflowRunId"].as_str().unwrap())
+            .expect("archived Workflow Run history");
+    assert_eq!(archived_workflow_run["workflowRun"]["status"], "archived");
+    assert_eq!(
+        archived_workflow_run["tasks"].as_array().unwrap().len(),
+        2
+    );
 }
 
 #[test]

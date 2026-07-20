@@ -14,37 +14,37 @@ fn project_task_capability(queue: &str, task_type: &str) -> String {
     }
 }
 
-fn workflow_id_for_task(task_id: &str) -> String {
+fn workflow_run_id_for_task(task_id: &str) -> String {
     format!(
-        "workflow:{}",
+        "workflow-run:{}",
         task_id.strip_prefix("task:").unwrap_or(task_id)
     )
 }
 
-fn insert_workflow_if_missing(
+fn insert_workflow_run_if_missing(
     connection: &Connection,
-    workflow_id: &str,
+    workflow_run_id: &str,
     project_id: &str,
     panel_id: &str,
-    workflow_type: &str,
-    source_workflow_id: Option<&str>,
+    definition_key: &str,
+    source_workflow_run_id: Option<&str>,
     source: &Value,
     now: &str,
 ) -> Result<(), CliError> {
     connection
         .execute(
             r#"
-            INSERT OR IGNORE INTO workflows (
-              id, project_id, panel_id, type, status, source_workflow_id,
+            INSERT OR IGNORE INTO workflow_runs (
+              id, project_id, panel_id, definition_key, status, source_workflow_run_id,
               source_json, created_at, updated_at
             ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
             "#,
             params![
-                workflow_id,
+                workflow_run_id,
                 project_id,
                 panel_id,
-                workflow_type,
-                source_workflow_id,
+                definition_key,
+                source_workflow_run_id,
                 serde_json::to_string(source).map_err(to_cli_error)?,
                 now,
                 now,
@@ -57,7 +57,7 @@ fn insert_workflow_if_missing(
 fn insert_task_created_records(
     connection: &Connection,
     task_id: &str,
-    workflow_id: &str,
+    workflow_run_id: &str,
     project_id: &str,
     status: &str,
     _capability: &str,
@@ -66,8 +66,8 @@ fn insert_task_created_records(
 ) -> Result<(), CliError> {
     connection
         .execute(
-            "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, created_at) VALUES (?, ?, 'created', NULL, ?, ?)",
-            params![task_id, workflow_id, status, now],
+            "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, created_at) VALUES (?, ?, 'created', NULL, ?, ?)",
+            params![task_id, workflow_run_id, status, now],
         )
         .map_err(to_cli_error)?;
     if let Some(document_id) = input.get("documentId").and_then(Value::as_str) {

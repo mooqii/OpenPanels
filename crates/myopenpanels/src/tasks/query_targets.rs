@@ -427,7 +427,7 @@ pub fn remove_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value
         .map_err(to_cli_error)?;
     let interrupted = {
         let mut statement = tx.prepare(
-            "SELECT id, queue, workflow_id, status FROM tasks WHERE project_id = ? AND assigned_agent_id = ? AND status IN ('reserved', 'running', 'claimed', 'converting', 'indexing')"
+            "SELECT id, queue, workflow_run_id, status FROM tasks WHERE project_id = ? AND assigned_agent_id = ? AND status IN ('reserved', 'running', 'claimed', 'converting', 'indexing')"
         ).map_err(to_cli_error)?;
         let rows = statement
             .query_map(params![project_id, target_id], |row| {
@@ -443,7 +443,7 @@ pub fn remove_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value
     };
     let now = crate::control::now_iso();
     let retry_after = now.clone();
-    for (task_id, _, workflow_id, previous_status) in &interrupted {
+    for (task_id, _, workflow_run_id, previous_status) in &interrupted {
         let reason = json!({ "code": "executor_removed", "targetId": target_id });
         tx.execute(
             r#"UPDATE tasks SET status = 'failed', assigned_agent_id = NULL, lease_owner = NULL,
@@ -454,7 +454,7 @@ pub fn remove_target(paths: &MyOpenPanelsPaths, target_id: &str) -> Result<Value
         )
         .map_err(to_cli_error)?;
         tx.execute("UPDATE task_attempts SET status = 'interrupted', finished_at = ?, error_json = ?, failure_class = 'retryable_channel' WHERE task_id = ? AND status = 'leased'", params![now, reason.to_string(), task_id]).map_err(to_cli_error)?;
-        tx.execute("INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, agent_target_id, created_at) VALUES (?, ?, 'executor_removed', ?, 'failed', ?, ?, ?)", params![task_id, workflow_id, previous_status, reason.to_string(), target_id, now]).map_err(to_cli_error)?;
+        tx.execute("INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, agent_target_id, created_at) VALUES (?, ?, 'executor_removed', ?, 'failed', ?, ?, ?)", params![task_id, workflow_run_id, previous_status, reason.to_string(), target_id, now]).map_err(to_cli_error)?;
     }
     let changed = tx
         .execute(

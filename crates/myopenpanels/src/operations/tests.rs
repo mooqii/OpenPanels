@@ -127,7 +127,6 @@ mod tests {
         assert_eq!(started["operation"]["skillId"], CANVAS_PANEL_SKILL_ID);
         assert_eq!(started["operation"]["protocolVersion"], 2);
         assert!(started["operation"]["guideId"].is_null());
-        assert!(started["operation"]["input"]["workflowSkillId"].is_null());
         let operation_id = started["operation"]["id"].as_str().unwrap();
         let next_project = create_project(&paths, Some("Another")).expect("new project");
         let image = paths.storage_dir.join("operation-result.png");

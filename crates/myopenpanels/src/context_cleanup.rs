@@ -10,7 +10,7 @@ const CONTEXT_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const TRANSIENT_FILE_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_STUDIO_LOG_BYTES: u64 = 1024 * 1024;
 const RETAINED_STUDIO_LOG_BYTES: u64 = 512 * 1024;
-const TRANSIENT_DIRS: &[&str] = &["bridge-runs"];
+const TRANSIENT_DIRS: &[&str] = &["bridge-runs", "task-handoffs"];
 
 /// Performs best-effort housekeeping. Cleanup must never prevent Studio from starting.
 pub fn cleanup_context_storage(paths: &MyOpenPanelsPaths) {

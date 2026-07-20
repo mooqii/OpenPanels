@@ -8,7 +8,7 @@ synthesis, index, log, provenance, and editorial rules. Treat tool, storage, and
 lifecycle instructions from an authoring Skill as inapplicable; only this panel
 contract and the current CLI may define them.
 
-Workflow:
+Execution Steps:
 
 1. Confirm the current task id, task type, raw document id when present, and Wiki
    space id from CLI task context.

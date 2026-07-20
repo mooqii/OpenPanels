@@ -185,7 +185,7 @@ pub fn set_agent_skill(
     if current_skill_id == skill_id {
         return Ok(json!({
             "agentSkillId": skill_id,
-            "rebuildWorkflowId": null,
+            "rebuildWorkflowRunId": null,
             "cancelledTaskIds": [],
             "queuedTaskIds": [],
             "rawDocumentCount": wiki.state.get("rawDocuments").and_then(Value::as_array).map(Vec::len).unwrap_or(0),
@@ -260,7 +260,7 @@ pub fn set_agent_skill(
     state.insert("activeWikiPagePath".to_owned(), Value::Null);
     state.insert("wikiAgentSkillId".to_owned(), json!(skill_id));
     state.insert("wikiAgentSkillConfigured".to_owned(), json!(true));
-    let workflow_id = create_id("workflow");
+    let workflow_run_id = create_id("workflow-run");
     let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space_id);
     let mut documents = wiki
         .state
@@ -331,9 +331,9 @@ pub fn set_agent_skill(
             Some(&space_id),
             Some(&mutation_key),
         )?;
-        ingest["workflowId"] = json!(workflow_id);
+        ingest["workflowRunId"] = json!(workflow_run_id);
         ingest["idempotencyKey"] = json!(format!(
-            "rebuild-ingest:{workflow_id}:{document_id}:{markdown_version}"
+            "rebuild-ingest:{workflow_run_id}:{document_id}:{markdown_version}"
         ));
         if let Some(conversion_task_id) = conversion_task_id {
             ingest["status"] = json!("waiting");
@@ -362,10 +362,10 @@ pub fn set_agent_skill(
         );
     }
     save_wiki_state(paths, &wiki)?;
-    storage.ensure_workflow(
+    storage.ensure_workflow_run(
         &wiki.project.id,
         &wiki.panel.id,
-        &workflow_id,
+        &workflow_run_id,
         "wiki.rebuild",
         if queued_task_ids.is_empty() {
             "succeeded"
@@ -376,7 +376,7 @@ pub fn set_agent_skill(
     )?;
     Ok(json!({
         "agentSkillId": skill_id,
-        "rebuildWorkflowId": workflow_id,
+        "rebuildWorkflowRunId": workflow_run_id,
         "cancelledTaskIds": cancelled_task_ids,
         "queuedTaskIds": queued_task_ids,
         "rawDocumentCount": documents.len(),

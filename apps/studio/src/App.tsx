@@ -29,6 +29,7 @@ import type { StudioRuntimeState } from "./components/update/StudioRuntimeStatus
 import { WikiPanel } from "./components/wiki/WikiPanel"
 import { ACTIVE_PROJECT_STORAGE_KEY } from "./constants"
 import { useManualTaskInstructions } from "./hooks/use-manual-task-instructions"
+import { usePanelStateSaves } from "./hooks/use-panel-state-saves"
 import { useStudioUpdate } from "./hooks/use-studio-update"
 import {
   apiFetch,
@@ -45,6 +46,7 @@ import {
   normalizeBootstrap,
   normalizePanelState,
   normalizeSnapshot,
+  publishingStateFromAppState,
   saveCanvasPanelState,
   saveSelectionState,
   typesettingRevisionFromAppState,
@@ -72,7 +74,6 @@ import type {
   AppState,
   BootstrapResponse,
   MyOpenPanelsTransport,
-  TypesettingState,
 } from "./types"
 
 export function App({ transport }: { transport: MyOpenPanelsTransport }) {
@@ -588,36 +589,8 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     }
   }, [transport])
 
-  const handleTypesettingStateSaved = useCallback(
-    (savedState: TypesettingState, savedRevision: number) => {
-      setAppState((current) => {
-        if (!current) return current
-        const next = {
-          ...current,
-          panels: current.panels.map((snapshot) =>
-            snapshot.panel.kind === "typesetting"
-              ? {
-                  ...snapshot,
-                  revision: savedRevision,
-                  state: savedState,
-                }
-              : snapshot
-          ),
-          revision:
-            current.activePanelKind === "typesetting"
-              ? savedRevision
-              : current.revision,
-          state:
-            current.activePanelKind === "typesetting"
-              ? savedState
-              : current.state,
-        }
-        appStateRef.current = next
-        return next
-      })
-    },
-    []
-  )
+  const { handlePublishingStateSaved, handleTypesettingStateSaved } =
+    usePanelStateSaves({ appStateRef, setAppState })
 
   useEffect(() => {
     if (!(appState && canvasPanel && canvasSnapshot)) return
@@ -904,6 +877,13 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           <PublishingPanel
             chromeContent={projectChrome}
             key={`${appState.project.id}:publishing`}
+            onOpenAgentTasks={(taskIds) => openAgentTaskList("all", taskIds)}
+            onOpenManualTask={manualTaskInstructions.open}
+            onStateSaved={handlePublishingStateSaved}
+            state={publishingStateFromAppState(appState)}
+            tasks={appState.tasks ?? []}
+            transport={transport}
+            typesetting={typesettingStateFromAppState(appState)}
           />
         ) : (
           <WikiPanel

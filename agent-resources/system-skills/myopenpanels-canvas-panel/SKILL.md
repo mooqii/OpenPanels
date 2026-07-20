@@ -19,8 +19,6 @@ Intent routing:
   `references/image-generation.md`.
 - To redraw, restyle, or edit an explicitly selected bitmap, read
   `references/image-edit.md`.
-- Before invoking an image model, read `references/workflow-skill-routing.md` to
-  determine whether a separate drawing workflow skill was selected.
 
 Core rules:
 
@@ -44,6 +42,6 @@ Core rules:
 
 Completion criteria:
 
-- The required references and any selected workflow skill were loaded.
+- The required Procedure reference was loaded.
 - The result is inserted into the intended Canvas and the operation lifecycle is
   closed explicitly.

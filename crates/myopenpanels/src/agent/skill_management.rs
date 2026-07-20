@@ -251,8 +251,14 @@ fn managed_skill_module_kinds(listing: &AgentSkillListing) -> Vec<String> {
     if has_panel("writing") && has_task("refine_writing_skill") {
         module_kinds.push("writing-refinement".to_owned());
     }
+    if has_panel("publishing") && has_task("publish_xiaohongshu_note") {
+        module_kinds.push("publishing-xiaohongshu".to_owned());
+    }
     for applies_to in &listing.skill.applies_to {
-        if !matches!(applies_to.as_str(), "wiki" | "writing" | "any")
+        if !matches!(
+            applies_to.as_str(),
+            "wiki" | "writing" | "publishing" | "any"
+        )
             && !module_kinds.contains(applies_to)
         {
             module_kinds.push(applies_to.clone());
@@ -311,7 +317,40 @@ fn clear_deleted_writing_skill_selections(
     skill_id: &str,
 ) -> Result<(), CliError> {
     clear_writing_skill_module_selections(paths, skill_id, true, true)?;
-    clear_wiki_skill_selections(paths, skill_id)
+    clear_wiki_skill_selections(paths, skill_id)?;
+    clear_publishing_skill_selections(paths, skill_id)
+}
+
+pub fn list_xiaohongshu_publishing_skills(
+    paths: &MyOpenPanelsPaths,
+) -> Result<Vec<AgentSkillListing>, CliError> {
+    sync_builtin_agent_skills(paths)?;
+    Ok(list_agent_skills(paths)?
+        .into_iter()
+        .filter(|item| {
+            metadata_matches(
+                &item.skill.applies_to,
+                &item.skill.task_types,
+                Some("publishing"),
+                Some("publish_xiaohongshu_note"),
+            )
+        })
+        .collect())
+}
+
+pub fn xiaohongshu_publishing_skill(
+    paths: &MyOpenPanelsPaths,
+    skill_id: &str,
+) -> Result<AgentSkillListing, CliError> {
+    list_xiaohongshu_publishing_skills(paths)?
+        .into_iter()
+        .find(|item| item.skill.id == skill_id)
+        .ok_or_else(|| {
+            CliError::with_code(
+                "publishing_skill_not_found",
+                format!("Xiaohongshu Publishing Skill not found: {skill_id}"),
+            )
+        })
 }
 
 fn clear_wiki_skill_selections(

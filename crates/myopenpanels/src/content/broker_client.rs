@@ -26,6 +26,12 @@ pub fn broker_read_skill(request: &SkillReadRequest) -> Result<Value, CliError> 
     broker_json("/api/task-broker/v3/skills/read", request)
 }
 
+pub fn broker_publishing_checkpoint(
+    request: &PublishingCheckpointRequest,
+) -> Result<Value, CliError> {
+    broker_json("/api/task-broker/v3/publishing/checkpoint", request)
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_TASK_BROKER_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

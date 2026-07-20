@@ -101,6 +101,9 @@ pub(crate) fn custom_writing_skill_from_source(
                     }
                     "writing" => ("writing", &["generate_document"]),
                     "writing-refinement" => ("writing", &["refine_writing_skill"]),
+                    "publishing-xiaohongshu" => {
+                        ("publishing", &["publish_xiaohongshu_note"])
+                    }
                     _ => {
                         return Err(CliError::with_code(
                             "invalid_custom_skill",

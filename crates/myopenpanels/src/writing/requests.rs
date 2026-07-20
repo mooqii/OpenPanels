@@ -410,6 +410,9 @@ pub fn create_requests(
                     "writingSkillId": listing.skill.id.clone(),
                     "writingSkillSource": listing.source.clone(),
                 }),
+                max_attempts: 8,
+                dispatch_mode: "auto".to_owned(),
+                idempotency_key: None,
             }
         })
         .collect::<Vec<_>>();

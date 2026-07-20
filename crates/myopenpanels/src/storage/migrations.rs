@@ -8,7 +8,6 @@ CREATE TABLE schema_migrations (
 "#;
 
 const MIGRATION_0001_SQL: &str = include_str!("../../migrations/0001_initial.sql");
-const MIGRATION_0002_SQL: &str = include_str!("../../migrations/0002_remove_poll_targets.sql");
 
 struct Migration {
     id: &'static str,
@@ -30,16 +29,10 @@ fn migrations() -> &'static [Migration] {
             checksum_material: MIGRATION_0001_SQL,
             up: migration_0001,
         },
-        Migration {
-            id: "0002_remove_poll_targets",
-            description: "Remove external poll targets",
-            checksum_material: MIGRATION_0002_SQL,
-            up: migration_0002,
-        },
     ]
 }
 
-fn migrate(connection: &mut Connection) -> Result<bool, CliError> {
+fn migrate(connection: &mut Connection) -> Result<(), CliError> {
     let migration_table_exists = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'schema_migrations')",
@@ -111,19 +104,17 @@ fn preflight_existing_database(database_path: &std::path::Path) -> Result<(), Cl
     validate_applied_history(&applied, migrations())
 }
 
-fn run_migrations(connection: &mut Connection, migrations: &[Migration]) -> Result<bool, CliError> {
+fn run_migrations(connection: &mut Connection, migrations: &[Migration]) -> Result<(), CliError> {
     validate_registry(migrations)?;
     let applied = read_applied_migrations(connection)?;
     validate_applied_history(&applied, migrations)?;
 
-    let mut removed_poll_targets = false;
     for migration in migrations {
         if !applied.contains_key(migration.id) {
             apply_migration(connection, migration)?;
-            removed_poll_targets |= migration.id == "0002_remove_poll_targets";
         }
     }
-    Ok(removed_poll_targets)
+    Ok(())
 }
 
 fn validate_applied_history(
@@ -218,10 +209,6 @@ fn migration_checksum(migration: &Migration) -> String {
 
 fn migration_0001(tx: &Transaction<'_>) -> Result<(), CliError> {
     tx.execute_batch(MIGRATION_0001_SQL).map_err(to_cli_error)
-}
-
-fn migration_0002(tx: &Transaction<'_>) -> Result<(), CliError> {
-    tx.execute_batch(MIGRATION_0002_SQL).map_err(to_cli_error)
 }
 
 fn to_cli_error(error: impl std::fmt::Display) -> CliError {

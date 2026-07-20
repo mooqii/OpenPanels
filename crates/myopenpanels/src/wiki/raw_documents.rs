@@ -48,7 +48,7 @@ pub fn add_raw_document(
         )?;
     }
 
-    let workflow_id = create_id("workflow");
+    let workflow_run_id = create_id("workflow-run");
     let content_hash = sha256_hex(content);
     let mut conversion_task = if is_text {
         None
@@ -65,14 +65,14 @@ pub fn add_raw_document(
         )?)
     };
     if let Some(task) = conversion_task.as_mut() {
-        task["workflowId"] = json!(workflow_id);
+        task["workflowRunId"] = json!(workflow_run_id);
         task["idempotencyKey"] = json!(format!("convert:{document_id}:{content_hash}"));
         if let Some(stored) = wiki
             .tasks
             .iter_mut()
             .find(|stored| stored["id"] == task["id"])
         {
-            stored["workflowId"] = task["workflowId"].clone();
+            stored["workflowRunId"] = task["workflowRunId"].clone();
             stored["idempotencyKey"] = task["idempotencyKey"].clone();
         }
     }
@@ -103,7 +103,7 @@ pub fn add_raw_document(
             .and_then(|value| value["id"].as_str())
             .unwrap_or_default();
         task["status"] = json!("waiting");
-        task["workflowId"] = json!(workflow_id);
+        task["workflowRunId"] = json!(workflow_run_id);
         task["dependsOnTaskIds"] = json!([conversion_id]);
         task["idempotencyKey"] = json!(format!("ingest:{document_id}:1"));
         if let Some(stored) = wiki
@@ -116,15 +116,15 @@ pub fn add_raw_document(
         Some(task)
     };
     if let Some(task) = ingest_task.as_mut() {
-        if task.get("workflowId").is_none() {
-            task["workflowId"] = json!(workflow_id);
+        if task.get("workflowRunId").is_none() {
+            task["workflowRunId"] = json!(workflow_run_id);
             task["idempotencyKey"] = json!(format!("ingest:{document_id}:1"));
             if let Some(stored) = wiki
                 .tasks
                 .iter_mut()
                 .find(|stored| stored["id"] == task["id"])
             {
-                stored["workflowId"] = task["workflowId"].clone();
+                stored["workflowRunId"] = task["workflowRunId"].clone();
                 stored["idempotencyKey"] = task["idempotencyKey"].clone();
             }
         }
@@ -529,4 +529,3 @@ pub fn reindex_raw_document(
     save_wiki_state(paths, &wiki)?;
     Ok(json!({ "document": document, "task": task, "state": wiki.state }))
 }
-

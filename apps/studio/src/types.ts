@@ -213,7 +213,7 @@ export interface ProjectTask {
     status: string
     successCondition: string
   }>
-  dispatchMode?: "auto" | "prefer"
+  dispatchMode?: "auto" | "prefer" | "manual"
   dispatchState?: "eligible" | "noTarget" | "running" | "done" | string
   error?: unknown
   executionGeneration?: number
@@ -251,7 +251,7 @@ export interface ProjectTask {
     taskIds: string[]
     tasks: ProjectTask[]
   }
-  workflowId?: string
+  workflowRunId?: string
 }
 
 export type TaskExecutionScope =
@@ -305,7 +305,63 @@ export interface TypesettingState {
 }
 
 export interface PublishingState {
+  releases: PublishingRelease[]
   schemaVersion: 1
+  selectedPublicationId: string | null
+  selectedSkillIds: {
+    xiaohongshu: string
+  }
+}
+
+export type PublishingOutcome =
+  | "published"
+  | "needs_user_action"
+  | "not_published"
+  | "unknown"
+
+export interface PublishingMediaSnapshot {
+  assetRef: string
+  contentHash: string
+  fileName: string
+  height?: number | null
+  isPrimary: boolean
+  mimeType: string
+  src: string
+  width?: number | null
+}
+
+export interface PublishingAttempt {
+  completedAt: string | null
+  createdAt: string
+  id: string
+  mode: "auto" | "manual"
+  outcome: PublishingOutcome | null
+  phase: "queued" | "prepared" | "committing" | "completed"
+  publishedAt?: string | null
+  reasonCode: string | null
+  remoteUrl: string | null
+  requestId: string
+  skillHash: string
+  skillId: string
+  skillName: string
+  summary: string | null
+  taskId: string
+  updatedAt?: string
+}
+
+export interface PublishingRelease {
+  attempts: PublishingAttempt[]
+  createdAt: string
+  id: string
+  platform: "xiaohongshu"
+  snapshot: {
+    bodyText: string
+    media: PublishingMediaSnapshot[]
+    title: string
+  }
+  sourcePublicationId: string
+  sourceUpdatedAt: string | null
+  updatedAt: string
 }
 
 export interface TypesettingPublication {

@@ -62,7 +62,7 @@
         )
         .expect("writing request");
         let mut task = created["tasks"][0].clone();
-        task["workflowId"] = json!("workflow:noise");
+        task["workflowRunId"] = json!("workflow:noise");
         task["mutationKey"] = json!("writing:noise");
         task["executionGeneration"] = json!(17);
         let workspace = temp.path().join("execution");
@@ -76,8 +76,10 @@
         assert!(prompt.contains("# Captured raw source"));
         assert!(prompt.contains("# Captured generated source"));
         assert!(prompt.contains("guides/reference.md"));
-        assert!(prompt.contains("writing generate --task-id"));
-        assert!(prompt.contains("operation complete --operation-id"));
+        assert!(!prompt.contains("writing generate --task-id"));
+        assert!(!prompt.contains("operation complete --operation-id"));
+        assert!(prompt.contains("outputs/document.md"));
+        assert!(prompt.contains("\"schemaVersion\": 2"));
         assert!(!prompt.contains("workflow:noise"));
         assert!(!prompt.contains("writing:noise"));
         assert!(!prompt.contains("executionGeneration"));

@@ -487,8 +487,8 @@ fn project_read_commands_bootstrap_project() {
     ]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(bootstrap["protocolVersion"], 9);
-    assert_eq!(bootstrap["commandCatalogVersion"], 3);
+    assert_eq!(bootstrap["protocolVersion"], 12);
+    assert_eq!(bootstrap["commandCatalogVersion"], 5);
     assert_eq!(bootstrap["panel"]["context"]["panelKind"], "canvas");
     assert_eq!(bootstrap["panel"]["selection"]["supported"], true);
     assert!(bootstrap.get("capabilities").is_none());
@@ -688,10 +688,10 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert_eq!(envelope["intent"], "agent.bootstrap.read");
     let payload = &envelope["data"];
     let actions = &envelope["actions"];
-    assert_eq!(payload["protocolVersion"], 9);
+    assert_eq!(payload["protocolVersion"], 12);
     assert!(payload.get("supportedProtocolVersions").is_none());
     assert_eq!(payload["cliVersion"], VERSION);
-    assert_eq!(payload["commandCatalogVersion"], 3);
+    assert_eq!(payload["commandCatalogVersion"], 5);
     assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
     assert!(payload.get("entrySkill").is_none());
     assert!(payload.get("entrySkillUpdate").is_none());
@@ -738,7 +738,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     let (code, stdout, stderr) = run(&["agent", "catalog", "--format", "json"]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let index = serde_json::from_str::<Value>(&stdout).expect("catalog index");
-    assert_eq!(index["catalogVersion"], 3);
+    assert_eq!(index["catalogVersion"], 5);
     assert!(index["domains"]
         .as_array()
         .unwrap()
@@ -778,7 +778,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
 }
 
 #[test]
-fn workflow_bootstrap_targets_without_changing_focus_and_returns_scoped_commands() {
+fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_commands() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -788,7 +788,7 @@ fn workflow_bootstrap_targets_without_changing_focus_and_returns_scoped_commands
     let args = [
         "agent",
         "bootstrap",
-        "--workflow",
+        "--procedure",
         "panel.canvas.image.insert",
         "--project-dir",
         project_dir.to_str().unwrap(),
@@ -802,11 +802,14 @@ fn workflow_bootstrap_targets_without_changing_focus_and_returns_scoped_commands
     let (code, stdout, stderr) = run_raw(&args);
     assert_eq!(code, 0, "{stderr}{stdout}");
     assert!(stdout.len() <= crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES);
-    let envelope = serde_json::from_str::<Value>(&stdout).expect("workflow bootstrap");
+    let envelope = serde_json::from_str::<Value>(&stdout).expect("procedure bootstrap");
     let payload = &envelope["data"];
-    assert_eq!(payload["protocolVersion"], 9);
-    assert_eq!(payload["workflowCatalogVersion"], 1);
-    assert_eq!(payload["agentWorkflow"]["key"], "panel.canvas.image.insert");
+    assert_eq!(payload["protocolVersion"], 12);
+    assert_eq!(payload["procedureCatalogVersion"], 1);
+    assert_eq!(payload["agentProcedure"]["key"], "panel.canvas.image.insert");
+    assert!(payload["agentProcedure"].get("executionMode").is_none());
+    assert!(payload.get("workflowCatalogVersion").is_none());
+    assert!(payload.get("agentWorkflow").is_none());
     assert_eq!(payload["focus"]["panelKind"], "wiki");
     assert_eq!(payload["target"]["panelKind"], "canvas");
     assert_eq!(payload["readiness"], "ready");
@@ -835,7 +838,7 @@ fn workflow_bootstrap_targets_without_changing_focus_and_returns_scoped_commands
         "wiki"
     );
 
-    for workflow in [
+    for procedure in [
         "panel.canvas.selection.read",
         "panel.canvas.selection.export",
         "panel.canvas.image.insert",
@@ -858,8 +861,8 @@ fn workflow_bootstrap_targets_without_changing_focus_and_returns_scoped_commands
         let (code, stdout, stderr) = run_raw(&[
             "agent",
             "bootstrap",
-            "--workflow",
-            workflow,
+            "--procedure",
+            procedure,
             "--project-dir",
             project_dir.to_str().unwrap(),
             "--storage-dir",
@@ -869,15 +872,15 @@ fn workflow_bootstrap_targets_without_changing_focus_and_returns_scoped_commands
             "--format",
             "json",
         ]);
-        assert_eq!(code, 0, "{workflow}: {stderr}{stdout}");
+        assert_eq!(code, 0, "{procedure}: {stderr}{stdout}");
         assert!(
             stdout.len() <= crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES,
-            "{workflow} Bootstrap was {} bytes",
+            "{procedure} Bootstrap was {} bytes",
             stdout.len()
         );
-        let envelope = serde_json::from_str::<Value>(&stdout).expect("workflow envelope");
-        assert_eq!(envelope["data"]["agentWorkflow"]["key"], workflow);
-        if workflow == "panel.wiki.knowledge.query" {
+        let envelope = serde_json::from_str::<Value>(&stdout).expect("procedure envelope");
+        assert_eq!(envelope["data"]["agentProcedure"]["key"], procedure);
+        if procedure == "panel.wiki.knowledge.query" {
             let selected_skill = envelope["data"]["skills"]
                 .as_array()
                 .unwrap()
@@ -900,7 +903,7 @@ fn workflow_bootstrap_targets_without_changing_focus_and_returns_scoped_commands
 }
 
 #[test]
-fn workflow_bootstrap_blocks_when_its_target_panel_is_missing() {
+fn procedure_bootstrap_blocks_when_its_target_panel_is_missing() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -934,7 +937,7 @@ fn workflow_bootstrap_blocks_when_its_target_panel_is_missing() {
     let (code, stdout, stderr) = run(&[
         "agent",
         "bootstrap",
-        "--workflow",
+        "--procedure",
         "panel.canvas.image.insert",
         "--project-dir",
         project_dir.to_str().unwrap(),
@@ -947,7 +950,7 @@ fn workflow_bootstrap_blocks_when_its_target_panel_is_missing() {
     ]);
 
     assert_eq!(code, 0, "{stderr}{stdout}");
-    let payload = serde_json::from_str::<Value>(&stdout).expect("blocked workflow");
+    let payload = serde_json::from_str::<Value>(&stdout).expect("blocked procedure");
     assert_eq!(payload["readiness"], "blocked");
     assert_eq!(payload["blockers"][0]["code"], "target_panel_required");
     assert_eq!(payload["focus"]["panelKind"], "wiki");

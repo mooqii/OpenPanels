@@ -168,18 +168,18 @@ async fn api_task_attempts(
     }
 }
 
-async fn api_workflows(State(state): State<Arc<AppState>>) -> Response {
-    match tasks::list_workflows(&state.paths) {
+async fn api_workflow_runs(State(state): State<Arc<AppState>>) -> Response {
+    match tasks::list_workflow_runs(&state.paths) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),
     }
 }
 
-async fn api_workflow(
+async fn api_workflow_run(
     State(state): State<Arc<AppState>>,
-    Path(workflow_id): Path<String>,
+    Path(workflow_run_id): Path<String>,
 ) -> Response {
-    match tasks::read_workflow(&state.paths, &workflow_id) {
+    match tasks::read_workflow_run(&state.paths, &workflow_run_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),
     }

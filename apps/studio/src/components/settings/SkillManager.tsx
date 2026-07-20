@@ -77,6 +77,7 @@ const ASSOCIATION_MODULES = [
   "wiki-update",
   "writing",
   "writing-refinement",
+  "publishing-xiaohongshu",
 ] as const
 
 export function filterDeviceSkills(

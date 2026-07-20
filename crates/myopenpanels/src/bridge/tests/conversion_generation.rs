@@ -33,7 +33,7 @@
             .into_iter()
             .find(|task| task["type"] == "convert_document_to_markdown")
             .expect("conversion task");
-        task["workflowId"] = json!("workflow:noise");
+        task["workflowRunId"] = json!("workflow:noise");
         task["executionGeneration"] = json!(9);
         task["leaseOwner"] = json!("target:noise");
         let workspace = temp.path().join("execution");
@@ -60,7 +60,8 @@
         assert!(prompt.contains("# Conversion Instructions"));
         assert!(prompt.contains("Convert A Raw Document To Markdown"));
         assert!(prompt.contains(original_path.to_str().unwrap()));
-        assert!(prompt.contains("wiki raw update"));
+        assert!(!prompt.contains("wiki raw update"));
+        assert!(prompt.contains("\"schemaVersion\": 2"));
         assert!(prompt.contains("outputs/source.md"));
         assert!(!prompt.contains("PROMPT-SECRET-BINARY"));
         assert!(!prompt.contains("workflow:noise"));
@@ -82,6 +83,95 @@
                 .pointer("/executionInputs/originalDocument/filePath")
                 .and_then(Value::as_str),
             original_path.to_str()
+        );
+    }
+
+    #[test]
+    fn automatic_agent_uses_the_runtime_finalizer_for_conversion() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().join("project");
+        let storage = temp.path().join("storage");
+        fs::create_dir_all(&project).expect("project");
+        let paths = crate::paths::resolve_myopenpanels_paths(
+            Some(project.to_str().unwrap()),
+            Some(storage.to_str().unwrap()),
+            Some("automatic-runtime-finalizer"),
+        )
+        .expect("paths");
+        let bootstrap = crate::control::ensure_project_bootstrap(
+            &paths,
+            crate::control::BootstrapRequest::new(),
+        )
+        .expect("bootstrap");
+        let uploaded = crate::wiki::add_raw_document(
+            &paths,
+            "automatic.pdf",
+            Some("Automatic conversion"),
+            Some("application/pdf"),
+            "user",
+            Some("wiki:default"),
+            b"binary fixture",
+        )
+        .expect("raw document");
+        let document_id = uploaded["document"]["id"].as_str().unwrap();
+        let task = crate::storage::Storage::open(&paths)
+            .expect("storage")
+            .list_tasks(&bootstrap.project.id)
+            .expect("tasks")
+            .into_iter()
+            .find(|task| task["type"] == "convert_document_to_markdown")
+            .expect("conversion task");
+        let target = crate::tasks::register_target(
+            &paths,
+            crate::tasks::TargetRegistration {
+                name: "automatic-runtime-finalizer",
+                host: Some("test"),
+                project_id: Some(&bootstrap.project.id),
+                capabilities: vec!["wiki.convertDocument".to_owned()],
+                priority: 0,
+                protocol_version: 3,
+                max_concurrency: 1,
+                model_gateway_connection_id: None,
+            },
+        )
+        .expect("target");
+        let _broker = crate::content::enable_test_task_broker();
+        let claim = crate::tasks::claim_task(
+            &paths,
+            task["id"].as_str().unwrap(),
+            target["target"]["id"].as_str().unwrap(),
+        )
+        .expect("claim");
+        let command = r#"mkdir -p outputs && printf '# Automatic Runtime\n' > outputs/source.md && printf '%s' '{"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#;
+        let result = run_task_command(
+            &paths,
+            command,
+            10_000,
+            &claim["task"],
+            target["target"]["id"].as_str().unwrap(),
+            claim["leaseToken"].as_str().unwrap(),
+            true,
+            claim["attemptId"].as_str(),
+            claim["executionGeneration"].as_i64(),
+            claim["taskBrokerUrl"].as_str(),
+            claim["executionToken"].as_str(),
+            None,
+        )
+        .expect("automatic execution");
+        assert_eq!(result["success"], true, "{result}");
+        assert_eq!(result["runtimeFinalized"], true);
+        assert_eq!(result["runtimeFinalization"]["status"], "succeeded");
+        assert_eq!(
+            result["runtimeFinalization"]["finalizationState"]["phase"],
+            "completed"
+        );
+        assert_eq!(
+            result["runtimeFinalization"]["result"]["runtimeFinalization"]["phase"],
+            "completed"
+        );
+        assert_eq!(
+            crate::wiki::read_markdown(&paths, document_id).unwrap()["markdown"],
+            "# Automatic Runtime\n"
         );
     }
 
@@ -156,6 +246,13 @@
         .expect("claim");
         let workspace = temp.path().join("execution");
         fs::create_dir_all(&workspace).expect("workspace");
+        let denied = crate::content::authorize_agent_broker_capability(
+            &paths,
+            claim["executionToken"].as_str().expect("execution token"),
+            "content.write",
+        )
+        .expect_err("conversion Agent cannot stage through the Broker");
+        assert_eq!(denied.code(), Some("task_handler_command_not_allowed"));
         let missing = validate_conversion_execution_result(&paths, &task, &workspace)
             .expect_err("missing result must fail");
         assert_eq!(missing.code(), Some("invalid_output"));

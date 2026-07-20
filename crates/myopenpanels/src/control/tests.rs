@@ -62,7 +62,7 @@ mod tests {
             .find(|snapshot| snapshot.panel.kind == PanelKind::Publishing)
             .expect("publishing panel");
         assert_eq!(publishing.panel.title, "发布");
-        assert_eq!(publishing.state, json!({ "schemaVersion": 1 }));
+        assert_eq!(publishing.state, crate::publishing::empty_state());
         assert!(paths.focus_dir.join("active-project.json").exists());
         assert!(paths.focus_dir.join("active-panel.json").exists());
         assert!(storage_dir

@@ -98,7 +98,7 @@ describe("manual task instructions", () => {
     const scope = { kind: "exact-task", taskId: "task:manual" } as const
 
     expect(manualTaskInstruction(scope, "en")).toContain(
-      "myopenpanels task scope read --scope exact-task --task-id task:manual --format json"
+      "myopenpanels task handoff start --scope exact-task --task-id task:manual --format json"
     )
     expect(manualTaskInstruction(scope, "zh-CN")).toContain(
       "只处理任务 task:manual"

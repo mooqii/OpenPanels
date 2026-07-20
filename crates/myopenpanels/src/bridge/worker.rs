@@ -67,7 +67,9 @@ pub fn run_bridge(
             name: options.name.unwrap_or(&default_name),
             host: options.host.or(Some("command-bridge")),
             project_id: None,
-            capabilities: if options.capabilities.is_empty() {
+            capabilities: if options.capabilities.is_empty() && options.agent_prompt {
+                task_handler_capabilities()
+            } else if options.capabilities.is_empty() {
                 vec!["*".to_owned()]
             } else {
                 options.capabilities.clone()
@@ -304,7 +306,7 @@ fn run_model_gateway_loop(paths: MyOpenPanelsPaths, shutdown: Arc<AtomicBool>) {
                     name: &format!("model-gateway:{}:{}", paths.context_id, spec.connection_id),
                     host: Some(&spec.host),
                     project_id: None,
-                    capabilities: vec!["*".to_owned()],
+                    capabilities: task_handler_capabilities(),
                     priority: 1000 - position as i64,
                     protocol_version: 3,
                     max_concurrency: max_concurrency as i64,
@@ -432,7 +434,14 @@ fn run_claimed_model_gateway_task(
                 lease_token,
                 error.message(),
                 None,
-                tasks::TaskFailureClass::RetryableChannel,
+                if matches!(
+                    error.code(),
+                    Some("task_handler_not_found" | "task_handler_mismatch")
+                ) {
+                    tasks::TaskFailureClass::TerminalTask
+                } else {
+                    tasks::TaskFailureClass::RetryableChannel
+                },
             );
             record_gateway_error(&paths, error.message());
             return;
@@ -512,6 +521,9 @@ fn finalize_task_result(
     host: &str,
     manual_lifecycle: bool,
 ) -> Result<(), CliError> {
+    if result.get("runtimeFinalized").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
     if manual_lifecycle {
         result["leaseToken"] = json!(lease_token);
         return Ok(());

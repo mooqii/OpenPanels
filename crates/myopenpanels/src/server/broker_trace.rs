@@ -29,6 +29,11 @@ async fn api_broker_stage(
         Ok(token) => token,
         Err(error) => return broker_error(error),
     };
+    if let Err(error) =
+        content::authorize_agent_broker_capability(&state.paths, token, "content.write")
+    {
+        return broker_error(error);
+    }
     match content::stage_file(&state.paths, token, &body) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => broker_error(error),
@@ -44,6 +49,11 @@ async fn api_broker_read(
         Ok(token) => token,
         Err(error) => return broker_error(error),
     };
+    if let Err(error) =
+        content::authorize_agent_broker_capability(&state.paths, token, "content.read")
+    {
+        return broker_error(error);
+    }
     match content::read_file(&state.paths, token, &body) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => broker_error(error),
@@ -59,6 +69,13 @@ async fn api_broker_prepare_operation(
         Ok(token) => token,
         Err(error) => return broker_error(error),
     };
+    if let Err(error) = content::authorize_agent_broker_capability(
+        &state.paths,
+        token,
+        "operation.prepare",
+    ) {
+        return broker_error(error);
+    }
     match content::prepare_operation(&state.paths, token, &body) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => broker_error(error),
@@ -74,6 +91,11 @@ async fn api_broker_begin_operation(
         Ok(token) => token,
         Err(error) => return broker_error(error),
     };
+    if let Err(error) =
+        content::authorize_agent_broker_capability(&state.paths, token, "operation.begin")
+    {
+        return broker_error(error);
+    }
     match content::begin_operation(&state.paths, token, &body) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => broker_error(error),
@@ -89,6 +111,11 @@ async fn api_broker_prepare_skill(
         Ok(token) => token,
         Err(error) => return broker_error(error),
     };
+    if let Err(error) =
+        content::authorize_agent_broker_capability(&state.paths, token, "skill.prepare")
+    {
+        return broker_error(error);
+    }
     match content::prepare_skill(&state.paths, token, &body) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => broker_error(error),
@@ -104,6 +131,11 @@ async fn api_broker_read_skill(
         Ok(token) => token,
         Err(error) => return broker_error(error),
     };
+    if let Err(error) =
+        content::authorize_agent_broker_capability(&state.paths, token, "skill.read")
+    {
+        return broker_error(error);
+    }
     match content::read_skill(&state.paths, token, &body) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => broker_error(error),
@@ -119,7 +151,34 @@ async fn api_broker_task_context(
         Ok(token) => token,
         Err(error) => return broker_error(error),
     };
+    if let Err(error) =
+        content::authorize_agent_broker_capability(&state.paths, token, "task-context.read")
+    {
+        return broker_error(error);
+    }
     match content::read_task_context(&state.paths, token, &body) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => broker_error(error),
+    }
+}
+
+async fn api_broker_publishing_checkpoint(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<PublishingCheckpointRequest>,
+) -> Response {
+    let token = match broker_token(&headers) {
+        Ok(token) => token,
+        Err(error) => return broker_error(error),
+    };
+    if let Err(error) = content::authorize_agent_broker_capability(
+        &state.paths,
+        token,
+        "publishing.checkpoint",
+    ) {
+        return broker_error(error);
+    }
+    match content::publishing_checkpoint(&state.paths, token, &body) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => broker_error(error),
     }

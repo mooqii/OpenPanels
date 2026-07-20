@@ -137,7 +137,7 @@ mod tests {
     fn registered_builtin_packages_are_standard_and_presets_are_portable() {
         let registry: BuiltinSkillRegistry =
             serde_json::from_str(BUILTIN_SKILL_REGISTRY).expect("registry");
-        assert_eq!(registry.schema_version, 2);
+        assert_eq!(registry.schema_version, 3);
         for registration in registry.system_skills {
             let directory = SYSTEM_SKILLS
                 .get_dir(&registration.package_dir)
@@ -166,22 +166,22 @@ mod tests {
     }
 
     #[test]
-    fn registered_agent_workflows_are_unique_valid_and_indexed_by_entry_skill() {
-        let workflows = load_agent_workflows().expect("Agent Workflows");
+    fn registered_agent_procedures_and_task_handoffs_are_valid_and_indexed() {
+        let catalog = load_agent_procedures().expect("Agent Procedure catalog");
         let entry_skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
-        assert_eq!(workflows.len(), 23);
-        assert_eq!(
-            workflows
-                .iter()
-                .filter(|workflow| workflow.registration.execution_mode == "bootstrap")
-                .count(),
-            18
-        );
-        for workflow in workflows {
+        assert_eq!(catalog.procedures.len(), 18);
+        assert_eq!(catalog.task_handoff_keys.len(), 5);
+        for procedure in catalog.procedures {
             assert!(
-                entry_skill.contains(&format!("`{}`", workflow.registration.key)),
+                entry_skill.contains(&format!("`{}`", procedure.registration.key)),
                 "Entry Skill is missing {}",
-                workflow.registration.key
+                procedure.registration.key
+            );
+        }
+        for handoff_key in catalog.task_handoff_keys {
+            assert!(
+                entry_skill.contains(&format!("`{handoff_key}`")),
+                "Entry Skill is missing {handoff_key}"
             );
         }
     }

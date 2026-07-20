@@ -50,7 +50,8 @@
         assert!(prompt.contains("# Source material"));
         assert!(prompt.contains("custom/home.md"));
         assert!(prompt.contains("Karpathy LLM Wiki"));
-        assert!(prompt.contains("wiki page create"));
+        assert!(!prompt.contains("wiki page create"));
+        assert!(prompt.contains("outputs/wiki/<path.md>"));
         assert!(prompt.contains(&format!(
             "--project-dir {}",
             shell_quote_prompt_arg(&paths.project_dir.display().to_string())
@@ -58,7 +59,7 @@
         assert!(prompt.contains("--space-id wiki:default"));
         assert!(prompt.contains(task["id"].as_str().unwrap()));
         assert!(!prompt.contains("Task JSON"));
-        assert!(!prompt.contains("workflowId"));
+        assert!(!prompt.contains("workflowRunId"));
         assert!(!prompt.contains("mutationSequence"));
         assert!(!prompt.contains("executionGeneration"));
         assert!(!prompt.contains("agent skill read --skill-id"));
@@ -143,7 +144,7 @@
             "projectId": bootstrap.project.id,
             "queue": "wiki",
             "type": "maintain_wiki",
-            "workflowId": "workflow:noise",
+            "workflowRunId": "workflow:noise",
             "mutationKey": "wiki:noise",
             "mutationSequence": 42,
             "executionGeneration": 7,
@@ -345,7 +346,6 @@
         let valid =
             validate_wiki_execution_result(&paths, &task, &workspace).expect("valid no change");
         assert_eq!(valid["outcome"], "no_change");
-        assert_eq!(valid["bridgeValidated"], true);
 
         fs::write(
             workspace.join(EXECUTION_RESULT_FILE),

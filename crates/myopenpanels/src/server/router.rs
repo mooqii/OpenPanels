@@ -3,6 +3,7 @@ use crate::bridge;
 use crate::content::{
     self, BeginOperationRequest, PrepareOperationRequest, PrepareSkillRequest, ReadFileRequest,
     SkillReadRequest, StageFileRequest, TaskContextRequest,
+    PublishingCheckpointRequest,
 };
 use crate::control::{
     create_project, delete_project, ensure_project_bootstrap, now_iso, open_runtime_panel,
@@ -198,8 +199,11 @@ fn build_router(
         .route("/api/tasks/{task_id}/archive", post(api_task_archive))
         .route("/api/tasks/{task_id}/events", get(api_task_events))
         .route("/api/tasks/{task_id}/attempts", get(api_task_attempts))
-        .route("/api/workflows", get(api_workflows))
-        .route("/api/workflows/{workflow_id}", get(api_workflow))
+        .route("/api/workflow-runs", get(api_workflow_runs))
+        .route(
+            "/api/workflow-runs/{workflow_run_id}",
+            get(api_workflow_run),
+        )
         .route("/api/agent/targets", get(api_agent_targets))
         .route(
             "/api/agent/routes",
@@ -256,6 +260,18 @@ fn build_router(
         .route(
             "/api/typesetting/canvas-assets",
             get(api_typesetting_canvas_assets),
+        )
+        .route(
+            "/api/publishing/preferences",
+            put(api_publishing_preferences),
+        )
+        .route(
+            "/api/publishing/releases",
+            post(api_publishing_create_release),
+        )
+        .route(
+            "/api/publishing/releases/{release_id}/attempts",
+            post(api_publishing_create_attempt),
         )
         .route(
             "/api/writing/selection",
@@ -418,6 +434,10 @@ fn build_router(
         .route(
             "/api/task-broker/v3/task-context",
             post(api_broker_task_context),
+        )
+        .route(
+            "/api/task-broker/v3/publishing/checkpoint",
+            post(api_broker_publishing_checkpoint),
         );
     regular
         .merge(broker)

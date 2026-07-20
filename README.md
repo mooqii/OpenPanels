@@ -22,7 +22,7 @@ Download only that skill directory. Do not clone or inspect the full repository
 unless direct skill-directory installation fails.
 
 After the skill is installed, invoke the MyOpenPanels skill once so it can run
-its setup workflow, install or verify the `myopenpanels` CLI, and open the
+its setup process, install or verify the `myopenpanels` CLI, and open the
 MyOpenPanels panel.
 ```
 
@@ -36,16 +36,16 @@ MyOpenPanels Studio, and opens the MyOpenPanels panel URL returned by the CLI.
 The entry skill keeps itself small and stable. It uses the Rust-native
 `myopenpanels` CLI from GitHub Releases, then asks the CLI for
 `agent bootstrap`, which is the source of truth for wiki, writing, canvas,
-typesetting, publishing, and future panel
-workflows. A normal Bootstrap contains no Entry Skill update fields. After a CLI
+typesetting, publishing, and future panel Procedures. A normal Bootstrap
+contains no Entry Skill update fields. After a CLI
 release changes the Entry Skill requirement, Bootstrap delivers a one-time
 Agent-host update check and keeps it pending until that Agent context
 acknowledges the installed version. The installed CLI remains authoritative for
 current command catalogs and returned actions.
-Protocol v6 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes. It
-prepares the required Panel and task-specific Skills locally and returns their
-ordered context and Skill paths in `nextRequiredAction.steps`; optional command
-descriptors, Tasks, and Operations remain progressively discoverable. Longer
+Protocol v12 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes.
+Procedure Bootstrap returns only its required panel context, Skill references,
+blockers, and Command Catalog v5 descriptors; generic Bootstrap keeps broader
+discovery progressive. Longer
 built-in Agent resources live under `agent-resources/` and are synced into the
 MyOpenPanels data directory at runtime.
 
@@ -117,25 +117,26 @@ Project/Panel focus. Calls from other Agents or working directories reuse that
 same service while retaining their own Agent context for private lifecycle data.
 
 If the host has no callable opener, or the attempt fails or cannot report
-success, execute `data.nextRequiredAction.fallback.argv` with the same resolved
-CLI executable. The CLI reports `data.opened: true` only after the
+success, execute the conditional CLI fallback in `actions.required` with the
+same resolved CLI executable. The CLI reports `data.opened: true` only after the
 operating-system launcher succeeds. An open-only request is complete only after
 an opener succeeds. Bootstrap is needed only for subsequent panel work.
 
 Agents can then use project-backed CLI commands:
 
 ```bash
+myopenpanels agent bootstrap --procedure <procedure-key> --format json
 myopenpanels agent bootstrap --format json
 ```
 
-These are the only stable Agent work entries. Follow each response's
-`data.nextRequiredAction` and execute applicable `data.nextActions` entries with
-the same resolved executable. Business command paths remain CLI-owned data and
-are not hardcoded into the Entry Skill.
+Use Procedure Bootstrap for a clear indexed intent and generic Bootstrap only
+as fallback. Execute top-level `actions.required` in order, then applicable
+`actions.suggested` entries with the same resolved executable. Business command
+paths remain CLI-owned data and are not hardcoded into the Entry Skill.
 
 ## v0.1 Scope
 
-- Local workflow for generic shell agents
+- Local operation for generic shell agents
 - Rust CLI/server/storage with a React Studio frontend
 - Multi-panel project workspace with wiki, writing, canvas, typesetting, and publishing panels
 - Image artifacts and editable canvas image shapes

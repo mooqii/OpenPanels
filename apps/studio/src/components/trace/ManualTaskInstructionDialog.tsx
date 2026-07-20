@@ -63,14 +63,14 @@ export function ManualTaskInstructionDialog({
             <Modal.Icon>
               <Terminal size={20} />
             </Modal.Icon>
-            <Modal.Heading>{t`Send task scope to an Agent`}</Modal.Heading>
+            <Modal.Heading>{t`Send Task Handoff to an Agent`}</Modal.Heading>
           </Modal.Header>
           <Modal.Body>
             <p>
-              {t`No active and usable Agent CLI is available. Copy the instruction below and send it to an Agent to process this task scope.`}
+              {t`No active and usable Agent CLI is available. Copy the instruction below and send it to an Agent to run this Task Handoff.`}
             </p>
             <div className="op-manual-task-dialog__instruction">
-              <span>{t`Task scope instruction`}</span>
+              <span>{t`Task Handoff instruction`}</span>
               <pre>{instruction}</pre>
             </div>
           </Modal.Body>

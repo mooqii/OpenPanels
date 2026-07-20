@@ -1,13 +1,18 @@
 #[derive(Debug, Clone)]
-struct AgentWorkflow {
-    registration: AgentWorkflowRegistration,
+struct AgentProcedure {
+    registration: AgentProcedureRegistration,
     skill_id: String,
 }
 
-fn load_agent_workflows() -> Result<Vec<AgentWorkflow>, CliError> {
+struct AgentProcedureCatalog {
+    procedures: Vec<AgentProcedure>,
+    task_handoff_keys: BTreeSet<String>,
+}
+
+fn load_agent_procedures() -> Result<AgentProcedureCatalog, CliError> {
     let registry: BuiltinSkillRegistry =
         serde_json::from_str(BUILTIN_SKILL_REGISTRY).map_err(to_cli_error)?;
-    if registry.schema_version != 2 {
+    if registry.schema_version != 3 {
         return Err(CliError::new(format!(
             "Unsupported built-in Skill registry schema: {}",
             registry.schema_version
@@ -15,57 +20,107 @@ fn load_agent_workflows() -> Result<Vec<AgentWorkflow>, CliError> {
     }
 
     let mut keys = BTreeSet::new();
-    let mut workflows = Vec::new();
+    let mut procedures = Vec::new();
+    let mut task_handoff_keys = BTreeSet::new();
     for skill in registry.system_skills {
-        for workflow in &skill.workflows {
-            validate_agent_workflow(&skill, workflow)?;
-            if !keys.insert(workflow.key.clone()) {
+        for procedure in &skill.procedures {
+            validate_agent_procedure(&skill, procedure)?;
+            if !keys.insert(procedure.key.clone()) {
                 return Err(CliError::with_code(
-                    "duplicate_agent_workflow",
-                    format!("Duplicate Agent Workflow key: {}", workflow.key),
+                    "duplicate_agent_procedure",
+                    format!("Duplicate Agent Procedure key: {}", procedure.key),
                 ));
             }
-            workflows.push(AgentWorkflow {
-                registration: workflow.clone(),
+            procedures.push(AgentProcedure {
+                registration: procedure.clone(),
                 skill_id: skill.id.clone(),
             });
         }
+        for handoff in &skill.task_handoffs {
+            validate_task_handoff(&skill, handoff)?;
+            if !keys.insert(handoff.key.clone()) {
+                return Err(CliError::with_code(
+                    "duplicate_agent_route",
+                    format!("Duplicate Agent route key: {}", handoff.key),
+                ));
+            }
+            task_handoff_keys.insert(handoff.key.clone());
+        }
     }
-    workflows.sort_by(|left, right| left.registration.key.cmp(&right.registration.key));
-    Ok(workflows)
+    procedures.sort_by(|left, right| left.registration.key.cmp(&right.registration.key));
+    Ok(AgentProcedureCatalog {
+        procedures,
+        task_handoff_keys,
+    })
 }
 
-fn validate_agent_workflow(
+fn validate_agent_procedure(
     skill: &BuiltinSkillRegistration,
-    workflow: &AgentWorkflowRegistration,
+    procedure: &AgentProcedureRegistration,
 ) -> Result<(), CliError> {
-    if workflow.key.trim().is_empty()
-        || workflow.description.trim().is_empty()
+    if procedure.key.trim().is_empty()
+        || procedure.description.trim().is_empty()
         || !matches!(
-            workflow.execution_mode.as_str(),
-            "bootstrap" | "handoff-only"
-        )
-        || !matches!(
-            workflow.selection_policy.as_str(),
+            procedure.selection_policy.as_str(),
             "none" | "summary" | "optional-detail" | "active-detail" | "explicit-detail"
         )
     {
         return Err(CliError::with_code(
-            "agent_workflow_invalid",
-            format!("Agent Workflow registration is invalid: {}", workflow.key),
+            "agent_procedure_invalid",
+            format!("Agent Procedure registration is invalid: {}", procedure.key),
         ));
     }
-    let panel_kind = workflow
-        .panel_kind
-        .as_deref()
+    validate_agent_route(
+        skill,
+        &procedure.key,
+        &procedure.description,
+        procedure.panel_kind.as_deref(),
+        &procedure.reference,
+        &procedure.command_intents,
+        "agent_procedure_invalid",
+        "Agent Procedure",
+    )
+}
+
+fn validate_task_handoff(
+    skill: &BuiltinSkillRegistration,
+    handoff: &TaskHandoffRegistration,
+) -> Result<(), CliError> {
+    validate_agent_route(
+        skill,
+        &handoff.key,
+        &handoff.description,
+        handoff.panel_kind.as_deref(),
+        &handoff.reference,
+        &handoff.command_intents,
+        "task_handoff_invalid",
+        "Task Handoff",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_agent_route(
+    skill: &BuiltinSkillRegistration,
+    key: &str,
+    description: &str,
+    panel_kind: Option<&str>,
+    reference: &str,
+    command_intents: &[String],
+    invalid_code: &str,
+    label: &str,
+) -> Result<(), CliError> {
+    if key.trim().is_empty() || description.trim().is_empty() || command_intents.is_empty() {
+        return Err(CliError::with_code(
+            invalid_code,
+            format!("{label} registration is invalid: {key}"),
+        ));
+    }
+    let panel_kind = panel_kind
         .map(|kind| {
             PanelKind::parse(kind).ok_or_else(|| {
                 CliError::with_code(
-                    "agent_workflow_invalid",
-                    format!(
-                        "Agent Workflow {} has an invalid panel kind: {kind}",
-                        workflow.key
-                    ),
+                    invalid_code,
+                    format!("{label} {key} has an invalid panel kind: {kind}"),
                 )
             })
         })
@@ -78,75 +133,79 @@ fn validate_agent_workflow(
             .any(|candidate| candidate == panel_kind || candidate == "any")
         {
             return Err(CliError::with_code(
-                "agent_workflow_invalid",
+                invalid_code,
                 format!(
-                    "Agent Workflow {} targets {panel_kind}, but Skill {} does not.",
-                    workflow.key, skill.id
+                    "{label} {key} targets {panel_kind}, but Skill {} does not.",
+                    skill.id
                 ),
             ));
         }
     }
-    let reference = Path::new(&workflow.reference);
-    if workflow.reference.trim().is_empty()
-        || reference.is_absolute()
-        || reference
+    let reference_path = Path::new(reference);
+    if reference.trim().is_empty()
+        || reference_path.is_absolute()
+        || reference_path
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir))
     {
         return Err(CliError::with_code(
-            "agent_workflow_invalid",
-            format!("Agent Workflow reference is invalid: {}", workflow.key),
+            invalid_code,
+            format!("{label} reference is invalid: {key}"),
         ));
     }
-    let embedded_reference = Path::new(&skill.package_dir).join(reference);
+    let embedded_reference = Path::new(&skill.package_dir).join(reference_path);
     if SYSTEM_SKILLS.get_file(&embedded_reference).is_none() {
         return Err(CliError::with_code(
-            "agent_workflow_reference_not_found",
+            if label == "Agent Procedure" {
+                "agent_procedure_reference_not_found"
+            } else {
+                "task_handoff_reference_not_found"
+            },
             format!(
-                "Agent Workflow {} reference is missing: {}",
-                workflow.key,
-                embedded_reference.display()
+                "{label} {key} reference is missing: {}",
+                embedded_reference.display(),
             ),
         ));
     }
-    crate::cli::registry::descriptors_for_intents(&workflow.command_intents)?;
+    crate::cli::registry::descriptors_for_intents(command_intents)?;
     Ok(())
 }
 
-fn agent_workflow_bootstrap(
+fn agent_procedure_bootstrap(
     paths: &MyOpenPanelsPaths,
     cli_version: &str,
     visible: &ProjectBootstrap,
-    workflow_key: &str,
+    procedure_key: &str,
 ) -> Result<Value, CliError> {
     sync_builtin_agent_skills(paths)?;
-    let workflow_key = workflow_key.trim();
-    let workflows = load_agent_workflows()?;
-    let workflow = workflows
+    let procedure_key = procedure_key.trim();
+    let catalog = load_agent_procedures()?;
+    let procedure = catalog
+        .procedures
         .iter()
-        .find(|workflow| workflow.registration.key == workflow_key)
+        .find(|procedure| procedure.registration.key == procedure_key)
         .ok_or_else(|| {
+            if catalog.task_handoff_keys.contains(procedure_key) {
+                return CliError::with_recovery(
+                    "task_handoff_required",
+                    format!(
+                        "{} is a Task Handoff and cannot be used as an Agent Procedure.",
+                        procedure_key
+                    ),
+                    false,
+                    "Execute the unchanged Task Handoff or claimed Task command. Do not replace it with Agent Bootstrap.",
+                );
+            }
             CliError::with_recovery(
-                "agent_workflow_not_found",
-                format!("Agent Workflow not found: {workflow_key}"),
+                "agent_procedure_not_found",
+                format!("Agent Procedure not found: {procedure_key}"),
                 true,
-                "Run the generic Agent Bootstrap and select a supported Workflow from current discovery context.",
+                "Run the generic Agent Bootstrap and select a supported Procedure from current discovery context.",
             )
             .with_recovery_action(generic_bootstrap_recovery_action(paths))
         })?;
-    if workflow.registration.execution_mode == "handoff-only" {
-        return Err(CliError::with_recovery(
-            "agent_workflow_not_bootstrappable",
-            format!(
-                "Agent Workflow {} is executed only from its exact Task handoff.",
-                workflow.registration.key
-            ),
-            false,
-            "Execute the unchanged task scope or claimed Task handoff command. Do not replace it with Agent Bootstrap.",
-        ));
-    }
 
-    let requested_panel_kind = workflow
+    let requested_panel_kind = procedure
         .registration
         .panel_kind
         .as_deref()
@@ -168,27 +227,27 @@ fn agent_workflow_bootstrap(
         .filter(|target| requested_panel_kind == Some(target.active_panel_kind));
 
     let skills = load_agent_skills(paths, &visible.project.id)?;
-    let panel_skill = required_agent_skill(&skills, &workflow.skill_id)?;
+    let panel_skill = required_agent_skill(&skills, &procedure.skill_id)?;
     let (_, skill_path) = agent_skill_local_paths(paths, &visible.project.id, &panel_skill.metadata);
     let skill_dir = skill_path
         .parent()
-        .ok_or_else(|| CliError::new("Agent Workflow Skill path has no parent directory."))?;
-    let reference_path = skill_dir.join(&workflow.registration.reference);
+        .ok_or_else(|| CliError::new("Agent Procedure Skill path has no parent directory."))?;
+    let reference_path = skill_dir.join(&procedure.registration.reference);
     if !reference_path.is_file() {
         return Err(CliError::with_code(
-            "agent_workflow_reference_not_found",
+            "agent_procedure_reference_not_found",
             format!(
-                "Agent Workflow reference is unavailable: {}",
+                "Agent Procedure reference is unavailable: {}",
                 reference_path.display()
             ),
         ));
     }
 
-    let (selection, mut blockers) = workflow_selection(paths, visible, target, workflow)?;
+    let (selection, mut blockers) = procedure_selection(paths, visible, target, procedure)?;
     let storage = crate::storage::Storage::open(paths)?;
     let operations = storage.list_agent_operations(Some(&paths.context_id), Some("active"))?;
     let commands = crate::cli::registry::descriptors_for_intents(
-        &workflow.registration.command_intents,
+        &procedure.registration.command_intents,
     )?;
     let focus_revision = crate::control::read_focus_revision(paths)?;
     let mut context_truncated = false;
@@ -204,21 +263,21 @@ fn agent_workflow_bootstrap(
         .unwrap_or(Value::Null);
     let mut required_actions = vec![
         json!({
-            "id": format!("skill.{}.body", workflow.skill_id),
+            "id": format!("skill.{}.body", procedure.skill_id),
             "intent": "agent-host.file.read",
             "executor": "agent-host",
             "kind": "read-file",
             "path": skill_path.display().to_string(),
         }),
         json!({
-            "id": format!("workflow.{}.reference", workflow.registration.key),
+            "id": format!("procedure.{}.reference", procedure.registration.key),
             "intent": "agent-host.file.read",
             "executor": "agent-host",
             "kind": "read-file",
             "path": reference_path.display().to_string(),
         }),
     ];
-    let suggested_actions = workflow_state_actions(paths, visible, workflow, &operations);
+    let suggested_actions = procedure_state_actions(paths, visible, procedure, &operations);
     let available_panel_kinds = visible
         .panels
         .iter()
@@ -245,7 +304,7 @@ fn agent_workflow_bootstrap(
         }),
     };
     let mut skill_entries = vec![json!({
-        "id": workflow.skill_id,
+        "id": procedure.skill_id,
         "role": "panel",
         "localPath": skill_path.display().to_string(),
         "referencePaths": [reference_path.display().to_string()],
@@ -284,22 +343,21 @@ fn agent_workflow_bootstrap(
 
     Ok(json!({
         "protocolVersion": AGENT_GUIDANCE_PROTOCOL_VERSION,
-        "workflowCatalogVersion": AGENT_WORKFLOW_CATALOG_VERSION,
+        "procedureCatalogVersion": AGENT_PROCEDURE_CATALOG_VERSION,
         "commandCatalogVersion": crate::cli::registry::COMMAND_CATALOG_VERSION,
         "cliVersion": cli_version,
         "bootstrapBudget": {
             "maxBytes": MAX_BOOTSTRAP_ENVELOPE_BYTES,
             "unit": "utf8",
         },
-        "agentWorkflow": {
-            "key": workflow.registration.key,
-            "description": workflow.registration.description,
-            "executionMode": workflow.registration.execution_mode,
-            "panelKind": workflow.registration.panel_kind,
-            "selectionPolicy": workflow.registration.selection_policy,
-            "skillId": workflow.skill_id,
+        "agentProcedure": {
+            "key": procedure.registration.key,
+            "description": procedure.registration.description,
+            "panelKind": procedure.registration.panel_kind,
+            "selectionPolicy": procedure.registration.selection_policy,
+            "skillId": procedure.skill_id,
             "referencePath": reference_path.display().to_string(),
-            "commandIntents": workflow.registration.command_intents,
+            "commandIntents": procedure.registration.command_intents,
         },
         "readiness": if blockers.is_empty() { "ready" } else { "blocked" },
         "blockers": blockers,
@@ -330,23 +388,23 @@ fn agent_workflow_bootstrap(
     }))
 }
 
-fn workflow_selection(
+fn procedure_selection(
     paths: &MyOpenPanelsPaths,
     visible: &ProjectBootstrap,
     target: Option<&ProjectBootstrap>,
-    workflow: &AgentWorkflow,
+    procedure: &AgentProcedure,
 ) -> Result<(Value, Vec<Value>), CliError> {
-    let policy = workflow.registration.selection_policy.as_str();
+    let policy = procedure.registration.selection_policy.as_str();
     if policy == "none" {
-        let blockers = if target.is_none() && workflow.registration.panel_kind.is_some() {
+        let blockers = if target.is_none() && procedure.registration.panel_kind.is_some() {
             vec![json!({
                 "code": "target_panel_required",
                 "message": format!(
-                    "Workflow {} requires an available {} panel.",
-                    workflow.registration.key,
-                    workflow.registration.panel_kind.as_deref().unwrap_or("target")
+                    "Procedure {} requires an available {} panel.",
+                    procedure.registration.key,
+                    procedure.registration.panel_kind.as_deref().unwrap_or("target")
                 ),
-                "expectedPanelKind": workflow.registration.panel_kind,
+                "expectedPanelKind": procedure.registration.panel_kind,
             })]
         } else {
             Vec::new()
@@ -375,11 +433,11 @@ fn workflow_selection(
             vec![json!({
                 "code": "target_panel_required",
                 "message": format!(
-                    "Workflow {} requires an available {} panel.",
-                    workflow.registration.key,
-                    workflow.registration.panel_kind.as_deref().unwrap_or("target")
+                    "Procedure {} requires an available {} panel.",
+                    procedure.registration.key,
+                    procedure.registration.panel_kind.as_deref().unwrap_or("target")
                 ),
-                "expectedPanelKind": workflow.registration.panel_kind,
+                "expectedPanelKind": procedure.registration.panel_kind,
             })],
         ));
     };
@@ -391,8 +449,8 @@ fn workflow_selection(
             blockers.push(json!({
                 "code": "active_panel_required",
                 "message": format!(
-                    "Workflow {} requires the {} panel to be active.",
-                    workflow.registration.key,
+                    "Procedure {} requires the {} panel to be active.",
+                    procedure.registration.key,
                     target.panel.kind.as_str()
                 ),
                 "expectedPanelKind": target.panel.kind,
@@ -419,8 +477,8 @@ fn workflow_selection(
         blockers.push(json!({
             "code": "explicit_selection_required",
             "message": format!(
-                "Workflow {} requires an explicit user selection.",
-                workflow.registration.key
+                "Procedure {} requires an explicit user selection.",
+                procedure.registration.key
             ),
             "panelKind": target.panel.kind,
         }));
@@ -469,14 +527,14 @@ fn selected_portable_skill_ids(target: &ProjectBootstrap) -> Vec<&str> {
     }
 }
 
-fn workflow_state_actions(
+fn procedure_state_actions(
     paths: &MyOpenPanelsPaths,
     bootstrap: &ProjectBootstrap,
-    workflow: &AgentWorkflow,
+    procedure: &AgentProcedure,
     operations: &[Value],
 ) -> Vec<Value> {
     let mut actions = Vec::new();
-    if workflow.registration.key == "task.queue.inspect" {
+    if procedure.registration.key == "task.queue.inspect" {
         if let Some(task_id) = next_task_id(bootstrap) {
             actions.push(project_command_action(
                 paths,
@@ -490,7 +548,7 @@ fn workflow_state_actions(
             ));
         }
     }
-    if workflow
+    if procedure
         .registration
         .command_intents
         .iter()

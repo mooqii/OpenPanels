@@ -22,6 +22,7 @@ pub(crate) fn claim_for_worker(
             capability,
             queue,
             WikiBatchPolicy::CompatibleWindow,
+            None,
         ) {
             Ok(payload) => {
                 return Ok(payload
@@ -57,6 +58,7 @@ pub fn claim_task(
         None,
         None,
         WikiBatchPolicy::CompatibleWindow,
+        None,
     )?
     .ok_or_else(|| {
         CliError::with_code(
@@ -74,6 +76,7 @@ fn claim_once(
     requested_capability: Option<&str>,
     requested_queue: Option<&str>,
     wiki_batch_policy: WikiBatchPolicy,
+    explicit_broker_url: Option<&str>,
 ) -> Result<Option<Value>, CliError> {
     recover_expired_tasks_in_session(paths, project_id)?;
     heartbeat_target_in_session(paths, project_id, target_id)?;
@@ -118,7 +121,10 @@ fn claim_once(
     let lease_token = random_secret("lease");
     let lease_expires_at = lease_expires_at();
     let attempt_id = random_id("task-attempt");
-    let broker_url = crate::content::task_broker_url_for_claim();
+    let broker_url = explicit_broker_url
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(crate::content::task_broker_url_for_claim);
     if broker_url.as_deref().is_none_or(str::is_empty) && !cfg!(test) {
         release_reservation(paths, project_id, &reserved)?;
         return Err(CliError::with_code(
@@ -165,9 +171,9 @@ fn claim_once(
         "host": target.get("host"),
         "modelGatewayConnectionId": model_gateway_connection_id,
     });
-    let workflow_id = tx
+    let workflow_run_id = tx
         .query_row(
-            "SELECT workflow_id FROM tasks WHERE id = ?",
+            "SELECT workflow_run_id FROM tasks WHERE id = ?",
             [&reserved.id],
             |row| row.get::<_, String>(0),
         )
@@ -205,8 +211,8 @@ fn claim_once(
         None
     };
     tx.execute(
-        "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, attempt_id, agent_target_id, created_at) VALUES (?, ?, 'claimed', ?, ?, ?, ?, ?)",
-        params![reserved.id, workflow_id, reserved.previous_status, claimed_status, attempt_id, target_id, now],
+        "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, attempt_id, agent_target_id, created_at) VALUES (?, ?, 'claimed', ?, ?, ?, ?, ?)",
+        params![reserved.id, workflow_run_id, reserved.previous_status, claimed_status, attempt_id, target_id, now],
     )
     .map_err(to_cli_error)?;
     crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
@@ -533,6 +539,7 @@ pub fn complete_task(
             crate::wiki::prepare_task_completion(paths, task_id, result.clone())?["state"].clone(),
         )),
         "writing" => crate::writing::prepare_task_completion(paths, task_id)?,
+        "publishing" => crate::publishing::prepare_task_completion(paths, task_id, result.clone())?,
         queue => {
             return Err(CliError::with_code(
                 "queue_adapter_missing",
@@ -835,16 +842,16 @@ pub(crate) fn mark_latest_attempt_invalid_output(
         "UPDATE task_attempts SET status = 'invalid_output', error_json = ?, failure_class = 'retryable_output' WHERE id = (SELECT id FROM task_attempts WHERE task_id = ? ORDER BY execution_generation DESC LIMIT 1) AND status IN ('failed_retryable', 'failed_terminal')",
         params![reason.to_string(), task_id],
     ).map_err(to_cli_error)?;
-    let workflow_id = tx
+    let workflow_run_id = tx
         .query_row(
-            "SELECT workflow_id FROM tasks WHERE id = ?",
+            "SELECT workflow_run_id FROM tasks WHERE id = ?",
             [task_id],
             |row| row.get::<_, String>(0),
         )
         .map_err(to_cli_error)?;
     tx.execute(
-        "INSERT INTO task_events (task_id, workflow_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'invalid_output', 'leased', 'failed', ?, ?)",
-        params![task_id, workflow_id, reason.to_string(), now],
+        "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'invalid_output', 'leased', 'failed', ?, ?)",
+        params![task_id, workflow_run_id, reason.to_string(), now],
     ).map_err(to_cli_error)?;
     crate::storage::record_scope(&tx, "tasks", Some(&project_id), None)?;
     tx.commit().map_err(to_cli_error)
@@ -857,8 +864,13 @@ pub fn release_task(
 ) -> Result<Value, CliError> {
     let lease = verify_lease(paths, task_id, lease_token)?;
     match lease["queue"].as_str().unwrap_or("") {
-        "wiki" => crate::wiki::release_task(paths, task_id)?,
-        "writing" => crate::writing::release_task(paths, task_id)?,
+        "wiki" => {
+            crate::wiki::release_task(paths, task_id)?;
+        }
+        "writing" => {
+            crate::writing::release_task(paths, task_id)?;
+        }
+        "publishing" => {}
         queue => {
             return Err(CliError::with_code(
                 "queue_adapter_missing",
@@ -890,7 +902,7 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
     if !matches!(task["task"]["status"].as_str(), Some("failed" | "queued")) {
         return Err(CliError::with_code(
             "invalid_task_transition",
-            "Only queued or failed tasks can be retried. Succeeded and cancelled tasks require a new Workflow.",
+            "Only queued or failed tasks can be retried. Succeeded and cancelled tasks require a new Workflow Run.",
         ));
     }
     if task["task"]["attempt"].as_i64().unwrap_or(0)
@@ -898,7 +910,7 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
     {
         return Err(CliError::with_code(
             "invalid_task_transition",
-            "The Task exhausted its Attempts. Start a new Workflow instead of retrying it in place.",
+            "The Task exhausted its Attempts. Start a new Workflow Run instead of retrying it in place.",
         ));
     }
     let project_id = task["task"]["projectId"]
@@ -908,6 +920,12 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
     match task["task"]["queue"].as_str().unwrap_or("") {
         "wiki" => crate::wiki::retry_task(paths, task_id)?,
         "writing" => crate::writing::retry_task(paths, task_id)?,
+        "publishing" => {
+            return Err(CliError::with_code(
+                "invalid_task_transition",
+                "Publishing Tasks cannot be retried in place. Start a new publishing attempt.",
+            ));
+        }
         queue => {
             return Err(CliError::with_code(
                 "queue_adapter_missing",

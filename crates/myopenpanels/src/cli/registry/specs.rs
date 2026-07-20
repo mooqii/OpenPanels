@@ -180,6 +180,15 @@ const SPECS: &[CommandDefinition] = &[
         panel = "wiki"
     ),
     spec!(
+        "publishing.checkpoint",
+        ["publishing", "checkpoint"],
+        "Checkpoint a publishing attempt",
+        "publishing",
+        "task",
+        true,
+        panel = "publishing"
+    ),
+    spec!(
         "wiki.raw.create",
         ["wiki", "raw", "create"],
         "Create a Wiki Raw Document",
@@ -398,19 +407,51 @@ const SPECS: &[CommandDefinition] = &[
         false
     ),
     spec!(
-        "task.scope.read",
-        ["task", "scope", "read"],
-        "Read a Task execution scope",
+        "task.handoff.start",
+        ["task", "handoff", "start"],
+        "Start a Task Handoff",
         "task",
-        "task-scope",
-        false
+        "task-handoff",
+        true
     ),
     spec!(
-        "task.scope.claim",
-        ["task", "scope", "claim"],
-        "Claim the next Task in an execution scope",
+        "task.handoff.exec",
+        ["task", "handoff", "exec"],
+        "Execute an allowed Task Handoff command",
         "task",
-        "task-scope",
+        "task-handoff",
+        true
+    ),
+    spec!(
+        "task.handoff.heartbeat",
+        ["task", "handoff", "heartbeat"],
+        "Heartbeat a Task Handoff",
+        "task",
+        "task-handoff",
+        true
+    ),
+    spec!(
+        "task.handoff.complete",
+        ["task", "handoff", "complete"],
+        "Complete and advance a Task Handoff",
+        "task",
+        "task-handoff",
+        true
+    ),
+    spec!(
+        "task.handoff.fail",
+        ["task", "handoff", "fail"],
+        "Fail and advance a Task Handoff",
+        "task",
+        "task-handoff",
+        true
+    ),
+    spec!(
+        "task.handoff.stop",
+        ["task", "handoff", "stop"],
+        "Stop a Task Handoff",
+        "task",
+        "task-handoff",
         true
     ),
     spec!(
@@ -494,17 +535,17 @@ const SPECS: &[CommandDefinition] = &[
         false
     ),
     spec!(
-        "workflow.list",
-        ["workflow", "list"],
-        "List Workflows",
+        "workflow.run.list",
+        ["workflow", "run", "list"],
+        "List Workflow Runs",
         "workflow",
         "current-project",
         false
     ),
     spec!(
-        "workflow.read",
-        ["workflow", "read"],
-        "Read a Workflow DAG",
+        "workflow.run.read",
+        ["workflow", "run", "read"],
+        "Read a Workflow Run DAG",
         "workflow",
         "current-project",
         false
@@ -717,8 +758,8 @@ pub(crate) fn descriptors_for_intents(intents: &[String]) -> Result<Vec<Value>, 
                 .find(|spec| spec.intent == intent)
                 .ok_or_else(|| {
                     CliError::with_code(
-                        "agent_workflow_command_not_found",
-                        format!("Agent Workflow command intent is not registered: {intent}"),
+                        "agent_procedure_command_not_found",
+                        format!("Agent Procedure command intent is not registered: {intent}"),
                     )
                 })?;
             Ok(descriptor(spec))

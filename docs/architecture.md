@@ -26,7 +26,7 @@ and its `change_scopes` revision must commit in the same transaction.
 - Typesetting panel state owns publication projects, ordered cover references,
   and Tiptap JSON content. Imported images are copied into the Typesetting
   panel so they do not depend on the source Canvas asset lifecycle.
-- Publishing panel state is reserved for the publishing workflow scaffold.
+- Publishing panel state is reserved for the publishing process scaffold.
 - `agent_operations` owns persistent Canvas and Wiki generation operations.
 - `studio/instance.json` owns the storage-wide Studio process binding, while
   `studio/focus/` owns the single user-visible Project and Panel focus.
@@ -34,17 +34,17 @@ and its `change_scopes` revision must commit in the same transaction.
   they never select or own a Studio process.
 
 The baseline contains 28 tables including `schema_migrations`: nine core
-storage tables, six Workflow/Task tables, three Agent tables, eight content and
+storage tables, six Workflow Run/Task tables, three Agent tables, eight content and
 staging tables, and two Model Gateway tables. Historical delivery, dispatch
 outbox, and content-import checkpoint tables are not part of the baseline.
 
 ## Storage baseline
 
-New storage starts from the single immutable `0001_initial` migration. It
-creates the complete current schema; later releases add migrations after that
-baseline rather than rewriting it. A database with an older migration history,
-or business tables without the current migration record, is rejected with
-`incompatible_storage_baseline` and is not modified.
+New storage starts from the single complete `0001_initial` migration. Before the
+first release, schema changes are folded directly into this baseline rather than
+kept as upgrade-only migrations. Any non-current database is rejected with
+`incompatible_storage_baseline`; there is intentionally no pre-release data
+upgrade path.
 
 Release data lives in `~/.myopenpanels/`. The previous platform-specific
 default directory is deliberately not imported or deleted. Self-update startup
@@ -56,6 +56,7 @@ and must match the current baseline.
 | --- | --- | --- |
 | `studio start`, `agent bootstrap` | Stable | Clap command and CLI envelope |
 | Task lifecycle | Stable | `tasks` and `/api/tasks/*` |
+| Workflow Run queries | Stable | `workflow_runs` and `/api/workflow-runs/*` |
 | Agent target status | Stable | `agent_targets` and read-only `/api/agent/targets` |
 | Agent guidance | Skill-only | `agent skill list/read` |
 | Panel kinds | Wiki, Writing, Canvas, Typesetting, and Publishing | `panels.kind` constraint |
@@ -75,9 +76,9 @@ may be updated by the Wiki adapter as part of Task completion, but they never
 hydrate or replace rows in `tasks`. Context JSON is not a Task or Agent process
 store.
 
-## Atomic Workflows
+## Atomic Workflow Runs
 
-The initial schema includes Workflow DAGs, versioned inputs, Attempts,
+The current schema includes persisted Workflow Run DAGs, versioned inputs, Attempts,
 append-only Events, fencing generations, and capability routes. Tasks and Agent
 Targets use execution protocol v3 exclusively; omitted target versions default
 to v3, while v1 and v2 are rejected.
@@ -87,19 +88,19 @@ Task creates exactly one Attempt and advances its execution generation in the
 same transaction. Cancellation, prerequisite deletion, content supersession,
 lease recovery, and Executor removal revoke the lease and advance the fencing
 generation before another Attempt can begin. Completion records the result,
-Attempt, Event, dependent activation, Workflow status, and `change_scopes`
+Attempt, Event, dependent activation, Workflow Run status, and `change_scopes`
 notification together.
 
 Task execution is command-target-only. The Studio Worker atomically claims work
 before starting a one-shot local CLI or BYOK process; `agent bridge run` uses the
 same command-target lifecycle. External Workers cannot register or pull Tasks.
 
-### Task Execution Scopes
+### Task Handoffs And Execution Bundles
 
-Manual Agent handoffs use non-persistent execution scopes over the existing Task,
-Workflow, lease, and mutation records. `exact-task` claims only its selected
-Task. `project-drain` keeps claiming independent work in one explicit Project
-until a live empty check succeeds or only blockers remain.
+Task Scope is the non-persistent selector over existing Task, Workflow Run,
+lease, and mutation records. `exact-task` claims only its selected Task.
+`project-drain` keeps claiming independent work in one explicit Project until a
+live empty check succeeds or only blockers remain.
 `wiki-mutation-drain` follows one Project-local `mutation_key`, first claims the
 non-terminal prerequisites needed to unlock its head, and then advances Wiki
 updates in `mutation_sequence` order. Compatible Wiki updates may share a
@@ -107,10 +108,30 @@ consolidated execution window bounded by 256 KiB of Task metadata and source
 inputs; windowing does not create a stored Task group or impose a file count
 limit.
 
-Scope reads and claims return the immutable selector, aggregate state and counts,
-structured blockers, required capabilities, actions, and the ordinary lease and
-Broker claim contract when work is acquired. One-shot Agent targets can bind an
-explicit Project so a copied handoff never follows later Studio focus changes.
+A Task Handoff is the Message-channel runtime over one Scope. `task handoff
+start` registers and claims just in time, then returns ExecutionBundle v2 with
+the selected Task Handler's objective, captured inputs and Skills, workspace
+files, Agent command allowlist, and artifact output contract. `complete` and `fail` advance the
+same Scope and return the next Bundle. One-shot targets bind the explicit Project
+so a copied handoff never follows later Studio focus changes.
+
+The static Task Handler Registry owns document conversion, document generation,
+Writing Skill refinement, Wiki authoring, and Xiaohongshu publishing. The
+automatic Agent CLI and Agent Message delivery adapters use the same Bundle
+builder and Runtime Finalizer. The Agent writes ExecutionResult v2 workspace
+artifacts; the Handler builds TaskOutputPlan v1, and the Finalizer creates or
+resumes Operations, stages outputs, and commits the Task. Delivery owns only
+startup, credentials, heartbeat, and scope continuation. Task Handoff keeps
+credentials in a private transient control file and exposes only Handler-allowed
+reads or Publishing checkpoints.
+
+Agent targets advertise only the Task capabilities present in the Handler
+Registry. A queue/type/capability tuple must match one registered Handler before
+an ExecutionBundle can be built; there is no generic Agent execution fallback.
+The Runtime Finalizer reports `validating`, `applying`, `committing`, and
+`completed` phases in development traces. Failed results identify the phase
+that failed, while successful Task results persist the final plan hash, Handler,
+Operation ids, and artifact hashes without workspace paths.
 
 ## Model Gateway
 

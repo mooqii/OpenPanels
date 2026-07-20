@@ -502,7 +502,7 @@ function TaskList({
                     {task.dispatchState ? (
                       <span>{formatDispatchState(task.dispatchState)}</span>
                     ) : null}
-                    {task.workflowId ? <span>workflow</span> : null}
+                    {task.workflowRunId ? <span>Workflow Run</span> : null}
                     {task.assignedTarget ? (
                       <span>{task.assignedTarget.name}</span>
                     ) : null}
@@ -555,10 +555,10 @@ function TaskList({
                         ))}
                       </div>
                     ) : null}
-                    {!task.wikiUpdateGroup && task.workflowId ? (
+                    {!task.wikiUpdateGroup && task.workflowRunId ? (
                       <div className="op-agent-task__command">
-                        <span>Workflow</span>
-                        <code>{task.workflowId}</code>
+                        <span>Workflow Run</span>
+                        <code>{task.workflowRunId}</code>
                       </div>
                     ) : null}
                     {task.dependencies?.length ? (

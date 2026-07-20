@@ -17,7 +17,7 @@ impl TaskExecutionScope {
         }
     }
 
-    fn value(&self, project_id: &str) -> Value {
+    pub(crate) fn value(&self, project_id: &str) -> Value {
         match self {
             Self::ProjectDrain { .. } => json!({
                 "kind": "project-drain",
@@ -49,6 +49,15 @@ pub fn claim_task_scope(
     scope: &TaskExecutionScope,
     target_id: &str,
 ) -> Result<Value, CliError> {
+    claim_task_scope_with_broker_url(paths, scope, target_id, None)
+}
+
+pub(crate) fn claim_task_scope_with_broker_url(
+    paths: &MyOpenPanelsPaths,
+    scope: &TaskExecutionScope,
+    target_id: &str,
+    task_broker_url: Option<&str>,
+) -> Result<Value, CliError> {
     let project_id = validate_task_scope(paths, scope)?;
     heartbeat_target_in_session(paths, &project_id, target_id)?;
     let claimed = match scope {
@@ -60,6 +69,7 @@ pub fn claim_task_scope(
             None,
             None,
             WikiBatchPolicy::CompatibleWindow,
+            task_broker_url,
         )?,
         TaskExecutionScope::ExactTask { task_id } => claim_once(
             paths,
@@ -69,6 +79,7 @@ pub fn claim_task_scope(
             None,
             None,
             WikiBatchPolicy::Exact,
+            task_broker_url,
         )?,
         TaskExecutionScope::WikiMutationDrain { mutation_key, .. } => {
             let tasks = tasks_for_scope(paths, scope, &project_id)?;
@@ -82,6 +93,7 @@ pub fn claim_task_scope(
                     None,
                     None,
                     WikiBatchPolicy::CompatibleWindow,
+                    task_broker_url,
                 )?,
                 None => None,
             }
