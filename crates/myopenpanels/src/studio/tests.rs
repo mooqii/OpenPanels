@@ -219,6 +219,55 @@ mod tests {
     }
 
     #[test]
+    fn start_reuses_the_owner_when_health_and_process_checks_are_unavailable() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let owner_paths = paths_for(&project_dir, &storage_dir, "owner");
+        let borrower_paths = paths_for(&project_dir, &storage_dir, "borrower");
+        let port = 41_003;
+        let owner_session = studio_session(&owner_paths, port);
+        write_studio_session(&owner_paths, &owner_session).expect("owner session");
+        let _owner_lock =
+            acquire_studio_owner_lock(&owner_paths, port).expect("owner lock");
+
+        let result = start_studio(
+            &borrower_paths,
+            StudioStartOptions {
+                host: "127.0.0.1".to_owned(),
+                static_dir: None,
+            },
+        )
+        .expect("reuse owner");
+
+        assert!(result.reused_existing);
+        assert_eq!(result.lifecycle, StudioLifecycle::Reused);
+        assert_eq!(result.session.pid, owner_session.pid);
+        assert_eq!(result.session.port, owner_session.port);
+        assert_eq!(result.server_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn owner_lock_rejects_a_second_server_for_the_same_storage() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let owner_paths = paths_for(&project_dir, &storage_dir, "owner");
+        let borrower_paths = paths_for(&project_dir, &storage_dir, "borrower");
+        let _owner_lock =
+            acquire_studio_owner_lock(&owner_paths, 41_001).expect("first owner lock");
+
+        let error = match acquire_studio_owner_lock(&borrower_paths, 41_002) {
+            Ok(_) => panic!("second owner lock unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code(), Some("studio_already_running"));
+    }
+
+    #[test]
     fn reuse_returns_the_storage_singleton_for_a_different_project_and_context() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
@@ -312,5 +361,41 @@ mod tests {
 
         assert!(result.stopped);
         assert!(!studio_session_path(&owner_paths).exists());
+    }
+
+    #[test]
+    fn stop_then_start_prefers_the_previous_port() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = paths_for(&project_dir, &storage_dir, "owner");
+        let port = find_open_port("127.0.0.1").expect("open port");
+        let mut session = studio_session(&paths, port);
+        session.pid = 0;
+        write_studio_session(&paths, &session).expect("session");
+
+        stop_studio_session(&paths).expect("stop");
+
+        assert_eq!(
+            find_studio_port(&paths, "127.0.0.1").expect("preferred port"),
+            port
+        );
+    }
+
+    #[test]
+    fn start_falls_back_when_the_previous_port_is_busy() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = paths_for(&project_dir, &storage_dir, "owner");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let busy_port = listener.local_addr().expect("local addr").port();
+        write_studio_port_preference(&paths, busy_port).expect("port preference");
+
+        let selected = find_studio_port(&paths, "127.0.0.1").expect("fallback port");
+
+        assert_ne!(selected, busy_port);
     }
 }

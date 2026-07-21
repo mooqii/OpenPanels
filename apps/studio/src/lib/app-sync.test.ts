@@ -305,9 +305,11 @@ function appState({
 
 function writingState(): WritingState {
   return {
+    createDraft: "",
     draft: "",
     mode: "create",
     refinementName: "",
+    revisionDraft: "",
     schemaVersion: 5,
     selectedCreateWritingSkillIds: ["writing-default"],
     selectedRefinementSkillId: "writing-skill-refiner",
@@ -319,7 +321,7 @@ function writingState(): WritingState {
 function typesettingState(): TypesettingState {
   return {
     publications: [],
-    schemaVersion: 1,
+    schemaVersion: 2,
   }
 }
 

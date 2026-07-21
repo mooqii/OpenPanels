@@ -233,19 +233,18 @@ pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cl
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    match task["task"]["queue"].as_str().unwrap_or("") {
-        "wiki" => {
+    match task_queue_adapter(task["task"]["queue"].as_str().unwrap_or(""))? {
+        TaskQueueAdapter::Wiki => {
             crate::wiki::cancel_task(paths, task_id)?;
         }
-        "writing" => {
+        TaskQueueAdapter::Writing => {
             crate::writing::cancel_task(paths, task_id)?;
         }
-        "publishing" => {}
-        queue => {
-            return Err(CliError::with_code(
-                "queue_adapter_missing",
-                format!("No task lifecycle adapter is available for queue: {queue}"),
-            ))
+        TaskQueueAdapter::Typesetting => {
+            crate::typesetting::cancel_task(paths, task_id)?;
+        }
+        TaskQueueAdapter::Publishing => {
+            crate::publishing::cancel_task(paths, task_id)?;
         }
     };
     finalize_task_runtime(
@@ -261,6 +260,29 @@ pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cl
         None,
     )?;
     inspect_task_in_session(paths, &project_id, task_id)
+}
+
+pub fn delete_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
+    let task = inspect_task(paths, task_id)?;
+    match task["task"]["status"].as_str().unwrap_or_default() {
+        "waiting" | "queued" | "failed" => {
+            cancel_task(paths, task_id)?;
+            archive_task(paths, task_id)
+        }
+        "cancelled" => {
+            if task_queue_adapter(task["task"]["queue"].as_str().unwrap_or(""))?
+                == TaskQueueAdapter::Publishing
+            {
+                crate::publishing::cancel_task(paths, task_id)?;
+            }
+            archive_task(paths, task_id)
+        }
+        "succeeded" | "stale" | "superseded" => archive_task(paths, task_id),
+        _ => Err(CliError::with_code(
+            "invalid_task_transition",
+            "Only waiting, queued, failed, or completed tasks can be deleted.",
+        )),
+    }
 }
 
 pub fn list_task_events(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {

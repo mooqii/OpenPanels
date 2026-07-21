@@ -1,10 +1,20 @@
+use crate::control::{read_project_bootstrap, BootstrapRequest};
 use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
-use crate::storage::Storage;
+use crate::storage::{Storage, TaskInsert};
 use crate::types::PanelKind;
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+include!("typesetting/task_lifecycle.rs");
+
+pub const DEFAULT_COVER_SKILL_ID: &str = "typesetting-cover-default";
+pub const COVER_TASK_TYPE: &str = "generate_typesetting_cover";
+pub const COVER_CAPABILITY: &str = "typesetting.generateCover";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +30,235 @@ pub struct CanvasAssetListing {
     pub mime_type: String,
     pub width: Option<f64>,
     pub height: Option<f64>,
+}
+
+pub fn cover_skills(
+    paths: &MyOpenPanelsPaths,
+) -> Result<Vec<crate::agent::AgentSkillListing>, CliError> {
+    crate::agent::list_typesetting_cover_skills(paths)
+}
+
+pub fn create_cover_request(
+    paths: &MyOpenPanelsPaths,
+    publication_id: &str,
+    skill_id: &str,
+    instruction: &str,
+    request_id: &str,
+) -> Result<Value, CliError> {
+    let publication_id = publication_id.trim();
+    let skill_id = skill_id.trim();
+    let request_id = request_id.trim();
+    if publication_id.is_empty() || skill_id.is_empty() || request_id.is_empty() {
+        return Err(CliError::with_code(
+            "invalid_cover_request",
+            "Publication, Cover Skill, and request id are required.",
+        ));
+    }
+    if instruction.chars().count() > 4_000 {
+        return Err(CliError::with_code(
+            "cover_instruction_too_long",
+            "Cover instructions cannot exceed 4000 characters.",
+        ));
+    }
+
+    let mut request = BootstrapRequest::new();
+    request.requested_panel_kind = Some(PanelKind::Typesetting);
+    let bootstrap = read_project_bootstrap(paths, request)?;
+    let storage = Storage::open(paths)?;
+    if let Some(existing) = storage
+        .list_tasks(&bootstrap.project.id)?
+        .into_iter()
+        .find(|task| {
+            task.get("queue").and_then(Value::as_str) == Some("typesetting")
+                && task.get("type").and_then(Value::as_str) == Some(COVER_TASK_TYPE)
+                && task.pointer("/input/requestId").and_then(Value::as_str) == Some(request_id)
+        })
+    {
+        return Ok(json!({ "task": existing }));
+    }
+
+    let publication = bootstrap
+        .state
+        .get("publications")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|publication| publication.get("id").and_then(Value::as_str) == Some(publication_id))
+        .cloned()
+        .ok_or_else(|| {
+            CliError::with_code(
+                "typesetting_publication_not_found",
+                format!("Typesetting publication not found: {publication_id}"),
+            )
+        })?;
+    let title = publication
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let body_text = plain_text(publication.get("content").unwrap_or(&Value::Null));
+    if title.trim().is_empty() && body_text.trim().is_empty() {
+        return Err(CliError::with_code(
+            "cover_source_empty",
+            "Add a title or article content before creating a cover.",
+        ));
+    }
+
+    let skill = crate::agent::typesetting_cover_skill(paths, skill_id)?;
+    let task_id = crate::ids::random_id("task");
+    let skill_files = snapshot_skill_package(
+        &storage,
+        &bootstrap.project.id,
+        &bootstrap.panel.id,
+        &task_id,
+        Path::new(&skill.local_dir),
+    )?;
+    let skill_hash = hash_file_manifest(&skill_files);
+    let task_insert = TaskInsert {
+        id: task_id,
+        queue: "typesetting".to_owned(),
+        task_type: COVER_TASK_TYPE.to_owned(),
+        capability: COVER_CAPABILITY.to_owned(),
+        target_ref: publication_id.to_owned(),
+        input: json!({
+            "requestId": request_id,
+            "publicationId": publication_id,
+            "publicationUpdatedAt": publication.get("updatedAt").cloned().unwrap_or(Value::Null),
+            "instruction": instruction.trim(),
+            "snapshot": { "title": title, "bodyText": body_text },
+            "coverSkillId": skill_id,
+            "coverSkillSnapshot": {
+                "id": skill_id,
+                "name": skill.skill.name,
+                "source": skill.source,
+                "contentHash": skill_hash,
+                "files": skill_files,
+            },
+        }),
+        source: json!({
+            "typesettingPanelId": bootstrap.panel.id,
+            "sourcePublicationId": publication_id,
+        }),
+        max_attempts: 3,
+        dispatch_mode: "auto".to_owned(),
+        idempotency_key: Some(request_id.to_owned()),
+    };
+    let (mut tasks, _) = storage.insert_tasks_with_panel_states(
+        &bootstrap.project.id,
+        &bootstrap.panel.id,
+        &[task_insert],
+        &[],
+    )?;
+    let task = tasks
+        .pop()
+        .ok_or_else(|| CliError::new("Created Cover Task was not found."))?;
+    Ok(json!({ "task": task }))
+}
+
+pub fn is_cover_task_type(task_type: &str) -> bool {
+    task_type == COVER_TASK_TYPE
+}
+
+pub fn plain_text(document: &Value) -> String {
+    let mut output = String::new();
+    append_plain_text(document, &mut output);
+    output.trim().to_owned()
+}
+
+fn append_plain_text(node: &Value, output: &mut String) {
+    if let Some(text) = node.get("text").and_then(Value::as_str) {
+        output.push_str(text);
+    }
+    let node_type = node.get("type").and_then(Value::as_str).unwrap_or("");
+    if node_type == "hardBreak" {
+        output.push('\n');
+    }
+    for child in node
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        append_plain_text(child, output);
+    }
+    if matches!(
+        node_type,
+        "paragraph" | "heading" | "listItem" | "blockquote"
+    ) && !output.ends_with('\n')
+    {
+        output.push('\n');
+    }
+}
+
+fn snapshot_skill_package(
+    storage: &Storage,
+    project_id: &str,
+    panel_id: &str,
+    task_id: &str,
+    root: &Path,
+) -> Result<Vec<Value>, CliError> {
+    let mut source_files = Vec::new();
+    collect_regular_files(root, root, &mut source_files)?;
+    let mut files = Vec::new();
+    for (relative, bytes) in source_files {
+        let relative_text = relative.to_string_lossy().replace('\\', "/");
+        let requested = format!("cover-tasks/{task_id}/skill/{relative_text}");
+        let written =
+            storage.write_asset_from_buffer(project_id, panel_id, &requested, &bytes, true)?;
+        files.push(json!({
+            "path": relative_text,
+            "assetRef": written.asset_ref,
+            "contentHash": format!("sha256:{:x}", Sha256::digest(&bytes)),
+            "sizeBytes": bytes.len(),
+        }));
+    }
+    files.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
+    Ok(files)
+}
+
+fn collect_regular_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut Vec<(PathBuf, Vec<u8>)>,
+) -> Result<(), CliError> {
+    for entry in fs::read_dir(directory).map_err(to_cli_error)? {
+        let entry = entry.map_err(to_cli_error)?;
+        let file_type = entry.file_type().map_err(to_cli_error)?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_regular_files(root, &entry.path(), files)?;
+        } else if file_type.is_file() {
+            files.push((
+                entry
+                    .path()
+                    .strip_prefix(root)
+                    .map_err(to_cli_error)?
+                    .to_owned(),
+                fs::read(entry.path()).map_err(to_cli_error)?,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn hash_file_manifest(files: &[Value]) -> String {
+    let mut hasher = Sha256::new();
+    for file in files {
+        hasher.update(
+            file.get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .as_bytes(),
+        );
+        hasher.update(
+            file.get("contentHash")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .as_bytes(),
+        );
+    }
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 pub fn list_canvas_assets(
@@ -251,6 +490,10 @@ fn parse_canvas_asset_ref(asset_ref: &str) -> Result<ParsedCanvasAssetRef, CliEr
     })
 }
 
+fn to_cli_error(error: impl std::fmt::Display) -> CliError {
+    CliError::new(error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,5 +691,162 @@ mod tests {
         )
         .expect("target remains readable");
         assert_eq!(refreshed.active_panel_kind, PanelKind::Typesetting);
+    }
+
+    #[test]
+    fn cover_request_snapshots_article_and_skill_and_is_idempotent() {
+        let (_temp, paths) = test_paths();
+        let bootstrap = create_project(&paths, Some("Covers")).expect("project");
+        let typesetting_panel = panel_id(&bootstrap, PanelKind::Typesetting);
+        let storage = Storage::open(&paths).expect("storage");
+        storage
+            .write_panel_state(
+                &bootstrap.project.id,
+                &typesetting_panel,
+                &json!({
+                    "schemaVersion": 2,
+                    "publications": [{
+                        "id": "publication:cover",
+                        "title": "A quiet city",
+                        "covers": [],
+                        "content": {
+                            "type": "doc",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{ "type": "text", "text": "Streets after rain" }]
+                            }]
+                        },
+                        "createdAt": "2026-07-21T00:00:00Z",
+                        "updatedAt": "2026-07-21T00:00:00Z"
+                    }]
+                }),
+            )
+            .expect("typesetting state");
+
+        let skills = cover_skills(&paths).expect("cover skills");
+        assert!(skills
+            .iter()
+            .any(|listing| listing.skill.id == DEFAULT_COVER_SKILL_ID));
+        let created = create_cover_request(
+            &paths,
+            "publication:cover",
+            DEFAULT_COVER_SKILL_ID,
+            "Use restrained colors",
+            "cover-request:1",
+        )
+        .expect("cover request");
+        let task = &created["task"];
+        assert_eq!(task["queue"], json!("typesetting"));
+        assert_eq!(task["type"], json!(COVER_TASK_TYPE));
+        assert_eq!(task["capability"], json!(COVER_CAPABILITY));
+        assert_eq!(task["targetId"], json!("publication:cover"));
+        assert_eq!(task["input"]["snapshot"]["title"], json!("A quiet city"));
+        assert_eq!(
+            task["input"]["snapshot"]["bodyText"],
+            json!("Streets after rain")
+        );
+        assert_eq!(
+            task["input"]["coverSkillSnapshot"]["id"],
+            json!(DEFAULT_COVER_SKILL_ID)
+        );
+        assert!(task["input"]["coverSkillSnapshot"]["files"]
+            .as_array()
+            .is_some_and(|files| files.iter().any(|file| file["path"] == "SKILL.md")));
+
+        let repeated = create_cover_request(
+            &paths,
+            "publication:cover",
+            DEFAULT_COVER_SKILL_ID,
+            "A different retry payload is ignored",
+            "cover-request:1",
+        )
+        .expect("idempotent retry");
+        assert_eq!(repeated["task"]["id"], task["id"]);
+        assert_eq!(
+            storage
+                .list_tasks(&bootstrap.project.id)
+                .expect("tasks")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn cover_completion_appends_once_and_rejects_a_deleted_publication() {
+        let (_temp, paths) = test_paths();
+        let bootstrap = create_project(&paths, Some("Covers")).expect("project");
+        let typesetting_panel = panel_id(&bootstrap, PanelKind::Typesetting);
+        let storage = Storage::open(&paths).expect("storage");
+        let state = json!({
+            "schemaVersion": 2,
+            "publications": [{
+                "id": "publication:cover",
+                "title": "Cover target",
+                "covers": [],
+                "content": { "type": "doc", "content": [{ "type": "paragraph" }] },
+                "createdAt": "2026-07-21T00:00:00Z",
+                "updatedAt": "2026-07-21T00:00:00Z"
+            }]
+        });
+        storage
+            .write_panel_state(&bootstrap.project.id, &typesetting_panel, &state)
+            .expect("typesetting state");
+        let created = create_cover_request(
+            &paths,
+            "publication:cover",
+            DEFAULT_COVER_SKILL_ID,
+            "",
+            "cover-request:complete",
+        )
+        .expect("cover request");
+        let task_id = created["task"]["id"].as_str().expect("task id");
+        let result = json!({
+            "runtimeFinalization": {
+                "artifacts": [{
+                    "assetRef": format!("projects/{}/panels/{typesetting_panel}/assets/cover-tasks/{task_id}/cover.png", bootstrap.project.id),
+                    "fileName": format!("cover-tasks/{task_id}/cover.png"),
+                    "mimeType": "image/png",
+                    "width": 1200,
+                    "height": 900
+                }]
+            }
+        });
+        let (_, completed_state) = prepare_task_completion(&paths, task_id, Some(result.clone()))
+            .expect("prepare completion")
+            .expect("panel state");
+        let covers = completed_state["publications"][0]["covers"]
+            .as_array()
+            .expect("covers");
+        assert_eq!(covers.len(), 1);
+        assert_eq!(covers[0]["source"]["taskId"], json!(task_id));
+        assert_eq!(
+            covers[0]["source"]["skillId"],
+            json!(DEFAULT_COVER_SKILL_ID)
+        );
+
+        storage
+            .write_panel_state(&bootstrap.project.id, &typesetting_panel, &completed_state)
+            .expect("persist prepared state");
+        let (_, repeated_state) = prepare_task_completion(&paths, task_id, Some(result.clone()))
+            .expect("repeat completion")
+            .expect("panel state");
+        assert_eq!(
+            repeated_state["publications"][0]["covers"]
+                .as_array()
+                .expect("covers")
+                .len(),
+            1
+        );
+
+        storage
+            .write_panel_state(
+                &bootstrap.project.id,
+                &typesetting_panel,
+                &json!({ "schemaVersion": 2, "publications": [] }),
+            )
+            .expect("delete publication");
+        let error = prepare_task_completion(&paths, task_id, Some(result))
+            .expect_err("deleted publication must reject completion");
+        assert_eq!(error.code(), Some("typesetting_publication_not_found"));
     }
 }

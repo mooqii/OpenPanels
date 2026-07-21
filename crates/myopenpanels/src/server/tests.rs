@@ -20,6 +20,14 @@ mod tests {
         .bypass_cache());
     }
 
+    #[test]
+    fn build_info_advertises_the_agent_cli_for_its_runtime() {
+        let build_info = serde_json::to_value(current_build_info()).expect("build info");
+        assert!(build_info["agentCli"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+    }
+
     #[tokio::test]
     async fn removed_routes_return_not_found_and_workflow_run_route_is_available() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -91,6 +99,19 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::OK);
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/api/tasks/task:missing")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
         let response = router
             .oneshot(
@@ -226,6 +247,23 @@ mod tests {
         let payload = serde_json::from_slice::<Value>(&body).expect("json response");
         assert!(payload["systemSkills"].as_array().is_some_and(|value| !value.is_empty()));
 
+        let response = api_recommended_skills(State(state.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("recommended response body");
+        let payload =
+            serde_json::from_slice::<Value>(&body).expect("recommended json response");
+        assert_eq!(payload["schemaVersion"], 1);
+        assert_eq!(payload["skills"], json!([]));
+
+        let response = api_install_recommended_skill(
+            State(state.clone()),
+            Path("missing-recommendation".to_owned()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
         let response = api_device_skills(State(state.clone())).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -234,7 +272,13 @@ mod tests {
         let payload = serde_json::from_slice::<Value>(&body).expect("device json response");
         assert_eq!(
             payload["availableModuleKinds"],
-            json!(["wiki-update", "writing", "writing-refinement"])
+            json!([
+                "wiki-update",
+                "writing",
+                "writing-refinement",
+                "typesetting-cover",
+                "publishing"
+            ])
         );
 
         let response = api_install_device_skill(
@@ -255,6 +299,7 @@ mod tests {
                 replace_existing: false,
                 url: String::new(),
                 archive_base64: String::new(),
+                skills: Vec::new(),
                 files: vec![crate::agent::SkillImportFile {
                     path: "api-import/SKILL.md".to_owned(),
                     content_base64: base64::engine::general_purpose::STANDARD.encode(
@@ -265,6 +310,29 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::CREATED);
+
+        let response = api_check_skill_updates(State(state.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("update response body");
+        let payload = serde_json::from_slice::<Value>(&body).expect("update json response");
+        assert!(payload["skills"].as_array().unwrap().iter().any(|skill| {
+            skill["status"] == "unmanaged" && skill["skillId"].as_str().is_some()
+        }));
+
+        let imported_skill_id = crate::agent::skill_update_ids(&state.paths)
+            .unwrap()
+            .into_iter()
+            .find(|skill_id| skill_id.starts_with("custom-"))
+            .expect("imported skill id");
+        let response = api_update_skill(
+            State(state.clone()),
+            Path(imported_skill_id),
+            Json(SkillUpdateBody { force: false }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
         let response = api_write_skill_file(
             State(state),

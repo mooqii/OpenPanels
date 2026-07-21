@@ -16,8 +16,6 @@ mod state;
 
 use state::*;
 
-pub const WIKI_PANEL_SKILL_ID: &str = "myopenpanels-wiki-panel";
-
 fn character_count(content: &str) -> usize {
     content
         .chars()
@@ -115,7 +113,7 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
         crate::cli::registry::CommandId::registered("agent.skill.read"),
         vec![
             "--skill-id".to_owned(),
-            WIKI_PANEL_SKILL_ID.to_owned(),
+            crate::agent::PANELS_SKILL_ID.to_owned(),
             "--format".to_owned(),
             "json".to_owned(),
         ],
@@ -133,7 +131,7 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
             "wikiSpaceId": wiki_space.id,
             "title": wiki_space.value.get("title").cloned().unwrap_or_else(|| json!("Wiki")),
             "pageCount": page_count,
-            "querySkillId": WIKI_PANEL_SKILL_ID,
+            "querySkillId": crate::agent::PANELS_SKILL_ID,
             "localAccess": local_access,
         },
         "actions": { "required": [], "suggested": [skill_action] },
@@ -273,7 +271,10 @@ pub fn create_generated_document(
     let now = now_iso();
     let document = json!({
         "id": document_id,
-        "title": title.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| title_from_file_name(&safe_file_name)),
+        "title": title
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| title_from_file_name(file_name)),
         "originalFileName": safe_file_name,
         "format": format,
         "mimeType": normalized_mime_type,

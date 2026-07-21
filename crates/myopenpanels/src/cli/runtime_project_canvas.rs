@@ -258,7 +258,7 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
             sync_builtin_agent_skills(&paths)?;
             if let Some(session) = reuse_existing_studio(&paths)? {
                 let bootstrap = bootstrap_studio(&paths)?;
-                let server_version = crate::studio::studio_version(&session)?
+                let server_version = crate::studio::studio_version(&paths, &session)?
                     .unwrap_or_else(|| "unknown".to_owned());
                 let result = StudioStartResult {
                     session,
@@ -279,7 +279,8 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
                 return write_result(parsed, stdout, &payload, text);
             }
             let host = studio_host(parsed);
-            let port = studio_port(parsed)?.unwrap_or(find_open_port(&host)?);
+            let port = studio_port(parsed)?.unwrap_or(find_studio_port(&paths, &host)?);
+            let owner_lock = acquire_studio_owner_lock(&service_paths, port)?;
             let local_server_url = format!("http://127.0.0.1:{port}");
             let session = StudioSession {
                 system_browser_url: Some(local_server_url.clone()),
@@ -317,7 +318,8 @@ fn run_studio_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<()
                 .map_err(|error| CliError::new(error.to_string()))?;
             drop(transition_lock);
             let static_dir = string_flag(parsed, "static-dir").map(std::path::PathBuf::from);
-            let exit_code = run_server(&host, port, service_paths, static_dir)?;
+            let exit_code =
+                run_server_with_owner_lock(&host, port, service_paths, static_dir, owner_lock)?;
             std::process::exit(exit_code);
         }
         Some("wait") => {

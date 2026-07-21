@@ -153,7 +153,7 @@ export function publishingRevisionFromAppState(appState: AppState): number {
 
 export function emptyTypesettingState(): TypesettingState {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     publications: [],
   }
 }
@@ -193,7 +193,7 @@ export function isTypesettingState(state: unknown): state is TypesettingState {
   return (
     typeof state === "object" &&
     state !== null &&
-    (state as { schemaVersion?: unknown }).schemaVersion === 1 &&
+    (state as { schemaVersion?: unknown }).schemaVersion === 2 &&
     Array.isArray((state as { publications?: unknown }).publications) &&
     (state as { publications: unknown[] }).publications.every(
       isTypesettingPublication
@@ -251,26 +251,40 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function isTypesettingPublicationImage(value: unknown): boolean {
   if (!(typeof value === "object" && value !== null)) return false
   const image = value as Record<string, unknown>
+  const source = isPlainObject(image.source) ? image.source : null
+  const sourceValid =
+    source?.kind === "canvas"
+      ? typeof source.assetRef === "string" &&
+        typeof source.projectId === "string" &&
+        typeof source.panelId === "string"
+      : source?.kind === "generated"
+        ? typeof source.taskId === "string" &&
+          typeof source.skillId === "string"
+        : false
   return (
     typeof image.assetRef === "string" &&
     typeof image.src === "string" &&
     image.src.startsWith("/") &&
     typeof image.fileName === "string" &&
     typeof image.mimeType === "string" &&
-    typeof image.sourceAssetRef === "string" &&
-    typeof image.sourceProjectId === "string" &&
-    typeof image.sourceCanvasPanelId === "string" &&
-    (image.width === undefined || typeof image.width === "number") &&
-    (image.height === undefined || typeof image.height === "number")
+    sourceValid &&
+    (image.width === undefined ||
+      image.width === null ||
+      typeof image.width === "number") &&
+    (image.height === undefined ||
+      image.height === null ||
+      typeof image.height === "number")
   )
 }
 
 export function emptyWritingState(): import("../types").WritingState {
   return {
     schemaVersion: 5,
+    createDraft: "",
     draft: "",
     mode: "create",
     refinementName: "",
+    revisionDraft: "",
     selectedCreateWritingSkillIds: ["writing-default"],
     selectedRefinementSkillId: "writing-skill-refiner",
     selectedRevisionWritingSkillId: "writing-default",
@@ -285,9 +299,11 @@ export function isWritingState(
     typeof state === "object" &&
     state !== null &&
     (state as { schemaVersion?: unknown }).schemaVersion === 5 &&
+    typeof (state as { createDraft?: unknown }).createDraft === "string" &&
     typeof (state as { draft?: unknown }).draft === "string" &&
     typeof (state as { refinementName?: unknown }).refinementName ===
       "string" &&
+    typeof (state as { revisionDraft?: unknown }).revisionDraft === "string" &&
     Array.isArray(
       (state as { selectedCreateWritingSkillIds?: unknown })
         .selectedCreateWritingSkillIds

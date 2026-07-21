@@ -557,15 +557,7 @@ fn wiki_authoring_task_prompt(
 }
 
 fn resolved_cli() -> String {
-    std::env::var("MYOPENPANELS_CLI")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .map(|path| path.display().to_string())
-        })
-        .unwrap_or_else(|| "myopenpanels".to_owned())
+    crate::cli_identity::agent_cli_executable()
 }
 
 fn shell_quote_prompt_arg(value: &str) -> String {

@@ -1,15 +1,30 @@
 import { describe, expect, it } from "vitest"
-import type { DeviceSkillGroup, ManagedProjectSkill } from "../../types"
+import type {
+  DeviceSkillGroup,
+  ManagedProjectSkill,
+  RecommendedSkill,
+} from "../../types"
+import {
+  groupRecommendedSkills,
+  recommendedSkillAction,
+  recommendedSkillPresentation,
+} from "./RecommendedSkillsPanel"
 import {
   canInstallSkill,
+  DEFAULT_ADD_SKILL_SOURCE_TAB,
   filterDeviceSkills,
   installedSkillCountLabel,
   managedSkillActionIds,
+  moduleLabel,
+  scannedSkillAssignments,
+  skillUpdatePresentation,
 } from "./SkillManager"
+import { shouldAutoCheckSkillUpdates } from "./useSkillUpdates"
 
 describe("SkillManagerDialog", () => {
   it("maps read-only and custom Skills to the permitted actions", () => {
     const skill = {
+      canCheckUpdates: false,
       canDelete: false,
       canEdit: false,
       description: "Description",
@@ -29,6 +44,41 @@ describe("SkillManagerDialog", () => {
         kind: "custom",
       })
     ).toEqual(["open", "delete"])
+  })
+
+  it("offers updates only when the source has changed", () => {
+    const skill = {
+      canCheckUpdates: true,
+      canDelete: true,
+      canEdit: true,
+      description: "Description",
+      id: "example",
+      kind: "custom",
+      localDir: "/tmp/example",
+      moduleKinds: ["writing"],
+      name: "Example",
+      provenance: {
+        sourceLocator: "https://github.com/example/example",
+        sourceType: "github",
+      },
+    } satisfies ManagedProjectSkill
+    const state = {
+      checkedAt: "2026-07-21T00:00:00Z",
+      localModified: true,
+      skillId: skill.id,
+      status: "updateAvailable",
+    } as const
+
+    expect(managedSkillActionIds(skill, state)).toEqual([
+      "open",
+      "update",
+      "delete",
+    ])
+    const t = (value: TemplateStringsArray) => value[0] ?? ""
+    expect(skillUpdatePresentation(skill, state, false, t)).toEqual({
+      label: "Update available · Local changes",
+      tone: "warning",
+    })
   })
 
   it("searches the selected device location and clears back to all Skills", () => {
@@ -64,7 +114,7 @@ describe("SkillManagerDialog", () => {
     expect(installedSkillCountLabel(23, "en")).toBe("23 installed Skills")
   })
 
-  it("requires both an import source and an associated module", () => {
+  it("allows URL scans without a module while requiring one for local imports", () => {
     expect(
       canInstallSkill({
         folderFileCount: 0,
@@ -73,7 +123,7 @@ describe("SkillManagerDialog", () => {
         url: "https://github.com/example/skill",
         zipSelected: false,
       })
-    ).toBe(false)
+    ).toBe(true)
     expect(
       canInstallSkill({
         folderFileCount: 0,
@@ -101,5 +151,100 @@ describe("SkillManagerDialog", () => {
         zipSelected: true,
       })
     ).toBe(true)
+  })
+
+  it("initializes every scanned Skill with the launch module", () => {
+    expect(
+      scannedSkillAssignments(
+        [
+          { description: "A", name: "alpha", subpath: "skills/alpha" },
+          { description: "B", name: "beta", subpath: "skills/beta" },
+        ],
+        "writing"
+      )
+    ).toEqual({
+      "skills/alpha": "writing",
+      "skills/beta": "writing",
+    })
+  })
+
+  it("presents publishing Skills under the shared content publishing module", () => {
+    const t = (value: TemplateStringsArray) => value[0] ?? ""
+    expect(moduleLabel("publishing", t)).toBe("Content publishing")
+    expect(moduleLabel("publishing-xiaohongshu", t)).toBe("Content publishing")
+    expect(moduleLabel("unassociated", t)).toBe("Unassociated Skills")
+  })
+
+  it("opens Add Skill on recommendations and checks updates once per opening", () => {
+    expect(DEFAULT_ADD_SKILL_SOURCE_TAB).toBe("recommended")
+    expect(shouldAutoCheckSkillUpdates("add", false)).toBe(true)
+    expect(shouldAutoCheckSkillUpdates("installed", false)).toBe(true)
+    expect(shouldAutoCheckSkillUpdates("add", true)).toBe(false)
+    expect(shouldAutoCheckSkillUpdates("device", false)).toBe(false)
+  })
+
+  it("groups multi-module recommendations while sharing their identity and state", () => {
+    const recommended = {
+      canCheckUpdates: true,
+      description: "Direct editorial prose",
+      id: "editorial-style",
+      installStatus: "bindingsMissing",
+      installedModuleKinds: ["writing"],
+      installedSkillId: "custom-editorial",
+      missingModuleKinds: ["publishing"],
+      moduleKinds: ["writing", "publishing"],
+      name: "Editorial Style",
+      sourceLocator:
+        "https://github.com/example/skills/tree/main/editorial-style",
+      sourceType: "github",
+      sourceUrl: "https://github.com/example/skills/tree/main/editorial-style",
+    } satisfies RecommendedSkill
+    const groups = groupRecommendedSkills([recommended], "publishing")
+
+    expect(groups.map((group) => group.kind)).toEqual(["publishing", "writing"])
+    expect(groups[0]?.skills[0]).toBe(recommended)
+    expect(groups[1]?.skills[0]).toBe(recommended)
+    expect(recommendedSkillAction(recommended)).toBe("associate")
+    expect(
+      recommendedSkillAction(recommended, {
+        checkedAt: "2026-07-21T00:00:00Z",
+        localModified: true,
+        skillId: "custom-editorial",
+        status: "updateAvailable",
+      })
+    ).toBe("update")
+  })
+
+  it("maps recommended installation and update states", () => {
+    const recommended = {
+      canCheckUpdates: false,
+      description: "Direct editorial prose",
+      id: "editorial-style",
+      installStatus: "notInstalled",
+      installedModuleKinds: [],
+      missingModuleKinds: [],
+      moduleKinds: ["writing"],
+      name: "Editorial Style",
+      sourceLocator: "https://github.com/example/editorial-style",
+      sourceType: "github",
+      sourceUrl: "https://github.com/example/editorial-style",
+    } satisfies RecommendedSkill
+    const t = (value: TemplateStringsArray) => value[0] ?? ""
+
+    expect(
+      recommendedSkillPresentation(recommended, undefined, false, false, t)
+    ).toEqual({ label: "Not installed", tone: "neutral" })
+    expect(
+      recommendedSkillPresentation(recommended, undefined, false, true, t)
+    ).toEqual({ label: "Installing", tone: "checking" })
+    expect(
+      recommendedSkillPresentation(
+        { ...recommended, installStatus: "conflict" },
+        undefined,
+        false,
+        false,
+        t
+      )
+    ).toEqual({ label: "Skill conflict", tone: "danger" })
   })
 })

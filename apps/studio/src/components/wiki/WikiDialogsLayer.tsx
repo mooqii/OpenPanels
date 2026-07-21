@@ -21,6 +21,9 @@ export function WikiDialogsLayer({
     markdownDialog,
     setMarkdownDialog,
     renameRawDocumentFile,
+    pendingRenameRawDocument,
+    setPendingRenameRawDocument,
+    renameRawDocument,
     saveMarkdown,
     pageDialog,
     setPageDialog,
@@ -126,6 +129,24 @@ export function WikiDialogsLayer({
           }
           title={t`Rename generated document`}
           value={pendingRenameGeneratedDocument.title}
+        />
+      ) : null}
+
+      {pendingRenameRawDocument ? (
+        <RenameDocumentDialog
+          cancelLabel={t`Cancel`}
+          confirmLabel={t`Rename`}
+          isBusy={isBusy}
+          onCancel={() => setPendingRenameRawDocument(null)}
+          onConfirm={(title) =>
+            renameRawDocument(pendingRenameRawDocument, title).catch(
+              (error) => {
+                console.error("Failed to rename raw document", error)
+              }
+            )
+          }
+          title={t`Rename raw document`}
+          value={pendingRenameRawDocument.title}
         />
       ) : null}
 

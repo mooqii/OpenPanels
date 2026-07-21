@@ -497,10 +497,10 @@ function safeEditorLink(value: string): string | null {
   }
 }
 
-export function formatPublicationTime(value: string): string {
+export function formatPublicationTime(value: string, locale?: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date)

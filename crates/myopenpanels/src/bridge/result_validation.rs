@@ -142,6 +142,146 @@ fn build_refinement_output_plan(
     })
 }
 
+fn build_typesetting_cover_output_plan(
+    _paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    _attempt_id: &str,
+    _execution_generation: i64,
+    _execution_unit: &Value,
+) -> Result<TaskOutputPlanDraft, CliError> {
+    let result = read_execution_result_v2(workspace, "Typesetting Cover")?;
+    validate_result_keys(
+        &result,
+        &["schemaVersion", "outcome", "summary", "artifacts"],
+        "Typesetting Cover",
+    )?;
+    require_outcome(&result, "generated", "Typesetting Cover")?;
+    let artifact = exactly_one_binary_artifact(workspace, &result, "Typesetting Cover")?;
+    validate_fixed_artifact(
+        &artifact,
+        "typesetting-cover",
+        "outputs/cover.png",
+        "Typesetting Cover",
+    )?;
+    let bytes = fs::read(&artifact.absolute_path).map_err(to_cli_error)?;
+    let (width, height) = png_dimensions(&bytes).ok_or_else(|| {
+        CliError::with_code(
+            "invalid_output",
+            "Typesetting Cover output must be a valid non-empty PNG bitmap.",
+        )
+    })?;
+    let project_id = task
+        .get("projectId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::with_code("invalid_output", "Cover project is missing."))?;
+    let panel_id = task
+        .get("panelId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::with_code("invalid_output", "Cover panel is missing."))?;
+    let task_id = task
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::with_code("invalid_output", "Cover Task id is missing."))?;
+    Ok(TaskOutputPlanDraft {
+        result,
+        actions: vec![TaskOutputAction::PrepareTypesettingCover {
+            project_id: project_id.to_owned(),
+            panel_id: panel_id.to_owned(),
+            task_id: task_id.to_owned(),
+            artifact,
+            width,
+            height,
+        }],
+    })
+}
+
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 8 || bytes[..8] != [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a] {
+        return None;
+    }
+    let mut offset = 8_usize;
+    let mut dimensions = None;
+    let mut saw_image_data = false;
+    while offset < bytes.len() {
+        let header_end = offset.checked_add(8)?;
+        if header_end > bytes.len() {
+            return None;
+        }
+        let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
+        let chunk_type = &bytes[offset + 4..header_end];
+        let data_end = header_end.checked_add(length)?;
+        let chunk_end = data_end.checked_add(4)?;
+        if chunk_end > bytes.len() {
+            return None;
+        }
+        let stored_crc = u32::from_be_bytes(bytes[data_end..chunk_end].try_into().ok()?);
+        if png_crc32(&bytes[offset + 4..data_end]) != stored_crc {
+            return None;
+        }
+        match chunk_type {
+            b"IHDR" => {
+                if dimensions.is_some() || offset != 8 || length != 13 {
+                    return None;
+                }
+                let data = &bytes[header_end..data_end];
+                let width = u32::from_be_bytes(data[..4].try_into().ok()?);
+                let height = u32::from_be_bytes(data[4..8].try_into().ok()?);
+                if width == 0
+                    || height == 0
+                    || !valid_png_color_format(data[8], data[9])
+                    || data[10] != 0
+                    || data[11] != 0
+                    || data[12] > 1
+                {
+                    return None;
+                }
+                dimensions = Some((width, height));
+            }
+            b"IDAT" => {
+                if dimensions.is_none() || length == 0 {
+                    return None;
+                }
+                saw_image_data = true;
+            }
+            b"IEND" => {
+                return (length == 0 && saw_image_data && chunk_end == bytes.len())
+                    .then_some(dimensions?)
+            }
+            _ => {}
+        }
+        offset = chunk_end;
+    }
+    None
+}
+
+fn valid_png_color_format(bit_depth: u8, color_type: u8) -> bool {
+    match color_type {
+        0 => matches!(bit_depth, 1 | 2 | 4 | 8 | 16),
+        2 | 4 | 6 => matches!(bit_depth, 8 | 16),
+        3 => matches!(bit_depth, 1 | 2 | 4 | 8),
+        _ => false,
+    }
+}
+
+fn png_crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
 fn build_wiki_output_plan(
     _paths: &MyOpenPanelsPaths,
     task: &Value,
@@ -267,7 +407,34 @@ fn build_xiaohongshu_publishing_output_plan(
     _execution_generation: i64,
     _execution_unit: &Value,
 ) -> Result<TaskOutputPlanDraft, CliError> {
-    let result = read_execution_result_v2(workspace, "Xiaohongshu publishing")?;
+    build_publishing_output_plan(paths, task, workspace, "Xiaohongshu publishing", "xiaohongshu")
+}
+
+fn build_wechat_official_account_publishing_output_plan(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    _attempt_id: &str,
+    _execution_generation: i64,
+    _execution_unit: &Value,
+) -> Result<TaskOutputPlanDraft, CliError> {
+    build_publishing_output_plan(
+        paths,
+        task,
+        workspace,
+        "WeChat Official Account publishing",
+        "wechat_official_account",
+    )
+}
+
+fn build_publishing_output_plan(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    label: &str,
+    platform: &str,
+) -> Result<TaskOutputPlanDraft, CliError> {
+    let result = read_execution_result_v2(workspace, label)?;
     validate_result_keys(
         &result,
         &[
@@ -282,9 +449,9 @@ fn build_xiaohongshu_publishing_output_plan(
             "remoteUrl",
             "publishedAt",
         ],
-        "Xiaohongshu publishing",
+        label,
     )?;
-    if !read_artifacts(workspace, &result, "Xiaohongshu publishing")?.is_empty() {
+    if !read_artifacts(workspace, &result, label)?.is_empty() {
         return Err(CliError::with_code(
             "invalid_output",
             "Publishing results cannot declare local output artifacts.",
@@ -294,7 +461,7 @@ fn build_xiaohongshu_publishing_output_plan(
     if !matches!(
         outcome,
         "published" | "needs_user_action" | "not_published" | "unknown"
-    ) || result.get("platform").and_then(Value::as_str) != Some("xiaohongshu")
+    ) || result.get("platform").and_then(Value::as_str) != Some(platform)
         || result.get("releaseId").and_then(Value::as_str)
             != task.pointer("/input/releaseId").and_then(Value::as_str)
         || result.get("attemptId").and_then(Value::as_str)
@@ -302,7 +469,7 @@ fn build_xiaohongshu_publishing_output_plan(
     {
         return Err(CliError::with_code(
             "invalid_output",
-            "Xiaohongshu publishing result does not match its Task contract.",
+            format!("{label} result does not match its Task contract."),
         ));
     }
     if outcome == "published" {
@@ -340,10 +507,17 @@ fn build_xiaohongshu_publishing_output_plan(
                 .split(':')
                 .next()
                 .unwrap_or("");
-            if host != "xiaohongshu.com" && !host.ends_with(".xiaohongshu.com") {
+            let allowed = match platform {
+                "xiaohongshu" => {
+                    host == "xiaohongshu.com" || host.ends_with(".xiaohongshu.com")
+                }
+                "wechat_official_account" => host == "mp.weixin.qq.com",
+                _ => false,
+            };
+            if !allowed {
                 return Err(CliError::with_code(
                     "invalid_output",
-                    "Publishing remoteUrl must be an HTTPS Xiaohongshu URL.",
+                    format!("Publishing remoteUrl is not valid for {platform}."),
                 ));
             }
         }
@@ -476,6 +650,21 @@ fn exactly_one_artifact(
     Ok(artifact.clone())
 }
 
+fn exactly_one_binary_artifact(
+    workspace: &Path,
+    result: &Value,
+    label: &str,
+) -> Result<TaskOutputArtifact, CliError> {
+    let artifacts = read_artifacts_with_mode(workspace, result, label, false)?;
+    let [artifact] = artifacts.as_slice() else {
+        return Err(CliError::with_code(
+            "invalid_output",
+            format!("{label} must declare exactly one artifact."),
+        ));
+    };
+    Ok(artifact.clone())
+}
+
 fn validate_fixed_artifact(
     artifact: &TaskOutputArtifact,
     role: &str,
@@ -499,6 +688,15 @@ fn read_artifacts(
     workspace: &Path,
     result: &Value,
     label: &str,
+) -> Result<Vec<TaskOutputArtifact>, CliError> {
+    read_artifacts_with_mode(workspace, result, label, true)
+}
+
+fn read_artifacts_with_mode(
+    workspace: &Path,
+    result: &Value,
+    label: &str,
+    require_utf8: bool,
 ) -> Result<Vec<TaskOutputArtifact>, CliError> {
     let declared = result
         .get("artifacts")
@@ -581,14 +779,22 @@ fn read_artifacts(
             ));
         }
         let bytes = fs::read(&absolute_path).map_err(to_cli_error)?;
-        let text = std::str::from_utf8(&bytes).map_err(|_| {
-            CliError::with_code("invalid_output", "Execution artifacts must be valid UTF-8.")
-        })?;
-        if text.trim().is_empty() {
+        if bytes.is_empty() {
             return Err(CliError::with_code(
                 "invalid_output",
                 "Execution artifacts cannot be empty.",
             ));
+        }
+        if require_utf8 {
+            let text = std::str::from_utf8(&bytes).map_err(|_| {
+                CliError::with_code("invalid_output", "Execution artifacts must be valid UTF-8.")
+            })?;
+            if text.trim().is_empty() {
+                return Err(CliError::with_code(
+                    "invalid_output",
+                    "Execution artifacts cannot be empty.",
+                ));
+            }
         }
         artifacts.push(TaskOutputArtifact {
             role: role.to_owned(),
@@ -865,4 +1071,144 @@ fn write_test_result(workspace: &Path, result: &Value) -> Result<(), CliError> {
         serde_json::to_vec(result).map_err(to_cli_error)?,
     )
     .map_err(to_cli_error)
+}
+
+#[cfg(test)]
+mod typesetting_cover_png_tests {
+    use super::*;
+
+    fn append_chunk(png: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
+        png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        png.extend_from_slice(chunk_type);
+        png.extend_from_slice(data);
+        let start = png.len() - data.len() - chunk_type.len();
+        let crc = png_crc32(&png[start..]);
+        png.extend_from_slice(&crc.to_be_bytes());
+    }
+
+    fn structurally_valid_png() -> Vec<u8> {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        append_chunk(
+            &mut png,
+            b"IHDR",
+            &[0, 0, 0, 4, 0, 0, 0, 3, 8, 6, 0, 0, 0],
+        );
+        append_chunk(&mut png, b"IDAT", &[0x78, 0x9c, 0x03, 0x00]);
+        append_chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
+    #[test]
+    fn png_validation_requires_complete_crc_checked_structure() {
+        let png = structurally_valid_png();
+        assert_eq!(png_dimensions(&png), Some((4, 3)));
+        assert_eq!(png_dimensions(&png[..24]), None);
+
+        let mut forged = png;
+        forged[20] ^= 1;
+        assert_eq!(png_dimensions(&forged), None);
+    }
+
+    #[test]
+    fn cover_output_plan_accepts_one_png_and_rejects_unsafe_or_invalid_outputs() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().join("project");
+        let storage = temp.path().join("storage");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("outputs")).expect("workspace");
+        fs::create_dir_all(&project).expect("project");
+        let paths = crate::paths::resolve_myopenpanels_paths(
+            Some(project.to_str().unwrap()),
+            Some(storage.to_str().unwrap()),
+            Some("cover-output-test"),
+        )
+        .expect("paths");
+        let task = json!({
+            "id": "task:cover",
+            "projectId": "project:cover",
+            "panelId": "panel:typesetting"
+        });
+        let write_result = |relative_path: &str| {
+            write_test_result(
+                &workspace,
+                &json!({
+                    "schemaVersion": 2,
+                    "outcome": "generated",
+                    "summary": "cover",
+                    "artifacts": [{
+                        "role": "typesetting-cover",
+                        "relativePath": relative_path
+                    }]
+                }),
+            )
+            .expect("execution result");
+        };
+
+        fs::write(workspace.join("outputs/cover.png"), structurally_valid_png())
+            .expect("valid png");
+        write_result("outputs/cover.png");
+        let plan = build_typesetting_cover_output_plan(
+            &paths,
+            &task,
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .expect("valid output");
+        assert_eq!(plan.actions.len(), 1);
+
+        write_result("../cover.png");
+        assert!(build_typesetting_cover_output_plan(
+            &paths,
+            &task,
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .is_err());
+
+        write_result("outputs/cover.png");
+        fs::write(workspace.join("outputs/cover.png"), []).expect("empty png");
+        assert!(build_typesetting_cover_output_plan(
+            &paths,
+            &task,
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .is_err());
+        fs::write(
+            workspace.join("outputs/cover.png"),
+            [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
+        )
+        .expect("forged png");
+        assert!(build_typesetting_cover_output_plan(
+            &paths,
+            &task,
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .is_err());
+
+        let oversized = fs::File::create(workspace.join("outputs/cover.png"))
+            .expect("oversized output");
+        oversized
+            .set_len(crate::content::MAX_TEXT_FILE_BYTES as u64 + 1)
+            .expect("sparse file");
+        let error = build_typesetting_cover_output_plan(
+            &paths,
+            &task,
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .expect_err("oversized output must fail");
+        assert_eq!(error.code(), Some("content_too_large"));
+    }
 }

@@ -1,22 +1,10 @@
-import { Button, Chip, ListBox, Select, Tabs, Tooltip } from "@heroui/react"
-import {
-  ArrowDown,
-  ArrowLeft,
-  Copy,
-  Info,
-  RefreshCw,
-  Settings,
-  Trash2,
-  X,
-} from "lucide-react"
+import { AlertDialog, Button, Chip, Tabs, Tooltip } from "@heroui/react"
+import { ArrowDown, ArrowLeft, Copy, RefreshCw, Trash2, X } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
-import { MODEL_GATEWAY_SETTINGS_CHANGED_EVENT } from "../../constants"
-import { apiJson, appendTraceEvent, fetchTraceSnapshot } from "../../lib/api"
+import { appendTraceEvent, fetchTraceSnapshot } from "../../lib/api"
 import type {
   AgentWorkerStatus,
-  LocalCliInfo,
-  ModelGatewaySettings,
   MyOpenPanelsBuildInfo,
   MyOpenPanelsTransport,
   ProjectTask,
@@ -28,6 +16,7 @@ import { TaskDispatchControl } from "./TaskDispatchControl"
 import { TraceEventRow } from "./TraceEventRow"
 import type { TraceFilter } from "./trace-utils"
 import {
+  canDeleteTask,
   compareTasksForDisplay,
   formatBlockedReason,
   formatDispatchState,
@@ -38,12 +27,14 @@ import {
   groupWikiUpdateTasks,
   isActiveTask,
   isDoneTask,
+  isPendingTask,
   pendingTaskCount,
+  taskDeleteNeedsConfirmation,
   taskMatchesFilter,
   taskStatusColor,
-  taskStatusTone,
   traceEventMatchesFilter,
 } from "./trace-utils"
+import { WorkerStatusCard } from "./WorkerStatusCard"
 
 const TRACE_CATEGORIES: TraceCategory[] = [
   "cli",
@@ -91,13 +82,14 @@ export function AgentPanel({
   transport: MyOpenPanelsTransport
   workerStatus?: AgentWorkerStatus
 }) {
-  const { t } = useMyOpenPanelsI18n()
   const isDevelopment = buildInfo?.channel === "development"
   const displayedTab = isDevelopment ? activeTab : "tasks"
   const [traceFilter, setTraceFilter] = useState<TraceFilter>("all")
   const [events, setEvents] = useState<TraceEvent[]>([])
   const [isFollowing, setIsFollowing] = useState(true)
-  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(
+    focusedTaskIds?.[0] ?? null
+  )
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -190,29 +182,6 @@ export function AgentPanel({
             )}
           </div>
           <div className="op-trace-panel__actions">
-            {displayedTab === "tasks" &&
-            hasUsableAgentCli === false &&
-            tasks[0] ? (
-              <Tooltip closeDelay={0} delay={300}>
-                <Button
-                  aria-label={t`Copy Project drain instruction`}
-                  isIconOnly
-                  onPress={() =>
-                    onOpenManualTask({
-                      kind: "project-drain",
-                      projectId: tasks[0].projectId,
-                    })
-                  }
-                  size="sm"
-                  variant="ghost"
-                >
-                  <Copy size={15} />
-                </Button>
-                <Tooltip.Content placement="bottom">
-                  {t`Copy Project drain instruction`}
-                </Tooltip.Content>
-              </Tooltip>
-            ) : null}
             {displayedTab === "communication" ? (
               <Button
                 aria-label="Clear communication view"
@@ -348,10 +317,21 @@ function TaskList({
   tasks: ProjectTask[]
   workerStatus?: AgentWorkerStatus
 }) {
+  const { t } = useMyOpenPanelsI18n()
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null)
+  const [hiddenTaskIds, setHiddenTaskIds] = useState<Set<string>>(
+    () => new Set()
+  )
+  const [pendingDeleteTask, setPendingDeleteTask] =
+    useState<ProjectTask | null>(null)
   const focusedTaskIdSet = focusedTaskIds ? new Set(focusedTaskIds) : null
-  const groupedTasks = groupWikiUpdateTasks(tasks)
+  const visibleTasks = tasks.filter((task) => !hiddenTaskIds.has(task.id))
+  const groupedTasks = groupWikiUpdateTasks(visibleTasks)
   const filteredTasks = groupWikiUpdateTasks(
-    tasks.filter((task) => !focusedTaskIdSet || focusedTaskIdSet.has(task.id))
+    visibleTasks.filter(
+      (task) => !focusedTaskIdSet || focusedTaskIdSet.has(task.id)
+    )
   )
     .filter((task) =>
       focusedTaskIdSet ? true : taskMatchesFilter(task, filter)
@@ -385,7 +365,44 @@ function TaskList({
     { id: "all", label: "All", count: groupedTasks.length },
   ]
 
-  if (!tasks.length) {
+  const deleteTask = async (task: ProjectTask) => {
+    setDeletingTaskId(task.id)
+    setDeleteError(null)
+    try {
+      const response = await fetch(
+        `${apiBase}/api/tasks/${encodeURIComponent(task.id)}`,
+        { method: "DELETE" }
+      )
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new Error(
+          payload?.error || `Task deletion failed (${response.status})`
+        )
+      }
+      setHiddenTaskIds((current) => {
+        const next = new Set(current)
+        next.add(task.id)
+        return next
+      })
+      if (expandedTaskId === task.id) onExpandTask(null)
+      setPendingDeleteTask(null)
+    } catch (cause) {
+      setDeleteError(formatTaskError(cause))
+    } finally {
+      setDeletingTaskId(null)
+    }
+  }
+
+  const requestTaskDelete = (task: ProjectTask) => {
+    setDeleteError(null)
+    if (taskDeleteNeedsConfirmation(task)) {
+      setPendingDeleteTask(task)
+      return
+    }
+    deleteTask(task).catch(() => undefined)
+  }
+
+  if (!visibleTasks.length) {
     return (
       <div className="op-agent-tasks">
         <div className="op-agent-tasks__scroll">
@@ -393,7 +410,10 @@ function TaskList({
         </div>
         <WorkerStatusCard
           apiBase={apiBase}
+          hasPendingTasks={false}
+          hasUsableAgentCli={hasUsableAgentCli}
           isActive={isActive}
+          onOpenManualTask={onOpenManualTask}
           onOpenModelSettings={onOpenModelSettings}
           workerStatus={workerStatus}
         />
@@ -404,14 +424,37 @@ function TaskList({
     <div className="op-agent-tasks">
       <div className="op-agent-tasks__scroll">
         {focusedTaskIds?.length ? (
-          <div className="op-agent-task-focus">
-            <span>
-              Refinement tasks <strong>{focusedTaskIds.length}</strong>
-            </span>
-            <Button onPress={onClearFocusedTasks} size="sm" variant="ghost">
-              <ArrowLeft size={14} />
-              All tasks
-            </Button>
+          <div
+            className={
+              focusedTaskIds.length === 1
+                ? "op-agent-task-focus op-agent-task-focus--single"
+                : "op-agent-task-focus"
+            }
+          >
+            {focusedTaskIds.length === 1 ? (
+              <Tooltip>
+                <Button
+                  aria-label="Back to all tasks"
+                  isIconOnly
+                  onPress={onClearFocusedTasks}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <ArrowLeft size={14} />
+                </Button>
+                <Tooltip.Content>All tasks</Tooltip.Content>
+              </Tooltip>
+            ) : (
+              <>
+                <span>
+                  Refinement tasks <strong>{focusedTaskIds.length}</strong>
+                </span>
+                <Button onPress={onClearFocusedTasks} size="sm" variant="ghost">
+                  <ArrowLeft size={14} />
+                  All tasks
+                </Button>
+              </>
+            )}
           </div>
         ) : (
           <div className="op-agent-task-filters">
@@ -442,13 +485,23 @@ function TaskList({
             ))}
           </div>
         )}
+        {deleteError && !pendingDeleteTask ? (
+          <p className="op-agent-task-list__error" role="alert">
+            {deleteError}
+          </p>
+        ) : null}
         {filteredTasks.length ? (
           filteredTasks.map((task) => {
-            const isExpanded = expandedTaskId === task.id
+            const isExpanded =
+              expandedTaskId === task.id ||
+              Boolean(
+                expandedTaskId &&
+                  task.wikiUpdateGroup?.taskIds.includes(expandedTaskId)
+              )
             const detail = JSON.stringify(task, null, 2)
             return (
               <article
-                className={`op-agent-task op-agent-task--${taskStatusTone(task.status)}`}
+                className="op-agent-task"
                 key={task.id}
                 ref={
                   task.id === focusedTaskIds?.[0] ? focusedTaskRef : undefined
@@ -456,91 +509,111 @@ function TaskList({
               >
                 <button
                   aria-expanded={isExpanded}
-                  className="op-agent-task__summary"
+                  className={
+                    canDeleteTask(task)
+                      ? "op-agent-task__summary op-agent-task__summary--deletable"
+                      : "op-agent-task__summary"
+                  }
                   onClick={() => onExpandTask(isExpanded ? null : task.id)}
                   type="button"
                 >
                   <span className="op-agent-task__topline">
-                    <Chip
-                      className="op-agent-task__queue"
-                      color={taskStatusColor(task.status)}
-                      size="sm"
-                      variant="soft"
-                    >
-                      {task.queue}
-                    </Chip>
-                    <span>{formatTaskTime(task.updatedAt)}</span>
+                    <span className="op-agent-task__statusline">
+                      <Chip
+                        className="op-agent-task__status"
+                        color={taskStatusColor(task.status)}
+                        size="sm"
+                        variant="soft"
+                      >
+                        {task.status}
+                      </Chip>
+                      {task.wikiUpdateGroup ? (
+                        <Chip size="sm" variant="soft">
+                          {task.wikiUpdateGroup.tasks.filter(isDoneTask).length}
+                          /{task.wikiUpdateGroup.tasks.length} complete
+                        </Chip>
+                      ) : null}
+                      {isPendingTask(task) && task.ready === false ? (
+                        <Chip color="warning" size="sm" variant="soft">
+                          {task.blockedReason
+                            ? formatBlockedReason(task.blockedReason)
+                            : "not ready"}
+                        </Chip>
+                      ) : null}
+                    </span>
+                    <time>{formatTaskTime(task.updatedAt)}</time>
                   </span>
                   <strong>
                     {task.wikiUpdateGroup
                       ? `Wiki updates · ${task.wikiUpdateGroup.tasks.length} tasks`
                       : (task.capability ?? formatTaskType(task.type))}
                   </strong>
-                  <span className="op-agent-task__meta">
-                    <span>{task.status}</span>
-                    <span
-                      className={
-                        task.ready
-                          ? "op-agent-task__state op-agent-task__state--ready"
-                          : task.blockedReason
-                            ? "op-agent-task__state op-agent-task__state--blocked"
-                            : "op-agent-task__state"
-                      }
-                    >
-                      {task.ready
-                        ? "ready"
-                        : task.blockedReason
-                          ? formatBlockedReason(task.blockedReason)
-                          : "not ready"}
-                    </span>
-                    {task.attempt ? (
-                      <span>
-                        attempt {task.attempt}
-                        {task.maxAttempts ? `/${task.maxAttempts}` : ""}
-                      </span>
-                    ) : null}
-                    {task.dispatchState ? (
-                      <span>{formatDispatchState(task.dispatchState)}</span>
-                    ) : null}
-                    {task.workflowRunId ? <span>Workflow Run</span> : null}
-                    {task.assignedTarget ? (
-                      <span>{task.assignedTarget.name}</span>
-                    ) : null}
-                    <span>{task.panelKind}</span>
-                    <span>{task.targetId || task.id}</span>
-                    {task.wikiUpdateGroup ? (
-                      <span>
-                        {task.wikiUpdateGroup.tasks.filter(isDoneTask).length}/
-                        {task.wikiUpdateGroup.tasks.length} complete
-                      </span>
-                    ) : null}
-                  </span>
-                  {task.error &&
-                  (task.status === "failed" || task.status === "cancelled") ? (
-                    <span className="op-agent-task__note">
-                      {formatTaskError(task.error)}
-                    </span>
-                  ) : null}
-                  {task.nextRunAt ? (
-                    <span className="op-agent-task__note">
-                      Next run {formatTaskTime(task.nextRunAt)}
-                    </span>
-                  ) : task.lease?.expiresAt &&
-                    task.blockedReason === "leased" ? (
-                    <span className="op-agent-task__note">
-                      Lease until {formatTaskTime(task.lease.expiresAt)}
-                    </span>
-                  ) : null}
-                  <code>{task.id}</code>
                 </button>
+                <TaskDeleteButton
+                  isDeleting={deletingTaskId === task.id}
+                  onDelete={requestTaskDelete}
+                  task={task}
+                />
                 <TaskDispatchControl
                   apiBase={apiBase}
+                  hasUsableAgentCli={hasUsableAgentCli}
                   onOpenManualTask={onOpenManualTask}
-                  showManualInstruction={hasUsableAgentCli === false}
                   task={task}
                 />
                 {isExpanded ? (
                   <div className="op-agent-task__detail">
+                    <div className="op-agent-task__meta">
+                      <span>{task.queue}</span>
+                      <span>{task.status}</span>
+                      <span
+                        className={
+                          task.ready
+                            ? "op-agent-task__state op-agent-task__state--ready"
+                            : task.blockedReason
+                              ? "op-agent-task__state op-agent-task__state--blocked"
+                              : "op-agent-task__state"
+                        }
+                      >
+                        {task.ready
+                          ? "ready"
+                          : task.blockedReason
+                            ? formatBlockedReason(task.blockedReason)
+                            : "not ready"}
+                      </span>
+                      {task.attempt ? (
+                        <span>
+                          attempt {task.attempt}
+                          {task.maxAttempts ? `/${task.maxAttempts}` : ""}
+                        </span>
+                      ) : null}
+                      {task.dispatchState ? (
+                        <span>{formatDispatchState(task.dispatchState)}</span>
+                      ) : null}
+                      {task.workflowRunId ? <span>Workflow Run</span> : null}
+                      {task.assignedTarget ? (
+                        <span>{task.assignedTarget.name}</span>
+                      ) : null}
+                      <span>{task.panelKind}</span>
+                      <span>{task.targetId || task.id}</span>
+                    </div>
+                    {task.error &&
+                    (task.status === "failed" ||
+                      task.status === "cancelled") ? (
+                      <span className="op-agent-task__note">
+                        {formatTaskError(task.error)}
+                      </span>
+                    ) : null}
+                    {task.nextRunAt ? (
+                      <span className="op-agent-task__note">
+                        Next run {formatTaskTime(task.nextRunAt)}
+                      </span>
+                    ) : task.lease?.expiresAt &&
+                      task.blockedReason === "leased" ? (
+                      <span className="op-agent-task__note">
+                        Lease until {formatTaskTime(task.lease.expiresAt)}
+                      </span>
+                    ) : null}
+                    <code>{task.id}</code>
                     {task.wikiUpdateGroup ? (
                       <div className="op-agent-task__members">
                         {task.wikiUpdateGroup.tasks.map((member) => (
@@ -550,6 +623,11 @@ function TaskList({
                           >
                             <span>{formatTaskType(member.type)}</span>
                             <span>{member.status}</span>
+                            <TaskDeleteButton
+                              isDeleting={deletingTaskId === member.id}
+                              onDelete={requestTaskDelete}
+                              task={member}
+                            />
                             <code>{member.id}</code>
                           </div>
                         ))}
@@ -612,11 +690,96 @@ function TaskList({
       </div>
       <WorkerStatusCard
         apiBase={apiBase}
+        hasPendingTasks={pendingTaskCount(groupedTasks) > 0}
+        hasUsableAgentCli={hasUsableAgentCli}
         isActive={isActive}
+        onOpenManualTask={onOpenManualTask}
         onOpenModelSettings={onOpenModelSettings}
+        projectId={visibleTasks[0]?.projectId}
         workerStatus={workerStatus}
       />
+      {pendingDeleteTask ? (
+        <AlertDialog.Backdrop
+          isOpen
+          onOpenChange={(isOpen) => {
+            if (!(isOpen || deletingTaskId)) {
+              setPendingDeleteTask(null)
+              setDeleteError(null)
+            }
+          }}
+        >
+          <AlertDialog.Container placement="center">
+            <AlertDialog.Dialog>
+              <AlertDialog.Header>
+                <AlertDialog.Icon status="danger" />
+                <AlertDialog.Heading>{t`Delete task?`}</AlertDialog.Heading>
+              </AlertDialog.Header>
+              <AlertDialog.Body>
+                <p>
+                  {t`This task is waiting to run. Deleting it will cancel its related panel content and prevent it from running.`}
+                </p>
+                {deleteError ? (
+                  <p className="op-agent-task-list__error" role="alert">
+                    {deleteError}
+                  </p>
+                ) : null}
+              </AlertDialog.Body>
+              <AlertDialog.Footer>
+                <Button
+                  isDisabled={Boolean(deletingTaskId)}
+                  onPress={() => {
+                    setPendingDeleteTask(null)
+                    setDeleteError(null)
+                  }}
+                  variant="tertiary"
+                >
+                  {t`Cancel`}
+                </Button>
+                <Button
+                  isPending={deletingTaskId === pendingDeleteTask.id}
+                  onPress={() =>
+                    deleteTask(pendingDeleteTask).catch(() => undefined)
+                  }
+                  variant="danger"
+                >
+                  <Trash2 size={15} />
+                  {t`Delete`}
+                </Button>
+              </AlertDialog.Footer>
+            </AlertDialog.Dialog>
+          </AlertDialog.Container>
+        </AlertDialog.Backdrop>
+      ) : null}
     </div>
+  )
+}
+
+function TaskDeleteButton({
+  isDeleting,
+  onDelete,
+  task,
+}: {
+  isDeleting: boolean
+  onDelete: (task: ProjectTask) => void
+  task: ProjectTask
+}) {
+  const { t } = useMyOpenPanelsI18n()
+  if (!canDeleteTask(task)) return null
+  return (
+    <Tooltip closeDelay={0} delay={300}>
+      <Button
+        aria-label={t`Delete task`}
+        className="op-agent-task__delete"
+        isDisabled={isDeleting}
+        isIconOnly
+        onPress={() => onDelete(task)}
+        size="sm"
+        variant="ghost"
+      >
+        <Trash2 size={14} />
+      </Button>
+      <Tooltip.Content placement="top">{t`Delete task`}</Tooltip.Content>
+    </Tooltip>
   )
 }
 
@@ -659,13 +822,12 @@ function TaskHistory({
     }
   }, [apiBase, task.id])
 
-  const mutate = async (action: "archive" | "cancel" | "retry") => {
+  const retry = async () => {
     setIsMutating(true)
     try {
-      await fetch(
-        `${apiBase}/api/tasks/${encodeURIComponent(task.id)}/${action}`,
-        { method: "POST" }
-      )
+      await fetch(`${apiBase}/api/tasks/${encodeURIComponent(task.id)}/retry`, {
+        method: "POST",
+      })
     } finally {
       setIsMutating(false)
     }
@@ -682,35 +844,11 @@ function TaskHistory({
             aria-label="Retry task"
             isDisabled={isMutating}
             isIconOnly
-            onPress={() => mutate("retry")}
+            onPress={() => retry()}
             size="sm"
             variant="ghost"
           >
             <RefreshCw size={14} />
-          </Button>
-        ) : null}
-        {!isDoneTask(task) && task.status !== "failed" ? (
-          <Button
-            aria-label="Cancel task"
-            isDisabled={isMutating}
-            isIconOnly
-            onPress={() => mutate("cancel")}
-            size="sm"
-            variant="ghost"
-          >
-            <X size={14} />
-          </Button>
-        ) : null}
-        {isDoneTask(task) && !task.archivedAt ? (
-          <Button
-            aria-label="Archive task"
-            isDisabled={isMutating}
-            isIconOnly
-            onPress={() => mutate("archive")}
-            size="sm"
-            variant="ghost"
-          >
-            <Trash2 size={14} />
           </Button>
         ) : null}
       </div>
@@ -720,253 +858,5 @@ function TaskHistory({
         </div>
       ) : null}
     </>
-  )
-}
-
-type LocalCliTone = "normal" | "disabled" | "warning"
-
-function WorkerStatusCard({
-  apiBase,
-  isActive,
-  onOpenModelSettings,
-  workerStatus,
-}: {
-  apiBase: string
-  isActive: boolean
-  onOpenModelSettings: () => void
-  workerStatus?: AgentWorkerStatus
-}) {
-  const { t } = useMyOpenPanelsI18n()
-  const [settings, setSettings] = useState<ModelGatewaySettings | null>(null)
-  const [localClis, setLocalClis] = useState<LocalCliInfo[]>([])
-  const [isLoading, setIsLoading] = useState(false)
-  const [isSaving, setIsSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const refresh = useCallback(async () => {
-    setIsLoading(true)
-    setError(null)
-    try {
-      const [settingsResponse, scanResponse] = await Promise.all([
-        apiJson<{ settings: ModelGatewaySettings }>(
-          apiBase,
-          "/api/model-gateway/settings"
-        ),
-        apiJson<{ localClis: LocalCliInfo[] }>(
-          apiBase,
-          "/api/model-gateway/local-clis"
-        ),
-      ])
-      setSettings(settingsResponse.settings)
-      setLocalClis(scanResponse.localClis)
-    } catch (cause) {
-      setError(formatTaskError(cause))
-    } finally {
-      setIsLoading(false)
-    }
-  }, [apiBase])
-
-  useEffect(() => {
-    if (!isActive) return
-    refresh().catch(() => undefined)
-    const onSettingsChanged = () => {
-      refresh().catch(() => undefined)
-    }
-    window.addEventListener(
-      MODEL_GATEWAY_SETTINGS_CHANGED_EVENT,
-      onSettingsChanged
-    )
-    return () =>
-      window.removeEventListener(
-        MODEL_GATEWAY_SETTINGS_CHANGED_EVENT,
-        onSettingsChanged
-      )
-  }, [isActive, refresh])
-
-  const orderedLocalClis = useMemo(() => {
-    const providerOrder = settings?.localCli.providerOrder ?? []
-    return [
-      ...providerOrder
-        .map((providerId) => localClis.find((cli) => cli.id === providerId))
-        .filter((cli): cli is LocalCliInfo => Boolean(cli)),
-      ...localClis.filter((cli) => !providerOrder.includes(cli.id)),
-    ].filter((cli) => cli.available)
-  }, [localClis, settings])
-  const maxConcurrency = settings?.maxConcurrency ?? 2
-  const enabledProviderIds = settings?.localCli.enabledProviderIds ?? []
-  const enabledLocalClis = orderedLocalClis.filter((cli) =>
-    enabledProviderIds.includes(cli.id)
-  )
-
-  const statusForCli = (cli: LocalCliInfo): LocalCliTone => {
-    if (!enabledProviderIds.includes(cli.id)) return "disabled"
-    const target = workerStatus?.queue?.targets?.find(
-      (candidate) =>
-        candidate.modelGatewayConnectionId === `local-cli:${cli.id}`
-    )
-    return cli.authStatus === "missing" ||
-      Boolean(cli.authMessage) ||
-      Boolean(cli.diagnostic) ||
-      target?.status === "offline" ||
-      Boolean(target?.lastError)
-      ? "warning"
-      : "normal"
-  }
-
-  const updateConcurrency = async (value: string) => {
-    const nextConcurrency = Number(value)
-    if (!(settings && Number.isInteger(nextConcurrency))) return
-    const previous = settings
-    const next = { ...settings, maxConcurrency: nextConcurrency }
-    setSettings(next)
-    setIsSaving(true)
-    setError(null)
-    try {
-      const response = await apiJson<{ settings: ModelGatewaySettings }>(
-        apiBase,
-        "/api/model-gateway/settings",
-        {
-          body: JSON.stringify({ settings: next }),
-          headers: { "content-type": "application/json" },
-          method: "PUT",
-        }
-      )
-      setSettings(response.settings)
-      window.dispatchEvent(new Event(MODEL_GATEWAY_SETTINGS_CHANGED_EVENT))
-    } catch (cause) {
-      setSettings(previous)
-      setError(formatTaskError(cause))
-    } finally {
-      setIsSaving(false)
-    }
-  }
-
-  return (
-    <section aria-label={t`Task processing`} className="op-agent-worker">
-      <div className="op-agent-worker__header">
-        <div className="op-agent-worker__title">
-          <strong>{t`Task processing`}</strong>
-          <Tooltip closeDelay={0} delay={0}>
-            <Button
-              aria-label={t`How tasks are processed`}
-              className="op-agent-worker__info"
-              isIconOnly
-              size="sm"
-              variant="ghost"
-            >
-              <Info size={13} />
-            </Button>
-            <Tooltip.Content
-              className="op-agent-worker__tooltip"
-              placement="top end"
-              showArrow
-            >
-              <Tooltip.Arrow />
-              <p>
-                {t`Enabled Agent CLIs claim queued tasks from left to right in priority order.`}
-              </p>
-              <p>
-                {t`Current priority:`}{" "}
-                {enabledLocalClis.length
-                  ? enabledLocalClis.map((cli) => cli.name).join(" > ")
-                  : t`No enabled automatic task channel.`}
-              </p>
-              <p>
-                {t`This project can process up to`} {maxConcurrency}{" "}
-                {t`tasks at the same time.`}
-              </p>
-            </Tooltip.Content>
-          </Tooltip>
-        </div>
-        <div className="op-agent-worker__controls">
-          <Select
-            aria-label={t`Parallel task count`}
-            className="op-agent-worker__concurrency"
-            isDisabled={!settings || isLoading || isSaving}
-            onChange={(key) => {
-              updateConcurrency(String(key)).catch(() => undefined)
-            }}
-            selectionMode="single"
-            value={String(maxConcurrency)}
-            variant="secondary"
-          >
-            <Select.Trigger>
-              <Select.Value />
-              <Select.Indicator />
-            </Select.Trigger>
-            <Select.Popover placement="top end">
-              <ListBox>
-                {[1, 2, 3, 4, 5].map((count) => (
-                  <ListBox.Item
-                    id={String(count)}
-                    key={count}
-                    textValue={`${count} ${t`parallel`}`}
-                  >
-                    {count} {t`parallel`}
-                    <ListBox.ItemIndicator />
-                  </ListBox.Item>
-                ))}
-              </ListBox>
-            </Select.Popover>
-          </Select>
-          <Tooltip closeDelay={0} delay={300}>
-            <Button
-              aria-label={t`Model and Agent settings`}
-              className="op-agent-worker__settings"
-              isIconOnly
-              onPress={onOpenModelSettings}
-              size="sm"
-              variant="ghost"
-            >
-              <Settings size={15} />
-            </Button>
-            <Tooltip.Content placement="top">
-              {t`Model and Agent settings`}
-            </Tooltip.Content>
-          </Tooltip>
-        </div>
-      </div>
-      <div className="op-agent-worker__agents">
-        {isLoading && !settings ? (
-          <span className="op-agent-worker__loading">
-            {t`Scanning available Agent CLIs`}
-          </span>
-        ) : orderedLocalClis.length ? (
-          orderedLocalClis.map((cli) => {
-            const tone = statusForCli(cli)
-            const statusLabel =
-              tone === "normal"
-                ? t`Running normally`
-                : tone === "disabled"
-                  ? t`Disabled`
-                  : t`Connection needs attention`
-            return (
-              <span
-                aria-label={`${cli.name}: ${statusLabel}`}
-                className="op-agent-worker__agent"
-                key={cli.id}
-                role="img"
-                title={statusLabel}
-              >
-                <i
-                  aria-hidden="true"
-                  className={`op-agent-worker__dot op-agent-worker__dot--${tone}`}
-                />
-                {cli.name}
-              </span>
-            )
-          })
-        ) : (
-          <p className="op-agent-worker__empty">
-            {t`No task-processing model is available. Send each task's instructions to an Agent manually.`}
-          </p>
-        )}
-      </div>
-      {error ? (
-        <p className="op-agent-worker__error" role="alert">
-          {error}
-        </p>
-      ) : null}
-    </section>
   )
 }

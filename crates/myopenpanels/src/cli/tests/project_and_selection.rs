@@ -186,7 +186,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         "skill",
         "read",
         "--skill-id",
-        "myopenpanels-wiki-panel",
+        "myopenpanels-panels",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -429,6 +429,67 @@ fn wiki_document_file_names_can_be_renamed_without_changing_extensions() {
         wiki::read_page(&paths, "wiki:default", "notes/final.md").expect("renamed page")
             ["markdown"],
         "# Page"
+    );
+}
+
+#[test]
+fn wiki_document_titles_preserve_spaces_and_unicode() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+
+    let raw = wiki::add_raw_document(
+        &paths,
+        "Pixcall 基础概念.md",
+        None,
+        Some("text/markdown"),
+        "user",
+        Some("wiki:default"),
+        b"# Pixcall",
+    )
+    .expect("raw document");
+    assert_eq!(raw["document"]["title"], "Pixcall 基础概念");
+    let raw_id = raw["document"]["id"].as_str().expect("raw id");
+    let renamed_raw = wiki::rename_raw_document_title(
+        &paths,
+        raw_id,
+        "  Pixcall 核心 概念  ",
+    )
+    .expect("renamed raw document");
+    assert_eq!(renamed_raw["document"]["title"], "Pixcall 核心 概念");
+    assert_eq!(
+        renamed_raw["document"]["originalFileName"],
+        raw["document"]["originalFileName"]
+    );
+
+    let generated = wiki::create_generated_document(
+        &paths,
+        "Pixcall 基础概念.md",
+        None,
+        Some("text/markdown"),
+        None,
+        None,
+        b"# Pixcall",
+    )
+    .expect("generated document");
+    assert_eq!(generated["document"]["title"], "Pixcall 基础概念");
+    let generated_id = generated["document"]["id"]
+        .as_str()
+        .expect("generated id");
+    let renamed_generated =
+        wiki::rename_generated_document(&paths, generated_id, "  Pixcall 核心 概念  ")
+            .expect("renamed generated document");
+    assert_eq!(
+        renamed_generated["document"]["title"],
+        "Pixcall 核心 概念"
     );
 }
 

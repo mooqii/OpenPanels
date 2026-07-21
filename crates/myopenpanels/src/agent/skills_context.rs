@@ -1,7 +1,15 @@
 pub fn sync_builtin_agent_skills(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
     let skills_dir = paths.storage_dir.join("skills");
     fs::create_dir_all(&skills_dir).map_err(to_cli_error)?;
-    for legacy_id in ["canvas-panel", "task-queue", "wiki-panel", "writing-panel"] {
+    for legacy_id in [
+        "canvas-panel",
+        "task-queue",
+        "wiki-panel",
+        "writing-panel",
+        "myopenpanels-canvas-panel",
+        "myopenpanels-wiki-panel",
+        "myopenpanels-writing-panel",
+    ] {
         let legacy_dir = skills_dir.join(legacy_id);
         if legacy_dir.exists() {
             fs::remove_dir_all(legacy_dir).map_err(to_cli_error)?;
@@ -161,6 +169,17 @@ pub fn read_agent_skill(
     skill_id: &str,
     task_id: Option<&str>,
 ) -> Result<AgentSkillReadPayload, CliError> {
+    read_agent_skill_for_panel(paths, skill_id, task_id, None)
+}
+
+pub(crate) fn read_agent_skill_for_panel(
+    paths: &MyOpenPanelsPaths,
+    skill_id: &str,
+    task_id: Option<&str>,
+    target_panel_kind: Option<PanelKind>,
+) -> Result<AgentSkillReadPayload, CliError> {
+    let legacy_panel_kind = legacy_panel_skill_kind(skill_id);
+    let skill_id = canonical_agent_skill_id(skill_id);
     if let Some(task_id) = task_id.filter(|_| crate::content::broker_execution_available()) {
         let payload = crate::content::broker_read_skill(&crate::content::SkillReadRequest {
             task_id: task_id.to_owned(),
@@ -264,6 +283,20 @@ pub fn read_agent_skill(
     } else {
         agent_skill_local_paths(paths, &bootstrap.project.id, &skill.metadata)
     };
+    let effective_panel_kind = target_panel_kind
+        .or(legacy_panel_kind)
+        .unwrap_or(bootstrap.active_panel_kind);
+    let reference_paths = panel_contract_reference_paths(
+        paths,
+        &bootstrap.project.id,
+        &skill,
+        effective_panel_kind,
+    )?;
+    let required_commands = if skill.metadata.id == PANELS_SKILL_ID {
+        procedure_command_intents_for_panel(effective_panel_kind)?
+    } else {
+        skill.metadata.requires_commands.clone()
+    };
     let markdown = render_agent_skill(
         &skill,
         &bootstrap,
@@ -272,62 +305,38 @@ pub fn read_agent_skill(
         task_id,
         &local_dir,
         &local_path,
+        &required_commands,
     )?;
-    let required_action = json!({
+    let mut required_actions = vec![json!({
         "id": format!("skill.{}.body", skill.metadata.id),
         "intent": "agent-host.file.read",
         "executor": "agent-host",
         "kind": "read-file",
         "path": local_path.display().to_string(),
-    });
+    })];
+    required_actions.extend(reference_paths.iter().enumerate().map(|(index, path)| {
+        json!({
+            "id": format!("skill.{}.reference.{index}", skill.metadata.id),
+            "intent": "agent-host.file.read",
+            "executor": "agent-host",
+            "kind": "read-file",
+            "path": path.display().to_string(),
+        })
+    }));
     Ok(AgentSkillReadPayload {
         actions: json!({
-            "required": [required_action],
-            "suggested": catalog_actions(&skill.metadata.requires_commands),
+            "required": required_actions,
+            "suggested": catalog_actions(&required_commands),
         }),
         skill: skill.metadata,
         local_dir: local_dir.display().to_string(),
         local_path: local_path.display().to_string(),
         markdown,
+        reference_paths: reference_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect(),
     })
-}
-
-fn catalog_actions(intents: &[String]) -> Vec<Value> {
-    intents
-        .iter()
-        .filter_map(|intent| crate::cli::registry::catalog_domain_for_intent(intent))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(catalog_action)
-        .collect()
-}
-
-fn catalog_action(domain: &str) -> Value {
-    let mut action = command_action(
-        "agent.catalog",
-        vec![
-            "--domain".to_owned(),
-            domain.to_owned(),
-            "--format".to_owned(),
-            "json".to_owned(),
-        ],
-    );
-    action["condition"] = json!({
-        "type": "agent-judgment",
-        "description": format!("The user request needs a command from the {domain} domain.")
-    });
-    action
-}
-
-fn recommended_catalog_domains(active_panel_kind: PanelKind) -> Vec<&'static str> {
-    let mut scopes = ["panel", "task", "operation"]
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    let panel_scope = active_panel_kind.as_str();
-    if crate::cli::registry::catalog(Some(panel_scope)).is_some() {
-        scopes.insert(panel_scope);
-    }
-    scopes.into_iter().collect()
 }
 
 pub fn render_agent_skills_markdown(skills: &[AgentSkillListing]) -> String {
@@ -346,6 +355,7 @@ fn render_agent_skill(
     task_id: Option<&str>,
     local_dir: &Path,
     local_path: &Path,
+    required_commands: &[String],
 ) -> Result<String, CliError> {
     let task = task_id.and_then(|id| find_wiki_task(bootstrap, id));
     if task_id.is_some() && task.is_none() {
@@ -363,7 +373,7 @@ fn render_agent_skill(
         local_path.display(),
         if skill.metadata.applies_to.is_empty() { "any".to_owned() } else { skill.metadata.applies_to.join(", ") },
         render_current_context(bootstrap, selection, wiki_selection, task.as_ref()),
-        skill.metadata.requires_commands.iter().map(|intent| format!("- `{intent}`")).collect::<Vec<_>>().join("\n"),
+        required_commands.iter().map(|intent| format!("- `{intent}`")).collect::<Vec<_>>().join("\n"),
     ))
 }
 
@@ -771,7 +781,7 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
         "wikiSpaceId": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("wikiSpaceId")).cloned().unwrap_or_else(|| json!(active_space_id)),
         "wikiTitle": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("title")).cloned().or_else(|| active_space.and_then(|space| space.get("title")).cloned()).unwrap_or_else(|| json!("Wiki")),
         "pageCount": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("pageCount")).cloned().unwrap_or_else(|| json!(active_space.and_then(|space| space.get("pageIndex")).and_then(Value::as_array).map(Vec::len).unwrap_or(0))),
-        "querySkillId": WIKI_PANEL_SKILL_ID,
+        "querySkillId": PANELS_SKILL_ID,
         "localAccess": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("localAccess")).cloned().unwrap_or(Value::Null),
         "selectedRawDocumentCount": selected_documents.len(),
         "selectedRawDocuments": selected_documents,

@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "myopenpanels"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "axum",
  "base64",
@@ -858,6 +858,7 @@ dependencies = [
  "clap",
  "flate2",
  "include_dir",
+ "libc",
  "mime_guess",
  "rand",
  "rusqlite",

@@ -5,9 +5,11 @@ import {
   activeWritingSkillIds,
   latestWritingTaskForDocument,
   refinementTaskGroups,
+  selectSingleSkill,
   sortGeneratedDocumentsByActivity,
   toggleWritingSkillSelection,
   writingDocumentStatus,
+  writingReferenceSelectionError,
   writingSkillSelectionError,
 } from "./writing"
 
@@ -19,6 +21,8 @@ describe("Writing Skill selection", () => {
     expect(emptyWritingState().selectedRevisionWritingSkillId).toBe(
       "writing-default"
     )
+    expect(emptyWritingState().createDraft).toBe("")
+    expect(emptyWritingState().revisionDraft).toBe("")
   })
 
   it("rejects an explicitly empty selection", () => {
@@ -73,6 +77,18 @@ describe("Writing Skill selection", () => {
     expect(
       toggleWritingSkillSelection(selected, "writing-a", false, "create")
     ).toEqual(["writing-b"])
+  })
+
+  it("switches single selection without clearing the selected Skill", () => {
+    expect(selectSingleSkill("writing-a", "writing-b", true)).toBe("writing-b")
+    expect(selectSingleSkill("writing-b", "writing-b", false)).toBe("writing-b")
+  })
+
+  it("requires ready references only when creating a document", () => {
+    expect(writingReferenceSelectionError("create", 0, 0)).toBe("required")
+    expect(writingReferenceSelectionError("create", 1, 1)).toBe("unready")
+    expect(writingReferenceSelectionError("create", 1, 0)).toBeNull()
+    expect(writingReferenceSelectionError("revise", 0, 0)).toBeNull()
   })
 })
 

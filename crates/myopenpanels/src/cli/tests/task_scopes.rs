@@ -119,6 +119,10 @@ fn task_handoff_cli_starts_a_project_drain_with_one_execution_bundle() {
     );
     assert!(ready["executionBundle"]["allowedCommandIntents"].is_null());
     assert_eq!(ready["delivery"]["mode"], "agent-message");
+    assert!(ready["delivery"]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("continue with every Task returned within the Project drain scope"));
     let serialized = serde_json::to_string(&ready).unwrap();
     assert!(!serialized.contains("leaseToken"));
     assert!(!serialized.contains("executionToken"));
@@ -820,6 +824,14 @@ fn wiki_mutation_handoff_bundles_the_required_conversion_first() {
         .as_str()
         .unwrap()
         .contains("task handoff exec"));
+    assert!(claim["delivery"]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("limited to the current Wiki mutation scope"));
+    assert!(!claim["delivery"]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("Project drain scope"));
     tasks::stop_task_handoff(
         &paths,
         claim["handoff"]["id"].as_str().expect("handoff id"),

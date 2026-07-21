@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 const STUDIO_HEALTH_REQUEST_TIMEOUT_MS: u64 = 700;
+const STUDIO_OWNER_RELEASE_TIMEOUT: Duration = Duration::from_secs(4);
 const STUDIO_TRANSITION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const STUDIO_TRANSITION_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 
@@ -101,9 +102,50 @@ pub(crate) struct StudioTransitionLock {
     path: PathBuf,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StudioOwner {
+    pid: u32,
+    port: u16,
+    version: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StudioPortPreference {
+    port: u16,
+}
+
+enum StudioOwnerState {
+    Available,
+    Held(Option<StudioOwner>),
+}
+
+pub(crate) struct StudioOwnerLock {
+    _file: fs::File,
+    identity_path: PathBuf,
+    pid: u32,
+    #[cfg(not(any(unix, windows)))]
+    lock_path: PathBuf,
+}
+
 impl Drop for StudioTransitionLock {
     fn drop(&mut self) {
         let _ = fs::remove_dir(&self.path);
+    }
+}
+
+impl Drop for StudioOwnerLock {
+    fn drop(&mut self) {
+        let owned_by_self = fs::read_to_string(&self.identity_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<StudioOwner>(&raw).ok())
+            .is_some_and(|owner| owner.pid == self.pid);
+        if owned_by_self {
+            let _ = fs::remove_file(&self.identity_path);
+        }
+        #[cfg(not(any(unix, windows)))]
+        let _ = fs::remove_file(&self.lock_path);
     }
 }
 
@@ -114,7 +156,7 @@ pub fn start_studio(
     let _transition_lock = acquire_studio_transition_lock(paths)?;
     crate::context_cleanup::cleanup_context_storage(paths);
     if let Some(session) = reuse_existing_studio(paths)? {
-        let previous_version = studio_version(&session)?;
+        let previous_version = studio_version(paths, &session)?;
         match compare_studio_version(previous_version.as_deref())? {
             StudioVersionRelation::Current => {
                 return Ok(StudioStartResult {
@@ -140,6 +182,7 @@ pub fn start_studio(
                 let host = session.host.clone().unwrap_or_else(|| options.host.clone());
                 let port = session.port;
                 terminate_process(session.pid);
+                require_studio_owner_release(paths)?;
                 remove_file_if_exists(&studio_session_path(paths))?;
                 return launch_studio(
                     paths,
@@ -153,7 +196,9 @@ pub fn start_studio(
         }
     }
 
-    let port = find_open_port(&options.host)?;
+    require_studio_owner_available(paths)?;
+
+    let port = find_studio_port(paths, &options.host)?;
     launch_studio(
         paths,
         &options.host,
@@ -224,6 +269,9 @@ pub fn reuse_existing_studio(paths: &MyOpenPanelsPaths) -> Result<Option<StudioS
             current.server,
             StudioServerStatus::Unavailable | StudioServerStatus::Stale
         ) {
+            if matches!(studio_owner_state(paths)?, StudioOwnerState::Held(_)) {
+                return Err(studio_owner_conflict_error());
+            }
             cleanup_current_session(paths, session)?;
         }
     }
@@ -266,14 +314,39 @@ pub(crate) fn find_open_port(host: &str) -> Result<u16, CliError> {
     Ok(port)
 }
 
+pub(crate) fn find_studio_port(
+    paths: &MyOpenPanelsPaths,
+    host: &str,
+) -> Result<u16, CliError> {
+    if let Some(port) = read_studio_port_preference(paths) {
+        if let Ok(listener) = TcpListener::bind((host, port)) {
+            drop(listener);
+            return Ok(port);
+        }
+    }
+    find_open_port(host)
+}
+
 pub fn studio_status(paths: &MyOpenPanelsPaths) -> Result<StudioStatusPayload, CliError> {
     let log_path = paths.studio_dir.join("studio.log");
     let session = read_studio_session(paths)?;
-    let server = match session.as_ref() {
-        None => StudioServerStatus::Missing,
-        Some(session) if !process_exists(session.pid) => StudioServerStatus::Stale,
-        Some(session) if is_studio_healthy(session) => StudioServerStatus::Running,
-        Some(_) => StudioServerStatus::Unavailable,
+    let owner_state = studio_owner_state(paths)?;
+    let server = match (session.as_ref(), &owner_state) {
+        (None, StudioOwnerState::Available) => StudioServerStatus::Missing,
+        (None, StudioOwnerState::Held(_)) => StudioServerStatus::Unavailable,
+        (Some(session), StudioOwnerState::Held(Some(owner)))
+            if studio_owner_matches(owner, session) =>
+        {
+            StudioServerStatus::Running
+        }
+        (Some(_), StudioOwnerState::Held(_)) => StudioServerStatus::Unavailable,
+        (Some(session), StudioOwnerState::Available) if !process_exists(session.pid) => {
+            StudioServerStatus::Stale
+        }
+        (Some(session), StudioOwnerState::Available) if is_studio_healthy(session) => {
+            StudioServerStatus::Running
+        }
+        (Some(_), StudioOwnerState::Available) => StudioServerStatus::Unavailable,
     };
 
     Ok(StudioStatusPayload {
@@ -288,10 +361,9 @@ pub fn studio_status(paths: &MyOpenPanelsPaths) -> Result<StudioStatusPayload, C
 pub fn resolve_current_studio_session(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Option<StudioSession>, CliError> {
-    if let Some(session) = read_studio_session(paths)? {
-        if process_exists(session.pid) && is_studio_healthy(&session) {
-            return Ok(Some(session));
-        }
+    let status = studio_status(paths)?;
+    if status.server == StudioServerStatus::Running {
+        return Ok(status.session);
     }
     Ok(None)
 }
@@ -309,6 +381,9 @@ pub fn wait_for_existing_studio(
         .as_deref()
         .unwrap_or(&session.server_url)
         .to_owned();
+    if studio_owner_matches_session(paths, &session)? {
+        return Ok(session);
+    }
     wait_for_studio(&url, timeout)?;
     Ok(session)
 }
@@ -319,7 +394,9 @@ pub fn stop_studio_session(paths: &MyOpenPanelsPaths) -> Result<StudioStopResult
         return Ok(StudioStopResult { stopped: false });
     };
     let path = studio_session_path(paths);
+    let _ = write_studio_port_preference(paths, session.port);
     terminate_process(session.pid);
+    require_studio_owner_release(paths)?;
     if path.exists() {
         fs::remove_file(path).map_err(to_cli_error)?;
     }
@@ -358,6 +435,30 @@ pub(crate) fn acquire_studio_transition_lock(
     }
 }
 
+pub(crate) fn acquire_studio_owner_lock(
+    paths: &MyOpenPanelsPaths,
+    port: u16,
+) -> Result<StudioOwnerLock, CliError> {
+    fs::create_dir_all(&paths.studio_dir).map_err(to_cli_error)?;
+    let Some(file) = try_acquire_studio_owner_file(paths)? else {
+        return Err(studio_owner_conflict_error());
+    };
+    let identity_path = studio_owner_identity_path(paths);
+    let owner = StudioOwner {
+        pid: std::process::id(),
+        port,
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+    };
+    write_studio_owner_identity(paths, &owner)?;
+    Ok(StudioOwnerLock {
+        _file: file,
+        identity_path,
+        pid: owner.pid,
+        #[cfg(not(any(unix, windows)))]
+        lock_path: studio_owner_lock_path(paths),
+    })
+}
+
 fn read_studio_session(paths: &MyOpenPanelsPaths) -> Result<Option<StudioSession>, CliError> {
     let path = studio_session_path(paths);
     if !path.exists() {
@@ -385,17 +486,191 @@ pub fn write_studio_session(
     .map_err(to_cli_error)?;
     file.persist(studio_session_path(paths))
         .map(|_| ())
-        .map_err(to_cli_error)
+        .map_err(to_cli_error)?;
+    let _ = write_studio_port_preference(paths, session.port);
+    Ok(())
 }
 
 fn studio_session_path(paths: &MyOpenPanelsPaths) -> PathBuf {
     paths.studio_dir.join("instance.json")
 }
 
+fn studio_owner_lock_path(paths: &MyOpenPanelsPaths) -> PathBuf {
+    paths.studio_dir.join("owner.lock")
+}
+
+fn studio_owner_identity_path(paths: &MyOpenPanelsPaths) -> PathBuf {
+    paths.studio_dir.join("owner.json")
+}
+
+fn studio_port_preference_path(paths: &MyOpenPanelsPaths) -> PathBuf {
+    paths.studio_dir.join("preferred-port.json")
+}
+
+fn read_studio_port_preference(paths: &MyOpenPanelsPaths) -> Option<u16> {
+    let raw = fs::read_to_string(studio_port_preference_path(paths)).ok()?;
+    serde_json::from_str::<StudioPortPreference>(&raw)
+        .ok()
+        .map(|preference| preference.port)
+        .filter(|port| *port != 0)
+}
+
+fn write_studio_port_preference(
+    paths: &MyOpenPanelsPaths,
+    port: u16,
+) -> Result<(), CliError> {
+    if port == 0 {
+        return Ok(());
+    }
+    fs::create_dir_all(&paths.studio_dir).map_err(to_cli_error)?;
+    let preference = StudioPortPreference { port };
+    let mut file = tempfile::NamedTempFile::new_in(&paths.studio_dir).map_err(to_cli_error)?;
+    file.write_all(
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&preference).map_err(to_cli_error)?
+        )
+        .as_bytes(),
+    )
+    .map_err(to_cli_error)?;
+    file.persist(studio_port_preference_path(paths))
+        .map(|_| ())
+        .map_err(to_cli_error)
+}
+
+fn write_studio_owner_identity(
+    paths: &MyOpenPanelsPaths,
+    owner: &StudioOwner,
+) -> Result<(), CliError> {
+    let mut file = tempfile::NamedTempFile::new_in(&paths.studio_dir).map_err(to_cli_error)?;
+    file.write_all(
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(owner).map_err(to_cli_error)?
+        )
+        .as_bytes(),
+    )
+    .map_err(to_cli_error)?;
+    file.persist(studio_owner_identity_path(paths))
+        .map(|_| ())
+        .map_err(to_cli_error)
+}
+
+fn studio_owner_state(paths: &MyOpenPanelsPaths) -> Result<StudioOwnerState, CliError> {
+    fs::create_dir_all(&paths.studio_dir).map_err(to_cli_error)?;
+    if let Some(file) = try_acquire_studio_owner_file(paths)? {
+        drop(file);
+        return Ok(StudioOwnerState::Available);
+    }
+    let owner = fs::read_to_string(studio_owner_identity_path(paths))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<StudioOwner>(&raw).ok());
+    Ok(StudioOwnerState::Held(owner))
+}
+
+#[cfg(unix)]
+fn try_acquire_studio_owner_file(paths: &MyOpenPanelsPaths) -> Result<Option<fs::File>, CliError> {
+    use std::os::fd::AsRawFd;
+
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(studio_owner_lock_path(paths))
+        .map_err(to_cli_error)?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(Some(file));
+    }
+    let error = std::io::Error::last_os_error();
+    if matches!(error.raw_os_error(), Some(code) if code == libc::EAGAIN || code == libc::EACCES) {
+        return Ok(None);
+    }
+    Err(to_cli_error(error))
+}
+
+#[cfg(windows)]
+fn try_acquire_studio_owner_file(paths: &MyOpenPanelsPaths) -> Result<Option<fs::File>, CliError> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    match fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(studio_owner_lock_path(paths))
+    {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if matches!(error.raw_os_error(), Some(code) if code == 32 || code == 33) => {
+            Ok(None)
+        }
+        Err(error) => Err(to_cli_error(error)),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn try_acquire_studio_owner_file(paths: &MyOpenPanelsPaths) -> Result<Option<fs::File>, CliError> {
+    match fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(studio_owner_lock_path(paths))
+    {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(error) => Err(to_cli_error(error)),
+    }
+}
+
+fn studio_owner_matches(owner: &StudioOwner, session: &StudioSession) -> bool {
+    owner.pid == session.pid && owner.port == session.port
+}
+
+fn studio_owner_matches_session(
+    paths: &MyOpenPanelsPaths,
+    session: &StudioSession,
+) -> Result<bool, CliError> {
+    Ok(matches!(
+        studio_owner_state(paths)?,
+        StudioOwnerState::Held(Some(owner)) if studio_owner_matches(&owner, session)
+    ))
+}
+
+fn require_studio_owner_available(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
+    match studio_owner_state(paths)? {
+        StudioOwnerState::Available => Ok(()),
+        StudioOwnerState::Held(_) => Err(studio_owner_conflict_error()),
+    }
+}
+
+fn require_studio_owner_release(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
+    let started = Instant::now();
+    while started.elapsed() < STUDIO_OWNER_RELEASE_TIMEOUT {
+        if matches!(studio_owner_state(paths)?, StudioOwnerState::Available) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Err(CliError::with_recovery(
+        "studio_stop_failed",
+        "The running MyOpenPanels Studio could not be stopped, so a second Studio was not started.",
+        true,
+        "Stop the active Studio from the environment that started it, then retry.",
+    ))
+}
+
+fn studio_owner_conflict_error() -> CliError {
+    CliError::with_code(
+        "studio_already_running",
+        "Another MyOpenPanels Studio already owns this storage directory.",
+    )
+}
+
 fn cleanup_current_session(
     paths: &MyOpenPanelsPaths,
     session: &StudioSession,
 ) -> Result<(), CliError> {
+    let _ = write_studio_port_preference(paths, session.port);
     terminate_process(session.pid);
     remove_file_if_exists(&studio_session_path(paths))
 }
@@ -426,7 +701,15 @@ fn is_studio_url_healthy(server_url: &str) -> bool {
     }
 }
 
-pub(crate) fn studio_version(session: &StudioSession) -> Result<Option<String>, CliError> {
+pub(crate) fn studio_version(
+    paths: &MyOpenPanelsPaths,
+    session: &StudioSession,
+) -> Result<Option<String>, CliError> {
+    if let StudioOwnerState::Held(Some(owner)) = studio_owner_state(paths)? {
+        if studio_owner_matches(&owner, session) {
+            return Ok(Some(owner.version));
+        }
+    }
     let server_url = session
         .local_server_url
         .as_deref()
@@ -534,7 +817,10 @@ fn wait_for_studio_version(
             "MyOpenPanels Studio did not start version {expected_version} at {server_url}: {last_error}"
         ),
         true,
-        "Retry `myopenpanels studio start --project-dir <project> --format json` after checking studio.log.",
+        format!(
+            "Retry `{} studio start --project-dir <project> --format json` after checking studio.log.",
+            crate::cli_identity::agent_cli_shell_word()
+        ),
     ))
 }
 

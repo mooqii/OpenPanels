@@ -12,7 +12,7 @@ struct AgentProcedureCatalog {
 fn load_agent_procedures() -> Result<AgentProcedureCatalog, CliError> {
     let registry: BuiltinSkillRegistry =
         serde_json::from_str(BUILTIN_SKILL_REGISTRY).map_err(to_cli_error)?;
-    if registry.schema_version != 3 {
+    if registry.schema_version != 4 {
         return Err(CliError::new(format!(
             "Unsupported built-in Skill registry schema: {}",
             registry.schema_version
@@ -54,6 +54,27 @@ fn load_agent_procedures() -> Result<AgentProcedureCatalog, CliError> {
     })
 }
 
+fn procedure_command_intents_for_panel(panel_kind: PanelKind) -> Result<Vec<String>, CliError> {
+    let panel_kind = panel_kind.as_str();
+    Ok(load_agent_procedures()?
+        .procedures
+        .into_iter()
+        .filter(|procedure| procedure.registration.panel_kind.as_deref() == Some(panel_kind))
+        .flat_map(|procedure| procedure.registration.command_intents)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect())
+}
+
+fn panel_contract_reference(panel_kind: PanelKind) -> Option<&'static str> {
+    match panel_kind {
+        PanelKind::Canvas => Some("references/canvas-contract.md"),
+        PanelKind::Wiki => Some("references/wiki-contract.md"),
+        PanelKind::Writing => Some("references/writing-contract.md"),
+        _ => None,
+    }
+}
+
 fn validate_agent_procedure(
     skill: &BuiltinSkillRegistration,
     procedure: &AgentProcedureRegistration,
@@ -75,7 +96,7 @@ fn validate_agent_procedure(
         &procedure.key,
         &procedure.description,
         procedure.panel_kind.as_deref(),
-        &procedure.reference,
+        &procedure.references,
         &procedure.command_intents,
         "agent_procedure_invalid",
         "Agent Procedure",
@@ -91,7 +112,7 @@ fn validate_task_handoff(
         &handoff.key,
         &handoff.description,
         handoff.panel_kind.as_deref(),
-        &handoff.reference,
+        std::slice::from_ref(&handoff.reference),
         &handoff.command_intents,
         "task_handoff_invalid",
         "Task Handoff",
@@ -104,12 +125,16 @@ fn validate_agent_route(
     key: &str,
     description: &str,
     panel_kind: Option<&str>,
-    reference: &str,
+    references: &[String],
     command_intents: &[String],
     invalid_code: &str,
     label: &str,
 ) -> Result<(), CliError> {
-    if key.trim().is_empty() || description.trim().is_empty() || command_intents.is_empty() {
+    if key.trim().is_empty()
+        || description.trim().is_empty()
+        || references.is_empty()
+        || command_intents.is_empty()
+    {
         return Err(CliError::with_code(
             invalid_code,
             format!("{label} registration is invalid: {key}"),
@@ -141,31 +166,35 @@ fn validate_agent_route(
             ));
         }
     }
-    let reference_path = Path::new(reference);
-    if reference.trim().is_empty()
-        || reference_path.is_absolute()
-        || reference_path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(CliError::with_code(
-            invalid_code,
-            format!("{label} reference is invalid: {key}"),
-        ));
-    }
-    let embedded_reference = Path::new(&skill.package_dir).join(reference_path);
-    if SYSTEM_SKILLS.get_file(&embedded_reference).is_none() {
-        return Err(CliError::with_code(
-            if label == "Agent Procedure" {
-                "agent_procedure_reference_not_found"
-            } else {
-                "task_handoff_reference_not_found"
-            },
-            format!(
-                "{label} {key} reference is missing: {}",
-                embedded_reference.display(),
-            ),
-        ));
+    let mut seen_references = BTreeSet::new();
+    for reference in references {
+        let reference_path = Path::new(reference);
+        if reference.trim().is_empty()
+            || reference_path.is_absolute()
+            || reference_path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+            || !seen_references.insert(reference)
+        {
+            return Err(CliError::with_code(
+                invalid_code,
+                format!("{label} reference is invalid or duplicated: {key}"),
+            ));
+        }
+        let embedded_reference = Path::new(&skill.package_dir).join(reference_path);
+        if SYSTEM_SKILLS.get_file(&embedded_reference).is_none() {
+            return Err(CliError::with_code(
+                if label == "Agent Procedure" {
+                    "agent_procedure_reference_not_found"
+                } else {
+                    "task_handoff_reference_not_found"
+                },
+                format!(
+                    "{label} {key} reference is missing: {}",
+                    embedded_reference.display(),
+                ),
+            ));
+        }
     }
     crate::cli::registry::descriptors_for_intents(command_intents)?;
     Ok(())
@@ -232,16 +261,26 @@ fn agent_procedure_bootstrap(
     let skill_dir = skill_path
         .parent()
         .ok_or_else(|| CliError::new("Agent Procedure Skill path has no parent directory."))?;
-    let reference_path = skill_dir.join(&procedure.registration.reference);
-    if !reference_path.is_file() {
-        return Err(CliError::with_code(
-            "agent_procedure_reference_not_found",
-            format!(
-                "Agent Procedure reference is unavailable: {}",
-                reference_path.display()
-            ),
-        ));
+    let reference_paths = procedure
+        .registration
+        .references
+        .iter()
+        .map(|reference| skill_dir.join(reference))
+        .collect::<Vec<_>>();
+    for reference_path in &reference_paths {
+        if !reference_path.is_file() {
+            return Err(CliError::with_code(
+                "agent_procedure_reference_not_found",
+                format!(
+                    "Agent Procedure reference is unavailable: {}",
+                    reference_path.display()
+                ),
+            ));
+        }
     }
+    let primary_reference_path = reference_paths
+        .last()
+        .expect("validated Agent Procedure references");
 
     let (selection, mut blockers) = procedure_selection(paths, visible, target, procedure)?;
     let storage = crate::storage::Storage::open(paths)?;
@@ -261,22 +300,22 @@ fn agent_procedure_bootstrap(
             )
         })
         .unwrap_or(Value::Null);
-    let mut required_actions = vec![
+    let mut required_actions = vec![json!({
+        "id": format!("skill.{}.body", procedure.skill_id),
+        "intent": "agent-host.file.read",
+        "executor": "agent-host",
+        "kind": "read-file",
+        "path": skill_path.display().to_string(),
+    })];
+    required_actions.extend(reference_paths.iter().enumerate().map(|(index, path)| {
         json!({
-            "id": format!("skill.{}.body", procedure.skill_id),
+            "id": format!("reference.{index}"),
             "intent": "agent-host.file.read",
             "executor": "agent-host",
             "kind": "read-file",
-            "path": skill_path.display().to_string(),
-        }),
-        json!({
-            "id": format!("procedure.{}.reference", procedure.registration.key),
-            "intent": "agent-host.file.read",
-            "executor": "agent-host",
-            "kind": "read-file",
-            "path": reference_path.display().to_string(),
-        }),
-    ];
+            "path": path.display().to_string(),
+        })
+    }));
     let suggested_actions = procedure_state_actions(paths, visible, procedure, &operations);
     let available_panel_kinds = visible
         .panels
@@ -307,7 +346,10 @@ fn agent_procedure_bootstrap(
         "id": procedure.skill_id,
         "role": "panel",
         "localPath": skill_path.display().to_string(),
-        "referencePaths": [reference_path.display().to_string()],
+        "referencePaths": reference_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>(),
     })];
     if let Some(target) = target {
         for selected_skill_id in selected_portable_skill_ids(target) {
@@ -356,7 +398,11 @@ fn agent_procedure_bootstrap(
             "panelKind": procedure.registration.panel_kind,
             "selectionPolicy": procedure.registration.selection_policy,
             "skillId": procedure.skill_id,
-            "referencePath": reference_path.display().to_string(),
+            "referencePath": primary_reference_path.display().to_string(),
+            "referencePaths": reference_paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>(),
             "commandIntents": procedure.registration.command_intents,
         },
         "readiness": if blockers.is_empty() { "ready" } else { "blocked" },

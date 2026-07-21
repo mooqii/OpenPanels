@@ -123,8 +123,12 @@ mod tests {
         request.requested_panel_kind = Some(PanelKind::Canvas);
         let canvas = read_project_bootstrap(&paths, request).expect("canvas");
         let started = begin_canvas(&paths, Some(128.0), Some(128.0), false, None).expect("begin");
-        assert_eq!(started["panelSkill"]["skill"]["id"], CANVAS_PANEL_SKILL_ID);
-        assert_eq!(started["operation"]["skillId"], CANVAS_PANEL_SKILL_ID);
+        assert_eq!(started["panelSkill"]["skill"]["id"], PANELS_SKILL_ID);
+        assert_eq!(started["operation"]["skillId"], PANELS_SKILL_ID);
+        assert!(started["panelSkill"]["referencePaths"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("references/canvas-contract.md"));
         assert_eq!(started["operation"]["protocolVersion"], 2);
         assert!(started["operation"]["guideId"].is_null());
         let operation_id = started["operation"]["id"].as_str().unwrap();
@@ -172,9 +176,13 @@ mod tests {
         let started = begin_wiki(&paths, "Report", "markdown", None).expect("begin");
         assert_eq!(
             started["panelSkill"]["skill"]["id"],
-            wiki::WIKI_PANEL_SKILL_ID
+            PANELS_SKILL_ID
         );
-        assert_eq!(started["operation"]["skillId"], wiki::WIKI_PANEL_SKILL_ID);
+        assert_eq!(started["operation"]["skillId"], PANELS_SKILL_ID);
+        assert!(started["panelSkill"]["referencePaths"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("references/wiki-contract.md"));
         assert_eq!(started["operation"]["protocolVersion"], 2);
         assert!(started["operation"]["guideId"].is_null());
         let operation_id = started["operation"]["id"].as_str().unwrap().to_owned();

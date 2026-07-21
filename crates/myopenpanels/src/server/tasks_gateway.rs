@@ -148,6 +148,16 @@ async fn api_task_archive(
     }
 }
 
+async fn api_task_delete(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+) -> Response {
+    match tasks::delete_task(&state.paths, &task_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
 async fn api_task_events(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<String>,

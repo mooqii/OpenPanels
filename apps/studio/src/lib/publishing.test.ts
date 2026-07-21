@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest"
-import type { ProjectTask, PublishingAttempt } from "../types"
+import type {
+  ProjectTask,
+  PublishingAttempt,
+  PublishingRelease,
+} from "../types"
 import {
   publishingAttemptStatus,
+  publishingPublicationSummary,
+  publishingSourceHasContent,
   typesettingContentToPlainText,
 } from "./publishing"
 
@@ -22,6 +28,19 @@ const attempt: PublishingAttempt = {
   taskId: "task:1",
 }
 
+function release(attempts: PublishingAttempt[]): PublishingRelease {
+  return {
+    attempts,
+    createdAt: "2026-07-20T00:00:00Z",
+    id: "release:1",
+    platform: "xiaohongshu",
+    snapshot: { bodyText: "Body", media: [], title: "Title" },
+    sourcePublicationId: "publication:1",
+    sourceUpdatedAt: "2026-07-20T00:00:00Z",
+    updatedAt: "2026-07-20T00:00:00Z",
+  }
+}
+
 function task(status: string): ProjectTask {
   return {
     createdAt: "2026-07-20T00:00:00Z",
@@ -38,6 +57,12 @@ function task(status: string): ProjectTask {
 }
 
 describe("publishing helpers", () => {
+  it("allows either body text or cover images to be published", () => {
+    expect(publishingSourceHasContent("Body", 0)).toBe(true)
+    expect(publishingSourceHasContent("", 1)).toBe(true)
+    expect(publishingSourceHasContent("  ", 0)).toBe(false)
+  })
+
   it("preserves visible structure and excludes inline images", () => {
     expect(
       typesettingContentToPlainText({
@@ -102,5 +127,45 @@ describe("publishing helpers", () => {
         task("succeeded")
       )
     ).toBe("needs_user_action")
+  })
+
+  it("does not treat an attempt whose task is no longer listed as queued", () => {
+    expect(publishingAttemptStatus(attempt)).toBe("unknown")
+  })
+
+  it("summarizes successful publishes and only the latest unfinished status per skill", () => {
+    const published = {
+      ...attempt,
+      completedAt: "2026-07-20T00:01:00Z",
+      id: "attempt:published",
+      outcome: "published" as const,
+      phase: "completed" as const,
+      updatedAt: "2026-07-20T00:01:00Z",
+    }
+    const retry = {
+      ...attempt,
+      createdAt: "2026-07-20T00:02:00Z",
+      id: "attempt:retry",
+      taskId: "task:retry",
+      updatedAt: "2026-07-20T00:02:00Z",
+    }
+    const failed = {
+      ...attempt,
+      createdAt: "2026-07-20T00:03:00Z",
+      id: "attempt:failed",
+      skillId: "publishing-wechat",
+      taskId: "task:failed",
+      updatedAt: "2026-07-20T00:03:00Z",
+    }
+
+    expect(
+      publishingPublicationSummary(
+        [release([published, retry, failed])],
+        [
+          { ...task("reserved"), id: "task:retry" },
+          { ...task("failed"), id: "task:failed" },
+        ]
+      )
+    ).toEqual({ publishedCount: 1, statuses: ["error", "publishing"] })
   })
 })

@@ -45,7 +45,9 @@ fn wiki_document_error(error: CliError) -> Response {
         Some(
             "generation_in_progress" | "generation_not_failed" | "generation_retry_unavailable",
         ) => StatusCode::CONFLICT,
-        Some("invalid_generated_document" | "already_published") => StatusCode::BAD_REQUEST,
+        Some("invalid_generated_document" | "invalid_raw_document" | "already_published") => {
+            StatusCode::BAD_REQUEST
+        }
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     json_error(status, error.message())
@@ -139,16 +141,27 @@ pub(super) async fn api_wiki_update_generated_document(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct RenameDocumentFileBody {
-    file_name: String,
+pub(super) struct UpdateRawDocumentBody {
+    file_name: Option<String>,
+    title: Option<String>,
 }
 
 pub(super) async fn api_wiki_rename_raw_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<String>,
-    Json(body): Json<RenameDocumentFileBody>,
+    Json(body): Json<UpdateRawDocumentBody>,
 ) -> Response {
-    match wiki::rename_raw_document(&state.paths, &document_id, &body.file_name) {
+    let result = if let Some(title) = body.title {
+        wiki::rename_raw_document_title(&state.paths, &document_id, &title)
+    } else if let Some(file_name) = body.file_name {
+        wiki::rename_raw_document(&state.paths, &document_id, &file_name)
+    } else {
+        Err(CliError::with_code(
+            "invalid_raw_document",
+            "Raw document update requires a title or file name.",
+        ))
+    };
+    match result {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => wiki_document_error(error),
     }

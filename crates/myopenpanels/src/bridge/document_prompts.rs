@@ -64,9 +64,9 @@ fn document_conversion_task_prompt(
     let instruction_source = paths
         .storage_dir
         .join("skills")
-        .join(crate::wiki::WIKI_PANEL_SKILL_ID)
+        .join(crate::agent::PANELS_SKILL_ID)
         .join("references")
-        .join("convert-document.md");
+        .join("wiki-convert-document.md");
     let instructions = fs::read_to_string(&instruction_source).map_err(|error| {
         CliError::with_code(
             "invalid_skill_package",

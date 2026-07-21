@@ -90,6 +90,20 @@ mod skill_management_tests {
                     .iter()
                     .any(|skill| skill["id"] == "writing-default")
         }));
+        assert!(modules.iter().any(|module| {
+            module["kind"] == "publishing"
+                && module["skills"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|skill| skill["id"] == "publishing-xiaohongshu")
+        }));
+        assert!(modules.iter().any(|module| {
+            module["kind"] == "publishing"
+                && module["skills"].as_array().unwrap().iter().any(|skill| {
+                    skill["id"] == "publishing-wechat-official-account"
+                })
+        }));
         let all = payload["modules"]
             .as_array()
             .unwrap()
@@ -318,6 +332,187 @@ mod skill_management_tests {
     }
 
     #[test]
+    fn device_skill_updates_preserve_identity_and_require_confirmation_for_local_edits() {
+        let (_temp, paths) = test_paths();
+        let device_dir = paths.project_dir.join(".codex/skills/update-style");
+        fs::create_dir_all(&device_dir).expect("device skill dir");
+        fs::write(
+            device_dir.join("SKILL.md"),
+            "---\nname: update-style\ndescription: Keep the prose direct.\n---\n\nInitial source.\n",
+        )
+        .expect("device skill");
+
+        install_device_skill(&paths, device_dir.to_str().unwrap(), "writing")
+            .expect("install");
+        let listing = find_installed_skill_by_identity(&paths, "update-style")
+            .expect("identity lookup")
+            .expect("installed listing");
+        let skill_id = listing.skill.id.clone();
+        let manifest = read_skill_manifest(&listing).expect("manifest");
+        assert_eq!(manifest["schemaVersion"], MANAGED_SKILL_SCHEMA_VERSION);
+        assert_eq!(manifest["provenance"]["sourceType"], "device");
+        assert_eq!(
+            manifest["provenance"]["sourceLocator"],
+            fs::canonicalize(&device_dir)
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(
+            check_skill_update(&paths, &skill_id).unwrap().status,
+            SkillUpdateStatus::UpToDate
+        );
+
+        fs::write(device_dir.join("source.txt"), "upstream revision")
+            .expect("upstream revision");
+        let state = check_skill_update(&paths, &skill_id).expect("update check");
+        assert_eq!(state.status, SkillUpdateStatus::UpdateAvailable);
+        assert!(!state.local_modified);
+
+        fs::write(
+            Path::new(&listing.local_dir).join("local.txt"),
+            "local revision",
+        )
+        .expect("local revision");
+        let state = check_skill_update(&paths, &skill_id).expect("local check");
+        assert!(state.local_modified);
+        let error = update_managed_skill(&paths, &skill_id, false)
+            .expect_err("local edits require confirmation");
+        assert_eq!(error.code(), Some("skill_local_modifications"));
+
+        let created_at = manifest["createdAt"].clone();
+        update_managed_skill(&paths, &skill_id, true).expect("forced update");
+        assert!(!Path::new(&listing.local_dir).join("local.txt").exists());
+        assert!(Path::new(&listing.local_dir).join("source.txt").is_file());
+        let updated = managed_skill_listing(&paths, &skill_id).expect("updated listing");
+        let updated_manifest = read_skill_manifest(&updated).expect("updated manifest");
+        assert_eq!(updated_manifest["skillId"], skill_id);
+        assert_eq!(updated_manifest["createdAt"], created_at);
+        assert_eq!(updated_manifest["binding"]["moduleKinds"], json!(["writing"]));
+        let state = check_skill_update(&paths, &skill_id).expect("updated check");
+        assert_eq!(state.status, SkillUpdateStatus::UpToDate);
+        assert!(!state.local_modified);
+
+        fs::write(
+            device_dir.join("SKILL.md"),
+            "---\nname: renamed-source\ndescription: Renamed source.\n---\n\nBody.\n",
+        )
+        .expect("rename source");
+        let state = check_skill_update(&paths, &skill_id).expect("identity check");
+        assert_eq!(state.status, SkillUpdateStatus::SourceUnavailable);
+        assert_eq!(
+            update_managed_skill(&paths, &skill_id, true)
+                .expect_err("identity change rejected")
+                .code(),
+            Some("skill_name_conflict")
+        );
+    }
+
+    #[test]
+    fn skill_update_comparison_keeps_local_changes_orthogonal_to_source_status() {
+        assert_eq!(
+            compare_skill_hashes("installed", "installed", "installed"),
+            (SkillUpdateStatus::UpToDate, false)
+        );
+        assert_eq!(
+            compare_skill_hashes("installed", "local", "installed"),
+            (SkillUpdateStatus::UpToDate, true)
+        );
+        assert_eq!(
+            compare_skill_hashes("installed", "installed", "source"),
+            (SkillUpdateStatus::UpdateAvailable, false)
+        );
+        assert_eq!(
+            compare_skill_hashes("installed", "local", "source"),
+            (SkillUpdateStatus::UpdateAvailable, true)
+        );
+    }
+
+    #[test]
+    fn project_device_provenance_is_unavailable_outside_its_project() {
+        let (temp, paths) = test_paths();
+        let device_dir = paths.project_dir.join(".codex/skills/project-source");
+        fs::create_dir_all(&device_dir).expect("device skill dir");
+        fs::write(
+            device_dir.join("SKILL.md"),
+            "---\nname: project-source\ndescription: Project-local source.\n---\n\nBody.\n",
+        )
+        .expect("device skill");
+        install_device_skill(&paths, device_dir.to_str().unwrap(), "writing")
+            .expect("install");
+        let listing = find_installed_skill_by_identity(&paths, "project-source")
+            .unwrap()
+            .unwrap();
+
+        let other_project = temp.path().join("other-project");
+        fs::create_dir_all(&other_project).expect("other project");
+        let other_paths = resolve_myopenpanels_paths(
+            Some(other_project.to_str().unwrap()),
+            Some(paths.storage_dir.to_str().unwrap()),
+            Some("other-skill-project"),
+        )
+        .expect("other paths");
+        ensure_project_bootstrap(&other_paths, BootstrapRequest::new()).expect("other bootstrap");
+        let state = check_skill_update(&other_paths, &listing.skill.id).expect("update state");
+        assert_eq!(state.status, SkillUpdateStatus::SourceUnavailable);
+    }
+
+    #[test]
+    fn legacy_remote_origin_is_safely_migrated_without_fetching() {
+        let (_temp, paths) = test_paths();
+        write_custom_skill(&paths, "legacy-remote", "Legacy Remote");
+        let listing = managed_skill_listing(&paths, "legacy-remote").expect("listing");
+        let mut manifest = read_skill_manifest(&listing).expect("manifest");
+        manifest["origin"] = json!("https://github.com/example/skills/tree/main/legacy-remote");
+        write_skill_manifest(&listing, &manifest).expect("legacy manifest");
+
+        let payload = managed_skills(&paths).expect("managed Skills");
+        let migrated = read_skill_manifest(&listing).expect("migrated manifest");
+        assert_eq!(migrated["schemaVersion"], MANAGED_SKILL_SCHEMA_VERSION);
+        assert_eq!(migrated["provenance"]["sourceType"], "github");
+        assert_eq!(migrated["provenance"]["revision"], "main");
+        assert_eq!(migrated["provenance"]["subpath"], "legacy-remote");
+        assert!(payload["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|module| module["skills"].as_array().unwrap())
+            .any(|skill| skill["id"] == "legacy-remote" && skill["canCheckUpdates"] == true));
+    }
+
+    #[test]
+    fn legacy_publishing_associations_are_exposed_as_content_publishing() {
+        let (_temp, paths) = test_paths();
+        let skill_id = "legacy-publishing-skill";
+        let directory = paths.storage_dir.join("skills").join(skill_id);
+        fs::create_dir_all(&directory).expect("skill dir");
+        fs::write(
+            directory.join("SKILL.md"),
+            "---\nname: legacy-publishing-skill\ndescription: Publish a note.\n---\n\nPublish the supplied content.\n",
+        )
+        .expect("SKILL.md");
+        fs::write(
+            directory.join("manifest.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 3,
+                "source": "custom",
+                "skillId": skill_id,
+                "name": "Legacy Publishing Skill",
+                "binding": { "moduleKinds": ["publishing-xiaohongshu"] },
+            }))
+            .expect("manifest"),
+        )
+        .expect("manifest file");
+
+        let listing = managed_skill_listing(&paths, skill_id).expect("listing");
+        assert_eq!(managed_skill_module_kinds(&listing), ["publishing"]);
+        assert_eq!(custom_skill_modules(&listing).unwrap(), ["publishing"]);
+
+        remove_skill_module(&paths, skill_id, "publishing").expect("remove association");
+        assert!(!directory.exists());
+    }
+
+    #[test]
     fn local_skill_import_validates_conflicts_and_replaces_custom_skills() {
         use base64::Engine;
         let (_temp, paths) = test_paths();
@@ -334,6 +529,12 @@ mod skill_management_tests {
         assert_eq!(installed["status"], "installed");
         assert_eq!(installed["replaced"], false);
         let skill_id = installed["skill"]["id"].as_str().unwrap().to_owned();
+        let initial_manifest = read_skill_manifest(
+            &managed_skill_listing(&paths, &skill_id).expect("initial listing"),
+        )
+        .expect("initial manifest");
+        assert_eq!(initial_manifest["schemaVersion"], MANAGED_SKILL_SCHEMA_VERSION);
+        assert!(initial_manifest.get("provenance").is_none());
 
         let conflict = import_skill_from_files(
             &paths,
@@ -375,6 +576,11 @@ mod skill_management_tests {
         )
         .expect("replaced source");
         assert!(after.contains("Lead with the conclusion."));
+        let replaced_manifest = read_skill_manifest(
+            &managed_skill_listing(&paths, &skill_id).expect("replaced listing"),
+        )
+        .expect("replaced manifest");
+        assert_eq!(replaced_manifest["createdAt"], initial_manifest["createdAt"]);
     }
 
     #[test]
@@ -421,6 +627,82 @@ mod skill_management_tests {
     }
 
     #[test]
+    fn remote_skill_discovery_lists_every_skill_with_stable_subpaths() {
+        let temporary = tempfile::tempdir().expect("temp");
+        let repository = temporary.path().join("repository");
+        for (subpath, name) in [("skills/alpha", "alpha"), ("skills/beta", "beta")] {
+            let root = repository.join(subpath);
+            fs::create_dir_all(&root).expect("skill dir");
+            fs::write(
+                root.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: {name} description.\n---\n\nUse the {name} workflow.\n"
+                ),
+            )
+            .expect("SKILL.md");
+        }
+        let template = repository.join("template");
+        fs::create_dir_all(&template).expect("template dir");
+        fs::write(
+            template.join("SKILL.md"),
+            "---\nname: Replace Me\ndescription: Template only.\n---\n\nTemplate body.\n",
+        )
+        .expect("template SKILL.md");
+
+        let candidates = discover_remote_skill_candidates(&repository, &repository, None)
+            .expect("discover Skills");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.subpath.as_str())
+                .collect::<Vec<_>>(),
+            ["skills/alpha", "skills/beta"]
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
+    }
+
+    #[test]
+    fn imported_skill_can_remain_unassociated() {
+        let (_temp, paths) = test_paths();
+        let package = paths.project_dir.join("unassociated-package");
+        fs::create_dir_all(&package).expect("package dir");
+        fs::write(
+            package.join("SKILL.md"),
+            "---\nname: unassociated-skill\ndescription: Installed without a module.\n---\n\nUse this Skill on demand.\n",
+        )
+        .expect("SKILL.md");
+
+        let installed = install_skill_package(
+            &paths,
+            &package,
+            "unassociated-skill".to_owned(),
+            "Installed without a module.".to_owned(),
+            &[],
+            false,
+            "test",
+            None,
+        )
+        .expect("install unassociated Skill");
+        assert_eq!(installed["skill"]["moduleKinds"], json!([]));
+
+        let managed = managed_skills(&paths).expect("managed Skills");
+        let unassociated = managed["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|module| module["kind"] == "unassociated")
+            .expect("unassociated module");
+        assert_eq!(unassociated["skills"][0]["name"], "unassociated-skill");
+    }
+
+    #[test]
     fn remote_skill_urls_are_restricted_and_resolve_supported_sources() {
         let parsed = parse_github_skill_source(
             "https://github.com/example/skills/tree/main/catalog/editorial",
@@ -440,6 +722,36 @@ mod skill_management_tests {
             "https://codeload.github.com/example/skills/zip/main"
         );
         assert_eq!(github.subpath.as_deref(), Some("catalog/editorial"));
+        assert_eq!(github.provenance.source_type, "github");
+        assert_eq!(
+            github.provenance.source_locator,
+            "https://github.com/example/skills/tree/main/catalog/editorial"
+        );
+        assert_eq!(github.provenance.revision.as_deref(), Some("main"));
+        assert_eq!(
+            github.provenance.subpath.as_deref(),
+            Some("catalog/editorial")
+        );
+
+        let skills_sh = parse_remote_skill_source(
+            "https://www.skills.sh/vercel-labs/skills/find-skills?ref=directory",
+        )
+        .expect("skills.sh Skill detail URL");
+        assert_eq!(
+            skills_sh.archive_url,
+            "https://codeload.github.com/vercel-labs/skills/zip/HEAD"
+        );
+        assert_eq!(skills_sh.skill_selector.as_deref(), Some("find-skills"));
+        assert_eq!(skills_sh.provenance.source_type, "skills-sh");
+        assert_eq!(
+            skills_sh.provenance.source_locator,
+            "https://www.skills.sh/vercel-labs/skills/find-skills"
+        );
+
+        let skills_sh_repository =
+            parse_remote_skill_source("https://skills.sh/vercel-labs/skills")
+                .expect("skills.sh repository URL");
+        assert_eq!(skills_sh_repository.skill_selector, None);
 
         let clawhub = parse_remote_skill_source(
             "https://clawhub.ai/openclaw/skills/memory-tools?version=1.0.0",
@@ -449,6 +761,11 @@ mod skill_management_tests {
             clawhub.archive_url,
             "https://clawhub.ai/api/v1/download?slug=memory-tools&ownerHandle=openclaw"
         );
+        assert_eq!(clawhub.provenance.source_type, "clawhub");
+        assert_eq!(
+            clawhub.provenance.source_locator,
+            "https://clawhub.ai/openclaw/skills/memory-tools"
+        );
 
         let skillhub =
             parse_remote_skill_source("https://skillhub.cn/skills/github-code-review/#readme")
@@ -457,6 +774,7 @@ mod skill_management_tests {
             skillhub.archive_url,
             "https://api.skillhub.cn/api/v1/download?slug=github-code-review"
         );
+        assert_eq!(skillhub.provenance.source_type, "skillhub");
 
         let plugin =
             parse_remote_skill_source("https://clawhub.ai/openclaw/plugins/memory-lancedb")
@@ -470,5 +788,35 @@ mod skill_management_tests {
         let error = parse_remote_skill_source("https://example.com/skill.zip")
             .expect_err("unsupported host");
         assert_eq!(error.code(), Some("unsupported_skill_source"));
+    }
+
+    #[test]
+    fn remote_skill_selector_picks_one_skill_from_a_repository() {
+        let temporary = tempfile::tempdir().expect("temporary repository");
+        for (directory, name) in [
+            ("packages/first", "first-skill"),
+            ("skills/selected-folder", "selected-skill"),
+        ] {
+            let root = temporary.path().join(directory);
+            fs::create_dir_all(&root).expect("Skill directory");
+            fs::write(
+                root.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: Test remote selection.\n---\n\nBody.\n"
+                ),
+            )
+            .expect("SKILL.md");
+        }
+
+        let selected = find_imported_skill(temporary.path(), Some("selected-skill"))
+            .expect("selected Skill");
+        assert_eq!(
+            selected.file_name().and_then(|value| value.to_str()),
+            Some("selected-folder")
+        );
+
+        let missing = find_imported_skill(temporary.path(), Some("missing-skill"))
+            .expect_err("missing selector");
+        assert_eq!(missing.code(), Some("invalid_skill_package"));
     }
 }

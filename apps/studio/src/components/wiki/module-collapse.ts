@@ -35,28 +35,34 @@ export function nextCollapsedModules(
   module: WikiModule,
   writing: boolean
 ): Set<WikiModule> {
-  const pair: readonly WikiModule[] = writing
-    ? ["structured", "raw"]
+  const accordionModules: readonly WikiModule[] = writing
+    ? ["generated", "structured", "raw"]
     : ["raw", "generated"]
   const next = new Set(current)
 
-  if (!pair.includes(module)) {
+  if (!accordionModules.includes(module)) {
     if (next.has(module)) next.delete(module)
     else next.add(module)
     return next
   }
 
-  const sibling = pair.find((candidate) => candidate !== module)
-  if (!sibling) return next
-
   if (next.has(module)) {
     next.delete(module)
-  } else if (next.has(sibling)) {
-    next.delete(sibling)
-    next.add(module)
-  } else {
-    next.add(module)
+    return next
   }
 
+  const openSiblings = accordionModules.filter(
+    (candidate) => candidate !== module && !next.has(candidate)
+  )
+  if (openSiblings.length > 0) {
+    next.add(module)
+    return next
+  }
+
+  const collapsedSibling = accordionModules.find(
+    (candidate) => candidate !== module && next.has(candidate)
+  )
+  if (collapsedSibling) next.delete(collapsedSibling)
+  next.add(module)
   return next
 }

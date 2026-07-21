@@ -43,8 +43,9 @@ pub(super) fn update_check_text(payload: &UpdateCheckPayload) -> String {
     if payload.update_available {
         if payload.asset_available {
             format!(
-                "Update available: myopenpanels {} -> {latest}. Run `myopenpanels update install` to install.",
-                payload.current_version
+                "Update available: myopenpanels {} -> {latest}. Run `{} update install` to install.",
+                payload.current_version,
+                crate::cli_identity::agent_cli_shell_word()
             )
         } else {
             format!(
@@ -61,8 +62,10 @@ pub(super) fn update_install_text(payload: &UpdateInstallPayload) -> String {
     let latest = payload.latest_version.as_deref().unwrap_or("unknown");
     if payload.updated {
         format!(
-            "Updated myopenpanels {} -> {latest}. Compare the loaded MyOpenPanels Entry Skill with version {} and consider updating it when older. Run `myopenpanels studio start --project-dir <project> --format json` to restart Studio, then navigate to the returned embeddedBrowserUrl.",
-            payload.current_version, payload.entry_skill_update_reminder.version
+            "Updated myopenpanels {} -> {latest}. Compare the loaded MyOpenPanels Entry Skill with version {} and consider updating it when older. Run `{} studio start --project-dir <project> --format json` to restart Studio, then navigate to the returned embeddedBrowserUrl.",
+            payload.current_version,
+            payload.entry_skill_update_reminder.version,
+            crate::cli_identity::agent_cli_shell_word()
         )
     } else {
         format!(

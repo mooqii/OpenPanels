@@ -320,6 +320,36 @@ fn apply_task_output_plan(
                 };
                 artifacts.push(finalized_artifact(artifact, Some(logical_path)));
             }
+            TaskOutputAction::PrepareTypesettingCover {
+                project_id,
+                panel_id,
+                task_id,
+                artifact,
+                width,
+                height,
+            } => {
+                let bytes = read_planned_artifact(artifact)?;
+                let storage = crate::storage::Storage::open(paths)?;
+                let requested = format!("cover-tasks/{task_id}/cover.png");
+                let written = storage.write_asset_from_buffer(
+                    project_id,
+                    panel_id,
+                    &requested,
+                    &bytes,
+                    true,
+                )?;
+                artifacts.push(json!({
+                    "role": artifact.role,
+                    "logicalPath": "cover.png",
+                    "contentHash": artifact.content_hash,
+                    "sizeBytes": artifact.size_bytes,
+                    "assetRef": written.asset_ref,
+                    "fileName": written.file_name,
+                    "mimeType": "image/png",
+                    "width": width,
+                    "height": height,
+                }));
+            }
         }
     }
     Ok(json!({

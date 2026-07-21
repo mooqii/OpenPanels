@@ -27,6 +27,40 @@ async fn api_typesetting_canvas_assets(
     }
 }
 
+async fn api_typesetting_cover_skills(State(state): State<Arc<AppState>>) -> Response {
+    match typesetting::cover_skills(&state.paths) {
+        Ok(skills) => json_response(StatusCode::OK, &json!({ "skills": skills })),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+struct TypesettingCoverRequestBody {
+    publication_id: String,
+    skill_id: String,
+    #[serde(default)]
+    instruction: String,
+    request_id: String,
+}
+
+async fn api_typesetting_cover_request(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TypesettingCoverRequestBody>,
+) -> Response {
+    match typesetting::create_cover_request(
+        &state.paths,
+        &body.publication_id,
+        &body.skill_id,
+        &body.instruction,
+        &body.request_id,
+    ) {
+        Ok(payload) => json_response(StatusCode::CREATED, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportTypesettingAssetBody {

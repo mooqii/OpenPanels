@@ -206,7 +206,7 @@ mod tests {
         );
         assert!(skills
             .iter()
-            .all(|item| item.skill.id != WRITING_PANEL_SKILL_ID));
+            .all(|item| item.skill.id != crate::agent::PANELS_SKILL_ID));
 
         let empty =
             create_requests(&paths, "Write", "create", None, &[]).expect_err("skill required");
@@ -355,6 +355,53 @@ mod tests {
         )
         .expect_err("missing target");
         assert_eq!(error.code(), Some("writing_target_not_found"));
+    }
+
+    #[test]
+    fn create_and_revision_drafts_are_persisted_independently() {
+        let (_temp, paths) = test_paths();
+        let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        ensure_project_bootstrap(
+            &paths,
+            BootstrapRequest {
+                requested_panel_kind: Some(PanelKind::Writing),
+                requested_panel_id: None,
+                requested_project_id: Some(initial.project.id),
+            },
+        )
+        .expect("writing panel");
+        let create_skills = vec!["writing-default".to_owned()];
+        let revision_skill = "writing-long-article";
+
+        save_draft(
+            &paths,
+            "Create a product brief",
+            "create",
+            "",
+            None,
+            &create_skills,
+            Some(revision_skill),
+        )
+        .expect("create draft");
+        let revised = save_draft(
+            &paths,
+            "Tighten the opening paragraph",
+            "revise",
+            "",
+            None,
+            &create_skills,
+            Some(revision_skill),
+        )
+        .expect("revision draft");
+
+        assert_eq!(
+            revised["state"]["createDraft"],
+            json!("Create a product brief")
+        );
+        assert_eq!(
+            revised["state"]["revisionDraft"],
+            json!("Tighten the opening paragraph")
+        );
     }
 
     #[test]

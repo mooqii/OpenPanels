@@ -21,19 +21,19 @@ struct PanelModule {
 static PANEL_MODULES: &[PanelModule] = &[
     PanelModule {
         kind: PanelKind::Wiki,
-        skill_id: Some(crate::wiki::WIKI_PANEL_SKILL_ID),
+        skill_id: Some(crate::agent::PANELS_SKILL_ID),
         context: wiki_context,
         selection: Some(wiki_selection),
     },
     PanelModule {
         kind: PanelKind::Writing,
-        skill_id: Some(crate::writing::WRITING_PANEL_SKILL_ID),
+        skill_id: Some(crate::agent::PANELS_SKILL_ID),
         context: crate::writing::panel_context,
         selection: Some(writing_selection),
     },
     PanelModule {
         kind: PanelKind::Canvas,
-        skill_id: Some(crate::agent::CANVAS_PANEL_SKILL_ID),
+        skill_id: Some(crate::agent::PANELS_SKILL_ID),
         context: canvas_context,
         selection: Some(canvas_selection),
     },
@@ -196,7 +196,7 @@ fn canvas_selection_envelope(
         actions: json!({
             "required": [],
             "suggested": panel_skill_actions(
-                crate::agent::CANVAS_PANEL_SKILL_ID,
+                crate::agent::PANELS_SKILL_ID,
                 "The user request requires Canvas selection or generation guidance.",
             ),
         }),
@@ -281,7 +281,7 @@ fn writing_selection(
         actions: json!({
             "required": [],
             "suggested": panel_skill_actions(
-                crate::writing::WRITING_PANEL_SKILL_ID,
+                crate::agent::PANELS_SKILL_ID,
                 "The user request targets Writing context or document generation.",
             ),
         }),

@@ -189,7 +189,7 @@ textarea {
 }
 
 .design-shell__workspace .op-wiki-panel__surface {
-  width: min(1280px, calc(100% - 40px));
+  width: min(1440px, calc(100% - 40px));
 }
 
 .design-shell--status {

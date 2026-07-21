@@ -1,4 +1,4 @@
-use crate::agent::{read_agent_skill, CANVAS_PANEL_SKILL_ID};
+use crate::agent::{read_agent_skill_for_panel, PANELS_SKILL_ID};
 use crate::canvas::{
     insert_image_for_target, insert_placeholder_for_target, update_placeholder_for_target,
     InsertImageInput, InsertPlaceholderInput,
@@ -177,7 +177,8 @@ pub fn begin_canvas(
         false,
     )?;
     let now = now_iso();
-    let panel_skill = read_agent_skill(paths, CANVAS_PANEL_SKILL_ID, None)?;
+    let panel_skill =
+        read_agent_skill_for_panel(paths, PANELS_SKILL_ID, None, Some(PanelKind::Canvas))?;
     let operation = json!({
         "id": id,
         "ownerContextId": paths.context_id,
@@ -188,7 +189,7 @@ pub fn begin_canvas(
         "panelId": bootstrap.panel.id,
         "panelTitle": bootstrap.panel.title,
         "panelKind": "canvas",
-        "skillId": CANVAS_PANEL_SKILL_ID,
+        "skillId": PANELS_SKILL_ID,
         "guideId": null,
         "protocolVersion": OPERATION_PROTOCOL_VERSION,
         "target": {
@@ -205,7 +206,7 @@ pub fn begin_canvas(
     });
     save(paths, &operation)?;
     Ok(
-        json!({ "operation": operation, "panelSkill": panel_skill, "nextAction": "Read the Canvas panel Skill and its relevant references, generate the bitmap, then run operation complete with the captured operation id." }),
+        json!({ "operation": operation, "panelSkill": panel_skill, "nextAction": "Read the Panels Skill and returned Canvas references, generate the bitmap, then run operation complete with the captured operation id." }),
     )
 }
 
@@ -359,20 +360,21 @@ pub fn begin_wiki(
     )?;
     let document_id = started["document"]["id"].as_str().unwrap_or_default();
     let now = now_iso();
-    let panel_skill = read_agent_skill(paths, wiki::WIKI_PANEL_SKILL_ID, None)?;
+    let panel_skill =
+        read_agent_skill_for_panel(paths, PANELS_SKILL_ID, None, Some(PanelKind::Wiki))?;
     let operation = json!({
         "id": id, "ownerContextId": paths.context_id,
         "intent": "wiki.document.generate", "status": "active",
         "projectId": bootstrap.project.id, "projectTitle": bootstrap.project.title,
         "panelId": bootstrap.panel.id, "panelTitle": bootstrap.panel.title, "panelKind": "wiki",
-        "skillId": wiki::WIKI_PANEL_SKILL_ID, "guideId": null, "protocolVersion": OPERATION_PROTOCOL_VERSION,
+        "skillId": PANELS_SKILL_ID, "guideId": null, "protocolVersion": OPERATION_PROTOCOL_VERSION,
         "target": { "documentId": document_id, "baseContentVersion": started["baseContentVersion"] },
         "input": { "title": title, "format": format, "mode": if is_update { "update" } else { "create" } },
         "result": null, "error": null, "createdAt": now, "updatedAt": now, "completedAt": null,
     });
     save(paths, &operation)?;
     Ok(
-        json!({ "operation": operation, "panelSkill": panel_skill, "document": started["document"], "nextAction": "Read the Wiki panel Skill and generated-document reference, write the result file, then run operation complete with the captured operation id." }),
+        json!({ "operation": operation, "panelSkill": panel_skill, "document": started["document"], "nextAction": "Read the Panels Skill and returned Wiki references, write the result file, then run operation complete with the captured operation id." }),
     )
 }
 
@@ -570,7 +572,8 @@ fn begin_writing_internal(
     )?;
     let generated_id = started["document"]["id"].as_str().unwrap_or_default();
     let now = now_iso();
-    let panel_skill = read_agent_skill(paths, crate::writing::WRITING_PANEL_SKILL_ID, None)?;
+    let panel_skill =
+        read_agent_skill_for_panel(paths, PANELS_SKILL_ID, None, Some(PanelKind::Writing))?;
     let mut operation = json!({
         "id": id,
         "ownerContextId": paths.context_id,
@@ -581,7 +584,7 @@ fn begin_writing_internal(
         "panelId": panel.id,
         "panelTitle": panel.title,
         "panelKind": "wiki",
-        "skillId": crate::writing::WRITING_PANEL_SKILL_ID,
+        "skillId": PANELS_SKILL_ID,
         "guideId": null,
         "protocolVersion": OPERATION_PROTOCOL_VERSION,
         "target": {

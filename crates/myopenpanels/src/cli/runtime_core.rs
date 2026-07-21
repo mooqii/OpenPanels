@@ -14,12 +14,12 @@ use crate::paths::{
     resolve_studio_service_paths,
 };
 use crate::selection::read_selection_asset_for_panel;
-use crate::server::run_server;
+use crate::server::{run_server, run_server_with_owner_lock};
 use crate::storage::Storage;
 use crate::studio::{
-    acquire_studio_transition_lock, find_open_port, open_browser, resolve_current_studio_session,
-    reuse_existing_studio, start_studio, stop_studio_session, studio_status,
-    wait_for_existing_studio, write_studio_session, StudioServerStatus, StudioSession,
+    acquire_studio_owner_lock, acquire_studio_transition_lock, find_studio_port, open_browser,
+    resolve_current_studio_session, reuse_existing_studio, start_studio, stop_studio_session,
+    studio_status, wait_for_existing_studio, write_studio_session, StudioServerStatus, StudioSession,
     StudioStartOptions, StudioStartResult,
 };
 use crate::tasks;

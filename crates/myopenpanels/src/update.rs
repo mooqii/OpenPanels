@@ -312,7 +312,8 @@ pub fn maybe_notify_update(current_version: &str, stderr: &mut impl Write) {
         let latest = checked.latest_version.as_deref().unwrap_or("unknown");
         let _ = writeln!(
             stderr,
-            "Update available: myopenpanels {current_version} -> {latest}. Run `myopenpanels update install` to install."
+            "Update available: myopenpanels {current_version} -> {latest}. Run `{} update install` to install.",
+            crate::cli_identity::agent_cli_shell_word()
         );
     }
 }

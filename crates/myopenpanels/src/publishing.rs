@@ -8,9 +8,71 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+include!("publishing/task_lifecycle.rs");
+
 pub const DEFAULT_XIAOHONGSHU_SKILL_ID: &str = "publishing-xiaohongshu";
 pub const XIAOHONGSHU_TASK_TYPE: &str = "publish_xiaohongshu_note";
 pub const XIAOHONGSHU_CAPABILITY: &str = "publishing.xiaohongshu";
+pub const WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE: &str = "publish_wechat_official_account_draft";
+pub const WECHAT_OFFICIAL_ACCOUNT_CAPABILITY: &str = "publishing.wechat_official_account";
+
+#[derive(Clone, Copy)]
+struct PublishingTarget {
+    capability: &'static str,
+    platform: &'static str,
+    task_type: &'static str,
+}
+
+const XIAOHONGSHU_TARGET: PublishingTarget = PublishingTarget {
+    capability: XIAOHONGSHU_CAPABILITY,
+    platform: "xiaohongshu",
+    task_type: XIAOHONGSHU_TASK_TYPE,
+};
+
+const WECHAT_OFFICIAL_ACCOUNT_TARGET: PublishingTarget = PublishingTarget {
+    capability: WECHAT_OFFICIAL_ACCOUNT_CAPABILITY,
+    platform: "wechat_official_account",
+    task_type: WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE,
+};
+
+pub fn is_publishing_task_type(task_type: &str) -> bool {
+    matches!(
+        task_type,
+        XIAOHONGSHU_TASK_TYPE | WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE
+    )
+}
+
+fn publishing_target_for_skill(
+    skill: &crate::agent::AgentSkillListing,
+) -> Result<PublishingTarget, CliError> {
+    if skill
+        .skill
+        .task_types
+        .iter()
+        .any(|value| value == WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE)
+    {
+        return Ok(WECHAT_OFFICIAL_ACCOUNT_TARGET);
+    }
+    if skill
+        .skill
+        .task_types
+        .iter()
+        .any(|value| value == XIAOHONGSHU_TASK_TYPE)
+    {
+        return Ok(XIAOHONGSHU_TARGET);
+    }
+    Err(CliError::with_code(
+        "publishing_skill_not_supported",
+        format!(
+            "Publishing Skill has no supported publishing target: {}",
+            skill.skill.id
+        ),
+    ))
+}
+
+fn publishing_source_has_content(body_text: &str, media_count: usize) -> bool {
+    !body_text.trim().is_empty() || media_count > 0
+}
 
 pub fn empty_state() -> Value {
     json!({
@@ -64,11 +126,20 @@ fn validate_release(release: &Value) -> bool {
     let Some(media) = release.pointer("/snapshot/media").and_then(Value::as_array) else {
         return false;
     };
+    let Some(body_text) = release
+        .pointer("/snapshot/bodyText")
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
     let Some(attempts) = release.get("attempts").and_then(Value::as_array) else {
         return false;
     };
     release.get("id").is_some_and(Value::is_string)
-        && release.get("platform").and_then(Value::as_str) == Some("xiaohongshu")
+        && matches!(
+            release.get("platform").and_then(Value::as_str),
+            Some("xiaohongshu" | "wechat_official_account")
+        )
         && release
             .get("sourcePublicationId")
             .is_some_and(Value::is_string)
@@ -78,7 +149,7 @@ fn validate_release(release: &Value) -> bool {
         && release
             .pointer("/snapshot/bodyText")
             .is_some_and(Value::is_string)
-        && !media.is_empty()
+        && publishing_source_has_content(body_text, media.len())
         && media.iter().enumerate().all(|(index, item)| {
             item.get("assetRef").is_some_and(Value::is_string)
                 && item.get("fileName").is_some_and(Value::is_string)
@@ -127,7 +198,7 @@ pub fn update_preferences(
     selected_publication_id: Option<&str>,
     skill_id: &str,
 ) -> Result<Value, CliError> {
-    crate::agent::xiaohongshu_publishing_skill(paths, skill_id)?;
+    crate::agent::publishing_skill(paths, skill_id)?;
     let bootstrap = publishing_bootstrap(paths)?;
     let storage = Storage::open(paths)?;
     for _ in 0..5 {
@@ -168,6 +239,8 @@ pub fn create_release(
             "Publication id and request id are required.",
         ));
     }
+    let selected_skill = crate::agent::publishing_skill(paths, skill_id)?;
+    let target = publishing_target_for_skill(&selected_skill)?;
     let bootstrap = publishing_bootstrap(paths)?;
     let storage = Storage::open(paths)?;
     let mut state = normalize_state(bootstrap.state.clone());
@@ -203,10 +276,10 @@ pub fn create_release(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    if title.trim().is_empty() || body_text.trim().is_empty() || covers.is_empty() {
+    if !publishing_source_has_content(&body_text, covers.len()) {
         return Err(CliError::with_code(
             "publishing_source_incomplete",
-            "Xiaohongshu publishing requires a title, body, and at least one cover image.",
+            "Publishing requires text content or at least one image.",
         ));
     }
 
@@ -227,7 +300,7 @@ pub fn create_release(
         let now = now_iso();
         let mut release = json!({
             "id": release_id,
-            "platform": "xiaohongshu",
+            "platform": target.platform,
             "sourcePublicationId": publication_id,
             "sourceUpdatedAt": publication.get("updatedAt").cloned().unwrap_or(Value::Null),
             "snapshot": {
@@ -318,9 +391,15 @@ pub fn create_attempt(
                 || attempt.get("outcome").and_then(Value::as_str) == Some("unknown")
         });
     if has_unknown_commit && !acknowledged_unknown {
+        let platform = release
+            .get("platform")
+            .and_then(Value::as_str)
+            .unwrap_or("the target platform");
         return Err(CliError::with_code(
             "publishing_unknown_unacknowledged",
-            "Check Xiaohongshu for a possibly published note before starting another attempt.",
+            format!(
+                "Check {platform} for possibly published content before starting another attempt."
+            ),
         ));
     }
     let (attempt, task) = build_attempt(
@@ -363,7 +442,21 @@ fn build_attempt(
     request_id: &str,
     mode: &str,
 ) -> Result<(Value, TaskInsert), CliError> {
-    let skill = crate::agent::xiaohongshu_publishing_skill(paths, skill_id)?;
+    let skill = crate::agent::publishing_skill(paths, skill_id)?;
+    let target = publishing_target_for_skill(&skill)?;
+    let release_platform = release
+        .get("platform")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if release_platform != target.platform {
+        return Err(CliError::with_code(
+            "publishing_skill_target_mismatch",
+            format!(
+                "Publishing Skill {} cannot publish a {release_platform} release.",
+                skill.skill.id
+            ),
+        ));
+    }
     let release_id = release.get("id").and_then(Value::as_str).unwrap_or("");
     let attempt_id = crate::ids::random_id("publish-attempt");
     let task_id = crate::ids::random_id("task");
@@ -397,11 +490,11 @@ fn build_attempt(
     let task = TaskInsert {
         id: task_id,
         queue: "publishing".to_owned(),
-        task_type: XIAOHONGSHU_TASK_TYPE.to_owned(),
-        capability: XIAOHONGSHU_CAPABILITY.to_owned(),
+        task_type: target.task_type.to_owned(),
+        capability: target.capability.to_owned(),
         target_ref: release_id.to_owned(),
         input: json!({
-            "platform": "xiaohongshu",
+            "platform": target.platform,
             "releaseId": release_id,
             "attemptId": attempt_id,
             "snapshot": release.get("snapshot").cloned().unwrap_or(Value::Null),
@@ -624,12 +717,13 @@ pub(crate) fn checkpoint_attempt_for_broker(
         ));
     }
     let task = crate::tasks::inspect_task(paths, task_id)?["task"].clone();
+    let task_type = task.get("type").and_then(Value::as_str).unwrap_or_default();
     if task.get("queue").and_then(Value::as_str) != Some("publishing")
-        || task.get("type").and_then(Value::as_str) != Some(XIAOHONGSHU_TASK_TYPE)
+        || !is_publishing_task_type(task_type)
     {
         return Err(CliError::with_code(
             "invalid_target",
-            "Publishing checkpoint requires a Xiaohongshu publishing Task.",
+            "Publishing checkpoint requires a supported publishing Task.",
         ));
     }
     if !matches!(
@@ -689,9 +783,13 @@ pub fn prepare_task_completion(
         .pointer("/input/attemptId")
         .and_then(Value::as_str)
         .unwrap_or("");
+    let platform = task
+        .pointer("/input/platform")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if result.get("releaseId").and_then(Value::as_str) != Some(release_id)
         || result.get("attemptId").and_then(Value::as_str) != Some(attempt_id)
-        || result.get("platform").and_then(Value::as_str) != Some("xiaohongshu")
+        || result.get("platform").and_then(Value::as_str) != Some(platform)
     {
         return Err(CliError::with_code(
             "invalid_output",
@@ -808,6 +906,41 @@ fn to_cli_error(error: impl std::fmt::Display) -> CliError {
 mod tests {
     use super::*;
 
+    fn publishing_skill_listing(task_type: &str) -> crate::agent::AgentSkillListing {
+        crate::agent::AgentSkillListing {
+            skill: crate::agent::AgentSkillMetadata {
+                applies_to: vec!["publishing".to_owned()],
+                description: "Publish prepared content.".to_owned(),
+                id: "publishing-test".to_owned(),
+                load_when: Vec::new(),
+                requires_commands: Vec::new(),
+                source: "builtin".to_owned(),
+                task_types: vec![task_type.to_owned()],
+                name: "Publishing Test".to_owned(),
+                tokens: "short".to_owned(),
+            },
+            local_dir: String::new(),
+            local_path: String::new(),
+            source: "builtin".to_owned(),
+        }
+    }
+
+    #[test]
+    fn publishing_skills_select_their_platform_route() {
+        let xiaohongshu =
+            publishing_target_for_skill(&publishing_skill_listing(XIAOHONGSHU_TASK_TYPE))
+                .expect("Xiaohongshu target");
+        assert_eq!(xiaohongshu.platform, "xiaohongshu");
+        assert_eq!(xiaohongshu.capability, XIAOHONGSHU_CAPABILITY);
+
+        let wechat = publishing_target_for_skill(&publishing_skill_listing(
+            WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE,
+        ))
+        .expect("WeChat target");
+        assert_eq!(wechat.platform, "wechat_official_account");
+        assert_eq!(wechat.capability, WECHAT_OFFICIAL_ACCOUNT_CAPABILITY);
+    }
+
     #[test]
     fn legacy_state_is_migrated_without_losing_schema_compatibility() {
         let state = normalize_state(json!({ "schemaVersion": 1 }));
@@ -845,6 +978,13 @@ mod tests {
     }
 
     #[test]
+    fn publishing_source_accepts_body_or_media() {
+        assert!(publishing_source_has_content("Body", 0));
+        assert!(publishing_source_has_content("", 1));
+        assert!(!publishing_source_has_content("  ", 0));
+    }
+
+    #[test]
     fn release_validation_requires_the_first_media_item_to_be_primary() {
         let attempt = json!({
             "id": "attempt:1",
@@ -877,5 +1017,35 @@ mod tests {
         };
         assert!(validate_release(&release(true)));
         assert!(!validate_release(&release(false)));
+        let mut wechat_release = release(true);
+        wechat_release["platform"] = json!("wechat_official_account");
+        assert!(validate_release(&wechat_release));
+    }
+
+    #[test]
+    fn release_validation_accepts_text_only_or_image_only_snapshots() {
+        let release = |body_text: &str, media: Value| {
+            json!({
+                "id": "release:1",
+                "platform": "xiaohongshu",
+                "sourcePublicationId": "publication:1",
+                "snapshot": {
+                    "title": "",
+                    "bodyText": body_text,
+                    "media": media
+                },
+                "attempts": []
+            })
+        };
+        let image = json!([{
+            "assetRef": "projects/p/panels/x/assets/cover.png",
+            "fileName": "cover.png",
+            "src": "/cover.png",
+            "isPrimary": true
+        }]);
+
+        assert!(validate_release(&release("Body", json!([]))));
+        assert!(validate_release(&release("", image)));
+        assert!(!validate_release(&release("", json!([]))));
     }
 }

@@ -30,6 +30,7 @@ import { WikiPanel } from "./components/wiki/WikiPanel"
 import { ACTIVE_PROJECT_STORAGE_KEY } from "./constants"
 import { useManualTaskInstructions } from "./hooks/use-manual-task-instructions"
 import { usePanelStateSaves } from "./hooks/use-panel-state-saves"
+import { useSkillManagerLaunch } from "./hooks/use-skill-manager-launch"
 import { useStudioUpdate } from "./hooks/use-studio-update"
 import {
   apiFetch,
@@ -108,7 +109,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
   } = useStudioUpdate(transport, setRuntimeState)
   const [isTraceOpen, setIsTraceOpen] = useState(false)
   const [isModelSettingsOpen, setIsModelSettingsOpen] = useState(false)
-  const [isSkillManagerOpen, setIsSkillManagerOpen] = useState(false)
+  const skillManager = useSkillManagerLaunch()
   const [agentPanelTab, setAgentPanelTab] = useState<AgentPanelTab>("tasks")
   const [agentTaskFilter, setAgentTaskFilter] = useState<TaskFilter>("pending")
   const [focusedAgentTaskIds, setFocusedAgentTaskIds] = useState<
@@ -831,11 +832,14 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       onCreateProject={createProject}
       onDeleteProject={deleteProject}
       onOpenModelSettings={() => setIsModelSettingsOpen(true)}
-      onOpenSkillManager={() => setIsSkillManagerOpen(true)}
+      onOpenSkillManager={() => skillManager.open()}
       onRenameProject={renameProject}
       onSwitchProject={loadProject}
       projects={projects}
     />
+  )
+  const typesettingPanelSnapshot = appState.panels.find(
+    ({ panel }) => panel.kind === "typesetting"
   )
 
   return (
@@ -865,11 +869,13 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           <TypesettingPanel
             chromeContent={projectChrome}
             key={`${appState.project.id}:typesetting`}
+            onOpenAgentTasks={(taskIds) => openAgentTaskList("all", taskIds)}
             onStateSaved={handleTypesettingStateSaved}
             panelId={appState.panel.id}
             projectId={appState.project.id}
             revision={typesettingRevisionFromAppState(appState)}
             state={typesettingStateFromAppState(appState)}
+            tasks={appState.tasks ?? []}
             transport={transport}
             wiki={wikiStateFromAppState(appState)}
           />
@@ -877,21 +883,29 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           <PublishingPanel
             chromeContent={projectChrome}
             key={`${appState.project.id}:publishing`}
+            onAddSkill={() => skillManager.open("add", "publishing")}
             onOpenAgentTasks={(taskIds) => openAgentTaskList("all", taskIds)}
             onOpenManualTask={manualTaskInstructions.open}
             onStateSaved={handlePublishingStateSaved}
+            onTypesettingStateSaved={handleTypesettingStateSaved}
+            projectId={appState.project.id}
+            skillsRevision={skillManager.skillsRevision}
             state={publishingStateFromAppState(appState)}
             tasks={appState.tasks ?? []}
             transport={transport}
             typesetting={typesettingStateFromAppState(appState)}
+            typesettingPanelId={typesettingPanelSnapshot?.panel.id ?? ""}
+            typesettingRevision={typesettingRevisionFromAppState(appState)}
           />
         ) : (
           <WikiPanel
             chromeContent={projectChrome}
             key={`${appState.project.id}:${appState.activePanelKind}`}
+            onManageSkills={() => skillManager.open("installed", "writing")}
             onOpenAgentTasks={openAgentTaskList}
             onReload={reloadCurrentProject}
             selectionVersion={wikiSelectionVersion}
+            skillsRevision={skillManager.skillsRevision}
             state={wikiStateFromAppState(appState)}
             transport={transport}
             writing={
@@ -919,7 +933,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
         <AppOverlays
           buildInfo={appState.buildInfo}
           isModelSettingsOpen={isModelSettingsOpen}
-          isSkillManagerOpen={isSkillManagerOpen}
+          isSkillManagerOpen={skillManager.isOpen}
           isTraceOpen={isTraceOpen}
           onCheckUpdate={checkUpdateFromBadge}
           onDismissUpdateError={dismissUpdateError}
@@ -937,13 +951,23 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           pendingTaskCount={appState.pendingTaskCount ?? 0}
           runtimeState={runtimeState}
           setIsModelSettingsOpen={setIsModelSettingsOpen}
-          setIsSkillManagerOpen={setIsSkillManagerOpen}
+          setIsSkillManagerOpen={skillManager.onOpenChange}
+          skillManagerInitialModuleKind={skillManager.initialModuleKind}
+          skillManagerInitialTab={skillManager.initialTab}
+          skillManagerOpenRequestId={skillManager.openRequestId}
           transport={transport}
           updateAction={updateAction}
           updateError={updateError}
           updateStatus={updateStatus}
         />
         <ManualTaskInstructionPrompt
+          buildInfo={
+            appState.buildInfo ?? {
+              channel: "release",
+              label: "release",
+              version: "unknown",
+            }
+          }
           controller={manualTaskInstructions}
           onConfigureCli={() => setIsModelSettingsOpen(true)}
         />

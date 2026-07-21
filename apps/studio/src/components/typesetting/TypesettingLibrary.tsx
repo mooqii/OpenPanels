@@ -3,7 +3,6 @@ import {
   FileText,
   Image as ImageIcon,
   LoaderCircle,
-  PanelLeft,
   Plus,
   X,
 } from "lucide-react"
@@ -34,26 +33,32 @@ import {
   nextCollapsedLibraryModules,
   type TypesettingLibraryModule,
 } from "./library-accordion"
-import { SaveIndicator } from "./TypesettingToolbar"
 
-type SaveStatus = "saved" | "saving" | "failed"
 type AssetScope = "current" | "all"
 export function TypesettingLibrary({
+  activePublicationId,
   className,
   onClose,
+  onCreatePublication,
   onOpenGenerated,
+  onOpenPublication,
   onOpenRaw,
   onOpenRawOriginal,
   projectId,
+  publications,
   transport,
   wiki,
 }: {
+  activePublicationId: string | null
   className: string
   onClose: () => void
+  onCreatePublication: () => void
   onOpenGenerated: (document: WikiGeneratedDocument) => void
+  onOpenPublication: (publication: TypesettingPublication) => void
   onOpenRaw: (document: WikiRawDocument) => void
   onOpenRawOriginal: (document: WikiRawDocument) => void
   projectId: string
+  publications: TypesettingPublication[]
   transport: MyOpenPanelsTransport
   wiki: WikiState
 }) {
@@ -117,6 +122,23 @@ export function TypesettingLibrary({
         </Button>
       </div>
       <div className="op-typesetting-document-library">
+        <PublicationContentModule
+          activePublicationId={activePublicationId}
+          isCollapsed={collapsedLibraryModules.has("publications")}
+          onCreatePublication={() => {
+            setCollapsedLibraryModules((current) => {
+              const next = new Set(current)
+              next.delete("publications")
+              return next
+            })
+            onCreatePublication()
+          }}
+          onOpenPublication={onOpenPublication}
+          onToggle={() => toggleLibraryModule("publications")}
+          publications={publications}
+          transport={transport}
+        />
+
         <LibraryModule
           isCollapsed={collapsedLibraryModules.has("raw")}
           isEmpty={wiki.rawDocuments.length === 0}
@@ -256,6 +278,7 @@ export function TypesettingLibrary({
 }
 
 function LibraryModule({
+  action,
   children,
   className = "",
   isCollapsed,
@@ -263,6 +286,7 @@ function LibraryModule({
   onToggle,
   title,
 }: {
+  action?: ReactNode
   children: ReactNode
   className?: string
   isCollapsed: boolean
@@ -278,14 +302,12 @@ function LibraryModule({
           : `op-typesetting-library-module ${className}`.trim()
       }
     >
-      <button
-        aria-expanded={!isCollapsed}
-        className="op-typesetting-library-module__header"
-        onClick={onToggle}
-        type="button"
-      >
-        <h3>{title}</h3>
-      </button>
+      <div className="op-typesetting-library-module__header">
+        <button aria-expanded={!isCollapsed} onClick={onToggle} type="button">
+          <h3 className="op-typesetting-library-module__title">{title}</h3>
+        </button>
+        {action}
+      </div>
       <div
         className={
           isEmpty
@@ -303,23 +325,72 @@ function LibraryEmpty({ children }: { children: ReactNode }) {
   return <div className="op-typesetting-library-empty">{children}</div>
 }
 
-export function PublicationList({
-  onCreate,
-  onOpen,
-  onOpenLibrary,
-  onRetrySave,
+export function PublicationContentModule({
+  activePublicationId,
+  className = "",
+  isCollapsed,
+  onCreatePublication,
+  onOpenPublication,
+  onToggle,
   publications,
-  saveError,
-  saveStatus,
+  renderPublicationMeta,
+  renderPublicationStatus,
   transport,
 }: {
-  onCreate: () => void
-  onOpen: (publication: TypesettingPublication) => void
-  onOpenLibrary: () => void
-  onRetrySave: () => void
+  activePublicationId: string | null
+  className?: string
+  isCollapsed: boolean
+  onCreatePublication?: () => void
+  onOpenPublication: (publication: TypesettingPublication) => void
+  onToggle: () => void
   publications: TypesettingPublication[]
-  saveError: string | null
-  saveStatus: SaveStatus
+  renderPublicationMeta?: (publication: TypesettingPublication) => ReactNode
+  renderPublicationStatus?: (publication: TypesettingPublication) => ReactNode
+  transport: MyOpenPanelsTransport
+}) {
+  const { t } = useMyOpenPanelsI18n()
+
+  return (
+    <LibraryModule
+      action={
+        onCreatePublication ? (
+          <Button onPress={onCreatePublication} size="sm" variant="primary">
+            <Plus size={14} />
+            {t`New`}
+          </Button>
+        ) : undefined
+      }
+      className={className}
+      isCollapsed={isCollapsed}
+      isEmpty={publications.length === 0}
+      onToggle={onToggle}
+      title={t`Publication content`}
+    >
+      <PublicationList
+        activePublicationId={activePublicationId}
+        onOpen={onOpenPublication}
+        publications={publications}
+        renderMeta={renderPublicationMeta}
+        renderStatus={renderPublicationStatus}
+        transport={transport}
+      />
+    </LibraryModule>
+  )
+}
+
+export function PublicationList({
+  activePublicationId,
+  onOpen,
+  publications,
+  renderMeta,
+  renderStatus,
+  transport,
+}: {
+  activePublicationId: string | null
+  onOpen: (publication: TypesettingPublication) => void
+  publications: TypesettingPublication[]
+  renderMeta?: (publication: TypesettingPublication) => ReactNode
+  renderStatus?: (publication: TypesettingPublication) => ReactNode
   transport: MyOpenPanelsTransport
 }) {
   const { locale, t } = useMyOpenPanelsI18n()
@@ -331,82 +402,63 @@ export function PublicationList({
   }, [])
 
   return (
-    <div className="op-typesetting-list-view">
-      <div className="op-typesetting-view-header">
-        <Button
-          aria-label={t`Open library`}
-          className="op-typesetting-mobile-library-button"
-          isIconOnly
-          onPress={onOpenLibrary}
-          size="sm"
-          variant="ghost"
-        >
-          <PanelLeft size={17} />
-        </Button>
-        <div>
-          <h1>{t`Publication content`}</h1>
-          <p>{t`Manage titles, covers, and details for the current publication content.`}</p>
-        </div>
-        <SaveIndicator
-          error={saveError}
-          onRetry={onRetrySave}
-          status={saveStatus}
-        />
-        <Button onPress={onCreate} size="sm" variant="primary">
-          <Plus size={15} />
-          {t`New`}
-        </Button>
-      </div>
-
+    <>
       {publications.length ? (
         <div className="op-typesetting-publication-list">
           {publications.map((publication) => (
-            <div
+            <button
               className="op-typesetting-publication-row"
+              data-selected={
+                publication.id === activePublicationId || undefined
+              }
               key={publication.id}
+              onClick={() => onOpen(publication)}
+              type="button"
             >
-              <button
-                className="op-typesetting-publication-row__body"
-                onClick={() => onOpen(publication)}
-                type="button"
-              >
-                <span className="op-typesetting-publication-row__cover">
-                  {publication.covers[0] ? (
-                    <img
-                      alt=""
-                      src={apiUrl(
-                        transport.apiBase,
-                        publication.covers[0].src
-                      ).toString()}
-                    />
-                  ) : (
-                    <ImageIcon size={18} />
-                  )}
-                </span>
-                <span className="op-typesetting-publication-row__text">
+              <span className="op-typesetting-publication-row__cover">
+                {publication.covers[0] ? (
+                  <img
+                    alt=""
+                    src={apiUrl(
+                      transport.apiBase,
+                      publication.covers[0].src
+                    ).toString()}
+                  />
+                ) : (
+                  <ImageIcon size={16} />
+                )}
+              </span>
+              <span className="op-typesetting-publication-row__text">
+                <span className="op-typesetting-publication-row__title">
                   <strong>
                     {publication.title.trim() || t`Untitled publication`}
                   </strong>
-                  <small className="op-typesetting-publication-row__meta">
-                    <span>
-                      {publication.covers.length.toLocaleString(locale)}{" "}
-                      {publication.covers.length === 1
-                        ? t`cover image`
-                        : t`cover images`}
+                  {renderStatus ? (
+                    <span className="op-typesetting-publication-row__statuses">
+                      {renderStatus(publication)}
                     </span>
-                    <span>
-                      {countTypesettingCharacters(
-                        publication.content
-                      ).toLocaleString(locale)}{" "}
-                      {t`characters`}
-                    </span>
-                    <span>
-                      {formatRelativeOrDate(publication.updatedAt, locale, now)}
-                    </span>
-                  </small>
+                  ) : null}
                 </span>
-              </button>
-            </div>
+                <small className="op-typesetting-publication-row__meta">
+                  <span>
+                    {publication.covers.length.toLocaleString(locale)}{" "}
+                    {publication.covers.length === 1
+                      ? t`cover image`
+                      : t`cover images`}
+                  </span>
+                  <span>
+                    {countTypesettingCharacters(
+                      publication.content
+                    ).toLocaleString(locale)}{" "}
+                    {t`characters`}
+                  </span>
+                  <span>
+                    {formatRelativeOrDate(publication.updatedAt, locale, now)}
+                  </span>
+                  {renderMeta?.(publication)}
+                </small>
+              </span>
+            </button>
           ))}
         </div>
       ) : (
@@ -414,6 +466,6 @@ export function PublicationList({
           {t`No publication projects yet`}
         </div>
       )}
-    </div>
+    </>
   )
 }

@@ -1,14 +1,26 @@
-import { Button, Input, Label } from "@heroui/react"
+import {
+  Button,
+  Chip,
+  Input,
+  Label,
+  ListBox,
+  Modal,
+  Select,
+  Spinner,
+  TextArea,
+} from "@heroui/react"
 import { Markdown } from "@tiptap/markdown"
 import { EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
 import {
   AlertCircle,
-  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   GripVertical,
+  ImagePlus,
+  LoaderCircle,
   PanelLeft,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react"
@@ -21,18 +33,24 @@ import {
   useState,
 } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
-import { apiUrl } from "../../lib/api"
+import { apiJson, apiUrl } from "../../lib/api"
+import { randomId } from "../../lib/id"
 import {
   isTypesettingDocumentEmpty,
   moveTypesettingCover,
   parseTypesettingAssetDrag,
   plainTextToTypesettingContent,
   TYPESETTING_ASSET_DRAG_TYPE,
+  type TypesettingCoverTaskDisplayStatus,
+  typesettingCoverRequestPayload,
+  typesettingCoverTaskStatus,
   typesettingInsertPosition,
   typesettingTitleAfterDocumentInsert,
 } from "../../lib/typesetting"
 import type {
+  AgentSkillListing,
   MyOpenPanelsTransport,
+  ProjectTask,
   TypesettingCanvasAsset,
   TypesettingPublication,
   TypesettingPublicationImage,
@@ -40,7 +58,6 @@ import type {
 import {
   createTypesettingImageExtension,
   formatPublicationTime,
-  SaveIndicator,
   TypesettingToolbar,
 } from "./TypesettingToolbar"
 
@@ -48,22 +65,25 @@ type SaveStatus = "saved" | "saving" | "failed"
 const TYPESETTING_COVER_DRAG_TYPE = "application/x-myopenpanels-cover-index"
 export function PublicationDetail({
   importAsset,
-  onBack,
   onDelete,
+  onFlushSave,
   onInsertHandlerChange,
+  onOpenAgentTasks,
   onOpenLibrary,
+  onPreview,
   onRetrySave,
   onUpdate,
   publication,
   saveError,
   saveStatus,
+  tasks,
   transport,
 }: {
   importAsset: (
     asset: TypesettingCanvasAsset
   ) => Promise<TypesettingPublicationImage>
-  onBack: () => void
   onDelete: () => void
+  onFlushSave: () => Promise<void>
   onInsertHandlerChange: (
     handler: (
       title: string,
@@ -71,7 +91,9 @@ export function PublicationDetail({
       format: "markdown" | "text"
     ) => void
   ) => void
-  onOpenLibrary: () => void
+  onOpenAgentTasks: (taskIds: string[]) => void
+  onOpenLibrary?: () => void
+  onPreview: () => void
   onRetrySave: () => void
   onUpdate: (
     updater: (publication: TypesettingPublication) => TypesettingPublication
@@ -79,18 +101,137 @@ export function PublicationDetail({
   publication: TypesettingPublication
   saveError: string | null
   saveStatus: SaveStatus
+  tasks: ProjectTask[]
   transport: MyOpenPanelsTransport
 }) {
-  const { t } = useMyOpenPanelsI18n()
+  const { locale, t } = useMyOpenPanelsI18n()
   const [assetError, setAssetError] = useState<string | null>(null)
   const [coverDropActive, setCoverDropActive] = useState(false)
   const [draggedCoverIndex, setDraggedCoverIndex] = useState<number | null>(
     null
   )
+  const [lastSavedAt, setLastSavedAt] = useState(publication.updatedAt)
+  const [isCoverDialogOpen, setIsCoverDialogOpen] = useState(false)
+  const [coverSkills, setCoverSkills] = useState<AgentSkillListing[]>([])
+  const [selectedCoverSkillId, setSelectedCoverSkillId] = useState("")
+  const [coverInstruction, setCoverInstruction] = useState("")
+  const [coverDialogError, setCoverDialogError] = useState<string | null>(null)
+  const [isCoverSkillsLoading, setIsCoverSkillsLoading] = useState(false)
+  const [isCoverSubmitting, setIsCoverSubmitting] = useState(false)
+  const [createdCoverTasks, setCreatedCoverTasks] = useState<ProjectTask[]>([])
   const editorRef = useRef<ReturnType<typeof useEditor>>(null)
   const lastInsertPositionRef = useRef<number | null>(null)
   const publicationRef = useRef(publication)
   publicationRef.current = publication
+
+  useEffect(() => {
+    if (saveStatus === "saved") setLastSavedAt(publication.updatedAt)
+  }, [publication.updatedAt, saveStatus])
+
+  const coverTasks = useMemo(() => {
+    const byId = new Map(tasks.map((task) => [task.id, task]))
+    for (const task of createdCoverTasks) {
+      if (!byId.has(task.id)) byId.set(task.id, task)
+    }
+    return [...byId.values()]
+      .filter(
+        (task) =>
+          task.queue === "typesetting" &&
+          task.type === "generate_typesetting_cover" &&
+          task.targetId === publication.id
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+  }, [createdCoverTasks, publication.id, tasks])
+  const generatedTaskIds = useMemo(
+    () =>
+      new Set(
+        publication.covers.flatMap((cover) =>
+          cover.source.kind === "generated" ? [cover.source.taskId] : []
+        )
+      ),
+    [publication.covers]
+  )
+  const createdCoverTaskIds = useMemo(
+    () => new Set(createdCoverTasks.map((task) => task.id)),
+    [createdCoverTasks]
+  )
+  const visibleCoverTasks = coverTasks.filter(
+    (task) =>
+      !generatedTaskIds.has(task.id) &&
+      (task.status !== "succeeded" || createdCoverTaskIds.has(task.id))
+  )
+
+  const openCoverDialog = useCallback(async () => {
+    setIsCoverDialogOpen(true)
+    setCoverDialogError(null)
+    setIsCoverSkillsLoading(true)
+    try {
+      const response = await apiJson<{ skills?: AgentSkillListing[] }>(
+        transport.apiBase,
+        "/api/typesetting/cover-skills"
+      )
+      const skills = response.skills ?? []
+      setCoverSkills(skills)
+      setSelectedCoverSkillId((current) =>
+        skills.some((item) => item.skill.id === current)
+          ? current
+          : (skills.find(
+              (item) => item.skill.id === "typesetting-cover-default"
+            )?.skill.id ??
+            skills[0]?.skill.id ??
+            "")
+      )
+    } catch (error) {
+      setCoverDialogError(
+        String(error instanceof Error ? error.message : error)
+      )
+    } finally {
+      setIsCoverSkillsLoading(false)
+    }
+  }, [transport.apiBase])
+
+  const submitCoverTask = useCallback(async () => {
+    if (!selectedCoverSkillId) return
+    setIsCoverSubmitting(true)
+    setCoverDialogError(null)
+    try {
+      await onFlushSave()
+      const response = await apiJson<{ task: ProjectTask }>(
+        transport.apiBase,
+        "/api/typesetting/cover-requests",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(
+            typesettingCoverRequestPayload({
+              instruction: coverInstruction,
+              publicationId: publication.id,
+              requestId: randomId("cover-request"),
+              skillId: selectedCoverSkillId,
+            })
+          ),
+        }
+      )
+      setCreatedCoverTasks((current) => [
+        response.task,
+        ...current.filter((task) => task.id !== response.task.id),
+      ])
+      setCoverInstruction("")
+      setIsCoverDialogOpen(false)
+    } catch (error) {
+      setCoverDialogError(
+        String(error instanceof Error ? error.message : error)
+      )
+    } finally {
+      setIsCoverSubmitting(false)
+    }
+  }, [
+    coverInstruction,
+    onFlushSave,
+    publication.id,
+    selectedCoverSkillId,
+    transport.apiBase,
+  ])
 
   const imageExtension = useMemo(
     () => createTypesettingImageExtension(transport.apiBase),
@@ -236,34 +377,55 @@ export function PublicationDetail({
   return (
     <div className="op-typesetting-detail-view">
       <div className="op-typesetting-view-header op-typesetting-detail-header">
-        <Button
-          aria-label={t`Back to publication projects`}
-          isIconOnly
-          onPress={onBack}
-          size="sm"
-          variant="ghost"
-        >
-          <ArrowLeft size={17} />
-        </Button>
-        <Button
-          aria-label={t`Open library`}
-          className="op-typesetting-mobile-library-button"
-          isIconOnly
-          onPress={onOpenLibrary}
-          size="sm"
-          variant="ghost"
-        >
-          <PanelLeft size={17} />
-        </Button>
-        <div className="op-typesetting-detail-header__title">
-          <strong>{publication.title.trim() || t`Untitled publication`}</strong>
-          <small>{formatPublicationTime(publication.updatedAt)}</small>
+        {onOpenLibrary ? (
+          <Button
+            aria-label={t`Open library`}
+            className="op-typesetting-mobile-library-button"
+            isIconOnly
+            onPress={onOpenLibrary}
+            size="sm"
+            variant="ghost"
+          >
+            <PanelLeft size={17} />
+          </Button>
+        ) : null}
+        <div className="op-typesetting-detail-header__save-meta">
+          <span>
+            {t`Last edited`}{" "}
+            <time dateTime={lastSavedAt}>
+              {formatPublicationTime(lastSavedAt, locale)}
+            </time>
+          </span>
+          {saveStatus === "failed" ? (
+            <button
+              className="is-failed op-typesetting-detail-header__save-state"
+              onClick={onRetrySave}
+              title={saveError ?? t`Retry save`}
+              type="button"
+            >
+              <AlertCircle size={12} />
+              {t`Save failed`}
+            </button>
+          ) : (
+            <span
+              className="op-typesetting-detail-header__save-state"
+              data-status={saveStatus}
+            >
+              {saveStatus === "saving" ? (
+                <LoaderCircle className="op-spin" size={12} />
+              ) : null}
+              {saveStatus === "saving" ? t`Saving` : t`Auto-saved`}
+            </span>
+          )}
         </div>
-        <SaveIndicator
-          error={saveError}
-          onRetry={onRetrySave}
-          status={saveStatus}
-        />
+        <Button
+          aria-label={t`Preview`}
+          onPress={onPreview}
+          size="sm"
+          variant="primary"
+        >
+          {t`Preview`}
+        </Button>
         <Button
           aria-label={t`Delete publication project`}
           isIconOnly
@@ -300,6 +462,10 @@ export function PublicationDetail({
               <span>{t`Covers`}</span>
               <small>{t`The first image is used in the project list.`}</small>
             </div>
+            <Button onPress={openCoverDialog} size="sm" variant="secondary">
+              <Sparkles size={14} />
+              {t`Create cover`}
+            </Button>
           </div>
           <div
             className={
@@ -322,7 +488,7 @@ export function PublicationDetail({
               dropCover(event).catch(() => undefined)
             }}
           >
-            {publication.covers.length ? (
+            {publication.covers.length || visibleCoverTasks.length ? (
               <div className="op-typesetting-covers">
                 {publication.covers.map((cover, index) => (
                   <div
@@ -441,6 +607,14 @@ export function PublicationDetail({
                     </div>
                   </div>
                 ))}
+                {visibleCoverTasks.map((task) => (
+                  <CoverTaskPlaceholder
+                    key={task.id}
+                    onOpen={() => onOpenAgentTasks([task.id])}
+                    status={typesettingCoverTaskStatus(task)}
+                    t={t}
+                  />
+                ))}
               </div>
             ) : (
               <div className="op-typesetting-drop-empty">
@@ -454,7 +628,6 @@ export function PublicationDetail({
           <div className="op-typesetting-section__heading">
             <div>
               <span>{t`Content details`}</span>
-              <small>{t`Rich text content is saved automatically.`}</small>
             </div>
           </div>
           <div className="op-typesetting-editor">
@@ -485,6 +658,163 @@ export function PublicationDetail({
           </div>
         ) : null}
       </div>
+
+      {isCoverDialogOpen ? (
+        <Modal.Backdrop
+          isOpen
+          onOpenChange={(open) => {
+            if (!(open || isCoverSubmitting)) setIsCoverDialogOpen(false)
+          }}
+        >
+          <Modal.Container placement="center" size="sm">
+            <Modal.Dialog className="op-typesetting-cover-dialog">
+              <Modal.CloseTrigger aria-label={t`Close`} />
+              <Modal.Header>
+                <Modal.Icon>
+                  <ImagePlus size={19} />
+                </Modal.Icon>
+                <Modal.Heading>{t`Create cover`}</Modal.Heading>
+              </Modal.Header>
+              <Modal.Body>
+                <div className="op-typesetting-cover-dialog__field">
+                  <Label>{t`Cover Skill`}</Label>
+                  {isCoverSkillsLoading ? (
+                    <div className="op-typesetting-cover-dialog__loading">
+                      <Spinner size="sm" />
+                      <span>{t`Loading Cover Skills`}</span>
+                    </div>
+                  ) : coverSkills.length ? (
+                    <Select
+                      aria-label={t`Cover Skill`}
+                      onSelectionChange={(key) =>
+                        setSelectedCoverSkillId(String(key))
+                      }
+                      selectedKey={selectedCoverSkillId}
+                    >
+                      <Select.Trigger>
+                        <Select.Value />
+                        <Select.Indicator />
+                      </Select.Trigger>
+                      <Select.Popover>
+                        <ListBox>
+                          {coverSkills.map((item) => (
+                            <ListBox.Item
+                              id={item.skill.id}
+                              key={item.skill.id}
+                              textValue={item.skill.name}
+                            >
+                              <div className="op-typesetting-cover-dialog__skill">
+                                <strong>{item.skill.name}</strong>
+                                <span>{item.skill.description}</span>
+                              </div>
+                            </ListBox.Item>
+                          ))}
+                        </ListBox>
+                      </Select.Popover>
+                    </Select>
+                  ) : (
+                    <span className="op-typesetting-cover-dialog__empty">
+                      {t`No Cover Skills available`}
+                    </span>
+                  )}
+                </div>
+                <div className="op-typesetting-cover-dialog__field">
+                  <Label>{t`Additional requirements`}</Label>
+                  <TextArea
+                    aria-label={t`Additional requirements`}
+                    fullWidth
+                    maxLength={4000}
+                    onChange={(event) =>
+                      setCoverInstruction(event.currentTarget.value)
+                    }
+                    placeholder={t`Describe the style, subject, or composition you want`}
+                    value={coverInstruction}
+                  />
+                </div>
+                {coverDialogError ? (
+                  <div className="op-typesetting-inline-error" role="alert">
+                    <AlertCircle size={15} />
+                    <span>{coverDialogError}</span>
+                  </div>
+                ) : null}
+              </Modal.Body>
+              <Modal.Footer>
+                <Button
+                  isDisabled={isCoverSubmitting}
+                  onPress={() => setIsCoverDialogOpen(false)}
+                  variant="secondary"
+                >
+                  {t`Cancel`}
+                </Button>
+                <Button
+                  isDisabled={
+                    isCoverSkillsLoading ||
+                    isCoverSubmitting ||
+                    !selectedCoverSkillId ||
+                    (!publication.title.trim() &&
+                      isTypesettingDocumentEmpty(publication.content))
+                  }
+                  onPress={submitCoverTask}
+                  variant="primary"
+                >
+                  {isCoverSubmitting ? (
+                    <Spinner size="sm" />
+                  ) : (
+                    <Sparkles size={15} />
+                  )}
+                  {isCoverSubmitting ? t`Submitting` : t`Start creating`}
+                </Button>
+              </Modal.Footer>
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
+      ) : null}
     </div>
+  )
+}
+
+function CoverTaskPlaceholder({
+  onOpen,
+  status,
+  t,
+}: {
+  onOpen: () => void
+  status: TypesettingCoverTaskDisplayStatus
+  t: (value: TemplateStringsArray) => string
+}) {
+  const active =
+    status === "waiting" || status === "running" || status === "saving"
+  const label =
+    status === "waiting"
+      ? t`Waiting to create`
+      : status === "running"
+        ? t`Creating cover`
+        : status === "saving"
+          ? t`Saving cover`
+          : status === "failed"
+            ? t`Cover creation failed`
+            : t`Cover creation cancelled`
+  return (
+    <button
+      className={`is-${status} op-typesetting-cover-task`}
+      onClick={onOpen}
+      type="button"
+    >
+      <span className="op-typesetting-cover-task__icon">
+        {active ? (
+          <LoaderCircle className="op-spin" size={18} />
+        ) : (
+          <AlertCircle size={18} />
+        )}
+      </span>
+      <strong>{label}</strong>
+      <Chip
+        color={status === "failed" ? "danger" : "default"}
+        size="sm"
+        variant="soft"
+      >
+        {t`Open task`}
+      </Chip>
+    </button>
   )
 }

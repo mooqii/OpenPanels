@@ -134,8 +134,8 @@ assert(
 
 const builtinRegistry = readJson("agent-resources/builtin-skill-registry.json")
 assert(
-  builtinRegistry.schemaVersion === 3,
-  "Built-in Skill registry must use schemaVersion 3."
+  builtinRegistry.schemaVersion === 4,
+  "Built-in Skill registry must use schemaVersion 4."
 )
 const forbiddenPortableSkillText = [
   "myopenpanels",
@@ -250,9 +250,27 @@ for (const [group, registrations] of [
           `Agent Procedure command intents are missing: ${procedure.key}`
         )
         assert(
-          existsSync(new URL(`${packagePath}/${procedure.reference}`, ROOT)),
-          `Agent Procedure reference is missing: ${procedure.key}`
+          Array.isArray(procedure.references) &&
+            procedure.references.length > 0,
+          `Agent Procedure references are missing: ${procedure.key}`
         )
+        assert(
+          new Set(procedure.references).size === procedure.references.length,
+          `Agent Procedure references are duplicated: ${procedure.key}`
+        )
+        for (const reference of procedure.references) {
+          assert(
+            typeof reference === "string" &&
+              reference.length > 0 &&
+              !reference.startsWith("/") &&
+              !reference.split("/").includes(".."),
+            `Agent Procedure reference is invalid: ${procedure.key}`
+          )
+          assert(
+            existsSync(new URL(`${packagePath}/${reference}`, ROOT)),
+            `Agent Procedure reference is missing: ${procedure.key}`
+          )
+        }
         assert(
           entrySkill.includes(`\`${procedure.key}\``),
           `Entry Skill is missing Agent Procedure route: ${procedure.key}`

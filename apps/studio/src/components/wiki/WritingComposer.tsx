@@ -1,7 +1,6 @@
 import {
   Alert,
   Button,
-  Checkbox,
   Dropdown,
   Input,
   Label,
@@ -12,6 +11,7 @@ import {
   TextArea,
 } from "@heroui/react"
 import {
+  BookOpen,
   Eye,
   FileOutput,
   FileText,
@@ -28,7 +28,9 @@ import { apiJson } from "../../lib/api"
 import {
   activeWritingSkillIds,
   refinementTaskGroups,
+  selectSingleSkill,
   toggleWritingSkillSelection,
+  writingReferenceSelectionError,
   writingSkillSelectionError,
 } from "../../lib/writing"
 import type {
@@ -52,9 +54,11 @@ export function WritingComposer({
   isSelectionBusy,
   onOpenAgentTasks,
   onOpenLibrary,
+  onManageSkills,
   onReload,
   rawDocuments,
   selection,
+  skillsRevision,
   state,
   tasks,
   transport,
@@ -66,15 +70,22 @@ export function WritingComposer({
     taskIds?: string[]
   ) => void
   onOpenLibrary: () => void
+  onManageSkills: () => void
   onReload: () => Promise<void>
   rawDocuments: WikiRawDocument[]
   selection: WikiAgentSelection
+  skillsRevision: number
   state: WritingState
   tasks: ProjectTask[]
   transport: MyOpenPanelsTransport
 }) {
   const { t } = useMyOpenPanelsI18n()
-  const [draft, setDraft] = useState(state.draft)
+  const [createDraft, setCreateDraft] = useState(
+    state.createDraft ?? (state.mode === "revise" ? "" : state.draft)
+  )
+  const [revisionDraft, setRevisionDraft] = useState(
+    state.revisionDraft ?? (state.mode === "revise" ? state.draft : "")
+  )
   const [mode, setMode] = useState<WritingState["mode"]>(state.mode)
   const [refinementName, setRefinementName] = useState(state.refinementName)
   const [targetId, setTargetId] = useState<string | null>(
@@ -92,6 +103,7 @@ export function WritingComposer({
     selectedCreateWritingSkillIds,
     selectedRevisionWritingSkillId
   )
+  const draft = mode === "revise" ? revisionDraft : createDraft
   const [writingSkills, setWritingSkills] = useState<AgentSkillListing[]>([])
   const [refinementSkills, setRefinementSkills] = useState<AgentSkillListing[]>(
     []
@@ -131,7 +143,7 @@ export function WritingComposer({
       skills?: AgentSkillListing[]
     }>(
       transport.apiBase,
-      `/api/writing/skills?taskVersion=${encodeURIComponent(refinementTaskVersion)}`
+      `/api/writing/skills?taskVersion=${encodeURIComponent(refinementTaskVersion)}&skillsRevision=${skillsRevision}`
     )
       .then((data) => {
         if (!isCancelled) {
@@ -147,7 +159,7 @@ export function WritingComposer({
     return () => {
       isCancelled = true
     }
-  }, [refinementTaskVersion, transport.apiBase])
+  }, [refinementTaskVersion, skillsRevision, transport.apiBase])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -156,8 +168,10 @@ export function WritingComposer({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           draft,
+          createDraft,
           mode,
           refinementName,
+          revisionDraft,
           selectedCreateWritingSkillIds,
           selectedRefinementSkillId,
           selectedRevisionWritingSkillId,
@@ -170,8 +184,10 @@ export function WritingComposer({
     return () => window.clearTimeout(timer)
   }, [
     draft,
+    createDraft,
     mode,
     refinementName,
+    revisionDraft,
     selectedCreateWritingSkillIds,
     selectedRefinementSkillId,
     selectedRevisionWritingSkillId,
@@ -199,12 +215,24 @@ export function WritingComposer({
     ).length
   const selectedSourceCount =
     selectedRawDocuments.length + selectedGeneratedDocuments.length
+  const selectedReferenceCount =
+    selectedSourceCount + Number(selection.isWikiSelected)
+  const referenceSelectionError = writingReferenceSelectionError(
+    mode,
+    selectedReferenceCount,
+    unreadySourceCount
+  )
+  const hasValidReferenceSelection = referenceSelectionError === null
+  const hasValidRefinementSkillSelection = refinementSkills.some(
+    (item) => item.skill.id === selectedRefinementSkillId
+  )
 
   const submit = useCallback(async () => {
     if (
       !(
         draft.trim() &&
         hasValidSkillSelection &&
+        hasValidReferenceSelection &&
         (mode !== "revise" || targetId)
       )
     ) {
@@ -223,7 +251,8 @@ export function WritingComposer({
           writingSkillIds: selectedWritingSkillIds,
         }),
       })
-      setDraft("")
+      if (mode === "revise") setRevisionDraft("")
+      else setCreateDraft("")
       setTargetId(null)
       await onReload()
     } catch (submitError) {
@@ -237,6 +266,7 @@ export function WritingComposer({
     }
   }, [
     draft,
+    hasValidReferenceSelection,
     hasValidSkillSelection,
     mode,
     onReload,
@@ -251,7 +281,8 @@ export function WritingComposer({
       !refinementName.trim() ||
       refinementName.trim().length > 80 ||
       selectedSourceCount === 0 ||
-      unreadySourceCount > 0
+      unreadySourceCount > 0 ||
+      !hasValidRefinementSkillSelection
     ) {
       return
     }
@@ -279,6 +310,7 @@ export function WritingComposer({
     }
   }, [
     onReload,
+    hasValidRefinementSkillSelection,
     refinementName,
     selectedRefinementSkillId,
     selectedSourceCount,
@@ -290,7 +322,9 @@ export function WritingComposer({
   const toggleWritingSkill = useCallback(
     (skillId: string, isSelected: boolean) => {
       if (mode === "revise") {
-        setSelectedRevisionWritingSkillId(isSelected ? skillId : null)
+        setSelectedRevisionWritingSkillId((current) =>
+          selectSingleSkill(current, skillId, isSelected)
+        )
         return
       }
       setSelectedCreateWritingSkillIds((current) =>
@@ -350,6 +384,15 @@ export function WritingComposer({
       setWritingSkills((current) =>
         current.filter((item) => item.skill.id !== deletedId)
       )
+      setRefinementSkills((current) =>
+        current.filter((item) => item.skill.id !== deletedId)
+      )
+      if (selectedRefinementSkillId === deletedId) {
+        setSelectedRefinementSkillId(
+          refinementSkills.find((item) => item.skill.id !== deletedId)?.skill
+            .id ?? ""
+        )
+      }
       setSelectedCreateWritingSkillIds((current) =>
         current.filter((id) => id !== deletedId)
       )
@@ -360,7 +403,167 @@ export function WritingComposer({
     } finally {
       setIsDeletingSkill(false)
     }
-  }, [pendingDeleteSkill, transport.apiBase])
+  }, [
+    pendingDeleteSkill,
+    refinementSkills,
+    selectedRefinementSkillId,
+    transport.apiBase,
+  ])
+
+  const renderSelectedSources = (
+    includeWiki: boolean,
+    title: string,
+    emptyMessage?: string
+  ) => {
+    const count =
+      selectedSourceCount + Number(includeWiki && selection.isWikiSelected)
+    return (
+      <div className="op-writing-refinement__sources">
+        <strong className="op-writing-section-title">
+          {title}: {count}
+        </strong>
+        {count === 0 && emptyMessage ? (
+          <Alert className="op-writing-refinement__warning" status="warning">
+            <Alert.Indicator />
+            <Alert.Content>
+              <Alert.Title className="op-writing-refinement__warning-text">
+                {emptyMessage}
+              </Alert.Title>
+            </Alert.Content>
+          </Alert>
+        ) : count === 0 ? (
+          <div className="op-wiki-empty-inline">
+            {t`No reference documents selected`}
+          </div>
+        ) : (
+          <>
+            <ul className="op-writing-refinement__source-list">
+              {includeWiki && selection.isWikiSelected ? (
+                <li>
+                  <BookOpen aria-hidden size={14} />
+                  <span title={t`Structured Wiki`}>{t`Structured Wiki`}</span>
+                  <small>{t`Wiki`}</small>
+                </li>
+              ) : null}
+              {selectedRawDocuments.map((document) => (
+                <li key={document.id}>
+                  <FileText aria-hidden size={14} />
+                  <span title={document.title}>{document.title}</span>
+                  <small>{t`Raw Documents`}</small>
+                </li>
+              ))}
+              {selectedGeneratedDocuments.map((document) => (
+                <li key={document.id}>
+                  <FileOutput aria-hidden size={14} />
+                  <span title={document.title}>{document.title}</span>
+                  <small>{t`Generated Documents`}</small>
+                </li>
+              ))}
+            </ul>
+            {unreadySourceCount > 0 ? (
+              <Alert
+                className="op-writing-refinement__warning"
+                status="warning"
+              >
+                <Alert.Indicator />
+                <Alert.Content>
+                  <Alert.Title className="op-writing-refinement__warning-text">
+                    {t`Some selected documents are not ready. Wait for processing or deselect them.`}
+                  </Alert.Title>
+                </Alert.Content>
+              </Alert>
+            ) : null}
+          </>
+        )}
+      </div>
+    )
+  }
+
+  const renderSkillList = (
+    items: AgentSkillListing[],
+    selectedIds: string[],
+    onToggle: (skillId: string, isSelected: boolean) => void,
+    inputIdPrefix: string,
+    emptyLabel: string
+  ) => (
+    <div className="op-writing-skills__list">
+      {items.map((item) => (
+        <div className="op-writing-skill" key={item.skill.id}>
+          <Button
+            aria-label={`${t`Select Writing Skill`}: ${item.skill.name}`}
+            aria-pressed={selectedIds.includes(item.skill.id)}
+            className="op-writing-skill__selector"
+            id={`${inputIdPrefix}-${item.skill.id}`}
+            isIconOnly
+            onPress={() =>
+              onToggle(item.skill.id, !selectedIds.includes(item.skill.id))
+            }
+            variant="ghost"
+          >
+            <span aria-hidden />
+          </Button>
+          <div className="op-writing-skill__body">
+            <span className="op-writing-skill__title">
+              <strong title={item.skill.name}>{item.skill.name}</strong>
+            </span>
+            <span className="op-writing-skill__description">
+              {item.skill.description}
+            </span>
+          </div>
+          <Dropdown>
+            <Button
+              aria-label={`${t`Writing Skill actions`}: ${item.skill.name}`}
+              className="op-writing-skill__menu"
+              isIconOnly
+              size="sm"
+              variant="ghost"
+            >
+              <MoreHorizontal size={16} />
+            </Button>
+            <Dropdown.Popover>
+              <Dropdown.Menu
+                onAction={(key) => {
+                  if (key === "view" || key === "edit") {
+                    openSkillFiles(item).catch((openError) => {
+                      console.error("Failed to open Writing Skill", openError)
+                    })
+                  } else if (key === "delete") {
+                    setPendingDeleteSkill(item)
+                  }
+                }}
+              >
+                {item.source === "builtin" ? (
+                  <Dropdown.Item id="view" textValue={t`View`}>
+                    <Eye size={14} />
+                    <Label>{t`View`}</Label>
+                  </Dropdown.Item>
+                ) : (
+                  <>
+                    <Dropdown.Item id="edit" textValue={t`Edit`}>
+                      <Pencil size={14} />
+                      <Label>{t`Edit`}</Label>
+                    </Dropdown.Item>
+                    <Separator />
+                    <Dropdown.Item
+                      id="delete"
+                      textValue={t`Delete`}
+                      variant="danger"
+                    >
+                      <Trash2 size={14} />
+                      <Label>{t`Delete`}</Label>
+                    </Dropdown.Item>
+                  </>
+                )}
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
+        </div>
+      ))}
+      {items.length === 0 ? (
+        <div className="op-wiki-empty-inline">{emptyLabel}</div>
+      ) : null}
+    </div>
+  )
 
   return (
     <section className="op-wiki-column op-writing-composer">
@@ -445,6 +648,46 @@ export function WritingComposer({
                 </p>
               </div>
             </div>
+            {renderSelectedSources(
+              false,
+              t`Selected articles`,
+              t`Select at least one raw or generated document`
+            )}
+            <div className="op-writing-skills">
+              <div className="op-writing-skills__header">
+                <strong className="op-writing-section-title">
+                  {t`Refinement Skill`}
+                </strong>
+                <div className="op-writing-skills__header-actions">
+                  <span>{t`Select one`}</span>
+                  <Button
+                    className="op-writing-skills__manage"
+                    onPress={onManageSkills}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {t`Manage Skill`}
+                  </Button>
+                </div>
+              </div>
+              {renderSkillList(
+                refinementSkills,
+                [selectedRefinementSkillId],
+                (skillId, isSelected) => {
+                  setSelectedRefinementSkillId(
+                    (current) =>
+                      selectSingleSkill(current, skillId, isSelected) ?? ""
+                  )
+                },
+                "refinement-skill",
+                t`No Refinement Skills available`
+              )}
+              {hasValidRefinementSkillSelection ? null : (
+                <div className="op-writing-error">
+                  {t`Select a Refinement Skill`}
+                </div>
+              )}
+            </div>
             <div className="op-writing-target">
               <Label className="op-writing-section-title">
                 {t`Writing Skill name`}
@@ -457,91 +700,6 @@ export function WritingComposer({
                 placeholder={t`Name this reusable writing method`}
                 value={refinementName}
               />
-            </div>
-            <div className="op-writing-target">
-              <Label className="op-writing-section-title">
-                {t`Refinement Skill`}
-              </Label>
-              <Select
-                aria-label={t`Refinement Skill`}
-                onChange={(key) =>
-                  key && setSelectedRefinementSkillId(String(key))
-                }
-                selectionMode="single"
-                value={selectedRefinementSkillId}
-              >
-                <Select.Trigger>
-                  <Select.Value>
-                    {refinementSkills.find(
-                      (item) => item.skill.id === selectedRefinementSkillId
-                    )?.skill.name ?? t`Refine writing`}
-                  </Select.Value>
-                  <Select.Indicator />
-                </Select.Trigger>
-                <Select.Popover>
-                  <ListBox>
-                    {refinementSkills.map((item) => (
-                      <ListBox.Item
-                        id={item.skill.id}
-                        key={item.skill.id}
-                        textValue={item.skill.name}
-                      >
-                        {item.skill.name}
-                      </ListBox.Item>
-                    ))}
-                  </ListBox>
-                </Select.Popover>
-              </Select>
-            </div>
-            <div className="op-writing-refinement__sources">
-              <strong className="op-writing-section-title">
-                {t("Selected articles")}: {selectedSourceCount}
-              </strong>
-              {selectedSourceCount === 0 ? (
-                <Alert
-                  className="op-writing-refinement__warning"
-                  status="warning"
-                >
-                  <Alert.Indicator />
-                  <Alert.Content>
-                    <Alert.Title className="op-writing-refinement__warning-text">
-                      {t`Select at least one raw or generated document`}
-                    </Alert.Title>
-                  </Alert.Content>
-                </Alert>
-              ) : (
-                <>
-                  <ul className="op-writing-refinement__source-list">
-                    {selectedRawDocuments.map((document) => (
-                      <li key={document.id}>
-                        <FileText aria-hidden size={14} />
-                        <span title={document.title}>{document.title}</span>
-                        <small>{t`Raw Documents`}</small>
-                      </li>
-                    ))}
-                    {selectedGeneratedDocuments.map((document) => (
-                      <li key={document.id}>
-                        <FileOutput aria-hidden size={14} />
-                        <span title={document.title}>{document.title}</span>
-                        <small>{t`Generated Documents`}</small>
-                      </li>
-                    ))}
-                  </ul>
-                  {unreadySourceCount > 0 ? (
-                    <Alert
-                      className="op-writing-refinement__warning"
-                      status="warning"
-                    >
-                      <Alert.Indicator />
-                      <Alert.Content>
-                        <Alert.Title className="op-writing-refinement__warning-text">
-                          {t`Some selected documents are not ready. Wait for processing or deselect them.`}
-                        </Alert.Title>
-                      </Alert.Content>
-                    </Alert>
-                  ) : null}
-                </>
-              )}
             </div>
             {error ? <div className="op-writing-error">{error}</div> : null}
           </div>
@@ -582,108 +740,44 @@ export function WritingComposer({
               </div>
             ) : null}
 
+            {mode === "create"
+              ? renderSelectedSources(
+                  true,
+                  t`Selected references`,
+                  t`Select at least one reference document`
+                )
+              : mode === "revise"
+                ? renderSelectedSources(true, t`Selected reference documents`)
+                : null}
+
             <div className="op-writing-skills">
               <div className="op-writing-skills__header">
                 <strong className="op-writing-section-title">
                   {t`Writing Skills`}
                 </strong>
-                <span>
-                  {mode === "revise" ? t`Select one` : t`Select one or more`}
-                </span>
+                <div className="op-writing-skills__header-actions">
+                  <span>
+                    {mode === "revise"
+                      ? t`Select one`
+                      : t`Multiple Skills generate multiple articles`}
+                  </span>
+                  <Button
+                    className="op-writing-skills__manage"
+                    onPress={onManageSkills}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {t`Manage Skill`}
+                  </Button>
+                </div>
               </div>
-              <div className="op-writing-skills__list">
-                {writingSkills.map((item) => (
-                  <div className="op-writing-skill" key={item.skill.id}>
-                    <Checkbox
-                      aria-label={`${t`Select Writing Skill`}: ${item.skill.name}`}
-                      id={`writing-skill-${item.skill.id}`}
-                      isSelected={selectedWritingSkillIds.includes(
-                        item.skill.id
-                      )}
-                      onChange={(isSelected) =>
-                        toggleWritingSkill(item.skill.id, isSelected)
-                      }
-                      variant="secondary"
-                    >
-                      <Checkbox.Content>
-                        <Checkbox.Control>
-                          <Checkbox.Indicator />
-                        </Checkbox.Control>
-                      </Checkbox.Content>
-                    </Checkbox>
-                    <label
-                      className="op-writing-skill__body"
-                      htmlFor={`writing-skill-${item.skill.id}`}
-                    >
-                      <span className="op-writing-skill__title">
-                        <strong>{item.skill.name}</strong>
-                        <span>
-                          {item.source === "builtin"
-                            ? t`Built-in`
-                            : t`Self-built`}
-                        </span>
-                      </span>
-                      <span className="op-writing-skill__description">
-                        {item.skill.description}
-                      </span>
-                    </label>
-                    <Dropdown>
-                      <Button
-                        aria-label={`${t`Writing Skill actions`}: ${item.skill.name}`}
-                        isIconOnly
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <MoreHorizontal size={16} />
-                      </Button>
-                      <Dropdown.Popover>
-                        <Dropdown.Menu
-                          onAction={(key) => {
-                            if (key === "view" || key === "edit") {
-                              openSkillFiles(item).catch((openError) => {
-                                console.error(
-                                  "Failed to open Writing Skill",
-                                  openError
-                                )
-                              })
-                            } else if (key === "delete") {
-                              setPendingDeleteSkill(item)
-                            }
-                          }}
-                        >
-                          {item.source === "builtin" ? (
-                            <Dropdown.Item id="view" textValue={t`View`}>
-                              <Eye size={14} />
-                              <Label>{t`View`}</Label>
-                            </Dropdown.Item>
-                          ) : (
-                            <>
-                              <Dropdown.Item id="edit" textValue={t`Edit`}>
-                                <Pencil size={14} />
-                                <Label>{t`Edit`}</Label>
-                              </Dropdown.Item>
-                              <Separator />
-                              <Dropdown.Item
-                                id="delete"
-                                textValue={t`Delete`}
-                                variant="danger"
-                              >
-                                <Trash2 size={14} />
-                                <Label>{t`Delete`}</Label>
-                              </Dropdown.Item>
-                            </>
-                          )}
-                        </Dropdown.Menu>
-                      </Dropdown.Popover>
-                    </Dropdown>
-                  </div>
-                ))}
-                {writingSkills.length === 0 ? (
-                  <div className="op-wiki-empty-inline">
-                    {t`No Writing Skills available`}
-                  </div>
-                ) : null}
-              </div>
+              {renderSkillList(
+                writingSkills,
+                selectedWritingSkillIds,
+                toggleWritingSkill,
+                "writing-skill",
+                t`No Writing Skills available`
+              )}
               {skillSelectionError === "required" ? (
                 <div className="op-writing-error">
                   {t`Select at least one Writing Skill`}
@@ -696,11 +790,22 @@ export function WritingComposer({
             </div>
 
             <TextArea
-              aria-label={t`Writing instructions`}
+              aria-label={
+                mode === "revise"
+                  ? t`Revision instructions`
+                  : t`New document instructions`
+              }
               className="op-writing-instructions"
               fullWidth
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder={t`Describe what the agent should write`}
+              onChange={(event) => {
+                if (mode === "revise") setRevisionDraft(event.target.value)
+                else setCreateDraft(event.target.value)
+              }}
+              placeholder={
+                mode === "revise"
+                  ? t`Describe how the agent should revise this document`
+                  : t`Describe what the agent should write in the new document`
+              }
               value={draft}
             />
             {error ? <div className="op-writing-error">{error}</div> : null}
@@ -717,7 +822,8 @@ export function WritingComposer({
               !refinementName.trim() ||
               refinementName.trim().length > 80 ||
               selectedSourceCount === 0 ||
-              unreadySourceCount > 0
+              unreadySourceCount > 0 ||
+              !hasValidRefinementSkillSelection
             }
             onPress={() => submitRefinement()}
             variant="primary"
@@ -730,15 +836,23 @@ export function WritingComposer({
             className="op-writing-submit"
             isDisabled={
               isSubmitting ||
+              isSelectionBusy ||
               !draft.trim() ||
               !hasValidSkillSelection ||
+              !hasValidReferenceSelection ||
               (mode === "revise" && !targetId)
             }
             onPress={() => submit()}
             variant="primary"
           >
             <Send size={15} />
-            <span>{isSubmitting ? t`Submitting` : t`Start writing`}</span>
+            <span>
+              {isSubmitting
+                ? t`Submitting`
+                : mode === "revise"
+                  ? t`Start revision`
+                  : t`Start writing`}
+            </span>
           </Button>
         )}
       </div>

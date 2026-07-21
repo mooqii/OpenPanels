@@ -201,6 +201,7 @@ fn create_cli_project_unacknowledged(project_dir: &Path, storage_dir: &Path) {
 
 include!("tests/bootstrap_and_parsing.rs");
 include!("tests/bootstrap_procedure_blockers.rs");
+include!("tests/skill_aliases.rs");
 include!("tests/workflow_runs.rs");
 include!("tests/task_routing.rs");
 include!("tests/wiki_generation.rs");
@@ -209,3 +210,4 @@ include!("tests/recovery_and_dispatch.rs");
 include!("tests/content_broker.rs");
 include!("tests/writing_and_wiki.rs");
 include!("tests/task_scopes.rs");
+include!("tests/task_publishing_lifecycle.rs");

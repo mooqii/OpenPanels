@@ -49,12 +49,14 @@ interface WikiAgentSelection {
 
 export interface WikiPanelProps {
   chromeContent: ReactNode
+  onManageSkills: () => void
   onOpenAgentTasks: (
     filter: "active" | "pending" | "done" | "all",
     taskIds?: string[]
   ) => void
   onReload: () => Promise<void>
   selectionVersion: number
+  skillsRevision: number
   state: WikiState
   transport: MyOpenPanelsTransport
   writing?: { state: WritingState; tasks: ProjectTask[] }
@@ -92,6 +94,8 @@ export function useWikiPanelController({
     title: string
   } | null>(null)
   const [pendingDeleteDocument, setPendingDeleteDocument] =
+    useState<WikiRawDocument | null>(null)
+  const [pendingRenameRawDocument, setPendingRenameRawDocument] =
     useState<WikiRawDocument | null>(null)
   const [pendingDeleteGeneratedDocument, setPendingDeleteGeneratedDocument] =
     useState<WikiGeneratedDocument | null>(null)
@@ -183,7 +187,7 @@ export function useWikiPanelController({
   const moduleHeaderToggle = (module: WikiModule, title: string) => {
     const isCollapsed = collapsedModules.has(module)
     const isAccordionModule = writing
-      ? module === "structured" || module === "raw"
+      ? module === "generated" || module === "structured" || module === "raw"
       : module === "raw" || module === "generated"
     return (
       <button
@@ -415,6 +419,28 @@ export function useWikiPanelController({
       await onReload()
     },
     [markdownDialogDocumentId, onReload, transport.apiBase]
+  )
+
+  const renameRawDocument = useCallback(
+    async (document: WikiRawDocument, title: string) => {
+      setIsBusy(true)
+      try {
+        await apiFetch(
+          transport.apiBase,
+          `/api/wiki/raw-documents/${encodeURIComponent(document.id)}`,
+          {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ title }),
+          }
+        )
+        setPendingRenameRawDocument(null)
+        await onReload()
+      } finally {
+        setIsBusy(false)
+      }
+    },
+    [onReload, transport.apiBase]
   )
 
   const extractMarkdown = useCallback(
@@ -925,6 +951,8 @@ export function useWikiPanelController({
     setPageDialog,
     pendingDeleteDocument,
     setPendingDeleteDocument,
+    pendingRenameRawDocument,
+    setPendingRenameRawDocument,
     pendingDeleteGeneratedDocument,
     setPendingDeleteGeneratedDocument,
     pendingRenameGeneratedDocument,
@@ -951,6 +979,7 @@ export function useWikiPanelController({
     openMarkdown,
     saveMarkdown,
     renameRawDocumentFile,
+    renameRawDocument,
     extractMarkdown,
     reindexDocument,
     deleteRawDocument,

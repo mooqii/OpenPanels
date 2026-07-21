@@ -40,6 +40,7 @@ async fn api_writing_set_selection(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WritingDraftBody {
+    create_draft: Option<String>,
     draft: String,
     mode: String,
     #[serde(default)]
@@ -49,6 +50,7 @@ struct WritingDraftBody {
     selected_create_writing_skill_ids: Vec<String>,
     selected_revision_writing_skill_id: Option<String>,
     selected_refinement_skill_id: Option<String>,
+    revision_draft: Option<String>,
 }
 
 async fn api_writing_save_draft(
@@ -64,6 +66,8 @@ async fn api_writing_save_draft(
         &body.selected_create_writing_skill_ids,
         body.selected_revision_writing_skill_id.as_deref(),
         body.selected_refinement_skill_id.as_deref(),
+        body.create_draft.as_deref(),
+        body.revision_draft.as_deref(),
     ) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),

@@ -1,5 +1,9 @@
 import type { JSONContent } from "@tiptap/core"
-import type { ProjectTask, PublishingAttempt } from "../types"
+import type {
+  ProjectTask,
+  PublishingAttempt,
+  PublishingRelease,
+} from "../types"
 
 export type PublishingBusinessStatus =
   | "queued"
@@ -9,6 +13,25 @@ export type PublishingBusinessStatus =
   | "needs_user_action"
   | "not_published"
   | "unknown"
+
+export type PublishingPublicationStatus =
+  | "pending"
+  | "publishing"
+  | "needs_user_action"
+  | "error"
+  | "unknown"
+
+export interface PublishingPublicationSummary {
+  publishedCount: number
+  statuses: PublishingPublicationStatus[]
+}
+
+export function publishingSourceHasContent(
+  bodyText: string,
+  coverCount: number
+): boolean {
+  return bodyText.trim().length > 0 || coverCount > 0
+}
 
 export function typesettingContentToPlainText(document: JSONContent): string {
   const output: string[] = []
@@ -61,11 +84,15 @@ export function publishingAttemptStatus(
       ? "committing"
       : "unknown"
   }
-  if (task && ["reserved", "claimed", "running"].includes(task.status)) {
+  if (!task) return "unknown"
+  if (["reserved", "claimed", "running"].includes(task.status)) {
     return "running"
   }
-  if (task && ["failed", "cancelled", "blocked"].includes(task.status)) {
+  if (["failed", "cancelled", "blocked"].includes(task.status)) {
     return "not_published"
+  }
+  if (["succeeded", "stale", "superseded"].includes(task.status)) {
+    return "unknown"
   }
   return "queued"
 }
@@ -76,4 +103,67 @@ export function publishingAttemptIsActive(
 ) {
   const status = publishingAttemptStatus(attempt, task)
   return ["queued", "running", "committing"].includes(status)
+}
+
+export function publishingPublicationSummary(
+  releases: PublishingRelease[],
+  tasks: ProjectTask[]
+): PublishingPublicationSummary {
+  const taskById = new Map(tasks.map((task) => [task.id, task]))
+  const attemptsById = new Map<string, PublishingAttempt>()
+  for (const release of releases) {
+    for (const attempt of release.attempts) {
+      attemptsById.set(attempt.id, attempt)
+    }
+  }
+
+  const attempts = [...attemptsById.values()]
+  const publishedCount = attempts.filter(
+    (attempt) =>
+      publishingAttemptStatus(attempt, taskById.get(attempt.taskId)) ===
+      "published"
+  ).length
+  const latestBySkill = new Map<string, PublishingAttempt>()
+  for (const attempt of attempts) {
+    const current = latestBySkill.get(attempt.skillId)
+    if (!current || attemptUpdatedAt(attempt) > attemptUpdatedAt(current)) {
+      latestBySkill.set(attempt.skillId, attempt)
+    }
+  }
+
+  const activeStatuses = new Set<PublishingPublicationStatus>()
+  for (const attempt of latestBySkill.values()) {
+    const status = publishingAttemptStatus(
+      attempt,
+      taskById.get(attempt.taskId)
+    )
+    if (status === "queued") activeStatuses.add("pending")
+    if (status === "running" || status === "committing") {
+      activeStatuses.add("publishing")
+    }
+    if (status === "needs_user_action") {
+      activeStatuses.add("needs_user_action")
+    }
+    if (status === "not_published") activeStatuses.add("error")
+    if (status === "unknown") activeStatuses.add("unknown")
+  }
+
+  const statusPriority: PublishingPublicationStatus[] = [
+    "error",
+    "needs_user_action",
+    "publishing",
+    "pending",
+    "unknown",
+  ]
+  return {
+    publishedCount,
+    statuses: statusPriority.filter((status) => activeStatuses.has(status)),
+  }
+}
+
+function attemptUpdatedAt(attempt: PublishingAttempt): number {
+  const timestamp =
+    attempt.updatedAt ?? attempt.completedAt ?? attempt.createdAt
+  const parsed = Date.parse(timestamp)
+  return Number.isNaN(parsed) ? 0 : parsed
 }

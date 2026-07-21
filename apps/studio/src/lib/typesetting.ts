@@ -1,5 +1,6 @@
 import type { JSONContent } from "@tiptap/core"
 import type {
+  ProjectTask,
   TypesettingCanvasAsset,
   TypesettingPublication,
   TypesettingPublicationImage,
@@ -9,6 +10,60 @@ import type {
 export const TYPESETTING_ASSET_DRAG_TYPE =
   "application/x-myopenpanels-canvas-asset"
 export const TYPESETTING_AUTOSAVE_DELAY_MS = 500
+
+export type TypesettingCoverTaskDisplayStatus =
+  | "waiting"
+  | "running"
+  | "saving"
+  | "failed"
+  | "cancelled"
+
+export function typesettingCoverRequestPayload({
+  instruction,
+  publicationId,
+  requestId,
+  skillId,
+}: {
+  instruction: string
+  publicationId: string
+  requestId: string
+  skillId: string
+}): {
+  instruction?: string
+  publicationId: string
+  requestId: string
+  skillId: string
+} {
+  const trimmedInstruction = instruction.trim()
+  return {
+    ...(trimmedInstruction ? { instruction: trimmedInstruction } : {}),
+    publicationId,
+    requestId,
+    skillId,
+  }
+}
+
+export function typesettingCoverTaskStatus(
+  task: ProjectTask
+): TypesettingCoverTaskDisplayStatus {
+  if (task.status === "succeeded") return "saving"
+  if (task.status === "failed") return "failed"
+  if (
+    task.status === "cancelled" ||
+    task.status === "stale" ||
+    task.status === "superseded"
+  ) {
+    return "cancelled"
+  }
+  if (
+    task.status === "running" ||
+    task.status === "claimed" ||
+    task.status === "reserved"
+  ) {
+    return "running"
+  }
+  return "waiting"
+}
 
 export function emptyTypesettingDocument(): JSONContent {
   return {
@@ -150,11 +205,13 @@ export function groupTypesettingAssets(
 }
 
 export function mergeTypesettingConflict({
+  deletedCoverAssetRefs,
   deletedIds,
   dirtyIds,
   local,
   remote,
 }: {
+  deletedCoverAssetRefs?: ReadonlyMap<string, ReadonlySet<string>>
   deletedIds: ReadonlySet<string>
   dirtyIds: ReadonlySet<string>
   local: TypesettingState
@@ -165,11 +222,27 @@ export function mergeTypesettingConflict({
   )
   const publications = remote.publications
     .filter((publication) => !deletedIds.has(publication.id))
-    .map((publication) =>
-      dirtyIds.has(publication.id)
-        ? (localById.get(publication.id) ?? publication)
-        : publication
-    )
+    .map((publication) => {
+      if (!dirtyIds.has(publication.id)) return publication
+      const localPublication = localById.get(publication.id)
+      if (!localPublication) return publication
+      const deletedCovers = deletedCoverAssetRefs?.get(publication.id)
+      const localAssetRefs = new Set(
+        localPublication.covers.map((cover) => cover.assetRef)
+      )
+      const generatedCovers = publication.covers.filter(
+        (cover) =>
+          cover.source.kind === "generated" &&
+          !localAssetRefs.has(cover.assetRef) &&
+          !deletedCovers?.has(cover.assetRef)
+      )
+      return generatedCovers.length
+        ? {
+            ...localPublication,
+            covers: [...localPublication.covers, ...generatedCovers],
+          }
+        : localPublication
+    })
   const remoteIds = new Set(publications.map((publication) => publication.id))
   for (const id of dirtyIds) {
     const publication = localById.get(id)
@@ -177,5 +250,5 @@ export function mergeTypesettingConflict({
       publications.push(publication)
     }
   }
-  return { schemaVersion: 1, publications }
+  return { schemaVersion: 2, publications }
 }

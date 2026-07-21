@@ -348,7 +348,13 @@ fn advance_task_handoff(
             task: prepared.task,
         };
         write_handoff_control(paths, &control)?;
-        let prompt = crate::bridge::render_task_handoff_prompt(&prepared.bundle, handoff_id);
+        let scope_kind = control
+            .scope
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("exact-task");
+        let prompt =
+            crate::bridge::render_task_handoff_prompt(&prepared.bundle, handoff_id, scope_kind);
         let mut payload = scope_summary(&claimed);
         payload["taskHandoffVersion"] = json!(TASK_HANDOFF_VERSION);
         payload["handoff"] = json!({

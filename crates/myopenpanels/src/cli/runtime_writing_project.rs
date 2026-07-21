@@ -108,7 +108,10 @@ fn parsed_current_paths(parsed: &Invocation) -> Result<crate::paths::MyOpenPanel
             "no_current_studio",
             "No running MyOpenPanels Studio is available for this storage directory.",
             true,
-            "Run `myopenpanels studio start --local-only --project-dir <dir> --format json`, then retry.",
+            format!(
+                "Run `{} studio start --local-only --project-dir <dir> --format json`, then retry.",
+                crate::cli_identity::agent_cli_shell_word()
+            ),
         ));
     };
     let _ = session;
@@ -128,7 +131,11 @@ fn parsed_bootstrap_paths(
             "no_current_studio",
             "No running user-visible MyOpenPanels Studio is available for Agent Bootstrap.",
             true,
-            "Run `myopenpanels studio start --local-only --project-dir <dir> --format json`, open the returned URL, then retry `myopenpanels agent bootstrap --format json`.",
+            format!(
+                "Run `{} studio start --local-only --project-dir <dir> --format json`, open the returned URL, then retry `{} agent bootstrap --format json`.",
+                crate::cli_identity::agent_cli_shell_word(),
+                crate::cli_identity::agent_cli_shell_word()
+            ),
         ));
     };
     let _ = session;

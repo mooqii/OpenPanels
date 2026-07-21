@@ -361,15 +361,36 @@ impl Storage {
                 SELECT
                   t.id, t.queue, t.project_id, t.panel_id, p.kind, t.type, t.status,
                   t.target_ref, t.created_at, t.updated_at, t.attempts, t.max_attempts,
-                  lease_owner, lease_expires_at, last_heartbeat_at, retry_after,
+                  t.lease_owner, t.lease_expires_at, t.last_heartbeat_at, t.retry_after,
                   t.capability, t.assigned_agent_id, t.result_json, t.error_json, t.completed_at,
                   t.input_json, t.source_json, t.workflow_run_id, t.execution_generation,
                   t.available_at, t.archived_at, t.terminal_reason_json,
                   t.required_protocol_version, t.dispatch_mode,
                   t.requested_gateway_connection_id,
-                  t.mutation_key, t.mutation_sequence
+                  t.mutation_key, t.mutation_sequence,
+                  current_target.name, current_target.host,
+                  current_target.model_gateway_connection_id,
+                  COALESCE(
+                    (SELECT json_object(
+                       'modelGatewayConnectionId', latest.model_gateway_connection_id,
+                       'executorSnapshotJson', latest.executor_snapshot_json
+                     )
+                     FROM task_attempts latest
+                     WHERE latest.task_id = t.id
+                     ORDER BY latest.execution_generation DESC, latest.started_at DESC
+                     LIMIT 1),
+                    (SELECT json_object(
+                       'modelGatewayConnectionId', latest.model_gateway_connection_id,
+                       'executorSnapshotJson', latest.executor_snapshot_json
+                     )
+                     FROM task_attempts latest
+                     WHERE latest.task_id = json_extract(t.result_json, '$.leaderTaskId')
+                     ORDER BY latest.execution_generation DESC, latest.started_at DESC
+                     LIMIT 1)
+                  )
                 FROM tasks t
                 JOIN panels p ON p.project_id = t.project_id AND p.id = t.panel_id
+                LEFT JOIN agent_targets current_target ON current_target.id = t.assigned_agent_id
                 WHERE t.project_id = ?
                 ORDER BY t.updated_at DESC, t.id ASC
                 "#,
@@ -412,6 +433,41 @@ impl Storage {
                     .as_deref()
                     .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
                     .unwrap_or(Value::Null);
+                let current_target_name = row.get::<_, Option<String>>(33)?;
+                let current_target_host = row.get::<_, Option<String>>(34)?;
+                let current_connection_id = row.get::<_, Option<String>>(35)?;
+                let latest_execution = row
+                    .get::<_, Option<String>>(36)?
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                    .unwrap_or(Value::Null);
+                let latest_connection_id = latest_execution
+                    .get("modelGatewayConnectionId")
+                    .and_then(Value::as_str);
+                let latest_executor_snapshot = latest_execution
+                    .get("executorSnapshotJson")
+                    .and_then(Value::as_str)
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                    .unwrap_or(Value::Null);
+                let (connection_id, target_name, target_host) =
+                    if current_target_name.is_some() || current_target_host.is_some() {
+                        (
+                            current_connection_id.as_deref(),
+                            current_target_name.as_deref(),
+                            current_target_host.as_deref(),
+                        )
+                    } else {
+                        (
+                            latest_connection_id.or_else(|| {
+                                latest_executor_snapshot
+                                    .get("modelGatewayConnectionId")
+                                    .and_then(Value::as_str)
+                            }),
+                            latest_executor_snapshot
+                                .get("targetName")
+                                .and_then(Value::as_str),
+                            latest_executor_snapshot.get("host").and_then(Value::as_str),
+                        )
+                    };
                 Ok(TaskRecord {
                     id: row.get(0)?,
                     workflow_run_id: row.get(23)?,
@@ -436,6 +492,11 @@ impl Storage {
                     assigned_target_id: assigned_agent_id,
                     completed_at,
                     execution_generation: row.get(24)?,
+                    execution_method: task_execution_method(
+                        connection_id,
+                        target_name,
+                        target_host,
+                    ),
                     available_at: row.get(25)?,
                     archived_at: row.get(26)?,
                     terminal_reason,
@@ -468,4 +529,29 @@ impl Storage {
             .optional()
             .map_err(to_cli_error)
     }
+}
+
+fn task_execution_method(
+    connection_id: Option<&str>,
+    target_name: Option<&str>,
+    target_host: Option<&str>,
+) -> Value {
+    if target_host == Some("agent-message") {
+        return json!({ "kind": "manualInstruction" });
+    }
+    if let Some(provider_id) = connection_id.and_then(|id| id.strip_prefix("local-cli:")) {
+        return json!({
+            "kind": "localCli",
+            "connectionId": connection_id,
+            "providerId": provider_id,
+        });
+    }
+    if connection_id.is_some() || target_name.is_some() {
+        return json!({
+            "kind": "agentTarget",
+            "connectionId": connection_id,
+            "label": target_name,
+        });
+    }
+    Value::Null
 }

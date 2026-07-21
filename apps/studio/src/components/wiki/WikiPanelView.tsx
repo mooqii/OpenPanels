@@ -52,7 +52,9 @@ export function WikiPanelView(
   const {
     chromeContent,
     onOpenAgentTasks,
+    onManageSkills,
     onReload,
+    skillsRevision,
     state,
     transport,
     writing,
@@ -65,6 +67,7 @@ export function WikiPanelView(
     setPendingWikiAgentSkillId,
     setPendingDeleteDocument,
     setPendingDeleteGeneratedDocument,
+    setPendingRenameRawDocument,
     setPendingRenameGeneratedDocument,
     setOriginalPreviewDocument,
     isBusy,
@@ -308,6 +311,7 @@ export function WikiPanelView(
                                           "open",
                                           "reveal",
                                           "sync",
+                                          "rename",
                                           "delete",
                                         ]
                                       : []),
@@ -343,6 +347,9 @@ export function WikiPanelView(
                                             error
                                           )
                                         })
+                                        break
+                                      case "rename":
+                                        setPendingRenameRawDocument(document)
                                         break
                                       case "delete":
                                         setPendingDeleteDocument(document)
@@ -383,6 +390,13 @@ export function WikiPanelView(
                                     <Label>
                                       {hasMarkdown ? t`Reindex` : t`Re-extract`}
                                     </Label>
+                                  </Dropdown.Item>
+                                  <Dropdown.Item
+                                    id="rename"
+                                    textValue={t`Rename`}
+                                  >
+                                    <Pencil size={14} />
+                                    <Label>{t`Rename`}</Label>
                                   </Dropdown.Item>
                                   <Separator />
                                   <Dropdown.Item
@@ -826,10 +840,10 @@ export function WikiPanelView(
                         <X size={17} />
                       </Button>
                     </div>
+                    {generatedDocumentsModule}
                     {structuredWikiModule}
                     {rawDocumentsModule}
                   </div>
-                  {generatedDocumentsModule}
                 </>
               )
             }
@@ -875,11 +889,13 @@ export function WikiPanelView(
             <WritingComposer
               documents={state.generatedDocuments}
               isSelectionBusy={isSelectionBusy}
+              onManageSkills={onManageSkills}
               onOpenAgentTasks={onOpenAgentTasks}
               onOpenLibrary={() => setIsDocumentLibraryOpen(true)}
               onReload={onReload}
               rawDocuments={state.rawDocuments}
               selection={agentSelection}
+              skillsRevision={skillsRevision}
               state={writing.state}
               tasks={writing.tasks}
               transport={transport}

@@ -9,7 +9,7 @@ pub struct SkillImportFile {
     pub content_base64: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct GithubSkillSource {
     owner: String,
     repo: String,
@@ -17,11 +17,45 @@ struct GithubSkillSource {
     subpath: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RemoteSkillSource {
     archive_url: String,
     label: &'static str,
+    skill_selector: Option<String>,
     subpath: Option<String>,
+    provenance: SkillProvenanceSource,
+}
+
+#[derive(Debug)]
+struct PreparedSkillPackage {
+    _temporary: Option<tempfile::TempDir>,
+    root: PathBuf,
+    name: String,
+    description: String,
+}
+
+#[derive(Debug)]
+struct PreparedRemoteArchive {
+    _temporary: tempfile::TempDir,
+    archive_root: PathBuf,
+    search_root: PathBuf,
+    source: RemoteSkillSource,
+}
+
+#[derive(Debug)]
+struct RemoteSkillCandidate {
+    root: PathBuf,
+    name: String,
+    description: String,
+    subpath: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UrlSkillImportSelection {
+    pub subpath: String,
+    #[serde(default)]
+    pub module_kind: Option<String>,
 }
 
 pub fn import_skill_from_files(
@@ -43,6 +77,7 @@ pub fn import_skill_from_files(
         module_kind,
         replace_existing,
         "local-folder",
+        None,
     )
 }
 
@@ -68,6 +103,7 @@ pub fn import_skill_from_zip(
         module_kind,
         replace_existing,
         "local-zip",
+        None,
     )
 }
 
@@ -78,8 +114,178 @@ pub fn import_skill_from_url(
     replace_existing: bool,
 ) -> Result<Value, CliError> {
     validate_custom_module(module_kind)?;
+    let (source, package) = prepare_remote_skill(source_url)?;
+    let origin = source.provenance.source_locator.clone();
+    let module_kinds = vec![module_kind.to_owned()];
+    install_skill_package(
+        paths,
+        &package.root,
+        package.name,
+        package.description,
+        &module_kinds,
+        replace_existing,
+        &origin,
+        Some(source.provenance),
+    )
+}
+
+pub fn scan_skills_from_url(source_url: &str) -> Result<Value, CliError> {
+    let prepared = prepare_remote_archive(source_url)?;
+    let candidates = discover_remote_skill_candidates(
+        &prepared.archive_root,
+        &prepared.search_root,
+        prepared.source.skill_selector.as_deref(),
+    )?;
+    Ok(json!({
+        "sourceUrl": prepared.source.provenance.source_locator,
+        "skills": candidates
+            .into_iter()
+            .map(|candidate| json!({
+                "name": candidate.name,
+                "description": candidate.description,
+                "subpath": candidate.subpath,
+            }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+pub fn import_skills_from_url(
+    paths: &MyOpenPanelsPaths,
+    source_url: &str,
+    selections: &[UrlSkillImportSelection],
+    replace_existing: bool,
+) -> Result<Value, CliError> {
+    if selections.is_empty() {
+        return Err(invalid_skill_import("Scan and select at least one Skill to install."));
+    }
+    let prepared = prepare_remote_archive(source_url)?;
+    let candidates = discover_remote_skill_candidates(
+        &prepared.archive_root,
+        &prepared.search_root,
+        prepared.source.skill_selector.as_deref(),
+    )?;
+    let mut candidates_by_subpath = candidates
+        .into_iter()
+        .map(|candidate| (candidate.subpath.clone(), candidate))
+        .collect::<BTreeMap<_, _>>();
+    let mut selected = Vec::with_capacity(selections.len());
+    let mut selected_subpaths = BTreeSet::new();
+    for selection in selections {
+        if !selected_subpaths.insert(selection.subpath.clone()) {
+            return Err(invalid_skill_import(
+                "The same scanned Skill cannot be installed more than once.",
+            ));
+        }
+        let candidate = candidates_by_subpath
+            .remove(&selection.subpath)
+            .ok_or_else(|| {
+                invalid_skill_import(
+                    "The scanned Skill list changed. Scan the URL again before installing.",
+                )
+            })?;
+        let module_kinds = selection
+            .module_kind
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                validate_custom_module(value)?;
+                Ok(vec![value.to_owned()])
+            })
+            .transpose()?
+            .unwrap_or_default();
+        selected.push((candidate, module_kinds));
+    }
+
+    sync_builtin_agent_skills(paths)?;
+    migrate_legacy_custom_agent_skills(paths)?;
+    for (candidate, _) in &selected {
+        let name_key = normalized_device_skill_name(&candidate.name);
+        let Some(listing) = find_installed_skill_by_identity(paths, &name_key)? else {
+            continue;
+        };
+        if managed_skill_kind(&listing)? != "custom" {
+            return Err(CliError::with_code(
+                "skill_reserved_name",
+                format!(
+                    "Installation failed because '{}' has the same name as a built-in Skill. Rename the Skill and try again.",
+                    candidate.name
+                ),
+            ));
+        }
+        if !replace_existing {
+            return Ok(json!({
+                "status": "conflict",
+                "message": format!("A self-built Skill named '{}' is already installed.", candidate.name),
+                "incomingSkill": {
+                    "name": candidate.name,
+                    "description": candidate.description,
+                },
+            }));
+        }
+    }
+
+    let mut installed = Vec::with_capacity(selected.len());
+    for (candidate, module_kinds) in selected {
+        let mut provenance = prepared.source.provenance.clone();
+        provenance.subpath = (!candidate.subpath.is_empty()).then_some(candidate.subpath);
+        let origin = provenance.source_locator.clone();
+        let result = install_skill_package(
+            paths,
+            &candidate.root,
+            candidate.name,
+            candidate.description,
+            &module_kinds,
+            replace_existing,
+            &origin,
+            Some(provenance),
+        )?;
+        installed.push(result["skill"].clone());
+    }
+    Ok(json!({
+        "status": "installed",
+        "skills": installed,
+    }))
+}
+
+fn prepare_remote_skill(
+    source_url: &str,
+) -> Result<(RemoteSkillSource, PreparedSkillPackage), CliError> {
+    let prepared = prepare_remote_archive(source_url)?;
+    let mut candidates = discover_remote_skill_candidates(
+        &prepared.archive_root,
+        &prepared.search_root,
+        prepared.source.skill_selector.as_deref(),
+    )?;
+    if candidates.len() > 1 {
+        return Err(CliError::with_code(
+            "skill_source_ambiguous",
+            "More than one Skill was found. Scan the URL and choose the Skills to install.",
+        ));
+    }
+    let candidate = candidates.remove(0);
+    let mut source = prepared.source;
+    if source.skill_selector.is_none() {
+        source.provenance.subpath = (!candidate.subpath.is_empty()).then_some(candidate.subpath);
+    }
+    Ok((
+        source,
+        PreparedSkillPackage {
+            _temporary: Some(prepared._temporary),
+            root: candidate.root,
+            name: candidate.name,
+            description: candidate.description,
+        },
+    ))
+}
+
+fn prepare_remote_archive(source_url: &str) -> Result<PreparedRemoteArchive, CliError> {
     let source = parse_remote_skill_source(source_url)?;
-    let response = ureq::get(&source.archive_url)
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout_read(std::time::Duration::from_secs(30))
+        .build();
+    let response = agent
+        .get(&source.archive_url)
         .set("User-Agent", "MyOpenPanels-Skill-Importer")
         .call()
         .map_err(|error| {
@@ -119,14 +325,14 @@ pub fn import_skill_from_url(
     }
     let temporary = tempfile::tempdir().map_err(to_cli_error)?;
     extract_skill_zip(&archive, temporary.path())?;
-    install_imported_skill(
-        paths,
-        temporary.path(),
-        source.subpath.as_deref(),
-        module_kind,
-        replace_existing,
-        source_url,
-    )
+    let archive_root = resolve_import_archive_root(temporary.path())?;
+    let search_root = resolve_import_subpath(&archive_root, source.subpath.as_deref())?;
+    Ok(PreparedRemoteArchive {
+        _temporary: temporary,
+        archive_root,
+        search_root,
+        source,
+    })
 }
 
 fn install_imported_skill(
@@ -136,13 +342,44 @@ fn install_imported_skill(
     module_kind: &str,
     replace_existing: bool,
     origin: &str,
+    provenance_source: Option<SkillProvenanceSource>,
 ) -> Result<Value, CliError> {
     sync_builtin_agent_skills(paths)?;
     migrate_legacy_custom_agent_skills(paths)?;
     let search_root = resolve_import_search_root(extracted_root, requested_subpath)?;
     let package_root = find_single_imported_skill(&search_root)?;
     let (name, description) = validate_imported_skill(&package_root)?;
+    let module_kinds = vec![module_kind.to_owned()];
+    install_skill_package(
+        paths,
+        &package_root,
+        name,
+        description,
+        &module_kinds,
+        replace_existing,
+        origin,
+        provenance_source,
+    )
+}
+
+fn install_skill_package(
+    paths: &MyOpenPanelsPaths,
+    package_root: &Path,
+    name: String,
+    description: String,
+    module_kinds: &[String],
+    replace_existing: bool,
+    origin: &str,
+    provenance_source: Option<SkillProvenanceSource>,
+) -> Result<Value, CliError> {
+    for module_kind in module_kinds {
+        validate_custom_module(module_kind)?;
+    }
+    sync_builtin_agent_skills(paths)?;
+    migrate_legacy_custom_agent_skills(paths)?;
     let name_key = normalized_device_skill_name(&name);
+    let content_hash = skill_package_hash(package_root)?;
+    let provenance = provenance_source.map(|source| source.with_content_hash(&content_hash));
 
     if let Some(listing) = find_installed_skill_by_identity(paths, &name_key)? {
         let kind = managed_skill_kind(&listing)?;
@@ -167,11 +404,25 @@ fn install_imported_skill(
             }));
         }
         let mut modules = custom_skill_modules(&listing)?;
-        if !modules.iter().any(|value| value == module_kind) {
-            modules.push(module_kind.to_owned());
+        for module_kind in module_kinds {
+            if !modules.iter().any(|value| value == module_kind) {
+                modules.push(module_kind.clone());
+            }
         }
-        let manifest = imported_skill_manifest(&listing.skill.id, &name, modules, origin);
+        let previous_manifest = read_skill_manifest(&listing)?;
+        let mut manifest = imported_skill_manifest(
+            &listing.skill.id,
+            &name,
+            modules,
+            origin,
+            provenance.as_ref(),
+        );
+        if let Some(created_at) = previous_manifest.get("createdAt") {
+            manifest["createdAt"] = created_at.clone();
+        }
+        manifest["updatedAt"] = json!(crate::control::now_iso());
         atomic_replace_device_skill(&package_root, Path::new(&listing.local_dir), &manifest)?;
+        clear_ignored_device_mismatches(paths, &listing.skill.name)?;
         let replaced = managed_skill_listing(paths, &listing.skill.id)?;
         return Ok(json!({
             "status": "installed",
@@ -199,7 +450,13 @@ fn install_imported_skill(
             format!("The Skill install target already exists: {skill_id}"),
         ));
     }
-    let manifest = imported_skill_manifest(&skill_id, &name, vec![module_kind.to_owned()], origin);
+    let manifest = imported_skill_manifest(
+        &skill_id,
+        &name,
+        module_kinds.to_vec(),
+        origin,
+        provenance.as_ref(),
+    );
     atomic_copy_device_skill(&package_root, &target, &manifest)?;
     let installed = managed_skill_listing(paths, &skill_id)?;
     Ok(json!({
@@ -218,16 +475,21 @@ fn imported_skill_manifest(
     name: &str,
     modules: Vec<String>,
     origin: &str,
+    provenance: Option<&SkillProvenance>,
 ) -> Value {
-    json!({
-        "schemaVersion": 3,
+    let mut manifest = json!({
+        "schemaVersion": MANAGED_SKILL_SCHEMA_VERSION,
         "source": "custom",
         "skillId": skill_id,
         "name": name,
         "binding": { "moduleKinds": modules },
         "createdAt": crate::control::now_iso(),
         "origin": origin,
-    })
+    });
+    if let Some(provenance) = provenance {
+        manifest["provenance"] = serde_json::to_value(provenance).unwrap_or(Value::Null);
+    }
+    manifest
 }
 
 fn materialize_import_files(root: &Path, files: &[SkillImportFile]) -> Result<(), CliError> {
@@ -323,17 +585,28 @@ fn extract_skill_zip(archive: &[u8], target: &Path) -> Result<(), CliError> {
 }
 
 fn resolve_import_search_root(root: &Path, subpath: Option<&str>) -> Result<PathBuf, CliError> {
+    let archive_root = resolve_import_archive_root(root)?;
+    resolve_import_subpath(&archive_root, subpath)
+}
+
+fn resolve_import_archive_root(root: &Path) -> Result<PathBuf, CliError> {
     let mut entries = fs::read_dir(root)
         .map_err(to_cli_error)?
         .filter_map(Result::ok)
         .collect::<Vec<_>>();
-    let archive_root = if entries.len() == 1 && entries[0].path().is_dir() {
+    Ok(if entries.len() == 1 && entries[0].path().is_dir() {
         entries.remove(0).path()
     } else {
         root.to_path_buf()
-    };
+    })
+}
+
+fn resolve_import_subpath(
+    archive_root: &Path,
+    subpath: Option<&str>,
+) -> Result<PathBuf, CliError> {
     let Some(subpath) = subpath else {
-        return Ok(archive_root);
+        return Ok(archive_root.to_path_buf());
     };
     let relative = safe_import_relative_path(subpath)?;
     let requested = archive_root.join(relative);
@@ -346,9 +619,22 @@ fn resolve_import_search_root(root: &Path, subpath: Option<&str>) -> Result<Path
 }
 
 fn find_single_imported_skill(search_root: &Path) -> Result<PathBuf, CliError> {
+    find_imported_skill(search_root, None)
+}
+
+fn find_imported_skill(
+    search_root: &Path,
+    skill_selector: Option<&str>,
+) -> Result<PathBuf, CliError> {
     let mut roots = Vec::new();
     find_imported_skill_roots(search_root, 0, &mut roots)?;
+    if let Some(selector) = skill_selector {
+        roots.retain(|root| imported_skill_matches_selector(root, selector));
+    }
     match roots.len() {
+        0 if skill_selector.is_some() => Err(invalid_skill_import(
+            "The selected Skill was not found in its source repository.",
+        )),
         0 => Err(invalid_skill_import(
             "No valid Skill was found. A Skill folder must contain SKILL.md.",
         )),
@@ -358,6 +644,72 @@ fn find_single_imported_skill(search_root: &Path) -> Result<PathBuf, CliError> {
             "More than one Skill was found. Use a URL or local folder that points to one Skill.",
         )),
     }
+}
+
+fn discover_remote_skill_candidates(
+    archive_root: &Path,
+    search_root: &Path,
+    skill_selector: Option<&str>,
+) -> Result<Vec<RemoteSkillCandidate>, CliError> {
+    let mut roots = Vec::new();
+    find_imported_skill_roots(search_root, 0, &mut roots)?;
+    if let Some(selector) = skill_selector {
+        roots.retain(|root| imported_skill_matches_selector(root, selector));
+    }
+    if roots.is_empty() {
+        return Err(invalid_skill_import(if skill_selector.is_some() {
+            "The selected Skill was not found in its source repository."
+        } else {
+            "No valid Skill was found. A Skill folder must contain SKILL.md."
+        }));
+    }
+    roots.sort();
+    let mut names = BTreeSet::new();
+    let mut candidates = Vec::with_capacity(roots.len());
+    let mut first_invalid = None;
+    for root in roots {
+        let (name, description) = match validate_imported_skill(&root) {
+            Ok(metadata) => metadata,
+            Err(error) if error.code() == Some("invalid_skill_package") => {
+                first_invalid.get_or_insert(error);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if !names.insert(normalized_device_skill_name(&name)) {
+            return Err(invalid_skill_import(
+                "The source contains more than one Skill with the same name.",
+            ));
+        }
+        let relative = root.strip_prefix(archive_root).map_err(to_cli_error)?;
+        let subpath = relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        candidates.push(RemoteSkillCandidate {
+            root,
+            name,
+            description,
+            subpath,
+        });
+    }
+    if candidates.is_empty() {
+        return Err(first_invalid.unwrap_or_else(|| {
+            invalid_skill_import("No installable Skill was found in the source repository.")
+        }));
+    }
+    Ok(candidates)
+}
+
+fn imported_skill_matches_selector(root: &Path, selector: &str) -> bool {
+    if root.file_name().and_then(|value| value.to_str()) == Some(selector) {
+        return true;
+    }
+    parse_device_skill(&root.join("SKILL.md"))
+        .ok()
+        .flatten()
+        .is_some_and(|(name, _)| name == selector)
 }
 
 fn find_imported_skill_roots(
@@ -482,8 +834,50 @@ fn parse_remote_skill_source(value: &str) -> Result<RemoteSkillSource, CliError>
                 source.owner, source.repo, source.revision
             ),
             label: "GitHub",
-            subpath: source.subpath,
+            skill_selector: None,
+            subpath: source.subpath.clone(),
+            provenance: SkillProvenanceSource {
+                source_type: "github".to_owned(),
+                source_locator: normalized.to_owned(),
+                revision: Some(source.revision),
+                subpath: source.subpath,
+            },
         });
+    }
+    if let Some(rest) = normalized
+        .strip_prefix("https://skills.sh/")
+        .or_else(|| normalized.strip_prefix("https://www.skills.sh/"))
+    {
+        let segments = rest.split('/').collect::<Vec<_>>();
+        if matches!(segments.len(), 2 | 3)
+            && valid_github_segment(segments[0])
+            && valid_github_segment(segments[1])
+            && !segments[0].contains('.')
+            && segments
+                .get(2)
+                .is_none_or(|value| valid_registry_segment(value))
+        {
+            let selector = segments.get(2).map(|value| (*value).to_owned());
+            return Ok(RemoteSkillSource {
+                archive_url: format!(
+                    "https://codeload.github.com/{}/{}/zip/HEAD",
+                    segments[0], segments[1]
+                ),
+                label: "skills.sh",
+                skill_selector: selector,
+                subpath: None,
+                provenance: SkillProvenanceSource {
+                    source_type: "skills-sh".to_owned(),
+                    source_locator: normalized.to_owned(),
+                    revision: Some("HEAD".to_owned()),
+                    subpath: None,
+                },
+            });
+        }
+        return Err(CliError::with_code(
+            "unsupported_skill_source",
+            "Use a skills.sh repository or Skill detail URL such as https://skills.sh/owner/repository/skill-name.",
+        ));
     }
     if let Some(rest) = normalized.strip_prefix("https://clawhub.ai/") {
         let segments = rest.split('/').collect::<Vec<_>>();
@@ -498,7 +892,14 @@ fn parse_remote_skill_source(value: &str) -> Result<RemoteSkillSource, CliError>
                     segments[2], segments[0]
                 ),
                 label: "ClawHub",
+                skill_selector: None,
                 subpath: None,
+                provenance: SkillProvenanceSource {
+                    source_type: "clawhub".to_owned(),
+                    source_locator: normalized.to_owned(),
+                    revision: None,
+                    subpath: None,
+                },
             });
         }
         return Err(CliError::with_code(
@@ -511,7 +912,14 @@ fn parse_remote_skill_source(value: &str) -> Result<RemoteSkillSource, CliError>
             return Ok(RemoteSkillSource {
                 archive_url: format!("https://api.skillhub.cn/api/v1/download?slug={rest}"),
                 label: "SkillHub",
+                skill_selector: None,
                 subpath: None,
+                provenance: SkillProvenanceSource {
+                    source_type: "skillhub".to_owned(),
+                    source_locator: normalized.to_owned(),
+                    revision: None,
+                    subpath: None,
+                },
             });
         }
         return Err(CliError::with_code(
@@ -574,7 +982,7 @@ fn valid_registry_segment(value: &str) -> bool {
 fn unsupported_skill_url() -> CliError {
     CliError::with_code(
         "unsupported_skill_source",
-        "Use a supported Skill URL: a GitHub repository or tree URL, a ClawHub Skill detail URL, or a SkillHub Skill detail URL.",
+        "Use a supported Skill URL: a GitHub repository or tree URL, a skills.sh repository or Skill detail URL, a ClawHub Skill detail URL, or a SkillHub Skill detail URL.",
     )
 }
 

@@ -54,7 +54,7 @@ mod tests {
         assert_eq!(typesetting.panel.title, "排版");
         assert_eq!(
             typesetting.state,
-            json!({ "schemaVersion": 1, "publications": [] })
+            json!({ "schemaVersion": 2, "publications": [] })
         );
         let publishing = bootstrap
             .panels
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn typesetting_state_rejects_future_and_malformed_documents() {
         let future = match resolve_typesetting_state(Some(json!({
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "publications": []
         }))) {
             Ok(_) => panic!("future state"),
@@ -141,7 +141,7 @@ mod tests {
         assert!(future.message().contains("Unsupported future typesetting"));
 
         let malformed = match resolve_typesetting_state(Some(json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "publications": [{
                 "id": "publication:1",
                 "title": "Broken",
@@ -155,6 +155,38 @@ mod tests {
             Err(error) => error,
         };
         assert!(malformed.message().contains("Malformed typesetting"));
+
+        let migrated = resolve_typesetting_state(Some(json!({
+            "schemaVersion": 1,
+            "publications": [{
+                "id": "publication:1",
+                "title": "Existing article",
+                "covers": [{
+                    "assetRef": "projects/project:1/panels/panel:canvas/assets/cover.png",
+                    "fileName": "cover.png",
+                    "mimeType": "image/png",
+                    "sourceAssetRef": "projects/project:1/panels/panel:canvas/assets/source.png",
+                    "sourceCanvasPanelId": "panel:canvas",
+                    "sourceProjectId": "project:1",
+                    "src": "/api/assets/cover.png"
+                }],
+                "content": { "type": "doc", "content": [{ "type": "paragraph" }] },
+                "createdAt": "2026-07-14T00:00:00Z",
+                "updatedAt": "2026-07-14T00:00:00Z"
+            }]
+        })))
+        .expect("v1 state migration");
+        assert!(migrated.changed);
+        assert_eq!(migrated.state["schemaVersion"], json!(2));
+        assert_eq!(
+            migrated.state["publications"][0]["covers"][0]["source"],
+            json!({
+                "kind": "canvas",
+                "assetRef": "projects/project:1/panels/panel:canvas/assets/source.png",
+                "panelId": "panel:canvas",
+                "projectId": "project:1"
+            })
+        );
     }
 
     #[test]
@@ -163,6 +195,24 @@ mod tests {
         let accepted = resolve_writing_state(Some(current.clone())).expect("current state");
         assert!(!accepted.changed);
         assert_eq!(accepted.state, current);
+
+        let migrated = resolve_writing_state(Some(json!({
+            "schemaVersion": 5,
+            "draft": "Revise this paragraph",
+            "mode": "revise",
+            "refinementName": "",
+            "targetGeneratedDocumentId": null,
+            "selectedCreateWritingSkillIds": ["writing-default"],
+            "selectedRevisionWritingSkillId": "writing-default",
+            "selectedRefinementSkillId": "writing-skill-refiner"
+        })))
+        .expect("legacy draft state");
+        assert!(migrated.changed);
+        assert_eq!(migrated.state["createDraft"], json!(""));
+        assert_eq!(
+            migrated.state["revisionDraft"],
+            json!("Revise this paragraph")
+        );
 
         let error = match resolve_writing_state(Some(json!({ "schemaVersion": 4 }))) {
             Ok(_) => panic!("old state must be rejected"),

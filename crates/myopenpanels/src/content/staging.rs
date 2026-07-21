@@ -587,7 +587,7 @@ pub fn publishing_checkpoint(
 ) -> Result<Value, CliError> {
     let context = authorize(paths, execution_token)?;
     if context.task_id != request.task_id
-        || context.task_type != crate::publishing::XIAOHONGSHU_TASK_TYPE
+        || !crate::publishing::is_publishing_task_type(&context.task_type)
     {
         return Err(CliError::with_code(
             "execution_fenced",

@@ -1,8 +1,10 @@
-const MANAGED_CUSTOM_MODULES: [&str; 4] = [
+const MANAGED_CUSTOM_MODULES: [&str; 6] = [
     "wiki-update",
     "writing",
     "writing-refinement",
+    "publishing",
     "publishing-xiaohongshu",
+    "typesetting-cover",
 ];
 
 pub fn install_device_skill(
@@ -27,6 +29,7 @@ pub fn install_device_skill(
                 modules.push(module_kind.to_owned());
             }
         })?;
+        attach_device_provenance_if_content_matches(&listing, &source_dir)?;
         return managed_skills(paths);
     }
 
@@ -39,7 +42,12 @@ pub fn install_device_skill(
     if final_dir.exists() {
         return Err(CliError::with_code("skill_name_conflict", format!("Skill target already exists: {skill_id}")));
     }
-    let manifest = custom_manifest(&skill_id, &discovered.name, vec![module_kind.to_owned()]);
+    let manifest = custom_manifest(
+        &skill_id,
+        &discovered.name,
+        vec![module_kind.to_owned()],
+        &source_dir,
+    )?;
     atomic_copy_device_skill(&source_dir, &final_dir, &manifest)?;
     managed_skills(paths)
 }
@@ -83,7 +91,10 @@ pub fn replace_skill_source(
         return Err(CliError::with_code("skill_name_conflict", "Device Skill name does not match the installed Skill."));
     }
     let manifest: Value = serde_json::from_slice(&fs::read(PathBuf::from(&listing.local_dir).join("manifest.json")).map_err(to_cli_error)?).map_err(to_cli_error)?;
+    let mut manifest = manifest_with_device_provenance(manifest, &source_dir)?;
+    manifest["updatedAt"] = json!(crate::control::now_iso());
     atomic_replace_device_skill(&source_dir, Path::new(&listing.local_dir), &manifest)?;
+    clear_ignored_device_mismatches(paths, &listing.skill.name)?;
     managed_skills(paths)
 }
 
@@ -147,7 +158,14 @@ fn validate_custom_module(module_kind: &str) -> Result<(), CliError> {
 fn custom_skill_modules(listing: &AgentSkillListing) -> Result<Vec<String>, CliError> {
     let manifest: Value = serde_json::from_slice(&fs::read(PathBuf::from(&listing.local_dir).join("manifest.json")).map_err(to_cli_error)?).map_err(to_cli_error)?;
     if let Some(modules) = manifest.pointer("/binding/moduleKinds").and_then(Value::as_array) {
-        return Ok(modules.iter().filter_map(Value::as_str).map(str::to_owned).collect());
+        return Ok(modules
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|module| match module {
+                "publishing-xiaohongshu" => "publishing".to_owned(),
+                value => value.to_owned(),
+            })
+            .collect());
     }
     Ok(managed_skill_module_kinds(listing))
 }
@@ -165,21 +183,27 @@ fn update_custom_skill_modules(
 fn write_custom_manifest(listing: &AgentSkillListing, modules: Vec<String>) -> Result<(), CliError> {
     let path = PathBuf::from(&listing.local_dir).join("manifest.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&path).map_err(to_cli_error)?).map_err(to_cli_error)?;
-    manifest["schemaVersion"] = json!(3);
+    manifest["schemaVersion"] = json!(MANAGED_SKILL_SCHEMA_VERSION);
     manifest["binding"] = json!({ "moduleKinds": modules });
     fs::write(path, format!("{}\n", serde_json::to_string_pretty(&manifest).map_err(to_cli_error)?)).map_err(to_cli_error)
 }
 
-fn custom_manifest(skill_id: &str, name: &str, modules: Vec<String>) -> Value {
-    json!({
-        "schemaVersion": 3,
+fn custom_manifest(
+    skill_id: &str,
+    name: &str,
+    modules: Vec<String>,
+    source_dir: &Path,
+) -> Result<Value, CliError> {
+    let manifest = json!({
+        "schemaVersion": MANAGED_SKILL_SCHEMA_VERSION,
         "source": "custom",
         "skillId": skill_id,
         "name": name,
         "binding": { "moduleKinds": modules },
         "createdAt": crate::control::now_iso(),
         "origin": "device",
-    })
+    });
+    manifest_with_device_provenance(manifest, source_dir)
 }
 
 fn atomic_copy_device_skill(source: &Path, target: &Path, manifest: &Value) -> Result<(), CliError> {
@@ -221,7 +245,7 @@ fn clear_removed_skill_module_selections(paths: &MyOpenPanelsPaths, skill_id: &s
         "writing-refinement" => {
             clear_writing_skill_module_selections(paths, skill_id, false, true)?;
         }
-        "publishing-xiaohongshu" => clear_publishing_skill_selections(paths, skill_id)?,
+        "publishing" | "publishing-xiaohongshu" => clear_publishing_skill_selections(paths, skill_id)?,
         _ => {}
     }
     Ok(())

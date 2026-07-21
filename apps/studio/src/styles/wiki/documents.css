@@ -414,19 +414,19 @@
   }
 
   .op-writing-workbench .op-wiki-column--structured {
-    order: 1;
-  }
-
-  .op-writing-workbench .op-wiki-column--raw {
     order: 2;
   }
 
-  .op-writing-workbench .op-writing-composer {
+  .op-writing-workbench .op-wiki-column--raw {
     order: 3;
   }
 
-  .op-writing-workbench .op-wiki-column--generated {
+  .op-writing-workbench .op-writing-composer {
     order: 4;
+  }
+
+  .op-writing-workbench .op-wiki-column--generated {
+    order: 1;
   }
 
   .op-wiki-column__header-toggle {
@@ -567,25 +567,22 @@
 
 @container (min-width: 460px) and (max-width: 959px) {
   .op-writing-workbench {
-    grid-template-areas:
-      "sources composer"
-      "sources generated";
-    grid-template-rows: repeat(2, minmax(280px, 1fr));
+    grid-template-areas: "sources composer";
+    grid-template-rows: minmax(0, 1fr);
     grid-template-columns: 320px minmax(0, 1fr);
-    height: max(calc(100vh - 84px), 576px);
+    height: calc(100vh - 84px);
   }
 
-  .op-writing-workbench .op-writing-composer,
-  .op-writing-workbench > .op-wiki-column--generated {
+  .op-writing-workbench .op-writing-composer {
     width: 100%;
-    height: auto;
+    height: 100%;
     min-height: 280px;
   }
 }
 
 @container (min-width: 960px) and (max-width: 1279px) {
   .op-writing-workbench {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: 320px minmax(0, 1fr);
   }
 }
 
@@ -623,18 +620,15 @@
   .op-writing-workbench {
     position: relative;
     display: grid;
-    grid-template-areas:
-      "composer"
-      "generated";
-    grid-template-rows: repeat(2, max(360px, calc((100vh - 116px) / 2)));
+    grid-template-areas: "composer";
+    grid-template-rows: max(360px, calc(100vh - 116px));
     grid-template-columns: minmax(0, 1fr);
     height: auto;
   }
 
-  .op-writing-workbench .op-writing-composer,
-  .op-writing-workbench > .op-wiki-column--generated {
+  .op-writing-workbench .op-writing-composer {
     width: 100%;
-    height: max(360px, calc((100vh - 116px) / 2));
+    height: max(360px, calc(100vh - 116px));
     min-height: 360px;
   }
 
@@ -679,10 +673,6 @@
     height: auto;
     min-height: 0;
     padding-inline: 4px;
-  }
-
-  .op-writing-source-library .op-wiki-column__header-toggle {
-    display: none;
   }
 
   .op-writing-source-library-backdrop {

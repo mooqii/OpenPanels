@@ -85,6 +85,7 @@
 }
 
 .op-agent-worker__header {
+  flex-wrap: wrap;
   gap: 10px;
   justify-content: space-between;
   min-width: 0;
@@ -119,10 +120,22 @@
 .op-agent-worker__controls {
   flex: 0 0 auto;
   gap: 2px;
+  margin-left: auto;
 }
 
 .op-agent-worker__concurrency {
   width: 92px;
+}
+
+.op-agent-worker__concurrency--manual {
+  width: 132px;
+}
+
+.op-agent-worker__project-drain {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding-inline: 8px;
+  font-size: 11px;
 }
 
 .op-agent-worker__concurrency .select__trigger {
@@ -266,6 +279,10 @@
   white-space: nowrap;
 }
 
+.op-agent-task-focus--single {
+  justify-content: flex-start;
+}
+
 .op-agent-task-focus button {
   flex: 0 0 auto;
   gap: 5px;
@@ -275,12 +292,12 @@
 }
 
 .op-agent-task {
+  position: relative;
   display: grid;
   gap: 7px;
   padding: 10px;
   background: color-mix(in oklab, var(--op-bg-elevated) 92%, transparent);
   border: 1px solid var(--op-border-default);
-  border-left: 3px solid var(--muted);
   border-radius: 8px;
 }
 
@@ -295,23 +312,12 @@
   border: 0;
 }
 
-.op-agent-task--danger {
-  border-left-color: var(--danger);
-}
-
-.op-agent-task--warning {
-  border-left-color: var(--warning);
-}
-
-.op-agent-task--active {
-  border-left-color: var(--accent);
-}
-
-.op-agent-task--success {
-  border-left-color: var(--success);
+.op-agent-task__summary--deletable {
+  padding-right: 30px;
 }
 
 .op-agent-task__topline,
+.op-agent-task__statusline,
 .op-agent-task__meta {
   display: flex;
   flex-wrap: wrap;
@@ -323,7 +329,11 @@
   justify-content: space-between;
 }
 
-.op-agent-task__topline span,
+.op-agent-task__statusline {
+  min-width: 0;
+}
+
+.op-agent-task__topline > time,
 .op-agent-task__meta span,
 .op-agent-task code {
   max-width: 100%;
@@ -332,9 +342,29 @@
   white-space: nowrap;
 }
 
-.op-agent-task__topline span {
+.op-agent-task__topline > time {
+  flex: 0 0 auto;
   font-size: 10px;
   color: var(--op-text-secondary);
+}
+
+.op-agent-task__status,
+.op-agent-task__statusline > span {
+  min-height: 22px;
+}
+
+.op-agent-task__delete {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+}
+
+.op-agent-task > .op-agent-task__delete {
+  position: absolute;
+  top: 7px;
+  right: 7px;
 }
 
 .op-agent-task strong {
@@ -400,7 +430,7 @@
 
 .op-agent-task__member {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 4px 10px;
   align-items: center;
   padding: 8px 0;
@@ -425,10 +455,7 @@
 }
 
 .op-agent-task__dispatch {
-  display: grid;
-  grid-template-columns: 62px minmax(0, 1fr);
-  gap: 6px 8px;
-  align-items: center;
+  min-width: 0;
 }
 
 .op-agent-task__dispatch-controls {
@@ -444,16 +471,25 @@
   height: 32px;
 }
 
-.op-agent-task__dispatch > span {
-  font-size: 10px;
-  font-weight: 750;
-  color: var(--op-text-tertiary);
+.op-agent-task__dispatch-controls > .op-agent-task__copy-instruction {
+  width: auto;
+  min-width: 94px;
+  padding-inline: 10px;
 }
 
 .op-agent-task__dispatch small {
-  grid-column: 2;
+  display: block;
+  margin-top: 4px;
   font-size: 10px;
   color: var(--danger);
+}
+
+.op-agent-task-list__error {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 
 .op-agent-task__command button,

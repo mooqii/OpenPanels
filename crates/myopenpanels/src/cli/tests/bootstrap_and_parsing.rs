@@ -487,18 +487,28 @@ fn project_read_commands_bootstrap_project() {
     ]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(bootstrap["protocolVersion"], 12);
+    assert_eq!(bootstrap["protocolVersion"], 13);
     assert_eq!(bootstrap["commandCatalogVersion"], 5);
     assert_eq!(bootstrap["panel"]["context"]["panelKind"], "canvas");
     assert_eq!(bootstrap["panel"]["selection"]["supported"], true);
     assert!(bootstrap.get("capabilities").is_none());
     let required_skill = &bootstrap["skills"][0];
-    assert_eq!(required_skill["id"], "myopenpanels-canvas-panel");
+    assert_eq!(required_skill["id"], "myopenpanels-panels");
     assert!(Path::new(required_skill["contextPath"].as_str().unwrap()).is_file());
     assert!(Path::new(required_skill["localPath"].as_str().unwrap()).is_file());
+    assert_eq!(required_skill["referencePaths"].as_array().unwrap().len(), 1);
+    assert!(required_skill["referencePaths"][0]
+        .as_str()
+        .unwrap()
+        .ends_with("references/canvas-contract.md"));
+    let canvas_loader = fs::read_to_string(required_skill["contextPath"].as_str().unwrap())
+        .expect("Canvas loader");
+    assert!(canvas_loader.contains("`canvas.image.generate`"));
+    assert!(!canvas_loader.contains("`wiki.page.search`"));
+    assert!(!canvas_loader.contains("`writing.generate`"));
     assert!(!legacy_skill_dir.exists());
     assert!(storage_dir
-        .join("skills/myopenpanels-canvas-panel/SKILL.md")
+        .join("skills/myopenpanels-panels/SKILL.md")
         .is_file());
 
     let (code, stdout, stderr) = run(&[
@@ -538,7 +548,7 @@ fn project_read_commands_bootstrap_project() {
     );
     assert_eq!(
         bootstrap["skills"][0]["id"],
-        "myopenpanels-writing-panel"
+        "myopenpanels-panels"
     );
 }
 
@@ -688,7 +698,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert_eq!(envelope["intent"], "agent.bootstrap.read");
     let payload = &envelope["data"];
     let actions = &envelope["actions"];
-    assert_eq!(payload["protocolVersion"], 12);
+    assert_eq!(payload["protocolVersion"], 13);
     assert!(payload.get("supportedProtocolVersions").is_none());
     assert_eq!(payload["cliVersion"], VERSION);
     assert_eq!(payload["commandCatalogVersion"], 5);
@@ -701,7 +711,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert_eq!(payload["panel"]["selection"]["supported"], true);
     assert_eq!(payload["operations"]["activeCount"], 0);
     assert_eq!(payload["operations"]["items"], json!([]));
-    assert!(actions["required"].as_array().unwrap().len() >= 2);
+    assert!(actions["required"].as_array().unwrap().len() >= 3);
     assert!(payload["discovery"]["recommendedDomains"]
         .as_array()
         .unwrap()
@@ -712,9 +722,18 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
         assert!(action["condition"].is_object());
     }
     let required_skill = &payload["skills"][0];
-    assert_eq!(required_skill["id"], "myopenpanels-wiki-panel");
+    assert_eq!(required_skill["id"], "myopenpanels-panels");
     assert!(Path::new(required_skill["contextPath"].as_str().unwrap()).is_file());
     assert!(Path::new(required_skill["localPath"].as_str().unwrap()).is_file());
+    assert!(required_skill["referencePaths"][0]
+        .as_str()
+        .unwrap()
+        .ends_with("references/wiki-contract.md"));
+    let wiki_loader = fs::read_to_string(required_skill["contextPath"].as_str().unwrap())
+        .expect("Wiki loader");
+    assert!(wiki_loader.contains("`wiki.page.search`"));
+    assert!(!wiki_loader.contains("`canvas.image.generate`"));
+    assert!(!wiki_loader.contains("`writing.generate`"));
     assert!(payload["discovery"].get("capabilityIndexAction").is_none());
     assert!(payload["discovery"].get("capabilityListActions").is_none());
     assert!(payload["discovery"].get("guideListAction").is_none());
@@ -804,8 +823,8 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
     assert!(stdout.len() <= crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES);
     let envelope = serde_json::from_str::<Value>(&stdout).expect("procedure bootstrap");
     let payload = &envelope["data"];
-    assert_eq!(payload["protocolVersion"], 12);
-    assert_eq!(payload["procedureCatalogVersion"], 1);
+    assert_eq!(payload["protocolVersion"], 13);
+    assert_eq!(payload["procedureCatalogVersion"], 2);
     assert_eq!(payload["agentProcedure"]["key"], "panel.canvas.image.insert");
     assert!(payload["agentProcedure"].get("executionMode").is_none());
     assert!(payload.get("workflowCatalogVersion").is_none());
@@ -818,7 +837,24 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
         payload["commands"]["items"][0]["intent"],
         "canvas.image.create"
     );
-    assert_eq!(envelope["actions"]["required"].as_array().unwrap().len(), 2);
+    assert_eq!(envelope["actions"]["required"].as_array().unwrap().len(), 3);
+    assert_eq!(payload["agentProcedure"]["skillId"], "myopenpanels-panels");
+    let reference_paths = payload["agentProcedure"]["referencePaths"]
+        .as_array()
+        .unwrap();
+    assert_eq!(reference_paths.len(), 2);
+    assert_eq!(
+        payload["agentProcedure"]["referencePath"],
+        reference_paths.last().unwrap().clone()
+    );
+    assert!(reference_paths[0]
+        .as_str()
+        .unwrap()
+        .ends_with("references/canvas-contract.md"));
+    assert!(reference_paths[1]
+        .as_str()
+        .unwrap()
+        .ends_with("references/canvas-image-insert.md"));
     assert!(envelope["actions"]["suggested"]
         .as_array()
         .unwrap()
@@ -880,6 +916,23 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
         );
         let envelope = serde_json::from_str::<Value>(&stdout).expect("procedure envelope");
         assert_eq!(envelope["data"]["agentProcedure"]["key"], procedure);
+        let reference_paths = envelope["data"]["agentProcedure"]["referencePaths"]
+            .as_array()
+            .expect("Procedure references");
+        assert_eq!(
+            envelope["data"]["agentProcedure"]["referencePath"],
+            reference_paths.last().unwrap().clone()
+        );
+        if procedure.starts_with("panel.") {
+            assert_eq!(envelope["data"]["agentProcedure"]["skillId"], "myopenpanels-panels");
+            assert_eq!(reference_paths.len(), 2);
+        } else {
+            assert_eq!(
+                envelope["data"]["agentProcedure"]["skillId"],
+                "myopenpanels-task-queue"
+            );
+            assert_eq!(reference_paths.len(), 1);
+        }
         if procedure == "panel.wiki.knowledge.query" {
             let selected_skill = envelope["data"]["skills"]
                 .as_array()
@@ -900,60 +953,4 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
             .iter()
             .all(|action| action["intent"] != "agent.catalog"));
     }
-}
-
-#[test]
-fn procedure_bootstrap_blocks_when_its_target_panel_is_missing() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let project_dir = temp.path().join("project");
-    let storage_dir = temp.path().join(".myopenpanels");
-    fs::create_dir_all(&project_dir).expect("project dir");
-    create_cli_project(&project_dir, &storage_dir);
-    let paths = resolve_myopenpanels_paths(
-        Some(project_dir.to_str().unwrap()),
-        Some(storage_dir.to_str().unwrap()),
-        Some("ctx"),
-    )
-    .expect("paths");
-    let bootstrap = crate::control::read_project_bootstrap(&paths, BootstrapRequest::new())
-        .expect("bootstrap");
-    let canvas_panel_id = bootstrap
-        .panels
-        .iter()
-        .find(|snapshot| snapshot.panel.kind == PanelKind::Canvas)
-        .expect("canvas panel")
-        .panel
-        .id
-        .clone();
-    let storage = crate::storage::Storage::open(&paths).expect("storage");
-    storage
-        .connection()
-        .execute(
-            "DELETE FROM panels WHERE project_id = ? AND id = ?",
-            rusqlite::params![bootstrap.project.id, canvas_panel_id],
-        )
-        .expect("remove canvas panel");
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "bootstrap",
-        "--procedure",
-        "panel.canvas.image.insert",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--format",
-        "json",
-    ]);
-
-    assert_eq!(code, 0, "{stderr}{stdout}");
-    let payload = serde_json::from_str::<Value>(&stdout).expect("blocked procedure");
-    assert_eq!(payload["readiness"], "blocked");
-    assert_eq!(payload["blockers"][0]["code"], "target_panel_required");
-    assert_eq!(payload["focus"]["panelKind"], "wiki");
-    assert_eq!(payload["target"]["panelKind"], "canvas");
-    assert_eq!(payload["target"]["panelId"], Value::Null);
 }

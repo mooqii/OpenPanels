@@ -8,7 +8,10 @@ pub struct ManagedSkill {
     pub module_kinds: Vec<String>,
     pub can_edit: bool,
     pub can_delete: bool,
+    pub can_check_updates: bool,
     pub local_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ManagedSkillProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,9 +52,42 @@ pub fn writing_refinement_agent_skill(
         })
 }
 
+pub fn list_typesetting_cover_skills(
+    paths: &MyOpenPanelsPaths,
+) -> Result<Vec<AgentSkillListing>, CliError> {
+    sync_builtin_agent_skills(paths)?;
+    Ok(list_agent_skills(paths)?
+        .into_iter()
+        .filter(|item| {
+            metadata_matches(
+                &item.skill.applies_to,
+                &item.skill.task_types,
+                Some("typesetting"),
+                Some(crate::typesetting::COVER_TASK_TYPE),
+            )
+        })
+        .collect())
+}
+
+pub fn typesetting_cover_skill(
+    paths: &MyOpenPanelsPaths,
+    skill_id: &str,
+) -> Result<AgentSkillListing, CliError> {
+    list_typesetting_cover_skills(paths)?
+        .into_iter()
+        .find(|item| item.skill.id == skill_id)
+        .ok_or_else(|| {
+            CliError::with_code(
+                "typesetting_cover_skill_not_found",
+                format!("Typesetting Cover Skill not found: {skill_id}"),
+            )
+        })
+}
+
 pub fn managed_skills(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     sync_builtin_agent_skills(paths)?;
     migrate_legacy_custom_agent_skills(paths)?;
+    migrate_skill_provenance(paths)?;
     let listings = list_agent_skills(paths)?;
     let mut system_skills = Vec::new();
     let mut modules = BTreeMap::<String, Vec<ManagedSkill>>::new();
@@ -61,6 +97,13 @@ pub fn managed_skills(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
         let managed = managed_skill_from_listing(&listing, kind, module_kinds.clone());
         if kind == "system" {
             system_skills.push(managed);
+            continue;
+        }
+        if module_kinds.is_empty() {
+            modules
+                .entry("unassociated".to_owned())
+                .or_default()
+                .push(managed);
             continue;
         }
         for module_kind in module_kinds {
@@ -224,6 +267,9 @@ fn managed_skill_from_listing(
     kind: &str,
     module_kinds: Vec<String>,
 ) -> ManagedSkill {
+    let provenance = (kind == "custom")
+        .then(|| managed_skill_provenance(listing))
+        .flatten();
     ManagedSkill {
         id: listing.skill.id.clone(),
         name: listing.skill.name.clone(),
@@ -232,7 +278,9 @@ fn managed_skill_from_listing(
         module_kinds,
         can_edit: kind == "custom",
         can_delete: kind == "custom",
+        can_check_updates: provenance.is_some(),
         local_dir: listing.local_dir.clone(),
+        provenance,
     }
 }
 
@@ -251,13 +299,16 @@ fn managed_skill_module_kinds(listing: &AgentSkillListing) -> Vec<String> {
     if has_panel("writing") && has_task("refine_writing_skill") {
         module_kinds.push("writing-refinement".to_owned());
     }
-    if has_panel("publishing") && has_task("publish_xiaohongshu_note") {
-        module_kinds.push("publishing-xiaohongshu".to_owned());
+    if has_panel("publishing") {
+        module_kinds.push("publishing".to_owned());
+    }
+    if has_panel("typesetting") && has_task(crate::typesetting::COVER_TASK_TYPE) {
+        module_kinds.push("typesetting-cover".to_owned());
     }
     for applies_to in &listing.skill.applies_to {
         if !matches!(
             applies_to.as_str(),
-            "wiki" | "writing" | "publishing" | "any"
+            "wiki" | "writing" | "typesetting" | "publishing" | "any"
         )
             && !module_kinds.contains(applies_to)
         {
@@ -321,34 +372,35 @@ fn clear_deleted_writing_skill_selections(
     clear_publishing_skill_selections(paths, skill_id)
 }
 
-pub fn list_xiaohongshu_publishing_skills(
+pub fn list_publishing_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
     sync_builtin_agent_skills(paths)?;
     Ok(list_agent_skills(paths)?
         .into_iter()
         .filter(|item| {
-            metadata_matches(
-                &item.skill.applies_to,
-                &item.skill.task_types,
-                Some("publishing"),
-                Some("publish_xiaohongshu_note"),
-            )
+            item.skill.applies_to.iter().any(|value| value == "publishing")
+                && item.skill.task_types.iter().any(|value| {
+                    matches!(
+                        value.as_str(),
+                        "publish_xiaohongshu_note" | "publish_wechat_official_account_draft"
+                    )
+                })
         })
         .collect())
 }
 
-pub fn xiaohongshu_publishing_skill(
+pub fn publishing_skill(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,
 ) -> Result<AgentSkillListing, CliError> {
-    list_xiaohongshu_publishing_skills(paths)?
+    list_publishing_skills(paths)?
         .into_iter()
         .find(|item| item.skill.id == skill_id)
         .ok_or_else(|| {
             CliError::with_code(
                 "publishing_skill_not_found",
-                format!("Xiaohongshu Publishing Skill not found: {skill_id}"),
+                format!("Publishing Skill not found: {skill_id}"),
             )
         })
 }

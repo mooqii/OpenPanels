@@ -30,10 +30,20 @@ describe("nextCollapsedModules", () => {
     ]).toEqual(["generated"])
   })
 
-  it("applies the same accordion behavior to Writing sources", () => {
+  it("lets all three Writing library modules collapse", () => {
     expect([
       ...nextCollapsedModules(collapsed("structured"), "raw", true),
-    ]).toEqual(["raw"])
+    ]).toEqual(["structured", "raw"])
+    expect([
+      ...nextCollapsedModules(
+        collapsed("generated", "structured"),
+        "raw",
+        true
+      ),
+    ]).toEqual(["structured", "raw"])
+    expect([
+      ...nextCollapsedModules(collapsed("generated"), "generated", true),
+    ]).toEqual([])
   })
 })
 

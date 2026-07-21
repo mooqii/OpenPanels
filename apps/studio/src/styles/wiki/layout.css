@@ -33,7 +33,7 @@
 }
 
 .op-wiki-panel__surface {
-  width: min(1280px, calc(100vw - 40px));
+  width: min(1440px, calc(100vw - 40px));
   min-height: 100vh;
   padding: 20px 0 64px;
   margin: 0 auto;
@@ -133,14 +133,10 @@
   display: none;
 }
 
-.design-shell__workspace .op-writing-panel .op-wiki-panel__surface {
-  width: min(1440px, calc(100% - 40px));
-}
-
 .op-writing-workbench {
-  grid-template-areas: "sources composer generated";
+  grid-template-areas: "sources composer";
   grid-template-rows: minmax(0, 1fr);
-  grid-template-columns: 320px minmax(0, 1fr) 320px;
+  grid-template-columns: 320px minmax(0, 1fr);
 }
 
 .op-writing-source-library {
@@ -162,10 +158,6 @@
 
 .op-writing-workbench .op-writing-composer {
   grid-area: composer;
-}
-
-.op-writing-workbench .op-wiki-column--generated {
-  grid-area: generated;
 }
 
 .op-writing-composer__content {
@@ -303,52 +295,10 @@
 .op-writing-skills {
   display: grid;
   gap: 8px;
+  container-type: inline-size;
 }
 
 .op-writing-skills__header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  font-size: 12px;
-}
-
-.op-writing-skills__header > span {
-  color: var(--op-text-tertiary);
-}
-
-.op-writing-skills__list {
-  display: grid;
-  gap: 6px;
-}
-
-.op-writing-skill {
-  display: flex;
-  gap: 9px;
-  align-items: flex-start;
-  padding: 9px;
-  background: var(--op-bg-muted);
-  border: 1px solid var(--op-border-subtle);
-  border-radius: 8px;
-}
-
-.op-writing-skill:has([data-selected="true"]) {
-  background: color-mix(in oklab, var(--accent) 8%, var(--op-bg-muted));
-  border-color: color-mix(in oklab, var(--accent) 42%, var(--op-border-subtle));
-}
-
-.op-writing-skill__body {
-  display: grid;
-  flex: 1;
-  gap: 4px;
-  min-width: 0;
-  cursor: pointer;
-}
-
-.op-writing-skill > button {
-  flex: 0 0 auto;
-}
-
-.op-writing-skill__title {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -356,23 +306,144 @@
   font-size: 12px;
 }
 
-.op-writing-skill__title > span {
-  flex: none;
-  padding: 2px 5px;
-  font-size: 10px;
+.op-writing-skills__header > span,
+.op-writing-skills__header-actions > span {
   color: var(--op-text-tertiary);
+}
+
+.op-writing-skills__header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.op-writing-skills__manage {
+  min-width: 0;
+  min-height: 24px;
+  padding-inline: 2px;
+  color: var(--accent);
+  background: transparent;
+}
+
+.op-writing-skills__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 220px));
+  gap: 6px;
+  justify-content: start;
+}
+
+.op-writing-skill {
+  position: relative;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  gap: 4px;
+  align-items: start;
+  width: 100%;
+  min-width: 0;
+  max-width: 220px;
+  padding: 7px 10px 9px;
+  background: var(--op-bg-muted);
   border: 1px solid var(--op-border-subtle);
-  border-radius: 6px;
+  border-radius: 8px;
+}
+
+.op-writing-skill:has(.op-writing-skill__selector[aria-pressed="true"]) {
+  background: color-mix(in oklab, var(--accent) 8%, var(--op-bg-muted));
+  border-color: color-mix(in oklab, var(--accent) 42%, var(--op-border-subtle));
+}
+
+.op-writing-skill:has(.op-writing-skill__selector[data-focus-visible="true"]) {
+  border-color: var(--accent);
+}
+
+.op-writing-skill__selector {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  cursor: pointer;
+  border: 0;
+  opacity: 0;
+}
+
+.op-writing-skill__body {
+  display: grid;
+  grid-row: 1;
+  grid-column: 1 / -1;
+  gap: 4px;
+  min-width: 0;
+}
+
+.op-writing-skill__menu {
+  --button-bg: transparent;
+  --button-bg-hover: color-mix(
+    in oklab,
+    var(--foreground) 9%,
+    var(--op-bg-muted)
+  );
+  --button-bg-pressed: color-mix(
+    in oklab,
+    var(--foreground) 13%,
+    var(--op-bg-muted)
+  );
+
+  z-index: 2;
+  grid-row: 1;
+  grid-column: 2;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  color: var(--op-text-secondary);
+  border-radius: 5px;
+}
+
+.op-writing-skill__menu:hover,
+.op-writing-skill__menu[data-hovered="true"] {
+  background: color-mix(in oklab, var(--foreground) 9%, var(--op-bg-muted));
+}
+
+.op-writing-skill__title {
+  display: block;
+  min-width: 0;
+  padding-right: 28px;
+  font-size: 12px;
+  line-height: 24px;
+}
+
+.op-writing-skill__title > strong {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .op-writing-skill__description {
   display: -webkit-box;
   -webkit-box-orient: vertical;
+  width: 100%;
+  padding: 0;
   overflow: hidden;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   font-size: 11px;
   line-height: 1.4;
   color: var(--op-text-secondary);
+}
+
+@container (max-width: 319px) {
+  .op-writing-skills__list {
+    grid-template-columns: minmax(0, 220px);
+  }
 }
 
 .op-writing-instructions {
@@ -540,6 +611,7 @@
 }
 
 .op-wiki-document-library > .op-wiki-column--generated::before,
+.op-writing-source-library > .op-wiki-column--structured::before,
 .op-writing-source-library > .op-wiki-column--raw::before {
   position: absolute;
   top: 0;
@@ -551,7 +623,7 @@
 }
 
 .op-writing-source-library > .op-wiki-column {
-  flex: 1 1 50%;
+  flex: 1 1 33.333%;
   min-height: 0;
   border: 0;
   border-radius: 0;

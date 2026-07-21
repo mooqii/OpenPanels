@@ -4,18 +4,21 @@ import { useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import type { ManualTaskInstructionsController } from "../../hooks/use-manual-task-instructions"
 import { copyTextToClipboard } from "../../lib/clipboard"
-import type { TaskExecutionScope } from "../../types"
+import type { MyOpenPanelsBuildInfo, TaskExecutionScope } from "../../types"
 import { manualTaskInstruction, taskExecutionScopeKey } from "./trace-utils"
 
 export function ManualTaskInstructionPrompt({
+  buildInfo,
   controller,
   onConfigureCli,
 }: {
+  buildInfo: MyOpenPanelsBuildInfo
   controller: ManualTaskInstructionsController
   onConfigureCli: () => void
 }) {
   return (
     <ManualTaskInstructionDialog
+      buildInfo={buildInfo}
       onClose={controller.dismiss}
       onConfigureCli={() => {
         controller.dismissAll()
@@ -27,10 +30,12 @@ export function ManualTaskInstructionPrompt({
 }
 
 export function ManualTaskInstructionDialog({
+  buildInfo,
   onClose,
   onConfigureCli,
   scope,
 }: {
+  buildInfo: MyOpenPanelsBuildInfo
   onClose: () => void
   onConfigureCli: () => void
   scope: TaskExecutionScope | null
@@ -40,7 +45,9 @@ export function ManualTaskInstructionDialog({
     status: "copied" | "failed"
     scopeKey: string
   } | null>(null)
-  const instruction = scope ? manualTaskInstruction(scope, locale) : ""
+  const instruction = scope
+    ? manualTaskInstruction(scope, locale, buildInfo)
+    : ""
 
   if (!scope) return null
   const scopeKey = taskExecutionScopeKey(scope)

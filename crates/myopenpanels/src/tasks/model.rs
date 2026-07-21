@@ -36,6 +36,8 @@ pub(crate) struct TaskRecord {
     pub(crate) assigned_target_id: Option<String>,
     pub(crate) completed_at: Option<String>,
     pub(crate) execution_generation: i64,
+    #[serde(default)]
+    pub(crate) execution_method: Value,
     pub(crate) available_at: Option<String>,
     pub(crate) archived_at: Option<String>,
     pub(crate) terminal_reason: Value,

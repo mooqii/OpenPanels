@@ -8,12 +8,15 @@ import {
   Modal,
   Select,
   Separator,
+  Tooltip,
 } from "@heroui/react"
 import {
+  Download,
   Eye,
   MoreHorizontal,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
   TriangleAlert,
   X,
@@ -24,66 +27,119 @@ import type {
   DeviceSkillGroup,
   ManagedProjectSkill,
   ManagedSkillModule,
+  SkillUpdateState,
 } from "../../types"
 
 const ASSOCIATION_MODULES = [
   "wiki-update",
   "writing",
   "writing-refinement",
-  "publishing-xiaohongshu",
+  "typesetting-cover",
+  "publishing",
 ] as const
 
-export function managedSkillActionIds(skill: ManagedProjectSkill) {
-  return skill.canDelete ? ["open", "delete"] : ["open"]
+export function managedSkillActionIds(
+  skill: ManagedProjectSkill,
+  updateState?: SkillUpdateState
+) {
+  const actions = ["open"]
+  if (updateState?.status === "updateAvailable") actions.push("update")
+  if (skill.canDelete) actions.push("delete")
+  return actions
 }
 
 export function InstalledSkillsPanel({
   isLoading,
+  isCheckingUpdates,
   modules,
+  onCheckUpdates,
   onDelete,
   onOpen,
+  onUpdate,
   systemSkills,
+  updateStates,
+  updatingSkillId,
 }: {
+  isCheckingUpdates: boolean
   isLoading: boolean
   modules: ManagedSkillModule[]
+  onCheckUpdates: () => void
   onDelete: (skill: ManagedProjectSkill) => void
   onOpen: (skill: ManagedProjectSkill) => void
+  onUpdate: (skill: ManagedProjectSkill) => void
   systemSkills: ManagedProjectSkill[]
+  updateStates: Record<string, SkillUpdateState>
+  updatingSkillId: string | null
 }) {
   const { t } = useMyOpenPanelsI18n()
   if (isLoading)
     return <div className="op-skill-manager__empty">{t`Loading...`}</div>
   return (
-    <div className="op-skill-sections">
-      <SkillSection
-        onDelete={onDelete}
-        onOpen={onOpen}
-        skills={systemSkills}
-        title={t`MyOpenPanels system`}
-      />
-      {modules.map((module) => (
+    <>
+      <div className="op-skill-manager__toolbar op-skill-manager__toolbar--installed">
+        <Tooltip closeDelay={0} delay={300}>
+          <Button
+            aria-label={t`Check Skill updates`}
+            isIconOnly
+            isPending={isCheckingUpdates}
+            onPress={onCheckUpdates}
+            size="sm"
+            variant="ghost"
+          >
+            <RefreshCw size={15} />
+          </Button>
+          <Tooltip.Content placement="bottom">
+            {t`Check Skill updates`}
+          </Tooltip.Content>
+        </Tooltip>
+      </div>
+      <div className="op-skill-sections">
         <SkillSection
-          key={module.kind}
+          isCheckingUpdates={isCheckingUpdates}
           onDelete={onDelete}
           onOpen={onOpen}
-          skills={module.skills}
-          title={moduleLabel(module.kind, t)}
+          onUpdate={onUpdate}
+          skills={systemSkills}
+          title={t`MyOpenPanels system`}
+          updateStates={updateStates}
+          updatingSkillId={updatingSkillId}
         />
-      ))}
-    </div>
+        {modules.map((module) => (
+          <SkillSection
+            isCheckingUpdates={isCheckingUpdates}
+            key={module.kind}
+            onDelete={onDelete}
+            onOpen={onOpen}
+            onUpdate={onUpdate}
+            skills={module.skills}
+            title={moduleLabel(module.kind, t)}
+            updateStates={updateStates}
+            updatingSkillId={updatingSkillId}
+          />
+        ))}
+      </div>
+    </>
   )
 }
 
 function SkillSection({
+  isCheckingUpdates,
   onDelete,
   onOpen,
+  onUpdate,
   skills,
   title,
+  updateStates,
+  updatingSkillId,
 }: {
+  isCheckingUpdates: boolean
   onDelete: (skill: ManagedProjectSkill) => void
   onOpen: (skill: ManagedProjectSkill) => void
+  onUpdate: (skill: ManagedProjectSkill) => void
   skills: ManagedProjectSkill[]
   title: string
+  updateStates: Record<string, SkillUpdateState>
+  updatingSkillId: string | null
 }) {
   if (skills.length === 0) return null
   return (
@@ -92,10 +148,14 @@ function SkillSection({
       <div className="op-skill-list">
         {skills.map((skill) => (
           <SkillRow
+            isCheckingUpdates={isCheckingUpdates}
             key={skill.id}
             onDelete={onDelete}
             onOpen={onOpen}
+            onUpdate={onUpdate}
             skill={skill}
+            updateState={updateStates[skill.id]}
+            updatingSkillId={updatingSkillId}
           />
         ))}
       </div>
@@ -104,16 +164,30 @@ function SkillSection({
 }
 
 function SkillRow({
+  isCheckingUpdates,
   onDelete,
   onOpen,
+  onUpdate,
   skill,
+  updateState,
+  updatingSkillId,
 }: {
+  isCheckingUpdates: boolean
   onDelete: (skill: ManagedProjectSkill) => void
   onOpen: (skill: ManagedProjectSkill) => void
+  onUpdate: (skill: ManagedProjectSkill) => void
   skill: ManagedProjectSkill
+  updateState?: SkillUpdateState
+  updatingSkillId: string | null
 }) {
   const { t } = useMyOpenPanelsI18n()
-  const actionIds = managedSkillActionIds(skill)
+  const actionIds = managedSkillActionIds(skill, updateState)
+  const updatePresentation = skillUpdatePresentation(
+    skill,
+    updateState,
+    isCheckingUpdates,
+    t
+  )
   return (
     <div className="op-skill-row">
       <div className="op-skill-row__content">
@@ -126,13 +200,34 @@ function SkillRow({
                 ? t`Preset`
                 : t`Self-built`}
           </Chip>
+          {updatePresentation ? (
+            <Chip
+              className={`op-skill-update-chip op-skill-update-chip--${updatePresentation.tone}`}
+              size="sm"
+              title={updateState?.message}
+              variant="soft"
+            >
+              {updatePresentation.label}
+            </Chip>
+          ) : null}
         </div>
         <span>{skill.description}</span>
+        {skill.kind === "custom" ? (
+          <span
+            className="op-skill-row__source"
+            title={skill.provenance?.sourceLocator}
+          >
+            {skill.provenance
+              ? `${skillSourceLabel(skill.provenance.sourceType, t)} · ${skill.provenance.sourceLocator}`
+              : t`Local import`}
+          </span>
+        ) : null}
       </div>
       <Dropdown>
         <Button
           aria-label={`${t`Skill actions`}: ${skill.name}`}
           isIconOnly
+          isPending={updatingSkillId === skill.id}
           size="sm"
           variant="ghost"
         >
@@ -142,6 +237,7 @@ function SkillRow({
           <Dropdown.Menu
             onAction={(key) => {
               if (key === "open") onOpen(skill)
+              if (key === "update") onUpdate(skill)
               if (key === "delete") onDelete(skill)
             }}
           >
@@ -152,6 +248,12 @@ function SkillRow({
               {skill.canEdit ? <Pencil size={14} /> : <Eye size={14} />}
               <Label>{skill.canEdit ? t`Edit` : t`View`}</Label>
             </Dropdown.Item>
+            {actionIds.includes("update") ? (
+              <Dropdown.Item id="update" textValue={t`Update Skill`}>
+                <Download size={14} />
+                <Label>{t`Update Skill`}</Label>
+              </Dropdown.Item>
+            ) : null}
             {actionIds.includes("delete") ? <Separator /> : null}
             {actionIds.includes("delete") ? (
               <Dropdown.Item id="delete" textValue={t`Delete`} variant="danger">
@@ -164,6 +266,56 @@ function SkillRow({
       </Dropdown>
     </div>
   )
+}
+
+export function skillUpdatePresentation(
+  skill: ManagedProjectSkill,
+  state: SkillUpdateState | undefined,
+  isChecking: boolean,
+  t: (value: TemplateStringsArray) => string
+): { label: string; tone: string } | null {
+  if (skill.kind !== "custom") return null
+  if (isChecking && skill.canCheckUpdates) {
+    return { label: t`Checking`, tone: "checking" }
+  }
+  if (!state && skill.canCheckUpdates) {
+    return { label: t`Not checked`, tone: "neutral" }
+  }
+  if (!state || state.status === "unmanaged") {
+    return { label: t`Updates unavailable`, tone: "neutral" }
+  }
+  if (state.status === "sourceUnavailable") {
+    return {
+      label: state.localModified
+        ? t`Source unavailable · Local changes`
+        : t`Source unavailable`,
+      tone: "danger",
+    }
+  }
+  if (state.status === "updateAvailable") {
+    return {
+      label: state.localModified
+        ? t`Update available · Local changes`
+        : t`Update available`,
+      tone: "warning",
+    }
+  }
+  if (state.localModified) {
+    return { label: t`Local changes`, tone: "warning" }
+  }
+  return { label: t`Up to date`, tone: "success" }
+}
+
+function skillSourceLabel(
+  sourceType: string,
+  t: (value: TemplateStringsArray) => string
+) {
+  if (sourceType === "github") return "GitHub"
+  if (sourceType === "skills-sh") return "skills.sh"
+  if (sourceType === "clawhub") return "ClawHub"
+  if (sourceType === "skillhub") return "SkillHub"
+  if (sourceType === "device") return t`Device`
+  return sourceType
 }
 
 export function DeviceSkillsPanel({
@@ -308,11 +460,13 @@ export function moduleLabel(
   if (kind === "wiki-update") return t`Wiki updates`
   if (kind === "writing") return t`Writing`
   if (kind === "writing-refinement") return t`Writing refinement`
-  if (kind === "publishing-xiaohongshu") return t`Xiaohongshu publishing`
+  if (kind === "typesetting-cover") return t`Cover creation`
+  if (kind === "publishing" || kind === "publishing-xiaohongshu")
+    return t`Content publishing`
   if (kind === "wiki") return t`Wiki`
   if (kind === "canvas") return t`Canvas`
   if (kind === "typesetting") return t`Typesetting`
-  if (kind === "publishing") return t`Publishing`
+  if (kind === "unassociated") return t`Unassociated Skills`
   return kind
 }
 

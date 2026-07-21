@@ -16,32 +16,34 @@ import {
   plainTextToTypesettingContent,
   TYPESETTING_ASSET_DRAG_TYPE,
   TYPESETTING_AUTOSAVE_DELAY_MS,
+  typesettingCoverRequestPayload,
+  typesettingCoverTaskStatus,
   typesettingInsertPosition,
   typesettingTitleAfterDocumentInsert,
 } from "./typesetting"
 
 describe("Typesetting state", () => {
-  it("normalizes malformed state and accepts complete schema v1 data", () => {
+  it("normalizes malformed state and accepts complete schema v2 data", () => {
     expect(normalizePanelState("typesetting", { schemaVersion: 9 })).toEqual({
       publications: [],
-      schemaVersion: 1,
+      schemaVersion: 2,
     })
     const publication = createTypesettingPublication(
       "publication:1",
       "2026-07-14T00:00:00Z"
     )
     expect(
-      isTypesettingState({ schemaVersion: 1, publications: [publication] })
+      isTypesettingState({ schemaVersion: 2, publications: [publication] })
     ).toBe(true)
     expect(
       isTypesettingState({
-        schemaVersion: 1,
+        schemaVersion: 2,
         publications: [{ ...publication, content: null }],
       })
     ).toBe(false)
     expect(
       isTypesettingState({
-        schemaVersion: 1,
+        schemaVersion: 2,
         publications: [
           {
             ...publication,
@@ -165,11 +167,11 @@ describe("Typesetting assets and persistence", () => {
     }
     const local: TypesettingState = {
       publications: [localA],
-      schemaVersion: 1,
+      schemaVersion: 2,
     }
     const remote: TypesettingState = {
       publications: [remoteA, remoteB],
-      schemaVersion: 1,
+      schemaVersion: 2,
     }
     expect(
       mergeTypesettingConflict({
@@ -181,6 +183,92 @@ describe("Typesetting assets and persistence", () => {
     ).toEqual(["Local A", "Remote B"])
     expect(TYPESETTING_AUTOSAVE_DELAY_MS).toBe(500)
   })
+
+  it("keeps local article edits while appending remotely generated covers", () => {
+    const localPublication = {
+      ...createTypesettingPublication(
+        "publication:cover",
+        "2026-07-14T00:00:00Z"
+      ),
+      covers: [first],
+      title: "Local title",
+    }
+    const generated = generatedImage("asset:generated", "task:cover")
+    const remotePublication = {
+      ...localPublication,
+      covers: [first, generated],
+      title: "Saved title",
+    }
+    const merged = mergeTypesettingConflict({
+      deletedIds: new Set(),
+      dirtyIds: new Set([localPublication.id]),
+      local: { publications: [localPublication], schemaVersion: 2 },
+      remote: { publications: [remotePublication], schemaVersion: 2 },
+    })
+
+    expect(merged.publications[0]?.title).toBe("Local title")
+    expect(merged.publications[0]?.covers).toEqual([first, generated])
+  })
+
+  it("does not restore a generated cover explicitly deleted during a conflict", () => {
+    const publication = createTypesettingPublication(
+      "publication:cover",
+      "2026-07-14T00:00:00Z"
+    )
+    const generated = generatedImage("asset:deleted", "task:cover")
+    const merged = mergeTypesettingConflict({
+      deletedCoverAssetRefs: new Map([
+        [publication.id, new Set([generated.assetRef])],
+      ]),
+      deletedIds: new Set(),
+      dirtyIds: new Set([publication.id]),
+      local: { publications: [publication], schemaVersion: 2 },
+      remote: {
+        publications: [{ ...publication, covers: [generated] }],
+        schemaVersion: 2,
+      },
+    })
+
+    expect(merged.publications[0]?.covers).toEqual([])
+  })
+})
+
+describe("Typesetting cover tasks", () => {
+  it("builds the cover request payload and omits blank optional instructions", () => {
+    expect(
+      typesettingCoverRequestPayload({
+        instruction: "  bold editorial collage  ",
+        publicationId: "publication:1",
+        requestId: "cover-request:1",
+        skillId: "typesetting-cover-default",
+      })
+    ).toEqual({
+      instruction: "bold editorial collage",
+      publicationId: "publication:1",
+      requestId: "cover-request:1",
+      skillId: "typesetting-cover-default",
+    })
+    expect(
+      typesettingCoverRequestPayload({
+        instruction: "  ",
+        publicationId: "publication:1",
+        requestId: "cover-request:2",
+        skillId: "typesetting-cover-default",
+      })
+    ).toEqual({
+      publicationId: "publication:1",
+      requestId: "cover-request:2",
+      skillId: "typesetting-cover-default",
+    })
+  })
+
+  it("maps every cover task lifecycle state to its placeholder status", () => {
+    expect(typesettingCoverTaskStatus(task("queued"))).toBe("waiting")
+    expect(typesettingCoverTaskStatus(task("running"))).toBe("running")
+    expect(typesettingCoverTaskStatus(task("succeeded"))).toBe("saving")
+    expect(typesettingCoverTaskStatus(task("failed"))).toBe("failed")
+    expect(typesettingCoverTaskStatus(task("cancelled"))).toBe("cancelled")
+  })
 })
 
 function image(assetRef: string): TypesettingPublicationImage {
@@ -188,9 +276,29 @@ function image(assetRef: string): TypesettingPublicationImage {
     assetRef,
     fileName: `${assetRef}.png`,
     mimeType: "image/png",
-    sourceAssetRef: `source:${assetRef}`,
-    sourceCanvasPanelId: "panel:canvas",
-    sourceProjectId: "project:1",
+    source: {
+      assetRef: `source:${assetRef}`,
+      kind: "canvas",
+      panelId: "panel:canvas",
+      projectId: "project:1",
+    },
+    src: `/api/${assetRef}.png`,
+  }
+}
+
+function generatedImage(
+  assetRef: string,
+  taskId: string
+): TypesettingPublicationImage {
+  return {
+    assetRef,
+    fileName: `${assetRef}.png`,
+    mimeType: "image/png",
+    source: {
+      kind: "generated",
+      skillId: "typesetting-cover-default",
+      taskId,
+    },
     src: `/api/${assetRef}.png`,
   }
 }
@@ -209,5 +317,20 @@ function canvasAsset(
     projectId,
     projectTitle: projectId,
     src: `/api/${assetId}.png`,
+  }
+}
+
+function task(status: string) {
+  return {
+    createdAt: "2026-07-21T00:00:00Z",
+    id: `task:${status}`,
+    panelId: "panel:typesetting",
+    panelKind: "typesetting",
+    projectId: "project:1",
+    queue: "typesetting",
+    status,
+    targetId: "publication:1",
+    type: "generate_typesetting_cover",
+    updatedAt: "2026-07-21T00:00:00Z",
   }
 }

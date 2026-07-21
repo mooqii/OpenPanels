@@ -1,37 +1,33 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
+import { Button } from "@heroui/react"
+import { FileText, PanelLeft } from "lucide-react"
+import { type ReactNode, useCallback, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
+import { useTypesettingStateEditor } from "../../hooks/use-typesetting-state-editor"
 import {
   apiFetch,
   apiJson,
-  isTypesettingState,
   originalPreviewKind,
-  savePanelState,
   tryOpenBrowserWindow,
   wikiRawOriginalUrl,
 } from "../../lib/api"
 import { randomId } from "../../lib/id"
-import {
-  createTypesettingPublication,
-  mergeTypesettingConflict,
-  TYPESETTING_AUTOSAVE_DELAY_MS,
-} from "../../lib/typesetting"
+import { createTypesettingPublication } from "../../lib/typesetting"
 import type {
   MyOpenPanelsTransport,
-  TypesettingCanvasAsset,
+  ProjectTask,
   TypesettingPublication,
-  TypesettingPublicationImage,
   TypesettingState,
   WikiGeneratedDocument,
   WikiRawDocument,
   WikiState,
 } from "../../types"
+import { PublicationPreview } from "../publishing/PublicationPreview"
 import { ConfirmDialog } from "../wiki/Dialogs"
 
-import { PublicationList, TypesettingLibrary } from "./TypesettingLibrary"
+import { TypesettingLibrary } from "./TypesettingLibrary"
 import { PublicationDetail } from "./TypesettingPublication"
 import { DocumentPreviewDialog } from "./TypesettingToolbar"
 
-type SaveStatus = "saved" | "saving" | "failed"
 type DocumentPreview =
   | {
       content: string | null
@@ -51,204 +47,58 @@ type DocumentPreview =
       loading: boolean
     }
 
-interface ImportedTypesettingAsset {
-  assetRef: string
-  fileName: string
-  mimeType: string
-  sourceAssetRef: string
-  sourceCanvasPanelId: string
-  sourceProjectId: string
-  src: string
-}
-
 export function TypesettingPanel({
   chromeContent,
   onStateSaved,
+  onOpenAgentTasks,
   panelId,
   projectId,
   revision,
   state: initialState,
+  tasks,
   transport,
   wiki,
 }: {
   chromeContent: ReactNode
   onStateSaved: (state: TypesettingState, revision: number) => void
+  onOpenAgentTasks: (taskIds: string[]) => void
   panelId: string
   projectId: string
   revision: number
   state: TypesettingState
+  tasks: ProjectTask[]
   transport: MyOpenPanelsTransport
   wiki: WikiState
 }) {
   const { t } = useMyOpenPanelsI18n()
-  const [state, setState] = useState(initialState)
-  const [view, setView] = useState<"list" | "detail">("list")
+  const [view, setView] = useState<"edit" | "preview">("edit")
   const [activePublicationId, setActivePublicationId] = useState<string | null>(
     null
   )
   const [pendingDelete, setPendingDelete] =
     useState<TypesettingPublication | null>(null)
   const [preview, setPreview] = useState<DocumentPreview | null>(null)
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved")
-  const [saveError, setSaveError] = useState<string | null>(null)
-  const [saveGeneration, setSaveGeneration] = useState(0)
   const [isLibraryOpen, setIsLibraryOpen] = useState(false)
-  const stateRef = useRef(state)
-  const revisionRef = useRef(revision)
-  const dirtyIdsRef = useRef(new Set<string>())
-  const deletedIdsRef = useRef(new Set<string>())
-  const changeGenerationRef = useRef(0)
-  const saveInFlightRef = useRef<Promise<void> | null>(null)
-  const flushRef = useRef<() => Promise<void>>(async () => undefined)
   const insertDocumentRef = useRef<
     | ((title: string, content: string, format: "markdown" | "text") => void)
     | null
   >(null)
-
-  useEffect(() => {
-    stateRef.current = state
-  }, [state])
-
-  useEffect(() => {
-    if (
-      revision <= revisionRef.current ||
-      dirtyIdsRef.current.size > 0 ||
-      deletedIdsRef.current.size > 0
-    ) {
-      return
-    }
-    revisionRef.current = revision
-    stateRef.current = initialState
-    setState(initialState)
-  }, [initialState, revision])
-
-  const replaceState = useCallback(
-    (
-      next: TypesettingState,
-      publicationId: string,
-      options?: { deleted?: boolean }
-    ) => {
-      stateRef.current = next
-      setState(next)
-      dirtyIdsRef.current.add(publicationId)
-      if (options?.deleted) deletedIdsRef.current.add(publicationId)
-      else deletedIdsRef.current.delete(publicationId)
-      changeGenerationRef.current += 1
-      setSaveGeneration(changeGenerationRef.current)
-      setSaveStatus("saving")
-      setSaveError(null)
-    },
-    []
-  )
-
-  const updatePublication = useCallback(
-    (
-      publicationId: string,
-      updater: (publication: TypesettingPublication) => TypesettingPublication
-    ) => {
-      const current = stateRef.current
-      const publications = current.publications.map((publication) =>
-        publication.id === publicationId ? updater(publication) : publication
-      )
-      replaceState({ ...current, publications }, publicationId)
-    },
-    [replaceState]
-  )
-
-  const flushSave = useCallback(async () => {
-    if (saveInFlightRef.current) {
-      await saveInFlightRef.current
-      if (dirtyIdsRef.current.size > 0 || deletedIdsRef.current.size > 0) {
-        await flushRef.current()
-      }
-      return
-    }
-    if (dirtyIdsRef.current.size === 0 && deletedIdsRef.current.size === 0) {
-      return
-    }
-
-    const save = (async () => {
-      let payloadState = stateRef.current
-      let generation = changeGenerationRef.current
-      try {
-        let saved: { revision: number }
-        try {
-          saved = await savePanelState(
-            transport,
-            projectId,
-            panelId,
-            payloadState,
-            revisionRef.current
-          )
-        } catch (error) {
-          if (!(error instanceof Error && error.message === "HTTP 409")) {
-            throw error
-          }
-          const remote = await apiJson<{
-            revision: number
-            state: unknown
-          }>(
-            transport.apiBase,
-            `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/state`
-          )
-          if (!isTypesettingState(remote.state)) {
-            throw new Error("Invalid remote Typesetting state")
-          }
-          payloadState = mergeTypesettingConflict({
-            deletedIds: deletedIdsRef.current,
-            dirtyIds: dirtyIdsRef.current,
-            local: stateRef.current,
-            remote: remote.state,
-          })
-          generation = changeGenerationRef.current
-          stateRef.current = payloadState
-          setState(payloadState)
-          saved = await savePanelState(
-            transport,
-            projectId,
-            panelId,
-            payloadState,
-            remote.revision
-          )
-        }
-
-        revisionRef.current = saved.revision
-        onStateSaved(payloadState, saved.revision)
-        if (changeGenerationRef.current === generation) {
-          dirtyIdsRef.current.clear()
-          deletedIdsRef.current.clear()
-          setSaveStatus("saved")
-        }
-      } catch (error) {
-        setSaveStatus("failed")
-        setSaveError(String(error instanceof Error ? error.message : error))
-      } finally {
-        saveInFlightRef.current = null
-      }
-    })()
-    saveInFlightRef.current = save
-    await save
-  }, [onStateSaved, panelId, projectId, transport])
-
-  useEffect(() => {
-    flushRef.current = flushSave
-  }, [flushSave])
-
-  useEffect(() => {
-    if (saveStatus !== "saving") return
-    const timer = window.setTimeout(() => {
-      if (saveGeneration !== changeGenerationRef.current) return
-      flushSave().catch(() => undefined)
-    }, TYPESETTING_AUTOSAVE_DELAY_MS)
-    return () => window.clearTimeout(timer)
-  }, [flushSave, saveGeneration, saveStatus])
-
-  useEffect(
-    () => () => {
-      flushRef.current().catch(() => undefined)
-    },
-    []
-  )
+  const {
+    flushSave,
+    importAsset,
+    replaceState,
+    saveError,
+    saveStatus,
+    state,
+    updatePublication,
+  } = useTypesettingStateEditor({
+    initialState,
+    onStateSaved,
+    panelId,
+    projectId,
+    revision,
+    transport,
+  })
 
   const createPublication = useCallback(() => {
     const timestamp = new Date().toISOString()
@@ -257,19 +107,19 @@ export function TypesettingPanel({
       timestamp
     )
     const next = {
-      ...stateRef.current,
-      publications: [publication, ...stateRef.current.publications],
+      ...state,
+      publications: [publication, ...state.publications],
     }
     replaceState(next, publication.id)
     setActivePublicationId(publication.id)
-    setView("detail")
-  }, [replaceState])
+    setView("edit")
+  }, [replaceState, state])
 
   const deletePublication = useCallback(
     (publication: TypesettingPublication) => {
       const next = {
-        ...stateRef.current,
-        publications: stateRef.current.publications.filter(
+        ...state,
+        publications: state.publications.filter(
           (candidate) => candidate.id !== publication.id
         ),
       }
@@ -277,38 +127,10 @@ export function TypesettingPanel({
       setPendingDelete(null)
       if (activePublicationId === publication.id) {
         setActivePublicationId(null)
-        setView("list")
+        setView("edit")
       }
     },
-    [activePublicationId, replaceState]
-  )
-
-  const importAsset = useCallback(
-    async (
-      asset: TypesettingCanvasAsset
-    ): Promise<TypesettingPublicationImage> => {
-      const imported = await apiJson<ImportedTypesettingAsset>(
-        transport.apiBase,
-        `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/assets/import`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ sourceAssetRef: asset.assetRef }),
-        }
-      )
-      return {
-        assetRef: imported.assetRef,
-        fileName: imported.fileName,
-        height: asset.height,
-        mimeType: imported.mimeType || asset.mimeType,
-        sourceAssetRef: imported.sourceAssetRef,
-        sourceCanvasPanelId: imported.sourceCanvasPanelId,
-        sourceProjectId: imported.sourceProjectId,
-        src: imported.src,
-        width: asset.width,
-      }
-    },
-    [panelId, projectId, transport.apiBase]
+    [activePublicationId, replaceState, state]
   )
 
   const openRawDocument = useCallback(
@@ -464,29 +286,36 @@ export function TypesettingPanel({
           />
         ) : null}
         <TypesettingLibrary
+          activePublicationId={activePublicationId}
           className={isLibraryOpen ? "is-open" : ""}
           onClose={() => setIsLibraryOpen(false)}
+          onCreatePublication={createPublication}
           onOpenGenerated={openGeneratedDocument}
+          onOpenPublication={(publication) => {
+            setActivePublicationId(publication.id)
+            setView("edit")
+            setIsLibraryOpen(false)
+          }}
           onOpenRaw={openRawDocument}
           onOpenRawOriginal={openRawOriginal}
           projectId={projectId}
+          publications={state.publications}
           transport={transport}
           wiki={wiki}
         />
-        <main className="op-typesetting-main">
-          {view === "detail" && activePublication ? (
+        <div className="op-typesetting-main">
+          {activePublication && view === "edit" ? (
             <PublicationDetail
               importAsset={importAsset}
               key={activePublication.id}
-              onBack={() => {
-                setView("list")
-                setActivePublicationId(null)
-              }}
               onDelete={() => setPendingDelete(activePublication)}
+              onFlushSave={flushSave}
               onInsertHandlerChange={(handler) => {
                 insertDocumentRef.current = handler
               }}
+              onOpenAgentTasks={onOpenAgentTasks}
               onOpenLibrary={() => setIsLibraryOpen(true)}
+              onPreview={() => setView("preview")}
               onRetrySave={() => flushSave().catch(() => undefined)}
               onUpdate={(updater) =>
                 updatePublication(activePublication.id, updater)
@@ -494,29 +323,40 @@ export function TypesettingPanel({
               publication={activePublication}
               saveError={saveError}
               saveStatus={saveStatus}
+              tasks={tasks}
+              transport={transport}
+            />
+          ) : activePublication ? (
+            <PublicationPreview
+              className="op-typesetting-publication-preview"
+              key={activePublication.id}
+              onEdit={() => setView("edit")}
+              onOpenSources={() => setIsLibraryOpen(true)}
+              publication={activePublication}
               transport={transport}
             />
           ) : (
-            <PublicationList
-              onCreate={createPublication}
-              onOpen={(publication) => {
-                setActivePublicationId(publication.id)
-                setView("detail")
-              }}
-              onOpenLibrary={() => setIsLibraryOpen(true)}
-              onRetrySave={() => flushSave().catch(() => undefined)}
-              publications={state.publications}
-              saveError={saveError}
-              saveStatus={saveStatus}
-              transport={transport}
-            />
+            <div className="op-typesetting-selection-empty">
+              <FileText size={24} />
+              <p>
+                {t`Select publication content from the left to edit, or create new publication content.`}
+              </p>
+              <Button
+                className="op-typesetting-selection-empty__open"
+                onPress={() => setIsLibraryOpen(true)}
+                variant="primary"
+              >
+                <PanelLeft size={16} />
+                {t`Publication content`}
+              </Button>
+            </div>
           )}
-        </main>
+        </div>
       </div>
 
       {preview ? (
         <DocumentPreviewDialog
-          activePublication={Boolean(activePublication)}
+          activePublication={Boolean(activePublication && view === "edit")}
           onClose={() => setPreview(null)}
           onInsert={() => {
             if (preview.content === null) return

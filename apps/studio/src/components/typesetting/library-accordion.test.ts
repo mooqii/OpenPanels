@@ -24,7 +24,10 @@ describe("nextCollapsedLibraryModules", () => {
 
   it("does not collapse the only expanded module", () => {
     expect([
-      ...nextCollapsedLibraryModules(collapsed("raw", "generated"), "assets"),
-    ]).toEqual(["raw", "generated"])
+      ...nextCollapsedLibraryModules(
+        collapsed("publications", "raw", "generated"),
+        "assets"
+      ),
+    ]).toEqual(["publications", "raw", "generated"])
   })
 })

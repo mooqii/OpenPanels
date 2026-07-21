@@ -129,6 +129,108 @@ mod tests {
     }
 
     #[test]
+    fn task_execution_method_records_the_actual_executor() {
+        assert_eq!(
+            task_execution_method(
+                Some("local-cli:codex"),
+                Some("generated target name"),
+                Some("codex")
+            ),
+            json!({
+                "kind": "localCli",
+                "connectionId": "local-cli:codex",
+                "providerId": "codex",
+            })
+        );
+        assert_eq!(
+            task_execution_method(None, Some("manual-task-handoff:1"), Some("agent-message")),
+            json!({ "kind": "manualInstruction" })
+        );
+        assert_eq!(task_execution_method(None, None, None), Value::Null);
+    }
+
+    #[test]
+    fn project_tasks_include_the_latest_recorded_executor() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        let project = Project {
+            id: "project:executor".to_owned(),
+            title: "Executor".to_owned(),
+            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            panel_ids: vec!["panel:wiki".to_owned()],
+        };
+        storage.write_project(&project).expect("write project");
+        storage
+            .write_panel(&Panel {
+                id: "panel:wiki".to_owned(),
+                project_id: project.id.clone(),
+                kind: PanelKind::Wiki,
+                title: "Wiki".to_owned(),
+                created_at: "2026-01-01T00:00:00.000Z".to_owned(),
+                updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+                state_ref: None,
+            })
+            .expect("write panel");
+        storage
+            .upsert_tasks(
+                &project.id,
+                "panel:wiki",
+                "wiki",
+                &[
+                    json!({
+                        "id": "task:manual-executor",
+                        "status": "succeeded",
+                        "targetId": "wiki:default",
+                        "type": "maintain_wiki",
+                    }),
+                    json!({
+                        "id": "task:batched-follower",
+                        "status": "succeeded",
+                        "targetId": "wiki:default",
+                        "type": "maintain_wiki",
+                    }),
+                ],
+            )
+            .expect("write task");
+        storage
+            .connection
+            .execute(
+                r#"INSERT INTO task_attempts (
+                    id, task_id, attempt_number, execution_generation, status, started_at,
+                    executor_snapshot_json
+                ) VALUES (?, ?, 1, 1, 'succeeded', ?, ?)"#,
+                params![
+                    "attempt:manual",
+                    "task:manual-executor",
+                    "2026-01-01T00:00:00.000Z",
+                    json!({
+                        "host": "agent-message",
+                        "targetName": "manual-task-handoff:1",
+                    })
+                    .to_string(),
+                ],
+            )
+            .expect("write task attempt");
+        storage
+            .connection
+            .execute(
+                "UPDATE tasks SET result_json = ? WHERE id = 'task:batched-follower'",
+                [json!({ "leaderTaskId": "task:manual-executor" }).to_string()],
+            )
+            .expect("link batched follower");
+
+        let tasks = storage.list_tasks(&project.id).expect("project tasks");
+        for task in tasks {
+            assert_eq!(
+                task["executionMethod"],
+                json!({ "kind": "manualInstruction" })
+            );
+        }
+    }
+
+    #[test]
     fn concurrent_panel_state_cas_allows_exactly_one_writer() {
         let temp = tempdir().expect("tempdir");
         let paths = paths_for(temp.path().join(".myopenpanels"));

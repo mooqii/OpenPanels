@@ -1,4 +1,9 @@
 import type { MyOpenPanelsLocale } from "../../canvas"
+import {
+  type AgentRuntimeIdentity,
+  agentCliBoundaryInstruction,
+  agentCliExecutable,
+} from "../../lib/agent-instructions"
 import type {
   ProjectTask,
   TaskExecutionScope,
@@ -212,7 +217,8 @@ export function taskExecutionScopeKey(scope: TaskExecutionScope): string {
 
 export function manualTaskInstruction(
   scope: TaskExecutionScope,
-  locale: MyOpenPanelsLocale
+  locale: MyOpenPanelsLocale,
+  runtime: AgentRuntimeIdentity
 ): string {
   const selector =
     scope.kind === "project-drain"
@@ -220,24 +226,25 @@ export function manualTaskInstruction(
       : scope.kind === "wiki-mutation-drain"
         ? `--scope wiki-mutation-drain --project-id ${shellQuote(scope.projectId)} --mutation-key ${shellQuote(scope.mutationKey)}`
         : `--scope exact-task --task-id ${shellQuote(scope.taskId)}`
-  const command = `myopenpanels task handoff start ${selector} --format json`
+  const command = `${agentCliExecutable(runtime)} task handoff start ${selector} --format json`
+  const cliBoundary = agentCliBoundaryInstruction(runtime, locale)
 
   if (locale === "zh-CN") {
-    const objective =
-      scope.kind === "project-drain"
-        ? `排空 Project ${scope.projectId} 中的任务`
-        : scope.kind === "wiki-mutation-drain"
-          ? `排空 Project ${scope.projectId} 中 Wiki mutation ${scope.mutationKey} 的串行更新队列`
-          : `只处理任务 ${scope.taskId}`
-    return `请通过 MyOpenPanels ${objective}。执行下面的 Task Handoff 命令，按照返回的 ExecutionBundle 和 Delivery Contract 工作；每次完成后 Runtime 会返回下一项，直到 scopeState 为 complete 或 blocked：\n\n${command}`
+    if (scope.kind === "project-drain") {
+      return `请通过 MyOpenPanels 排空 Project ${scope.projectId} 中的任务。${cliBoundary}执行下面的 Task Handoff 命令，按照返回的 ExecutionBundle 和 Delivery Contract 工作；每完成一个任务后继续处理 Runtime 返回的下一项，直到 scopeState 为 complete 或 blocked：\n\n${command}`
+    }
+    if (scope.kind === "wiki-mutation-drain") {
+      return `请通过 MyOpenPanels 处理 Project ${scope.projectId} 中 Wiki mutation ${scope.mutationKey} 的串行更新队列。${cliBoundary}执行下面的 Task Handoff 命令，按照返回的 ExecutionBundle 和 Delivery Contract 工作；只处理这个 Wiki mutation 范围内返回的任务，不要处理 Project 中的其他任务，直到 scopeState 为 complete 或 blocked：\n\n${command}`
+    }
+    return `请通过 MyOpenPanels 只处理任务 ${scope.taskId}。${cliBoundary}执行下面的 Task Handoff 命令，并按照返回的 ExecutionBundle 和 Delivery Contract 完成这个任务；完成后即停止，不要领取或处理其他任务：\n\n${command}`
   }
-  const objective =
-    scope.kind === "project-drain"
-      ? `drain tasks in Project ${scope.projectId}`
-      : scope.kind === "wiki-mutation-drain"
-        ? `drain the serial Wiki mutation queue ${scope.mutationKey} in Project ${scope.projectId}`
-        : `process only Task ${scope.taskId}`
-  return `Use MyOpenPanels to ${objective}. Run the Task Handoff command below, follow its ExecutionBundle and Delivery Contract, and continue with each Bundle returned by the Runtime until scopeState is complete or blocked:\n\n${command}`
+  if (scope.kind === "project-drain") {
+    return `Use MyOpenPanels to drain tasks in Project ${scope.projectId}. ${cliBoundary} Run the Task Handoff command below, follow its ExecutionBundle and Delivery Contract, and continue with each Task returned by the Runtime until scopeState is complete or blocked:\n\n${command}`
+  }
+  if (scope.kind === "wiki-mutation-drain") {
+    return `Use MyOpenPanels to process the serial Wiki mutation queue ${scope.mutationKey} in Project ${scope.projectId}. ${cliBoundary} Run the Task Handoff command below and follow its ExecutionBundle and Delivery Contract. Process only Tasks returned within this Wiki mutation scope. Do not process other Project tasks; stop when scopeState is complete or blocked:\n\n${command}`
+  }
+  return `Use MyOpenPanels to process only Task ${scope.taskId}. ${cliBoundary} Run the Task Handoff command below and follow its ExecutionBundle and Delivery Contract for this Task. Stop after it completes. Do not claim or process another Task:\n\n${command}`
 }
 
 export function compareTasksForDisplay(
@@ -315,6 +322,29 @@ export function isActiveTask(task: ProjectTask): boolean {
 
 export function isDoneTask(task: ProjectTask): boolean {
   return ["succeeded", "cancelled", "stale", "superseded"].includes(task.status)
+}
+
+export function canDeleteTask(task: ProjectTask): boolean {
+  return (
+    !task.wikiUpdateGroup &&
+    [
+      "waiting",
+      "queued",
+      "failed",
+      "succeeded",
+      "cancelled",
+      "stale",
+      "superseded",
+    ].includes(task.status)
+  )
+}
+
+export function taskDeleteNeedsConfirmation(task: ProjectTask): boolean {
+  return task.status === "waiting" || task.status === "queued"
+}
+
+export function isPendingTask(task: ProjectTask): boolean {
+  return ["waiting", "queued", "failed"].includes(task.status)
 }
 
 function isTaskReadyForManualAgent(task: ProjectTask): boolean {

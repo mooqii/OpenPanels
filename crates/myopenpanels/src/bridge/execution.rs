@@ -280,10 +280,128 @@ fn materialize_task_inputs(
             });
         }
     }
-    if task.get("type").and_then(Value::as_str) == Some("publish_xiaohongshu_note") {
+    if task
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(crate::publishing::is_publishing_task_type)
+    {
         materialize_publishing_inputs(paths, task, workspace, &mut materialized)?;
     }
+    if task.get("type").and_then(Value::as_str) == Some(crate::typesetting::COVER_TASK_TYPE) {
+        materialize_typesetting_cover_inputs(paths, task, workspace, &mut materialized)?;
+    }
     Ok(materialized)
+}
+
+fn materialize_typesetting_cover_inputs(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    materialized: &mut Value,
+) -> Result<(), CliError> {
+    let storage = crate::storage::Storage::open(paths)?;
+    let inputs_dir = workspace.join("inputs");
+    let skill_dir = inputs_dir.join("skill");
+    fs::create_dir_all(&skill_dir).map_err(to_cli_error)?;
+    let title_path = inputs_dir.join("title.txt");
+    let body_path = inputs_dir.join("body.txt");
+    fs::write(
+        &title_path,
+        task.pointer("/input/snapshot/title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .as_bytes(),
+    )
+    .map_err(to_cli_error)?;
+    fs::write(
+        &body_path,
+        task.pointer("/input/snapshot/bodyText")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .as_bytes(),
+    )
+    .map_err(to_cli_error)?;
+
+    let mut skill_files = Vec::new();
+    for file in task
+        .pointer("/input/coverSkillSnapshot/files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let relative = file.get("path").and_then(Value::as_str).ok_or_else(|| {
+            CliError::with_code("invalid_target", "Cover Skill file path is missing.")
+        })?;
+        let asset_ref = file
+            .get("assetRef")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CliError::with_code("invalid_target", "Cover Skill asset reference is missing.")
+            })?;
+        let bytes = storage.read_asset(asset_ref)?;
+        let actual_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        if file.get("contentHash").and_then(Value::as_str) != Some(actual_hash.as_str()) {
+            return Err(CliError::with_code(
+                "cover_skill_snapshot_corrupt",
+                format!("Cover Skill snapshot failed integrity validation: {relative}"),
+            ));
+        }
+        let mut destination = skill_dir.clone();
+        for part in Path::new(relative).components() {
+            let std::path::Component::Normal(part) = part else {
+                return Err(CliError::with_code(
+                    "invalid_target",
+                    "Cover Skill path is unsafe.",
+                ));
+            };
+            destination.push(sanitize_path_part(&part.to_string_lossy()));
+        }
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(to_cli_error)?;
+        }
+        fs::write(&destination, &bytes).map_err(to_cli_error)?;
+        skill_files.push(json!({
+            "path": relative,
+            "filePath": destination,
+            "contentHash": actual_hash,
+        }));
+    }
+    let mut manifest_hash = Sha256::new();
+    for file in &skill_files {
+        manifest_hash.update(file.get("path").and_then(Value::as_str).unwrap_or("").as_bytes());
+        manifest_hash.update(
+            file.get("contentHash")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .as_bytes(),
+        );
+    }
+    let actual_manifest_hash = format!("sha256:{:x}", manifest_hash.finalize());
+    if task
+        .pointer("/input/coverSkillSnapshot/contentHash")
+        .and_then(Value::as_str)
+        != Some(actual_manifest_hash.as_str())
+    {
+        return Err(CliError::with_code(
+            "cover_skill_snapshot_corrupt",
+            "Cover Skill snapshot manifest failed integrity validation.",
+        ));
+    }
+    let skill_file_path = skill_dir.join("SKILL.md");
+    if !skill_file_path.is_file() {
+        return Err(CliError::with_code(
+            "cover_skill_snapshot_corrupt",
+            "Cover Skill snapshot has no SKILL.md.",
+        ));
+    }
+    materialized["executionInputs"]["typesettingCover"] = json!({
+        "titleFilePath": title_path,
+        "bodyFilePath": body_path,
+        "skillFilePath": skill_file_path,
+        "skillDirectory": skill_dir,
+        "skillFiles": skill_files,
+    });
+    Ok(())
 }
 
 fn materialize_publishing_inputs(

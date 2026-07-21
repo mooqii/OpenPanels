@@ -5,7 +5,10 @@ import type {
   MyOpenPanelsUpdateStatus,
 } from "../types"
 import { ModelGatewaySettingsDialog } from "./settings/ModelGatewaySettings"
-import { SkillManagerDialog } from "./settings/SkillManager"
+import {
+  SkillManagerDialog,
+  type SkillManagerTab,
+} from "./settings/SkillManager"
 import { AgentToggleButton } from "./trace/AgentToggleButton"
 import { BuildVersionBadge } from "./trace/BuildVersionBadge"
 import {
@@ -18,6 +21,9 @@ export function AppOverlays({
   buildInfo,
   isModelSettingsOpen,
   isSkillManagerOpen,
+  skillManagerInitialModuleKind,
+  skillManagerInitialTab,
+  skillManagerOpenRequestId,
   isTraceOpen,
   onCheckUpdate,
   onDismissUpdateError,
@@ -46,6 +52,9 @@ export function AppOverlays({
   onUpdate: () => void
   pendingTaskCount: number
   runtimeState: StudioRuntimeState
+  skillManagerInitialModuleKind?: string
+  skillManagerInitialTab: SkillManagerTab
+  skillManagerOpenRequestId: number
   setIsModelSettingsOpen: (isOpen: boolean) => void
   setIsSkillManagerOpen: (isOpen: boolean) => void
   transport: MyOpenPanelsTransport
@@ -77,12 +86,22 @@ export function AppOverlays({
         transport={transport}
       />
       <SkillManagerDialog
+        initialModuleKind={skillManagerInitialModuleKind}
+        initialTab={skillManagerInitialTab}
         isOpen={isSkillManagerOpen}
         onOpenChange={setIsSkillManagerOpen}
+        openRequestId={skillManagerOpenRequestId}
         transport={transport}
       />
       <UpdatePrompt
         action={updateAction}
+        buildInfo={
+          buildInfo ?? {
+            channel: "release",
+            label: "release",
+            version: "unknown",
+          }
+        }
         errorMessage={updateError}
         onDismissError={onDismissUpdateError}
         onRefresh={onRefreshUpdate}

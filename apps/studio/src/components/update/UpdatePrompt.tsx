@@ -1,7 +1,11 @@
 import { Button } from "@heroui/react"
 import { AlertTriangle, LoaderCircle, RefreshCw, X } from "lucide-react"
 import { useState } from "react"
-import type { MyOpenPanelsUpdateStatus } from "../../types"
+import { agentRecoveryInstruction } from "../../lib/agent-instructions"
+import type {
+  MyOpenPanelsBuildInfo,
+  MyOpenPanelsUpdateStatus,
+} from "../../types"
 
 export type UpdateAction =
   | "checking"
@@ -13,6 +17,7 @@ export type UpdateAction =
 
 export function UpdatePrompt({
   action,
+  buildInfo,
   errorMessage,
   onDismissError,
   onRefresh,
@@ -21,6 +26,7 @@ export function UpdatePrompt({
   status,
 }: {
   action: UpdateAction
+  buildInfo: MyOpenPanelsBuildInfo
   errorMessage: string | null
   onDismissError: () => void
   onRefresh: () => void
@@ -31,8 +37,7 @@ export function UpdatePrompt({
   const latest = status?.latestVersion ?? "new"
   const visible = Boolean(status?.updateAvailable || status?.readyToInstall)
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(null)
-  const recoveryCommand =
-    '请先运行 myopenpanels update install --format json 安装最新的 MyOpenPanels CLI；安装成功后，再运行 myopenpanels studio start --local-only --project-dir "$PWD" --format json 重新启动 Studio。'
+  const recoveryCommand = agentRecoveryInstruction(buildInfo)
 
   if (
     action === "installing" ||

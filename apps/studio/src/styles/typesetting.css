@@ -18,7 +18,7 @@
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
   gap: 16px;
-  width: min(1440px, calc(100vw - 40px));
+  width: min(1440px, calc(100% - 40px));
   height: 100%;
   padding: 20px 0 64px;
   margin: 0 auto;
@@ -66,7 +66,7 @@
 }
 
 .op-typesetting-document-library > .op-typesetting-library-module {
-  flex: 1 1 calc(100% / 3);
+  flex: 1 1 calc(100% / 4);
   border: 0;
   border-radius: 0;
 }
@@ -95,8 +95,13 @@
   gap: 8px;
   align-items: center;
   justify-content: space-between;
-  width: 100%;
   min-height: 32px;
+}
+
+.op-typesetting-library-module__header > button:first-child {
+  flex: 1;
+  align-self: stretch;
+  min-width: 0;
   padding: 0;
   color: var(--op-text-primary);
   text-align: left;
@@ -106,7 +111,7 @@
   border: 0;
 }
 
-.op-typesetting-library-module__header h3 {
+.op-typesetting-library-module__title {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
@@ -323,8 +328,7 @@
   padding: 12px 16px;
 }
 
-.op-typesetting-view-header > div:first-of-type,
-.op-typesetting-detail-header__title {
+.op-typesetting-view-header > div:first-of-type {
   min-width: 0;
   margin-right: auto;
 }
@@ -374,16 +378,21 @@ button.op-typesetting-save {
   display: grid;
   gap: 8px;
   align-content: start;
-  padding: 16px;
+  padding: 0;
   overflow: auto;
 }
 
 .op-typesetting-publication-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
   gap: 8px;
   align-items: center;
-  min-height: 76px;
-  padding: 8px 10px;
+  width: 100%;
+  min-height: 58px;
+  padding: 7px 8px;
+  color: var(--op-text-primary);
+  text-align: left;
+  cursor: pointer;
   background: var(--op-bg-base);
   border: 1px solid var(--op-border-subtle);
   border-radius: 8px;
@@ -400,26 +409,17 @@ button.op-typesetting-save {
     color-mix(in oklab, var(--accent) 16%, transparent);
 }
 
-.op-typesetting-publication-row__body {
-  display: grid;
-  flex: 1;
-  grid-template-columns: 52px minmax(0, 1fr);
-  gap: 12px;
-  align-items: center;
-  min-width: 0;
-  padding: 0;
-  color: var(--op-text-primary);
-  text-align: left;
-  cursor: pointer;
-  background: transparent;
-  border: 0;
+.op-typesetting-publication-row[data-selected="true"] {
+  background: var(--op-row-hover-bg);
+  border-color: var(--op-row-hover-border);
+  box-shadow: var(--op-row-hover-shadow);
 }
 
 .op-typesetting-publication-row__cover {
   display: grid;
   place-items: center;
-  width: 52px;
-  height: 52px;
+  width: 42px;
+  height: 42px;
   overflow: hidden;
   color: var(--op-text-tertiary);
   background: var(--op-bg-muted);
@@ -450,19 +450,44 @@ button.op-typesetting-save {
   white-space: normal;
 }
 
+.op-typesetting-publication-row__title {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+}
+
+.op-typesetting-publication-row__title > strong {
+  flex: 1;
+}
+
+.op-typesetting-publication-row__statuses {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  align-items: center;
+}
+
+.op-typesetting-publication-row__status {
+  min-height: 18px;
+  padding-inline: 5px;
+  font-size: 9px;
+  line-height: 1;
+}
+
 .op-typesetting-publication-row__meta span + span::before {
   margin-right: 5px;
   content: "·";
 }
 
 .op-typesetting-publication-row__text strong {
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .op-typesetting-publication-row__text small {
-  margin-top: 4px;
-  font-size: 11px;
+  margin-top: 3px;
+  font-size: 10px;
   color: var(--op-text-secondary);
 }
 
@@ -477,31 +502,83 @@ button.op-typesetting-save {
   text-align: center;
 }
 
+.op-typesetting-selection-empty {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 24px;
+  color: var(--op-text-tertiary);
+  text-align: center;
+}
+
+.op-typesetting-selection-empty p {
+  max-width: 420px;
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.op-typesetting-selection-empty__open {
+  display: none;
+  margin-top: 16px;
+}
+
+.op-typesetting-publication-preview {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
 .op-typesetting-detail-header {
   min-height: 58px;
   padding-block: 8px;
 }
 
-.op-typesetting-detail-header__title strong,
-.op-typesetting-detail-header__title small {
-  display: block;
+.op-typesetting-detail-header__save-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.op-typesetting-detail-header__save-meta > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 10px;
+  color: var(--op-text-secondary);
   white-space: nowrap;
 }
 
-.op-typesetting-detail-header__title strong {
-  font-size: 13px;
+.op-typesetting-detail-header__save-state {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  width: fit-content;
+  min-height: 16px;
+  padding: 0;
+  font-size: 10px;
+  color: var(--success-soft-foreground);
+  background: transparent;
+  border: 0;
 }
 
-.op-typesetting-detail-header__title small {
-  margin-top: 2px;
-  font-size: 10px;
-  color: var(--op-text-secondary);
+.op-typesetting-detail-header__save-state[data-status="saving"] {
+  color: var(--op-text-tertiary);
+}
+
+button.op-typesetting-detail-header__save-state.is-failed {
+  color: var(--danger-soft-foreground);
+  cursor: pointer;
 }
 
 .op-typesetting-detail-scroll {
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-height: 0;
   padding: 16px 16px 40px;
   overflow: auto;
@@ -510,8 +587,16 @@ button.op-typesetting-save {
 .op-typesetting-field,
 .op-typesetting-section {
   display: block;
+  flex: 0 0 auto;
   width: min(100%, 920px);
   margin: 0 auto 24px;
+}
+
+.op-typesetting-content-section {
+  display: flex;
+  flex: 1 0 420px;
+  flex-direction: column;
+  min-height: 420px;
 }
 
 .op-typesetting-field > label,
@@ -605,6 +690,96 @@ button.op-typesetting-save {
   height: 26px;
 }
 
+.op-typesetting-cover-task {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  aspect-ratio: 4 / 3;
+  padding: 12px;
+  color: var(--op-text-secondary);
+  text-align: center;
+  background: var(--op-bg-muted);
+  border: 1px dashed var(--op-border-strong);
+  border-radius: 6px;
+}
+
+.op-typesetting-cover-task:hover {
+  background: var(--op-bg-elevated);
+  border-color: var(--accent);
+}
+
+.op-typesetting-cover-task.is-failed {
+  color: var(--danger-soft-foreground);
+  background: var(--danger-soft);
+  border-color: color-mix(
+    in oklab,
+    var(--danger-soft-foreground) 42%,
+    transparent
+  );
+}
+
+.op-typesetting-cover-task strong {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.op-typesetting-cover-task__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  color: var(--op-text-tertiary);
+}
+
+.op-typesetting-cover-dialog {
+  width: min(520px, calc(100vw - 24px));
+}
+
+.op-typesetting-cover-dialog__field {
+  display: grid;
+  gap: 7px;
+}
+
+.op-typesetting-cover-dialog__field + .op-typesetting-cover-dialog__field {
+  margin-top: 18px;
+}
+
+.op-typesetting-cover-dialog__field > label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--op-text-secondary);
+}
+
+.op-typesetting-cover-dialog__loading,
+.op-typesetting-cover-dialog__empty {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 42px;
+  color: var(--op-text-tertiary);
+}
+
+.op-typesetting-cover-dialog__skill {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.op-typesetting-cover-dialog__skill strong,
+.op-typesetting-cover-dialog__skill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-typesetting-cover-dialog__skill span {
+  font-size: 11px;
+  color: var(--op-text-tertiary);
+}
+
 .op-typesetting-drop-empty {
   display: flex;
   align-items: center;
@@ -615,6 +790,10 @@ button.op-typesetting-save {
 }
 
 .op-typesetting-editor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 360px;
   overflow: visible;
   background: var(--op-bg-base);
   border: 1px solid var(--op-border-default);
@@ -643,11 +822,15 @@ button.op-typesetting-save {
 
 .op-typesetting-editor__body {
   position: relative;
-  min-height: 340px;
+  display: flex;
+  flex: 1;
+  min-height: 300px;
 }
 
 .op-typesetting-editor__content {
-  min-height: 340px;
+  flex: 1;
+  width: 100%;
+  min-height: 300px;
   padding: 24px 28px 52px;
   font-family: ui-serif, Georgia, serif;
   font-size: 15px;
@@ -924,6 +1107,10 @@ button.op-typesetting-save {
 
   .op-typesetting-view-header p {
     display: none;
+  }
+
+  .op-typesetting-selection-empty__open {
+    display: inline-flex;
   }
 
   .op-typesetting-save {

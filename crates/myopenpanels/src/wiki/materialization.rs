@@ -386,7 +386,7 @@ pub(crate) fn agent_content_context(
             "wikiSpaceId": wiki_space.id,
             "title": wiki_space.value.get("title").cloned().unwrap_or_else(|| json!("Wiki")),
             "pageCount": page_count,
-            "querySkillId": WIKI_PANEL_SKILL_ID,
+            "querySkillId": crate::agent::PANELS_SKILL_ID,
             "localAccess": local_access,
         }
     }))

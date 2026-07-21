@@ -137,7 +137,8 @@ mod tests {
     fn registered_builtin_packages_are_standard_and_presets_are_portable() {
         let registry: BuiltinSkillRegistry =
             serde_json::from_str(BUILTIN_SKILL_REGISTRY).expect("registry");
-        assert_eq!(registry.schema_version, 3);
+        assert_eq!(registry.schema_version, 4);
+        assert_eq!(registry.system_skills.len(), 2);
         for registration in registry.system_skills {
             let directory = SYSTEM_SKILLS
                 .get_dir(&registration.package_dir)
@@ -184,6 +185,42 @@ mod tests {
                 "Entry Skill is missing {handoff_key}"
             );
         }
+    }
+
+    #[test]
+    fn agent_procedure_references_are_nonempty_unique_relative_and_present() {
+        let registry: BuiltinSkillRegistry =
+            serde_json::from_str(BUILTIN_SKILL_REGISTRY).expect("registry");
+        let skill = registry
+            .system_skills
+            .into_iter()
+            .find(|skill| skill.id == PANELS_SKILL_ID)
+            .expect("Panels Skill");
+        let procedure = skill.procedures.first().expect("Procedure").clone();
+
+        for references in [
+            Vec::new(),
+            vec!["references/canvas-contract.md".to_owned(); 2],
+            vec!["../canvas-contract.md".to_owned()],
+        ] {
+            let mut invalid = procedure.clone();
+            invalid.references = references;
+            assert_eq!(
+                validate_agent_procedure(&skill, &invalid)
+                    .expect_err("invalid references")
+                    .code(),
+                Some("agent_procedure_invalid")
+            );
+        }
+
+        let mut missing = procedure;
+        missing.references = vec!["references/not-found.md".to_owned()];
+        assert_eq!(
+            validate_agent_procedure(&skill, &missing)
+                .expect_err("missing reference")
+                .code(),
+            Some("agent_procedure_reference_not_found")
+        );
     }
 
     fn assert_portable_directory(directory: &Dir<'_>, skill_id: &str) {

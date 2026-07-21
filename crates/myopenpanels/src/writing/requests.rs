@@ -10,7 +10,6 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-pub const WRITING_PANEL_SKILL_ID: &str = "myopenpanels-writing-panel";
 pub const WRITING_CAPABILITY: &str = "writing.generateDocument";
 pub const WRITING_REFINEMENT_CAPABILITY: &str = "writing.refineSkill";
 pub const WRITING_SKILL_REFINER_ID: &str = "writing-skill-refiner";
@@ -169,6 +168,8 @@ pub fn save_draft(
         selected_create_writing_skill_ids,
         selected_revision_writing_skill_id,
         None,
+        None,
+        None,
     )
 }
 
@@ -181,6 +182,8 @@ pub fn save_draft_with_refinement_skill(
     selected_create_writing_skill_ids: &[String],
     selected_revision_writing_skill_id: Option<&str>,
     selected_refinement_skill_id: Option<&str>,
+    create_draft: Option<&str>,
+    revision_draft: Option<&str>,
 ) -> Result<Value, CliError> {
     let bootstrap = writing_panel(paths)?;
     validate_mode(
@@ -198,11 +201,31 @@ pub fn save_draft_with_refinement_skill(
         .or_else(|| bootstrap.state["selectedRefinementSkillId"].as_str())
         .unwrap_or(WRITING_SKILL_REFINER_ID);
     crate::agent::writing_refinement_agent_skill(paths, refinement_skill_id)?;
+    let create_draft = create_draft
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            if mode == "create" {
+                draft.to_owned()
+            } else {
+                saved_mode_draft(&bootstrap.state, "createDraft", "create")
+            }
+        });
+    let revision_draft = revision_draft
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            if mode == "revise" {
+                draft.to_owned()
+            } else {
+                saved_mode_draft(&bootstrap.state, "revisionDraft", "revise")
+            }
+        });
     let state = json!({
         "schemaVersion": 5,
+        "createDraft": create_draft,
         "draft": draft,
         "mode": mode,
         "refinementName": refinement_name,
+        "revisionDraft": revision_draft,
         "targetGeneratedDocumentId": if mode == "revise" { target_generated_document_id } else { None },
         "selectedCreateWritingSkillIds": selected_create_writing_skill_ids,
         "selectedRevisionWritingSkillId": selected_revision_writing_skill_id,
@@ -214,6 +237,25 @@ pub fn save_draft_with_refinement_skill(
         &state,
     )?;
     Ok(json!({ "state": state, "revision": revision }))
+}
+
+fn saved_mode_draft(state: &Value, field: &str, legacy_mode: &str) -> String {
+    state
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            let mode = state.get("mode").and_then(Value::as_str);
+            if mode == Some(legacy_mode) || (legacy_mode == "create" && mode == Some("refine")) {
+                state
+                    .get("draft")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            } else {
+                String::new()
+            }
+        })
 }
 
 fn validate_mode(
@@ -406,7 +448,7 @@ pub fn create_requests(
                     "writingPanelId": bootstrap.panel.id,
                     "wikiPanelId": wiki.panel.id,
                     "wikiSpaceId": wiki_space_id,
-                    "panelSkillId": WRITING_PANEL_SKILL_ID,
+                    "panelSkillId": crate::agent::PANELS_SKILL_ID,
                     "writingSkillId": listing.skill.id.clone(),
                     "writingSkillSource": listing.source.clone(),
                 }),
@@ -432,11 +474,23 @@ pub fn create_requests(
     } else {
         selected_revision_writing_skill_id = writing_skill_ids.first().cloned();
     }
+    let create_draft = if mode == "create" {
+        String::new()
+    } else {
+        saved_mode_draft(&bootstrap.state, "createDraft", "create")
+    };
+    let revision_draft = if mode == "revise" {
+        String::new()
+    } else {
+        saved_mode_draft(&bootstrap.state, "revisionDraft", "revise")
+    };
     let state = json!({
         "schemaVersion": 5,
+        "createDraft": create_draft,
         "draft": "",
         "mode": mode,
         "refinementName": bootstrap.state.get("refinementName").and_then(Value::as_str).unwrap_or(""),
+        "revisionDraft": revision_draft,
         "targetGeneratedDocumentId": null,
         "selectedCreateWritingSkillIds": selected_create_writing_skill_ids,
         "selectedRevisionWritingSkillId": selected_revision_writing_skill_id,
@@ -630,7 +684,7 @@ pub fn create_refinement_request_with_skill(
     let source = json!({
         "writingPanelId": bootstrap.panel.id,
         "wikiPanelId": wiki.panel.id,
-        "panelSkillId": WRITING_PANEL_SKILL_ID,
+        "panelSkillId": crate::agent::PANELS_SKILL_ID,
         "refinerSkillId": refiner_skill_id,
     });
     let task = Storage::open(paths)?.insert_task(
@@ -645,9 +699,11 @@ pub fn create_refinement_request_with_skill(
     )?;
     let state = json!({
         "schemaVersion": 5,
+        "createDraft": saved_mode_draft(&bootstrap.state, "createDraft", "create"),
         "draft": bootstrap.state.get("draft").and_then(Value::as_str).unwrap_or(""),
         "mode": "refine",
         "refinementName": "",
+        "revisionDraft": saved_mode_draft(&bootstrap.state, "revisionDraft", "revise"),
         "targetGeneratedDocumentId": bootstrap.state.get("targetGeneratedDocumentId").cloned().unwrap_or(Value::Null),
         "selectedCreateWritingSkillIds": bootstrap.state.get("selectedCreateWritingSkillIds").cloned().unwrap_or_else(|| json!([])),
         "selectedRevisionWritingSkillId": bootstrap.state.get("selectedRevisionWritingSkillId").cloned().unwrap_or(Value::Null),

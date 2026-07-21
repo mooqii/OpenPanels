@@ -12,13 +12,13 @@ import { formatTaskError, taskExecutionScope } from "./trace-utils"
 
 export function TaskDispatchControl({
   apiBase,
+  hasUsableAgentCli,
   onOpenManualTask,
-  showManualInstruction,
   task,
 }: {
   apiBase: string
+  hasUsableAgentCli: boolean | null
   onOpenManualTask: (scope: TaskExecutionScope) => void
-  showManualInstruction: boolean
   task: ProjectTask
 }) {
   const { t } = useMyOpenPanelsI18n()
@@ -27,7 +27,8 @@ export function TaskDispatchControl({
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const canDispatch = ["waiting", "queued", "failed"].includes(task.status)
-  const currentTaskSelection = taskDispatchSelection(task)
+  const requiresManualInstruction = canDispatch && hasUsableAgentCli === false
+  const currentTaskSelection = taskDispatchSelection(task, canDispatch)
 
   useEffect(() => {
     setSelection(currentTaskSelection)
@@ -104,17 +105,35 @@ export function TaskDispatchControl({
     }
   }
 
-  if (!canDispatch) return null
+  const assignedSelection = currentTaskSelection.startsWith("assigned:")
+    ? currentTaskSelection
+    : null
+  const executionSelection = canDispatch
+    ? null
+    : taskExecutionSelection(task, channels, t)
+  const selectedProviderId = currentTaskSelection.split(":", 2)[1]
+  const selectedProviderIsMissing =
+    !assignedSelection &&
+    selectedProviderId &&
+    !channels.some((channel) => channel.id === selectedProviderId)
+
   return (
     <div className="op-agent-task__dispatch">
-      <span>Channel</span>
       <div className="op-agent-task__dispatch-controls">
         <Select
-          aria-label="Task channel"
-          isDisabled={isSaving}
-          onChange={(key) => updateDispatch(String(key))}
+          aria-label={t`Task channel`}
+          isDisabled={isSaving || !canDispatch || requiresManualInstruction}
+          onChange={(key) => {
+            if (canDispatch && !requiresManualInstruction) {
+              updateDispatch(String(key))
+            }
+          }}
           selectionMode="single"
-          value={selection}
+          value={
+            requiresManualInstruction
+              ? "manual-unavailable"
+              : (executionSelection?.id ?? selection)
+          }
           variant="secondary"
         >
           <Select.Trigger>
@@ -123,22 +142,56 @@ export function TaskDispatchControl({
           </Select.Trigger>
           <Select.Popover>
             <ListBox>
-              <ListBox.Item id="auto" textValue="Automatic">
-                Automatic
-              </ListBox.Item>
-              {channels.map((channel) => (
+              {executionSelection ? (
                 <ListBox.Item
-                  id={`prefer:${channel.id}`}
-                  key={`prefer:${channel.id}`}
-                  textValue={`Prefer ${channel.name}`}
+                  id={executionSelection.id}
+                  textValue={executionSelection.label}
                 >
-                  Prefer {channel.name}
+                  {executionSelection.label}
                 </ListBox.Item>
-              ))}
+              ) : requiresManualInstruction ? (
+                <ListBox.Item
+                  id="manual-unavailable"
+                  textValue={t`Send instruction manually`}
+                >
+                  {t`Send instruction manually`}
+                </ListBox.Item>
+              ) : (
+                <>
+                  <ListBox.Item id="auto" textValue="Automatic">
+                    {t`Automatic`}
+                  </ListBox.Item>
+                  {assignedSelection && task.assignedTarget ? (
+                    <ListBox.Item
+                      id={assignedSelection}
+                      textValue={task.assignedTarget.name}
+                    >
+                      {task.assignedTarget.name}
+                    </ListBox.Item>
+                  ) : null}
+                  {selectedProviderIsMissing ? (
+                    <ListBox.Item
+                      id={currentTaskSelection}
+                      textValue={`${t`Prefer`} ${selectedProviderId}`}
+                    >
+                      {t`Prefer`} {selectedProviderId}
+                    </ListBox.Item>
+                  ) : null}
+                  {channels.map((channel) => (
+                    <ListBox.Item
+                      id={`prefer:${channel.id}`}
+                      key={`prefer:${channel.id}`}
+                      textValue={`Prefer ${channel.name}`}
+                    >
+                      {t`Prefer`} {channel.name}
+                    </ListBox.Item>
+                  ))}
+                </>
+              )}
             </ListBox>
           </Select.Popover>
         </Select>
-        {showManualInstruction ? (
+        {canDispatch && hasUsableAgentCli === true ? (
           <Tooltip closeDelay={0} delay={300}>
             <Button
               aria-label={t`Copy task instruction`}
@@ -153,6 +206,16 @@ export function TaskDispatchControl({
               {t`Copy task instruction`}
             </Tooltip.Content>
           </Tooltip>
+        ) : requiresManualInstruction ? (
+          <Button
+            className="op-agent-task__copy-instruction"
+            onPress={() => onOpenManualTask(taskExecutionScope(task))}
+            size="sm"
+            variant="secondary"
+          >
+            <Copy size={14} />
+            {t`Copy instruction`}
+          </Button>
         ) : null}
       </div>
       {error ? <small role="alert">{error}</small> : null}
@@ -160,7 +223,44 @@ export function TaskDispatchControl({
   )
 }
 
-function taskDispatchSelection(task: ProjectTask): string {
+function taskExecutionSelection(
+  task: ProjectTask,
+  channels: LocalCliInfo[],
+  t: (input: TemplateStringsArray | string, ...values: unknown[]) => string
+): { id: string; label: string } | null {
+  const method = task.executionMethod
+  if (!method) return null
+  if (method.kind === "manualInstruction") {
+    return { id: "execution:manual", label: t`Manual instruction` }
+  }
+  if (method.kind === "localCli" && method.providerId) {
+    const provider = channels.find(
+      (channel) => channel.id === method.providerId
+    )
+    return {
+      id: `execution:local-cli:${method.providerId}`,
+      label: provider?.name ?? localCliFallbackName(method.providerId),
+    }
+  }
+  const label = method.label?.trim()
+  return label
+    ? { id: `execution:target:${method.connectionId ?? label}`, label }
+    : null
+}
+
+function localCliFallbackName(providerId: string): string {
+  if (providerId === "codex") return "Codex CLI"
+  if (providerId === "hermes") return "Hermes"
+  return providerId
+}
+
+function taskDispatchSelection(
+  task: ProjectTask,
+  canDispatch = ["waiting", "queued", "failed"].includes(task.status)
+): string {
+  if (!(canDispatch || !task.assignedTarget)) {
+    return `assigned:${task.assignedTarget.id}`
+  }
   const providerId = task.requestedGatewayConnectionId?.replace(
     /^local-cli:/,
     ""

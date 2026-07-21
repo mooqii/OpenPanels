@@ -15,8 +15,8 @@ use crate::model_gateway;
 use crate::paths::MyOpenPanelsPaths;
 use crate::storage::Storage;
 use crate::studio::{
-    acquire_studio_transition_lock, open_browser, spawn_studio_server_process,
-    write_studio_session, StudioSession,
+    acquire_studio_owner_lock, acquire_studio_transition_lock, open_browser,
+    spawn_studio_server_process, write_studio_session, StudioOwnerLock, StudioSession,
 };
 use crate::tasks;
 use crate::trace::{self, TraceEventInput};
@@ -66,6 +66,7 @@ struct AppState {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StudioBuildInfo {
+    agent_cli: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     build_time: Option<String>,
     channel: &'static str,
@@ -78,6 +79,17 @@ pub fn run_server(
     port: u16,
     paths: MyOpenPanelsPaths,
     static_dir: Option<PathBuf>,
+) -> Result<i32, CliError> {
+    let owner_lock = acquire_studio_owner_lock(&paths, port)?;
+    run_server_with_owner_lock(host, port, paths, static_dir, owner_lock)
+}
+
+pub(crate) fn run_server_with_owner_lock(
+    host: &str,
+    port: u16,
+    paths: MyOpenPanelsPaths,
+    static_dir: Option<PathBuf>,
+    _owner_lock: StudioOwnerLock,
 ) -> Result<i32, CliError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -188,7 +200,10 @@ fn build_router(
         .route("/api/events", get(api_project_events))
         .route("/api/tasks", get(api_tasks))
         .route("/api/tasks/next", get(api_next_task))
-        .route("/api/tasks/{task_id}", get(api_inspect_task))
+        .route(
+            "/api/tasks/{task_id}",
+            get(api_inspect_task).delete(api_task_delete),
+        )
         .route("/api/tasks/{task_id}/retry", post(api_task_retry))
         .route(
             "/api/tasks/wiki-update-groups/dispatch",
@@ -215,7 +230,14 @@ fn build_router(
         )
         .route("/api/agent/skills", get(api_agent_skills))
         .route("/api/skills", get(api_skills))
+        .route("/api/skills/recommended", get(api_recommended_skills))
+        .route(
+            "/api/skills/recommended/{catalog_id}/install",
+            post(api_install_recommended_skill),
+        )
+        .route("/api/skills/import/scan", post(api_scan_skill_url))
         .route("/api/skills/import", post(api_import_skill))
+        .route("/api/skill-updates/check", post(api_check_skill_updates))
         .route(
             "/api/skills/{skill_id}",
             get(api_skill_files).delete(api_delete_skill),
@@ -224,6 +246,7 @@ fn build_router(
             "/api/skills/{skill_id}/file",
             axum::routing::put(api_write_skill_file),
         )
+        .route("/api/skills/{skill_id}/update", post(api_update_skill))
         .route("/api/device/skills", get(api_device_skills))
         .route("/api/device/skills/install", post(api_install_device_skill))
         .route(
@@ -260,6 +283,14 @@ fn build_router(
         .route(
             "/api/typesetting/canvas-assets",
             get(api_typesetting_canvas_assets),
+        )
+        .route(
+            "/api/typesetting/cover-skills",
+            get(api_typesetting_cover_skills),
+        )
+        .route(
+            "/api/typesetting/cover-requests",
+            post(api_typesetting_cover_request),
         )
         .route(
             "/api/publishing/preferences",

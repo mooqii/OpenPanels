@@ -5,6 +5,13 @@ with `studio start --local-only --project-dir "$PWD" --format json`. Execute the
 returned top-level `actions.required` in order: try the URL opener first and use
 the conditional CLI fallback only when that opener fails or is unavailable.
 
+Studio-generated Agent instructions are runtime-bound. Development Studio
+responses advertise the checkout-local CLI from `MYOPENPANELS_CLI`; release
+Studio responses advertise the installed `myopenpanels`. Preserve that exact
+executable for every returned `argv` action and never cross from one channel to
+the other, because their storage and running Studio sessions are intentionally
+separate.
+
 Before panel work with a clear intent, run `agent bootstrap --procedure <key>
 --format json`. It provides visible focus, the non-activating target, Procedure
 readiness, relevant context, required Skill and reference reads, and only the

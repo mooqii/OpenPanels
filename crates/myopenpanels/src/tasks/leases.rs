@@ -100,13 +100,11 @@ fn claim_once(
         return Ok(None);
     };
 
-    let claim_result = match reserved.queue.as_str() {
-        "wiki" => crate::wiki::claim_task(paths, &reserved.id),
-        "writing" => crate::writing::claim_task(paths, &reserved.id),
-        queue => Err(CliError::with_code(
-            "queue_adapter_missing",
-            format!("No task lifecycle adapter is available for queue: {queue}"),
-        )),
+    let claim_result = match task_queue_adapter(&reserved.queue)? {
+        TaskQueueAdapter::Wiki => crate::wiki::claim_task(paths, &reserved.id),
+        TaskQueueAdapter::Writing => crate::writing::claim_task(paths, &reserved.id),
+        TaskQueueAdapter::Typesetting => crate::typesetting::claim_task(paths, &reserved.id),
+        TaskQueueAdapter::Publishing => crate::publishing::claim_task(paths, &reserved.id),
     };
     let claimed = match claim_result {
         Ok(claimed) => claimed,
@@ -470,15 +468,11 @@ pub fn heartbeat_task(
 ) -> Result<Value, CliError> {
     let lease = verify_lease(paths, task_id, lease_token)?;
     let expires_at = lease_expires_at();
-    match lease["queue"].as_str().unwrap_or("") {
-        "wiki" => crate::wiki::heartbeat_task(paths, task_id, &expires_at)?,
-        "writing" => crate::writing::heartbeat_task(paths, task_id)?,
-        queue => {
-            return Err(CliError::with_code(
-                "queue_adapter_missing",
-                format!("No task lifecycle adapter is available for queue: {queue}"),
-            ))
-        }
+    match task_queue_adapter(lease["queue"].as_str().unwrap_or(""))? {
+        TaskQueueAdapter::Wiki => crate::wiki::heartbeat_task(paths, task_id, &expires_at)?,
+        TaskQueueAdapter::Writing => crate::writing::heartbeat_task(paths, task_id)?,
+        TaskQueueAdapter::Typesetting => crate::typesetting::heartbeat_task(paths, task_id)?,
+        TaskQueueAdapter::Publishing => crate::publishing::heartbeat_task(paths, task_id)?,
     };
     let storage = Storage::open(paths)?;
     let tx = storage
@@ -532,19 +526,18 @@ pub fn complete_task(
         .as_ref()
         .map(|batch| enrich_wiki_batch_result(result.clone(), batch))
         .unwrap_or(result);
-    let prepared_panel_state: Option<(String, Value)> = match lease["queue"].as_str().unwrap_or("")
-    {
-        "wiki" => Some((
+    let prepared_panel_state: Option<(String, Value)> =
+        match task_queue_adapter(lease["queue"].as_str().unwrap_or(""))? {
+        TaskQueueAdapter::Wiki => Some((
             lease["panelId"].as_str().unwrap_or_default().to_owned(),
             crate::wiki::prepare_task_completion(paths, task_id, result.clone())?["state"].clone(),
         )),
-        "writing" => crate::writing::prepare_task_completion(paths, task_id)?,
-        "publishing" => crate::publishing::prepare_task_completion(paths, task_id, result.clone())?,
-        queue => {
-            return Err(CliError::with_code(
-                "queue_adapter_missing",
-                format!("No task lifecycle adapter is available for queue: {queue}"),
-            ))
+        TaskQueueAdapter::Writing => crate::writing::prepare_task_completion(paths, task_id)?,
+        TaskQueueAdapter::Typesetting => {
+            crate::typesetting::prepare_task_completion(paths, task_id, result.clone())?
+        }
+        TaskQueueAdapter::Publishing => {
+            crate::publishing::prepare_task_completion(paths, task_id, result.clone())?
         }
     };
     let project_id = lease["projectId"].as_str().unwrap_or_default();
@@ -808,18 +801,18 @@ fn fail_queue_projection(
     message: &str,
     retry_after: Option<&str>,
 ) -> Result<(), CliError> {
-    match queue {
-        "wiki" => {
+    match task_queue_adapter(queue)? {
+        TaskQueueAdapter::Wiki => {
             crate::wiki::fail_task_with_retry(paths, task_id, message, retry_after)?;
         }
-        "writing" => {
+        TaskQueueAdapter::Writing => {
             crate::writing::fail_task(paths, task_id, message)?;
         }
-        queue => {
-            return Err(CliError::with_code(
-                "queue_adapter_missing",
-                format!("No task lifecycle adapter is available for queue: {queue}"),
-            ));
+        TaskQueueAdapter::Typesetting => {
+            crate::typesetting::fail_task(paths, task_id, message)?;
+        }
+        TaskQueueAdapter::Publishing => {
+            crate::publishing::fail_task(paths, task_id, message)?;
         }
     }
     Ok(())
@@ -863,28 +856,31 @@ pub fn release_task(
     lease_token: &str,
 ) -> Result<Value, CliError> {
     let lease = verify_lease(paths, task_id, lease_token)?;
-    match lease["queue"].as_str().unwrap_or("") {
-        "wiki" => {
+    let release_status = match task_queue_adapter(lease["queue"].as_str().unwrap_or(""))? {
+        TaskQueueAdapter::Wiki => {
             crate::wiki::release_task(paths, task_id)?;
+            "queued"
         }
-        "writing" => {
+        TaskQueueAdapter::Writing => {
             crate::writing::release_task(paths, task_id)?;
+            "queued"
         }
-        "publishing" => {}
-        queue => {
-            return Err(CliError::with_code(
-                "queue_adapter_missing",
-                format!("No task lifecycle adapter is available for queue: {queue}"),
-            ))
+        TaskQueueAdapter::Typesetting => {
+            crate::typesetting::release_task(paths, task_id)?;
+            "queued"
+        }
+        TaskQueueAdapter::Publishing => {
+            crate::publishing::release_task(paths, task_id)?;
+            "cancelled"
         }
     };
     finalize_task_runtime(
         paths,
         lease["projectId"].as_str().unwrap_or_default(),
         task_id,
-        "queued",
+        release_status,
         None,
-        None,
+        (release_status == "cancelled").then(|| json!({ "code": "execution_stopped" })),
         None,
         None,
         None,
@@ -917,20 +913,15 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    match task["task"]["queue"].as_str().unwrap_or("") {
-        "wiki" => crate::wiki::retry_task(paths, task_id)?,
-        "writing" => crate::writing::retry_task(paths, task_id)?,
-        "publishing" => {
+    match task_queue_adapter(task["task"]["queue"].as_str().unwrap_or(""))? {
+        TaskQueueAdapter::Wiki => crate::wiki::retry_task(paths, task_id)?,
+        TaskQueueAdapter::Writing => crate::writing::retry_task(paths, task_id)?,
+        TaskQueueAdapter::Typesetting => crate::typesetting::retry_task(paths, task_id)?,
+        TaskQueueAdapter::Publishing => {
             return Err(CliError::with_code(
                 "invalid_task_transition",
                 "Publishing Tasks cannot be retried in place. Start a new publishing attempt.",
             ));
-        }
-        queue => {
-            return Err(CliError::with_code(
-                "queue_adapter_missing",
-                format!("No task lifecycle adapter is available for queue: {queue}"),
-            ))
         }
     };
     finalize_task_runtime(

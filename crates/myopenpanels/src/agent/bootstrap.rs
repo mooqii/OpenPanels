@@ -3,7 +3,7 @@ use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
 use crate::selection::read_selection;
 use crate::types::{PanelKind, ProjectBootstrap};
-use crate::wiki::{read_agent_selection, selected_agent_skill_id, WIKI_PANEL_SKILL_ID};
+use crate::wiki::{read_agent_selection, selected_agent_skill_id};
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -19,11 +19,29 @@ static BUILTIN_SKILL_REGISTRY: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../agent-resources/builtin-skill-registry.json"
 ));
-pub const CANVAS_PANEL_SKILL_ID: &str = "myopenpanels-canvas-panel";
+pub const PANELS_SKILL_ID: &str = "myopenpanels-panels";
 pub const TASK_QUEUE_SKILL_ID: &str = "myopenpanels-task-queue";
-pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 12;
-pub const AGENT_PROCEDURE_CATALOG_VERSION: u32 = 1;
+pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 13;
+pub const AGENT_PROCEDURE_CATALOG_VERSION: u32 = 2;
 pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
+
+pub(crate) fn canonical_agent_skill_id(skill_id: &str) -> &str {
+    match skill_id {
+        "myopenpanels-canvas-panel"
+        | "myopenpanels-wiki-panel"
+        | "myopenpanels-writing-panel" => PANELS_SKILL_ID,
+        _ => skill_id,
+    }
+}
+
+fn legacy_panel_skill_kind(skill_id: &str) -> Option<PanelKind> {
+    match skill_id {
+        "myopenpanels-canvas-panel" => Some(PanelKind::Canvas),
+        "myopenpanels-wiki-panel" => Some(PanelKind::Wiki),
+        "myopenpanels-writing-panel" => Some(PanelKind::Writing),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +79,8 @@ pub struct AgentSkillReadPayload {
     pub local_dir: String,
     pub local_path: String,
     pub markdown: String,
+    #[serde(default)]
+    pub reference_paths: Vec<String>,
     pub actions: Value,
 }
 
@@ -97,7 +117,7 @@ struct AgentProcedureRegistration {
     description: String,
     key: String,
     panel_kind: Option<String>,
-    reference: String,
+    references: Vec<String>,
     selection_policy: String,
 }
 
@@ -183,7 +203,14 @@ pub fn agent_bootstrap(
     let mut required_commands = BTreeSet::new();
     if let Some(skill_id) = panel_skill_id(bootstrap.active_panel_kind) {
         let skill = required_agent_skill(&skills, skill_id)?;
-        required_commands.extend(skill.metadata.requires_commands.iter().cloned());
+        let panel_commands = procedure_command_intents_for_panel(bootstrap.active_panel_kind)?;
+        required_commands.extend(panel_commands.iter().cloned());
+        let reference_paths = panel_contract_reference_paths(
+            paths,
+            &bootstrap.project.id,
+            skill,
+            bootstrap.active_panel_kind,
+        )?;
         required_skills.push(write_required_skill_loader(
             paths,
             skill,
@@ -191,6 +218,8 @@ pub fn agent_bootstrap(
             detailed_selection.as_ref(),
             wiki_selection.as_ref(),
             None,
+            &reference_paths,
+            &panel_commands,
         )?);
     }
     if let Some((task_id, skill_id)) = next_wiki_task_authoring_skill(&bootstrap)
@@ -205,6 +234,8 @@ pub fn agent_bootstrap(
             detailed_selection.as_ref(),
             wiki_selection.as_ref(),
             Some(task_id),
+            &[],
+            &skill.metadata.requires_commands,
         )?);
     }
     let mut next_actions = Vec::new();
@@ -302,7 +333,7 @@ pub fn agent_bootstrap(
         .iter()
         .flat_map(|skill| {
             let id = skill.get("id").and_then(Value::as_str).unwrap_or("skill");
-            [
+            let mut actions = vec![
                 json!({
                     "id": format!("skill.{id}.context"),
                     "intent": "agent-host.file.read",
@@ -317,7 +348,25 @@ pub fn agent_bootstrap(
                     "kind": "read-file",
                     "path": skill.get("localPath").cloned().unwrap_or(Value::Null),
                 }),
-            ]
+            ];
+            actions.extend(
+                skill
+                    .get("referencePaths")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    .map(|(index, path)| {
+                        json!({
+                            "id": format!("skill.{id}.reference.{index}"),
+                            "intent": "agent-host.file.read",
+                            "executor": "agent-host",
+                            "kind": "read-file",
+                            "path": path,
+                        })
+                    }),
+            );
+            actions
         })
         .collect::<Vec<_>>();
     Ok(json!({
@@ -455,7 +504,7 @@ fn next_wiki_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str,
                 .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
                 .map(|snapshot| selected_agent_skill_id(&snapshot.state))
         })?;
-    (skill_id != WIKI_PANEL_SKILL_ID).then_some((task_id, skill_id))
+    (skill_id != PANELS_SKILL_ID).then_some((task_id, skill_id))
 }
 
 fn next_writing_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str, &str)> {
@@ -493,6 +542,8 @@ fn write_required_skill_loader(
     selection: Option<&crate::selection::SelectionPayload>,
     wiki_selection: Option<&Value>,
     task_id: Option<&str>,
+    reference_paths: &[PathBuf],
+    required_commands: &[String],
 ) -> Result<Value, CliError> {
     let (local_dir, local_path) =
         agent_skill_local_paths(paths, &bootstrap.project.id, &skill.metadata);
@@ -504,6 +555,7 @@ fn write_required_skill_loader(
         task_id,
         &local_dir,
         &local_path,
+        required_commands,
     )?;
     let loader_dir = paths.context_dir.join("agent-skill-loaders");
     fs::create_dir_all(&loader_dir).map_err(to_cli_error)?;
@@ -516,13 +568,78 @@ fn write_required_skill_loader(
         "id": skill.metadata.id,
         "contextPath": context_path.display().to_string(),
         "localPath": local_path.display().to_string(),
+        "referencePaths": reference_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>(),
         "taskId": task_id,
     }))
+}
+
+fn panel_contract_reference_paths(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    skill: &AgentSkill,
+    panel_kind: PanelKind,
+) -> Result<Vec<PathBuf>, CliError> {
+    if skill.metadata.id != PANELS_SKILL_ID {
+        return Ok(Vec::new());
+    }
+    let Some(reference) = panel_contract_reference(panel_kind) else {
+        return Ok(Vec::new());
+    };
+    let (local_dir, _) = agent_skill_local_paths(paths, project_id, &skill.metadata);
+    let path = local_dir.join(reference);
+    if !path.is_file() {
+        return Err(CliError::with_code(
+            "panel_contract_not_found",
+            format!("Panel contract is unavailable: {}", path.display()),
+        ));
+    }
+    Ok(vec![path])
 }
 
 fn command_action(intent: &str, args: Vec<String>) -> Value {
     crate::cli::registry::command_action(crate::cli::registry::CommandId::registered(intent), args)
         .unwrap_or_else(|| panic!("missing Command Registry action for {intent}"))
+}
+
+fn catalog_actions(intents: &[String]) -> Vec<Value> {
+    intents
+        .iter()
+        .filter_map(|intent| crate::cli::registry::catalog_domain_for_intent(intent))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(catalog_action)
+        .collect()
+}
+
+fn catalog_action(domain: &str) -> Value {
+    let mut action = command_action(
+        "agent.catalog",
+        vec![
+            "--domain".to_owned(),
+            domain.to_owned(),
+            "--format".to_owned(),
+            "json".to_owned(),
+        ],
+    );
+    action["condition"] = json!({
+        "type": "agent-judgment",
+        "description": format!("The user request needs a command from the {domain} domain.")
+    });
+    action
+}
+
+fn recommended_catalog_domains(active_panel_kind: PanelKind) -> Vec<&'static str> {
+    let mut scopes = ["panel", "task", "operation"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let panel_scope = active_panel_kind.as_str();
+    if crate::cli::registry::catalog(Some(panel_scope)).is_some() {
+        scopes.insert(panel_scope);
+    }
+    scopes.into_iter().collect()
 }
 
 fn project_command_action(paths: &MyOpenPanelsPaths, intent: &str, args: Vec<String>) -> Value {

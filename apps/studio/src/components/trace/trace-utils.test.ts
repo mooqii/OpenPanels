@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest"
 import type { ProjectTask, TraceCategory, TraceEvent } from "../../types"
 import {
+  canDeleteTask,
   groupWikiUpdateTasks,
+  isPendingTask,
   manualAgentScopeCandidates,
   manualTaskInstruction,
+  taskDeleteNeedsConfirmation,
   traceEventMatchesFilter,
 } from "./trace-utils"
 
@@ -93,16 +96,74 @@ describe("Wiki update task groups", () => {
   })
 })
 
+describe("task deletion rules", () => {
+  it("allows pending and terminal tasks but rejects active tasks and aggregates", () => {
+    expect(canDeleteTask(projectTask({ status: "waiting" }))).toBe(true)
+    expect(canDeleteTask(projectTask({ status: "queued" }))).toBe(true)
+    expect(canDeleteTask(projectTask({ status: "failed" }))).toBe(true)
+    expect(canDeleteTask(projectTask({ status: "succeeded" }))).toBe(true)
+    expect(canDeleteTask(projectTask({ status: "running" }))).toBe(false)
+
+    const aggregate = groupWikiUpdateTasks([
+      projectTask({ mutationKey: "wiki:mutation", status: "queued" }),
+    ])[0]
+    expect(canDeleteTask(aggregate)).toBe(false)
+  })
+
+  it("confirms only waiting work that can still run", () => {
+    expect(
+      taskDeleteNeedsConfirmation(projectTask({ status: "waiting" }))
+    ).toBe(true)
+    expect(taskDeleteNeedsConfirmation(projectTask({ status: "queued" }))).toBe(
+      true
+    )
+    expect(taskDeleteNeedsConfirmation(projectTask({ status: "failed" }))).toBe(
+      false
+    )
+    expect(isPendingTask(projectTask({ status: "failed" }))).toBe(true)
+  })
+})
+
 describe("manual task instructions", () => {
   it("includes the exact scope command in the current language", () => {
     const scope = { kind: "exact-task", taskId: "task:manual" } as const
 
-    expect(manualTaskInstruction(scope, "en")).toContain(
+    const english = manualTaskInstruction(scope, "en", {
+      channel: "release",
+    })
+    const chinese = manualTaskInstruction(scope, "zh-CN", {
+      channel: "release",
+    })
+
+    expect(english).toContain(
       "myopenpanels task handoff start --scope exact-task --task-id task:manual --format json"
     )
-    expect(manualTaskInstruction(scope, "zh-CN")).toContain(
-      "只处理任务 task:manual"
+    expect(english).toContain("Do not claim or process another Task")
+    expect(english).not.toContain("continue with each Bundle")
+    expect(chinese).toContain("只处理任务 task:manual")
+    expect(chinese).toContain("不要领取或处理其他任务")
+    expect(chinese).not.toContain("Runtime 会返回下一项")
+  })
+
+  it("reserves project-wide continuation language for project drains", () => {
+    const projectDrain = manualTaskInstruction(
+      { kind: "project-drain", projectId: "project:test" },
+      "en",
+      { channel: "release" }
     )
+    const wikiDrain = manualTaskInstruction(
+      {
+        kind: "wiki-mutation-drain",
+        mutationKey: "wiki:project:panel:default",
+        projectId: "project:test",
+      },
+      "en",
+      { channel: "release" }
+    )
+
+    expect(projectDrain).toContain("continue with each Task returned")
+    expect(wikiDrain).toContain("Do not process other Project tasks")
+    expect(wikiDrain).not.toContain("continue with each Task returned")
   })
 
   it("uses one mutation scope without enumerating historical Task ids", () => {
@@ -112,12 +173,33 @@ describe("manual task instructions", () => {
         mutationKey: "wiki:project:panel:default",
         projectId: "project:test",
       },
-      "en"
+      "en",
+      { channel: "release" }
     )
 
     expect(instruction).toContain("--scope wiki-mutation-drain")
     expect(instruction).toContain("--mutation-key wiki:project:panel:default")
     expect(instruction).not.toContain("--task-id")
+  })
+
+  it("keeps development and release Task Handoffs on separate CLIs", () => {
+    const scope = { kind: "exact-task", taskId: "task:manual" } as const
+
+    const development = manualTaskInstruction(scope, "zh-CN", {
+      agentCli: "/checkout/scripts/myopenpanels-dev",
+      channel: "development",
+    })
+    expect(development).toContain(
+      "/checkout/scripts/myopenpanels-dev task handoff start"
+    )
+    expect(development).toContain("不要运行已安装的正式版 myopenpanels")
+
+    const release = manualTaskInstruction(scope, "zh-CN", {
+      channel: "release",
+    })
+    expect(release).toContain("myopenpanels task handoff start")
+    expect(release).not.toContain("scripts/myopenpanels-dev task handoff start")
+    expect(release).toContain("不要运行仓库内的 scripts/myopenpanels-dev")
   })
 
   it("folds conversion prerequisites into one ready Wiki mutation scope", () => {

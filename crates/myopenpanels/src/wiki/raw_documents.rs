@@ -152,7 +152,10 @@ pub fn add_raw_document(
     );
     let document = json!({
         "id": document_id,
-        "title": title.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| title_from_file_name(&safe_file_name)),
+        "title": title
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| title_from_file_name(file_name)),
         "originalFileName": safe_file_name,
         "mimeType": mime_type.unwrap_or_else(|| mime_type_for_file(file_name)),
         "sizeBytes": content.len(),
@@ -412,6 +415,42 @@ pub fn rename_raw_document(
     document["updatedAt"] = json!(now);
     let document = document.clone();
     let meta_path = wiki_panel_path(&panel_dir, &wiki_ref(&["raw", document_id, "meta.json"]))?;
+    fs::write(
+        meta_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&document).map_err(to_cli_error)?
+        ),
+    )
+    .map_err(to_cli_error)?;
+    save_wiki_state(paths, &wiki)?;
+    Ok(json!({ "document": document, "state": wiki.state }))
+}
+
+pub fn rename_raw_document_title(
+    paths: &MyOpenPanelsPaths,
+    document_id: &str,
+    title: &str,
+) -> Result<Value, CliError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(CliError::with_code(
+            "invalid_raw_document",
+            "Raw document title cannot be empty.",
+        ));
+    }
+    let mut wiki = get_wiki_bootstrap(paths)?;
+    let storage = Storage::open(paths)?;
+    let now = now_iso();
+    let document = find_document_mut(&mut wiki.state, document_id)?;
+    document["title"] = json!(title);
+    document["updatedAt"] = json!(now);
+    let document = document.clone();
+    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
+    let meta_path = wiki_panel_path(
+        &panel_dir,
+        &wiki_ref(&["raw", document_id, "meta.json"]),
+    )?;
     fs::write(
         meta_path,
         format!(

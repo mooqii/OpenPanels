@@ -149,12 +149,17 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let panel_skill = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(panel_skill["skill"]["name"], "MyOpenPanels Wiki Panel");
+    assert_eq!(panel_skill["skill"]["id"], "myopenpanels-panels");
+    assert_eq!(panel_skill["skill"]["name"], "MyOpenPanels Panels");
     assert!(panel_skill["skill"].get("title").is_none());
     assert!(panel_skill["markdown"]
         .as_str()
         .unwrap_or("")
-        .contains("`agent.skill.read`"));
+        .contains("`wiki.page.search`"));
+    assert!(panel_skill["referencePaths"][0]
+        .as_str()
+        .unwrap()
+        .ends_with("references/wiki-contract.md"));
 
     let (code, _, _) = run(&[
         "agent",
@@ -559,8 +564,9 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "ctx",
     ]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(panel_stdout.contains("`task.claim`"));
-    assert!(panel_stdout.contains("`wiki.page.create`"));
+    assert!(panel_stdout.contains("`wiki.page.search`"));
+    assert!(!panel_stdout.contains("`task.claim`"));
+    assert!(!panel_stdout.contains("`wiki.page.create`"));
 
     let (code, stdout, stderr) = run(&[
         "agent",

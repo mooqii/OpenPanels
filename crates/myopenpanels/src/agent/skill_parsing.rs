@@ -79,14 +79,14 @@ pub(crate) fn custom_writing_skill_from_source(
         {
             return Ok(skill);
         }
-    } else if schema_version == 2 || schema_version == 3 {
-        let mut skill = if schema_version == 3 {
+    } else if matches!(schema_version, 2 | 3 | 4) {
+        let mut skill = if schema_version >= 3 {
             external_custom_skill_from_source(source, file_name, skill_id)?
         } else {
             parse_portable_skill(source, file_name)?
         };
         let binding = manifest.get("binding").unwrap_or(&Value::Null);
-        if schema_version == 3 {
+        if schema_version >= 3 {
             let module_kinds = binding
                 .get("moduleKinds")
                 .and_then(Value::as_array)
@@ -101,8 +101,11 @@ pub(crate) fn custom_writing_skill_from_source(
                     }
                     "writing" => ("writing", &["generate_document"]),
                     "writing-refinement" => ("writing", &["refine_writing_skill"]),
-                    "publishing-xiaohongshu" => {
+                    "publishing" | "publishing-xiaohongshu" => {
                         ("publishing", &["publish_xiaohongshu_note"])
+                    }
+                    "typesetting-cover" => {
+                        ("typesetting", &[crate::typesetting::COVER_TASK_TYPE])
                     }
                     _ => {
                         return Err(CliError::with_code(
@@ -120,7 +123,7 @@ pub(crate) fn custom_writing_skill_from_source(
                     }
                 }
             }
-            if module_kinds.is_empty() || skill.metadata.id != skill_id {
+            if skill.metadata.id != skill_id {
                 return Err(CliError::with_code(
                     "invalid_custom_skill",
                     format!("Custom Skill binding is invalid: {skill_id}"),

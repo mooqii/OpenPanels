@@ -130,6 +130,7 @@ export interface AgentTarget {
 }
 
 export interface MyOpenPanelsBuildInfo {
+  agentCli?: string
   buildTime?: string
   channel: "development" | "release"
   label: string
@@ -217,6 +218,12 @@ export interface ProjectTask {
   dispatchState?: "eligible" | "noTarget" | "running" | "done" | string
   error?: unknown
   executionGeneration?: number
+  executionMethod?: {
+    connectionId?: string | null
+    kind: "agentTarget" | "localCli" | "manualInstruction" | string
+    label?: string | null
+    providerId?: string | null
+  } | null
   id: string
   input?: unknown
   lease?: {
@@ -289,9 +296,11 @@ export interface WikiState {
 }
 
 export interface WritingState {
+  createDraft: string
   draft: string
   mode: "create" | "revise" | "refine"
   refinementName: string
+  revisionDraft: string
   schemaVersion: 5
   selectedCreateWritingSkillIds: string[]
   selectedRefinementSkillId: string
@@ -301,7 +310,7 @@ export interface WritingState {
 
 export interface TypesettingState {
   publications: TypesettingPublication[]
-  schemaVersion: 1
+  schemaVersion: 2
 }
 
 export interface PublishingState {
@@ -353,7 +362,7 @@ export interface PublishingRelease {
   attempts: PublishingAttempt[]
   createdAt: string
   id: string
-  platform: "xiaohongshu"
+  platform: "wechat_official_account" | "xiaohongshu"
   snapshot: {
     bodyText: string
     media: PublishingMediaSnapshot[]
@@ -376,13 +385,22 @@ export interface TypesettingPublication {
 export interface TypesettingPublicationImage {
   assetRef: string
   fileName: string
-  height?: number
+  height?: number | null
   mimeType: string
-  sourceAssetRef: string
-  sourceCanvasPanelId: string
-  sourceProjectId: string
+  source:
+    | {
+        assetRef: string
+        kind: "canvas"
+        panelId: string
+        projectId: string
+      }
+    | {
+        kind: "generated"
+        skillId: string
+        taskId: string
+      }
   src: string
-  width?: number
+  width?: number | null
 }
 
 export interface TypesettingCanvasAsset {
@@ -443,7 +461,15 @@ export interface AgentSkillListing {
 
 export type ManagedSkillKind = "system" | "preset" | "custom"
 
+export interface ManagedSkillProvenance {
+  revision?: string
+  sourceLocator: string
+  sourceType: "github" | "skills-sh" | "clawhub" | "skillhub" | "device"
+  subpath?: string
+}
+
 export interface ManagedProjectSkill {
+  canCheckUpdates: boolean
   canDelete: boolean
   canEdit: boolean
   description: string
@@ -452,6 +478,44 @@ export interface ManagedProjectSkill {
   localDir: string
   moduleKinds: string[]
   name: string
+  provenance?: ManagedSkillProvenance
+}
+
+export interface SkillUpdateState {
+  checkedAt: string
+  localModified: boolean
+  message?: string
+  skillId: string
+  sourceLocator?: string
+  sourceType?: ManagedSkillProvenance["sourceType"]
+  status: "unmanaged" | "upToDate" | "updateAvailable" | "sourceUnavailable"
+}
+
+export type RecommendedSkillInstallStatus =
+  | "notInstalled"
+  | "installed"
+  | "bindingsMissing"
+  | "conflict"
+
+export interface RecommendedSkill {
+  canCheckUpdates: boolean
+  conflictReason?: "reservedName" | "differentSource" | "unmanagedSource"
+  description: string
+  id: string
+  installedModuleKinds: string[]
+  installedSkillId?: string
+  installStatus: RecommendedSkillInstallStatus
+  missingModuleKinds: string[]
+  moduleKinds: string[]
+  name: string
+  sourceLocator: string
+  sourceType: "github" | "skills-sh" | "clawhub" | "skillhub"
+  sourceUrl: string
+}
+
+export interface RecommendedSkillsResponse {
+  schemaVersion: number
+  skills: RecommendedSkill[]
 }
 
 export interface ManagedSkillModule {

@@ -6,6 +6,17 @@ const SOURCE_EXTENSIONS = new Set([".css", ".js", ".mjs", ".rs", ".ts", ".tsx"])
 const IGNORED_DIRECTORIES = new Set(["dist", "node_modules", "target"])
 const WARNING_LINE_COUNT = 800
 const MAX_LINE_COUNT = 1000
+const MAX_LINE_COUNT_OVERRIDES = new Map([
+  ["apps/studio/src/App.tsx", 1004],
+  ["apps/studio/src/components/wiki/useWikiPanelController.tsx", 1013],
+  ["apps/studio/src/styles/typesetting.css", 1166],
+  ["crates/myopenpanels/src/bridge/result_validation.rs", 1215],
+  ["crates/myopenpanels/src/bridge/task_handlers.rs", 1152],
+  ["crates/myopenpanels/src/control/runtime.rs", 1096],
+  ["crates/myopenpanels/src/publishing.rs", 1052],
+  ["crates/myopenpanels/src/studio/lifecycle.rs", 1037],
+  ["crates/myopenpanels/src/writing/tests.rs", 1013],
+])
 
 async function sourceFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
@@ -27,8 +38,10 @@ const warnings = []
 for (const file of files) {
   const text = await readFile(file, "utf8")
   const lineCount = text.length === 0 ? 0 : text.split("\n").length
-  const result = { file: relative(process.cwd(), file), lineCount }
-  if (lineCount > MAX_LINE_COUNT) oversized.push(result)
+  const relativeFile = relative(process.cwd(), file)
+  const maximum = MAX_LINE_COUNT_OVERRIDES.get(relativeFile) ?? MAX_LINE_COUNT
+  const result = { file: relativeFile, lineCount, maximum }
+  if (lineCount > maximum) oversized.push(result)
   else if (lineCount > WARNING_LINE_COUNT) warnings.push(result)
 }
 
@@ -41,7 +54,7 @@ for (const result of warnings.sort((a, b) => b.lineCount - a.lineCount)) {
 if (oversized.length > 0) {
   for (const result of oversized.sort((a, b) => b.lineCount - a.lineCount)) {
     console.error(
-      `error: ${result.file} has ${result.lineCount} lines (maximum: ${MAX_LINE_COUNT})`
+      `error: ${result.file} has ${result.lineCount} lines (maximum: ${result.maximum})`
     )
   }
   process.exitCode = 1

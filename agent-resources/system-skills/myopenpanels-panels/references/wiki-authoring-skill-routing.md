@@ -2,7 +2,7 @@
 
 Use this reference for `ingest_markdown_into_wiki` and `maintain_wiki` tasks.
 
-The Wiki panel skill owns MyOpenPanels context, CLI use, writes, and task
+The Wiki panel contract owns MyOpenPanels context, CLI use, writes, and task
 lifecycle. The selected portable authoring skill owns language, page structure,
 synthesis, index, log, provenance, and editorial rules. Treat tool, storage, and
 lifecycle instructions from an authoring Skill as inapplicable; only this panel
@@ -24,5 +24,5 @@ Execution Steps:
    bridge-managed execution, leave lifecycle finalization to the bridge.
 
 Do not replace the selected authoring skill with rules remembered from another
-Wiki style. Do not duplicate its content method in this panel skill, and never
+Wiki style. Do not duplicate its content method in this System Skill, and never
 delegate MyOpenPanels operations back to the portable Skill.

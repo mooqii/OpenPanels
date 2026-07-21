@@ -49,6 +49,7 @@ fn current_build_info() -> StudioBuildInfo {
         .unwrap_or_else(|| std::env::var("MYOPENPANELS_DEV").is_ok());
     if !is_development {
         return StudioBuildInfo {
+            agent_cli: crate::cli_identity::agent_cli_executable(),
             build_time: None,
             channel: "release",
             label: env!("CARGO_PKG_VERSION").to_owned(),
@@ -57,6 +58,7 @@ fn current_build_info() -> StudioBuildInfo {
     }
 
     StudioBuildInfo {
+        agent_cli: crate::cli_identity::agent_cli_executable(),
         build_time: development_build_time(),
         channel: "development",
         label: "dev".to_owned(),
@@ -130,8 +132,11 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "publishing_release_not_found"
             | "publishing_attempt_not_found"
             | "publishing_source_not_found"
+            | "typesetting_publication_not_found"
+            | "typesetting_cover_skill_not_found"
             | "writing_skill_file_not_found"
             | "skill_not_found"
+            | "recommended_skill_not_found"
             | "device_skill_not_found"
             | "skill_module_not_found"
             | "skill_file_not_found",
@@ -147,6 +152,8 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "publishing_unknown_unacknowledged"
             | "skill_reserved_name"
             | "skill_content_changed"
+            | "skill_local_modifications"
+            | "recommended_skill_conflict"
             | "content_conflict",
         ) => StatusCode::CONFLICT,
         Some("content_not_found") => StatusCode::NOT_FOUND,
@@ -162,7 +169,9 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
         ) => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
-        Some("skill_read_only" | "writing_skill_read_only") => StatusCode::FORBIDDEN,
+        Some(
+            "skill_read_only" | "writing_skill_read_only" | "skill_update_unavailable",
+        ) => StatusCode::FORBIDDEN,
         Some(
             "invalid_target"
             | "invalid_dispatch_mode"
@@ -176,9 +185,16 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "writing_skill_name_too_long"
             | "invalid_skill_module"
             | "invalid_skill_package"
+            | "invalid_recommended_skill_catalog"
+            | "recommended_skill_name_mismatch"
             | "invalid_publishing_request"
             | "publishing_source_incomplete"
+            | "publishing_skill_not_supported"
+            | "publishing_skill_target_mismatch"
             | "invalid_publishing_phase"
+            | "invalid_cover_request"
+            | "cover_instruction_too_long"
+            | "cover_source_empty"
             | "skill_source_ambiguous"
             | "unsupported_skill_source",
         ) => StatusCode::BAD_REQUEST,

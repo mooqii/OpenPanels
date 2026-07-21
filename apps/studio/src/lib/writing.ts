@@ -1,6 +1,7 @@
 import type { ProjectTask, WikiGeneratedDocument, WritingState } from "../types"
 
 export type WritingSkillSelectionError = "required" | "revision_limit" | null
+export type WritingReferenceSelectionError = "required" | "unready" | null
 export type RefinementTaskGroup = "active" | "waiting" | "error"
 export type WritingDocumentStatus =
   | "pending_create"
@@ -125,6 +126,17 @@ export function writingSkillSelectionError(
   return null
 }
 
+export function writingReferenceSelectionError(
+  mode: WritingState["mode"],
+  selectedCount: number,
+  unreadyCount: number
+): WritingReferenceSelectionError {
+  if (mode !== "create") return null
+  if (selectedCount === 0) return "required"
+  if (unreadyCount > 0) return "unready"
+  return null
+}
+
 export function toggleWritingSkillSelection(
   current: string[],
   skillId: string,
@@ -139,4 +151,12 @@ export function toggleWritingSkillSelection(
   return isSelected
     ? [...current.filter((id) => id !== skillId), skillId]
     : current.filter((id) => id !== skillId)
+}
+
+export function selectSingleSkill(
+  current: string | null,
+  skillId: string,
+  isSelected: boolean
+): string | null {
+  return isSelected ? skillId : current
 }

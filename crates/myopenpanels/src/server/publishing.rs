@@ -11,7 +11,6 @@ struct PublishingReleaseBody {
     publication_id: String,
     skill_id: String,
     request_id: String,
-    platform: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,9 +40,6 @@ async fn api_publishing_create_release(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PublishingReleaseBody>,
 ) -> Response {
-    if body.platform != "xiaohongshu" {
-        return json_error(StatusCode::BAD_REQUEST, "Only Xiaohongshu is supported.");
-    }
     match crate::publishing::create_release(
         &state.paths,
         &body.publication_id,
@@ -72,4 +68,3 @@ async fn api_publishing_create_attempt(
         Err(error) => json_cli_error(&error),
     }
 }
-

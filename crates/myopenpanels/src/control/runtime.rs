@@ -160,7 +160,10 @@ pub fn read_project_bootstrap(
             "no_current_project",
             "No current MyOpenPanels project is available. Start Studio to prepare the current project context.",
             true,
-            "Run `myopenpanels studio start --project-dir <dir> --format json`, then retry.",
+            format!(
+                "Run `{} studio start --project-dir <dir> --format json`, then retry.",
+                crate::cli_identity::agent_cli_shell_word()
+            ),
         )
     })?;
 
@@ -240,7 +243,8 @@ pub fn require_active_panel(
             ),
             true,
             format!(
-                "Run `myopenpanels panel activate --panel-kind {} --format json`, read the new focus revision, and retry.",
+                "Run `{} panel activate --panel-kind {} --format json`, read the new focus revision, and retry.",
+                crate::cli_identity::agent_cli_shell_word(),
                 expected_kind.as_str()
             ),
         ));
@@ -252,7 +256,10 @@ pub fn require_active_panel(
                 "focus_changed",
                 format!("Expected focus revision {expected}, but the current revision is {current}."),
                 true,
-                "Read `myopenpanels panel context read --format json` and retry against the new focus.",
+                format!(
+                    "Read `{} panel context read --format json` and retry against the new focus.",
+                    crate::cli_identity::agent_cli_shell_word()
+                ),
             ));
         }
     }
@@ -421,7 +428,10 @@ fn requested_or_active_project(
             "project_not_found",
             format!("MyOpenPanels project not found: {project_id}"),
             false,
-            "Run `myopenpanels project list --format json` and select an existing Project id.",
+            format!(
+                "Run `{} project list --format json` and select an existing Project id.",
+                crate::cli_identity::agent_cli_shell_word()
+            ),
         ));
     }
     if let Some(project_id) = active_project_id {
@@ -578,10 +588,15 @@ fn resolve_typesetting_state(state: Option<Value>) -> Result<PanelStateResolutio
     };
     match state.get("schemaVersion").and_then(Value::as_i64) {
         Some(1) if is_typesetting_state_v1(&state) => Ok(PanelStateResolution {
+            state: migrate_typesetting_state_v1(state),
+            changed: true,
+        }),
+        Some(1) => Err(CliError::new("Malformed typesetting panel state.")),
+        Some(2) if is_typesetting_state_v2(&state) => Ok(PanelStateResolution {
             state,
             changed: false,
         }),
-        Some(1) => Err(CliError::new("Malformed typesetting panel state.")),
+        Some(2) => Err(CliError::new("Malformed typesetting panel state.")),
         Some(version) => Err(CliError::new(format!(
             "Unsupported future typesetting panel state schemaVersion: {version}"
         ))),
@@ -589,6 +604,38 @@ fn resolve_typesetting_state(state: Option<Value>) -> Result<PanelStateResolutio
             "Malformed typesetting panel state: missing schemaVersion.",
         )),
     }
+}
+
+fn migrate_typesetting_state_v1(mut state: Value) -> Value {
+    state["schemaVersion"] = json!(2);
+    for cover in state
+        .get_mut("publications")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(|publication| publication.get_mut("covers").and_then(Value::as_array_mut))
+        .flatten()
+    {
+        cover["source"] = json!({
+            "kind": "canvas",
+            "assetRef": cover.get("sourceAssetRef").cloned().unwrap_or(Value::Null),
+            "projectId": cover.get("sourceProjectId").cloned().unwrap_or(Value::Null),
+            "panelId": cover.get("sourceCanvasPanelId").cloned().unwrap_or(Value::Null),
+        });
+        if let Some(object) = cover.as_object_mut() {
+            object.remove("sourceAssetRef");
+            object.remove("sourceProjectId");
+            object.remove("sourceCanvasPanelId");
+        }
+    }
+    state
+}
+
+fn is_typesetting_state_v2(state: &Value) -> bool {
+    state
+        .get("publications")
+        .and_then(Value::as_array)
+        .is_some_and(|publications| publications.iter().all(is_typesetting_publication_v2))
 }
 
 pub(crate) fn validate_typesetting_state(state: &Value) -> Result<(), CliError> {
@@ -616,6 +663,20 @@ fn is_typesetting_publication_v1(publication: &Value) -> bool {
             .get("covers")
             .and_then(Value::as_array)
             .is_some_and(|covers| covers.iter().all(is_typesetting_image_v1))
+}
+
+fn is_typesetting_publication_v2(publication: &Value) -> bool {
+    publication.get("id").is_some_and(Value::is_string)
+        && publication.get("title").is_some_and(Value::is_string)
+        && publication.get("createdAt").is_some_and(Value::is_string)
+        && publication.get("updatedAt").is_some_and(Value::is_string)
+        && publication
+            .get("content")
+            .is_some_and(is_typesetting_document_v1)
+        && publication
+            .get("covers")
+            .and_then(Value::as_array)
+            .is_some_and(|covers| covers.iter().all(is_typesetting_image_v2))
 }
 
 fn is_typesetting_document_v1(content: &Value) -> bool {
@@ -667,6 +728,36 @@ fn is_typesetting_image_v1(image: &Value) -> bool {
         })
 }
 
+fn is_typesetting_image_v2(image: &Value) -> bool {
+    let base_valid = ["assetRef", "src", "fileName", "mimeType"]
+        .iter()
+        .all(|key| image.get(key).is_some_and(Value::is_string))
+        && image
+            .get("src")
+            .and_then(Value::as_str)
+            .is_some_and(|src| src.starts_with('/'))
+        && ["width", "height"].iter().all(|key| {
+            image
+                .get(key)
+                .map_or(true, |value| value.is_null() || value.as_f64().is_some())
+        });
+    let source = image.get("source");
+    base_valid
+        && match source.and_then(|value| value.get("kind")).and_then(Value::as_str) {
+            Some("canvas") => source.is_some_and(|source| {
+                ["assetRef", "projectId", "panelId"]
+                    .iter()
+                    .all(|key| source.get(key).is_some_and(Value::is_string))
+            }),
+            Some("generated") => source.is_some_and(|source| {
+                ["taskId", "skillId"]
+                    .iter()
+                    .all(|key| source.get(key).is_some_and(Value::is_string))
+            }),
+            _ => false,
+        }
+}
+
 fn resolve_writing_state(state: Option<Value>) -> Result<PanelStateResolution, CliError> {
     let Some(mut state) = state else {
         return Ok(PanelStateResolution {
@@ -689,11 +780,39 @@ fn resolve_writing_state(state: Option<Value>) -> Result<PanelStateResolution, C
             .get("selectedRevisionWritingSkillId")
             .is_some_and(|id| id.is_null() || id.is_string());
     if valid {
-        let changed = !state
+        let mut changed = false;
+        if !state
             .get("selectedRefinementSkillId")
-            .is_some_and(Value::is_string);
-        if changed {
+            .is_some_and(Value::is_string)
+        {
             state["selectedRefinementSkillId"] = json!(DEFAULT_REFINEMENT_SKILL_ID);
+            changed = true;
+        }
+        let mode = state
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("create")
+            .to_owned();
+        let legacy_draft = state
+            .get("draft")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if !state.get("createDraft").is_some_and(Value::is_string) {
+            state["createDraft"] = if mode == "revise" {
+                json!("")
+            } else {
+                json!(legacy_draft)
+            };
+            changed = true;
+        }
+        if !state.get("revisionDraft").is_some_and(Value::is_string) {
+            state["revisionDraft"] = if mode == "revise" {
+                json!(legacy_draft)
+            } else {
+                json!("")
+            };
+            changed = true;
         }
         Ok(PanelStateResolution {
             state,
@@ -777,7 +896,7 @@ fn empty_publishing_state() -> Value {
 
 fn empty_typesetting_state() -> Value {
     json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "publications": [],
     })
 }
@@ -785,9 +904,11 @@ fn empty_typesetting_state() -> Value {
 fn empty_writing_state() -> Value {
     json!({
         "schemaVersion": 5,
+        "createDraft": "",
         "draft": "",
         "mode": "create",
         "refinementName": "",
+        "revisionDraft": "",
         "targetGeneratedDocumentId": null,
         "selectedCreateWritingSkillIds": [DEFAULT_WRITING_SKILL_ID],
         "selectedRevisionWritingSkillId": DEFAULT_WRITING_SKILL_ID,

@@ -4,12 +4,12 @@ MyOpenPanels separates host integration from reusable content methods.
 
 ## Platform Skills
 
-`myopenpanels-wiki-panel`, `myopenpanels-writing-panel`,
-`myopenpanels-canvas-panel`, and `myopenpanels-task-queue` are system contracts.
-They may describe MyOpenPanels context, command discovery, target binding,
-storage operations, and Task or Operation lifecycle. Agent Bootstrap loads the
-applicable system Skill before panel work. Their packages live under
-`agent-resources/system-skills`.
+`myopenpanels-panels` and `myopenpanels-task-queue` are system contracts. The
+first owns shared Canvas, Wiki, and Writing mechanics; the second owns generic
+Task queue and handoff mechanics. They may describe MyOpenPanels context,
+command discovery, target binding, storage operations, and Task or Operation
+lifecycle. Agent Bootstrap loads the applicable system Skill before panel work.
+Their packages live under `agent-resources/system-skills`.
 
 ## Portable Skills
 
@@ -23,12 +23,14 @@ Built-in portable presets live under `agent-resources/preset-skills`. Both
 system and preset packages use standard `name` and `description` frontmatter.
 They are associated with panels, task types, command intents, and user-visible
 names through `agent-resources/builtin-skill-registry.json`. That platform
-registry uses schema v3. Its `procedures` bind 18 stable Agent Procedure keys to
-one system Skill reference, selection policy, and the minimum command intents
-required for that single capability. Its five `taskHandoffs` bind direct Task
-execution routes without making them bootstrappable Procedures. It is not part
-of any Skill package. Custom Writing Skills use the same separation through
-their platform-owned `manifest.json`.
+registry uses schema v4. Its `procedures` bind 18 stable Agent Procedure keys to
+an ordered set of System Skill references, a selection policy, and the minimum
+command intents required for that single capability. Procedure Bootstrap loads
+the thin Skill body, panel contract, and exact function reference in that order.
+Its five `taskHandoffs` bind direct Task execution routes without making them
+bootstrappable Procedures. The registry is not part of any Skill package.
+Custom Writing Skills use the same separation through their platform-owned
+`manifest.json`.
 
 The independently installed Entry Skill contains the compact Procedure and Task
 Handoff intent index. System Panel Skills and their references ship inside the CLI. Procedure
