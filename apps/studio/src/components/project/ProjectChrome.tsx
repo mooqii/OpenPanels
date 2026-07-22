@@ -78,7 +78,7 @@ export function BottomPanelTabs({
   onSwitchPanel: (kind: MyOpenPanelsPanelKind) => void
   panels: MyOpenPanelsPanel[]
 }) {
-  const { t } = useMyOpenPanelsI18n()
+  const { locale, t } = useMyOpenPanelsI18n()
   const visiblePanels = panels.filter(
     (panel) =>
       panel.kind === "wiki" ||
@@ -117,13 +117,15 @@ export function BottomPanelTabs({
                 )}
                 <span>
                   {panel.kind === "wiki"
-                    ? t`Wiki`
+                    ? locale === "zh-CN"
+                      ? "文档"
+                      : "Wiki"
                     : panel.kind === "writing"
                       ? t`Writing`
-                      : panel.kind === "typesetting"
-                        ? t`Typesetting`
+                    : panel.kind === "typesetting"
+                        ? t`Typeset`
                         : panel.kind === "publishing"
-                          ? t`Publishing`
+                          ? t`Publish`
                           : t`Canvas`}
                 </span>
                 <Tabs.Indicator />
@@ -294,7 +296,7 @@ function ProjectTitleControl({
               </AlertDialog.Header>
               <AlertDialog.Body>
                 <p>
-                  {t`Deleting this project removes its Wiki, writing requests, generated documents, canvas content, and publication projects. This cannot be undone.`}
+                  {t`Deleting this project removes its Wiki, writing requests, My Documents, canvas content, and publication projects. This cannot be undone.`}
                 </p>
                 <div className="op-project-title__confirm-name">
                   {pendingDeleteProject.title}

@@ -22,7 +22,7 @@ static BUILTIN_SKILL_REGISTRY: &str = include_str!(concat!(
 pub const PANELS_SKILL_ID: &str = "myopenpanels-panels";
 pub const TASK_QUEUE_SKILL_ID: &str = "myopenpanels-task-queue";
 pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 13;
-pub const AGENT_PROCEDURE_CATALOG_VERSION: u32 = 2;
+pub const AGENT_PROCEDURE_CATALOG_VERSION: u32 = 3;
 pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
 
 pub(crate) fn canonical_agent_skill_id(skill_id: &str) -> &str {
@@ -30,6 +30,10 @@ pub(crate) fn canonical_agent_skill_id(skill_id: &str) -> &str {
         "myopenpanels-canvas-panel"
         | "myopenpanels-wiki-panel"
         | "myopenpanels-writing-panel" => PANELS_SKILL_ID,
+        crate::wiki::LEGACY_WIKI_AGENT_SKILL_ID
+        | crate::wiki::LEGACY_ZH_WIKI_AGENT_SKILL_ID => {
+            crate::wiki::DEFAULT_WIKI_AGENT_SKILL_ID
+        }
         _ => skill_id,
     }
 }
@@ -524,6 +528,7 @@ fn required_agent_skill<'a>(
     skills: &'a [AgentSkill],
     skill_id: &str,
 ) -> Result<&'a AgentSkill, CliError> {
+    let skill_id = canonical_agent_skill_id(skill_id);
     skills
         .iter()
         .find(|skill| skill.metadata.id == skill_id)

@@ -190,6 +190,116 @@
     }
 
     #[test]
+    fn imported_document_conversion_stays_out_of_the_wiki() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().join("project");
+        let storage = temp.path().join("storage");
+        fs::create_dir_all(&project).expect("project");
+        let paths = crate::paths::resolve_myopenpanels_paths(
+            Some(project.to_str().unwrap()),
+            Some(storage.to_str().unwrap()),
+            Some("imported-document-conversion"),
+        )
+        .expect("paths");
+        let bootstrap = crate::control::ensure_project_bootstrap(
+            &paths,
+            crate::control::BootstrapRequest::new(),
+        )
+        .expect("bootstrap");
+        let imported = crate::wiki::import_generated_document(
+            &paths,
+            "brief.pdf",
+            Some("Brief"),
+            Some("application/pdf"),
+            b"binary fixture",
+        )
+        .expect("import");
+        let document_id = imported["document"]["id"].as_str().unwrap();
+        let task_id = imported["task"]["id"].as_str().unwrap();
+        let task = crate::storage::Storage::open(&paths)
+            .expect("storage")
+            .list_tasks(&bootstrap.project.id)
+            .expect("tasks")
+            .into_iter()
+            .find(|task| task["id"] == task_id)
+            .expect("conversion task");
+        assert_eq!(task["input"]["documentKind"], "generated");
+
+        let target = crate::tasks::register_target(
+            &paths,
+            crate::tasks::TargetRegistration {
+                name: "imported-document-conversion",
+                host: Some("test"),
+                project_id: Some(&bootstrap.project.id),
+                capabilities: vec!["wiki.convertDocument".to_owned()],
+                priority: 0,
+                protocol_version: 3,
+                max_concurrency: 1,
+                model_gateway_connection_id: None,
+            },
+        )
+        .expect("target");
+        let _broker = crate::content::enable_test_task_broker();
+        let claim = crate::tasks::claim_task(
+            &paths,
+            task_id,
+            target["target"]["id"].as_str().unwrap(),
+        )
+        .expect("claim");
+        #[cfg(unix)]
+        let command = r#"printf '# Imported Document\n' > outputs/source.md && printf '%s' '{"schemaVersion":2,"outcome":"converted","summary":"Converted imported document.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#.to_owned();
+        #[cfg(windows)]
+        let command = {
+            use base64::Engine as _;
+
+            let script = r##"[IO.File]::WriteAllText('outputs/source.md', "# Imported Document`n"); [IO.File]::WriteAllText('execution-result.json', '{"schemaVersion":2,"outcome":"converted","summary":"Converted imported document.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}')"##;
+            let utf16 = script
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>();
+            format!(
+                "powershell.exe -NoProfile -NonInteractive -EncodedCommand {}",
+                base64::engine::general_purpose::STANDARD.encode(utf16)
+            )
+        };
+        let result = run_task_command(
+            &paths,
+            &command,
+            10_000,
+            &claim["task"],
+            target["target"]["id"].as_str().unwrap(),
+            claim["leaseToken"].as_str().unwrap(),
+            true,
+            claim["attemptId"].as_str(),
+            claim["executionGeneration"].as_i64(),
+            claim["taskBrokerUrl"].as_str(),
+            claim["executionToken"].as_str(),
+            None,
+        )
+        .expect("automatic execution");
+        assert_eq!(result["success"], true, "{result}");
+
+        let completed = crate::wiki::read_generated_document(&paths, document_id)
+            .expect("completed document");
+        assert_eq!(completed["content"], "# Imported Document\n");
+        assert_eq!(completed["document"]["contentVersion"], 1);
+        assert_eq!(completed["document"]["conversion"]["status"], "ready");
+        let context = crate::wiki::wiki_context(&paths).expect("wiki context");
+        assert_eq!(context["state"]["rawDocuments"], json!([]));
+        assert_eq!(context["state"]["wikiSpaces"][0]["pageIndex"], json!([]));
+        let tasks = crate::storage::Storage::open(&paths)
+            .expect("storage")
+            .list_tasks(&bootstrap.project.id)
+            .expect("tasks");
+        assert!(!tasks.iter().any(|task| {
+            matches!(
+                task["type"].as_str(),
+                Some("ingest_markdown_into_wiki" | "maintain_wiki")
+            )
+        }));
+    }
+
+    #[test]
     fn conversion_result_must_match_the_single_staged_markdown() {
         use base64::Engine as _;
 
@@ -431,7 +541,7 @@
         .expect("paths");
         crate::control::ensure_project_bootstrap(&paths, crate::control::BootstrapRequest::new())
             .expect("bootstrap");
-        crate::writing::write_selection(&paths, false, &[], &[]).expect("selection");
+        crate::writing::write_selection(&paths, false, &[]).expect("selection");
         let created = crate::writing::create_requests(
             &paths,
             "Return plain text",

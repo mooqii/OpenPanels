@@ -134,6 +134,7 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "publishing_source_not_found"
             | "typesetting_publication_not_found"
             | "typesetting_cover_skill_not_found"
+            | "typesetting_layout_skill_not_found"
             | "writing_skill_file_not_found"
             | "skill_not_found"
             | "recommended_skill_not_found"
@@ -154,7 +155,9 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "skill_content_changed"
             | "skill_local_modifications"
             | "recommended_skill_conflict"
-            | "content_conflict",
+            | "content_conflict"
+            | "typesetting_layout_in_progress"
+            | "typesetting_content_locked",
         ) => StatusCode::CONFLICT,
         Some("content_not_found") => StatusCode::NOT_FOUND,
         Some("content_too_large" | "skill_package_too_large") => StatusCode::PAYLOAD_TOO_LARGE,
@@ -195,6 +198,9 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "invalid_cover_request"
             | "cover_instruction_too_long"
             | "cover_source_empty"
+            | "invalid_layout_request"
+            | "layout_instruction_too_long"
+            | "layout_source_empty"
             | "skill_source_ambiguous"
             | "unsupported_skill_source",
         ) => StatusCode::BAD_REQUEST,

@@ -27,13 +27,13 @@
         )
         .expect("generated document");
         let document_id = generated["document"]["id"].as_str().expect("document id");
-        crate::writing::write_selection(&paths, false, &[], &[]).expect("selection");
+        crate::writing::write_selection(&paths, false, &[]).expect("selection");
         let created = crate::writing::create_requests(
             &paths,
             "Revise this document",
             "revise",
             Some(document_id),
-            &["writing-long-article".to_owned()],
+            &["writing-default".to_owned()],
         )
         .expect("revision request");
         crate::wiki::write_generated_document(
@@ -109,13 +109,21 @@
         crate::writing::write_selection(
             &paths,
             true,
-            &[raw_id.to_owned()],
             &[generated_id.to_owned()],
         )
         .expect("selection");
         let created = crate::writing::create_refinement_request(&paths, "House Style")
             .expect("refinement request");
         let mut task = created["task"].clone();
+        let raw_content = "# Raw style\n\nShort rhythmic paragraphs.\n";
+        let mut legacy_raw_snapshot = raw["document"].clone();
+        legacy_raw_snapshot["snapshotContent"] = json!(raw_content);
+        legacy_raw_snapshot["snapshotHash"] = json!(format!(
+            "{:x}",
+            Sha256::digest(raw_content.as_bytes())
+        ));
+        task["input"]["contextSnapshot"]["rawDocuments"] =
+            json!([legacy_raw_snapshot]);
         task["workflowRunId"] = json!("workflow:noise");
         task["executionGeneration"] = json!(23);
         let workspace = temp.path().join("execution");
@@ -142,7 +150,7 @@
         assert!(!prompt.contains("Task JSON:"));
         assert!(workspace.join("task-context.json").is_file());
         assert!(workspace
-            .join("skills/writing-skill-refiner/SKILL.md")
+            .join("skills/writing-refinement-default/SKILL.md")
             .is_file());
         assert!(workspace
             .join("inputs/raw")
@@ -203,7 +211,7 @@
         )
         .expect("source");
         let source_id = generated["document"]["id"].as_str().expect("source id");
-        crate::writing::write_selection(&paths, false, &[], &[source_id.to_owned()])
+        crate::writing::write_selection(&paths, false, &[source_id.to_owned()])
             .expect("selection");
         let created = crate::writing::create_refinement_request(&paths, "Concise House Style")
             .expect("request");

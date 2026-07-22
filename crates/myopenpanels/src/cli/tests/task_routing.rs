@@ -137,7 +137,7 @@ fn agent_bootstrap_prepares_panel_and_wiki_task_authoring_skills() {
     let required_skills = payload["skills"].as_array().unwrap();
     assert_eq!(required_skills.len(), 2);
     assert_eq!(required_skills[0]["id"], "myopenpanels-panels");
-    assert_eq!(required_skills[1]["id"], "karpathy-llm-wiki");
+    assert_eq!(required_skills[1]["id"], "wiki-default");
     assert_eq!(required_skills[1]["taskId"], task_id);
     for skill in required_skills {
         let context_path = Path::new(skill["contextPath"].as_str().unwrap());

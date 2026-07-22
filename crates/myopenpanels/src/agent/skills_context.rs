@@ -9,6 +9,11 @@ pub fn sync_builtin_agent_skills(paths: &MyOpenPanelsPaths) -> Result<(), CliErr
         "myopenpanels-canvas-panel",
         "myopenpanels-wiki-panel",
         "myopenpanels-writing-panel",
+        crate::wiki::LEGACY_WIKI_AGENT_SKILL_ID,
+        crate::wiki::LEGACY_ZH_WIKI_AGENT_SKILL_ID,
+        crate::writing::LEGACY_WRITING_SKILL_REFINER_ID,
+        "writing-long-article",
+        "writing-xiaohongshu-note",
     ] {
         let legacy_dir = skills_dir.join(legacy_id);
         if legacy_dir.exists() {
@@ -64,6 +69,7 @@ pub(crate) fn wiki_agent_skill_for_project(
     project_id: &str,
     skill_id: &str,
 ) -> Result<AgentSkillListing, CliError> {
+    let skill_id = canonical_agent_skill_id(skill_id);
     load_agent_skills(paths, project_id)?
         .into_iter()
         .filter(|item| {
@@ -737,25 +743,6 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
                 .find(|space| space.get("id").and_then(Value::as_str) == Some(active_space_id))
                 .or_else(|| spaces.first())
         });
-    let selected_documents = selection
-        .and_then(|value| value.get("selectedRawDocuments"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|document| {
-            json!({
-                "documentId": document.get("id").cloned().unwrap_or(Value::Null),
-                "title": document.get("title").cloned().unwrap_or(Value::Null),
-                "mimeType": document.get("mimeType").cloned().unwrap_or(Value::Null),
-                "markdownVersion": document.get("markdownVersion").cloned().unwrap_or(Value::Null),
-                "originalFilePath": document.get("originalFilePath").cloned().unwrap_or(Value::Null),
-                "markdownFilePath": document.get("markdownFilePath").cloned().unwrap_or(Value::Null),
-                "originalAccess": document.get("originalAccess").cloned().unwrap_or(Value::Null),
-                "markdownAccess": document.get("markdownAccess").cloned().unwrap_or(Value::Null),
-            })
-        })
-        .collect::<Vec<_>>();
     let selected_generated_documents = selection
         .and_then(|value| value.get("selectedGeneratedDocuments"))
         .and_then(Value::as_array)
@@ -783,8 +770,6 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
         "pageCount": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("pageCount")).cloned().unwrap_or_else(|| json!(active_space.and_then(|space| space.get("pageIndex")).and_then(Value::as_array).map(Vec::len).unwrap_or(0))),
         "querySkillId": PANELS_SKILL_ID,
         "localAccess": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("localAccess")).cloned().unwrap_or(Value::Null),
-        "selectedRawDocumentCount": selected_documents.len(),
-        "selectedRawDocuments": selected_documents,
         "selectedGeneratedDocumentCount": selected_generated_documents.len(),
         "selectedGeneratedDocuments": selected_generated_documents,
         "nextTask": next_task,
@@ -875,18 +860,20 @@ fn render_current_context(
             "- wiki agent skill: {}",
             task.and_then(|value| value.get("agentSkillId"))
                 .and_then(Value::as_str)
-                .unwrap_or_else(|| wiki["agentSkillId"].as_str().unwrap_or("karpathy-llm-wiki"))
-        ),
-        format!(
-            "- wiki selected as context: {}",
-            wiki["selected"].as_bool().unwrap_or(false)
-        ),
-        format!(
-            "- selected raw document count: {}",
-            wiki["selectedRawDocumentCount"].as_u64().unwrap_or(0)
+                .unwrap_or_else(|| {
+                    wiki["agentSkillId"]
+                        .as_str()
+                        .unwrap_or(crate::wiki::DEFAULT_WIKI_AGENT_SKILL_ID)
+                })
         ),
         format!("- canvas selected shape count: {selected_shape_count}"),
     ];
+    if bootstrap.active_panel_kind == PanelKind::Writing {
+        lines.push(format!(
+            "- wiki selected as context: {}",
+            wiki["selected"].as_bool().unwrap_or(false)
+        ));
+    }
     if let Some(access) = wiki.get("localAccess").filter(|value| value.is_object()) {
         lines.push(format!(
             "- wiki local access: status={}, root={}, manifest={}",
@@ -908,20 +895,6 @@ fn render_current_context(
                 .join(" ");
             lines.push(format!("- wiki materialize command: `{command}`"));
         }
-    }
-    for document in wiki["selectedRawDocuments"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        lines.push(format!(
-            "- selected raw document: {} ({}); markdown status={}; markdown path={}; original path={}",
-            document.get("title").and_then(Value::as_str).unwrap_or("untitled"),
-            document.get("documentId").and_then(Value::as_str).unwrap_or("unknown"),
-            document.pointer("/markdownAccess/status").and_then(Value::as_str).unwrap_or("unavailable"),
-            document.get("markdownFilePath").and_then(Value::as_str).unwrap_or("none"),
-            document.get("originalFilePath").and_then(Value::as_str).unwrap_or("none")
-        ));
     }
     for document in wiki["selectedGeneratedDocuments"]
         .as_array()

@@ -38,6 +38,7 @@ pub struct TaskInsert {
     pub max_attempts: i64,
     pub dispatch_mode: String,
     pub idempotency_key: Option<String>,
+    pub exclusive_non_terminal: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

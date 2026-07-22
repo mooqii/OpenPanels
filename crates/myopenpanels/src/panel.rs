@@ -39,13 +39,13 @@ static PANEL_MODULES: &[PanelModule] = &[
     },
     PanelModule {
         kind: PanelKind::Typesetting,
-        skill_id: None,
+        skill_id: Some(crate::agent::PANELS_SKILL_ID),
         context: typesetting_context,
         selection: None,
     },
     PanelModule {
         kind: PanelKind::Publishing,
-        skill_id: None,
+        skill_id: Some(crate::agent::PANELS_SKILL_ID),
         context: publishing_context,
         selection: None,
     },
@@ -220,11 +220,6 @@ fn wiki_selection(
         .get("isExplicitSelection")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let raw_count = value
-        .get("selectedRawDocuments")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
     let generated_count = value
         .get("selectedGeneratedDocuments")
         .and_then(Value::as_array)
@@ -237,9 +232,7 @@ fn wiki_selection(
         is_explicit,
         updated_at: selection.get("updatedAt").cloned(),
         summary: json!({
-            "rawDocumentCount": raw_count,
             "generatedDocumentCount": generated_count,
-            "wikiSelected": selection.get("isWikiSelected").and_then(Value::as_bool).unwrap_or(false),
         }),
         value,
         actions: json!({ "required": [], "suggested": suggested_actions }),
@@ -252,11 +245,6 @@ fn writing_selection(
     focus: Value,
 ) -> Result<PanelSelectionEnvelope, CliError> {
     let value = crate::writing::panel_selection(paths, bootstrap)?;
-    let raw_count = value
-        .get("selectedRawDocumentIds")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
     let generated_count = value
         .get("selectedGeneratedDocumentIds")
         .and_then(Value::as_array)
@@ -270,10 +258,9 @@ fn writing_selection(
         focus,
         supported: true,
         selection_kind: Some("writing.context".to_owned()),
-        is_explicit: wiki_selected || raw_count > 0 || generated_count > 0,
+        is_explicit: wiki_selected || generated_count > 0,
         updated_at: value.get("updatedAt").cloned(),
         summary: json!({
-            "rawDocumentCount": raw_count,
             "generatedDocumentCount": generated_count,
             "wikiSelected": wiki_selected,
         }),
@@ -411,7 +398,7 @@ mod tests {
     use crate::paths::resolve_myopenpanels_paths;
 
     #[test]
-    fn scaffold_panels_expose_basic_context_without_skill_or_selection() {
+    fn scaffold_panels_expose_basic_context_and_declared_agent_support() {
         let temp = tempfile::tempdir().expect("temp");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join("storage");
@@ -439,7 +426,10 @@ mod tests {
             "typesetting"
         );
         assert_eq!(context_for_bootstrap(&bootstrap)["publicationCount"], 0);
-        assert_eq!(skill_id(PanelKind::Typesetting), None);
+        assert_eq!(
+            skill_id(PanelKind::Typesetting),
+            Some(crate::agent::PANELS_SKILL_ID)
+        );
         let selection =
             selection_for_bootstrap(&paths, &bootstrap, json!({})).expect("selection envelope");
         assert!(!selection.supported);
@@ -458,7 +448,10 @@ mod tests {
             context_for_bootstrap(&publishing)["panelKind"],
             "publishing"
         );
-        assert_eq!(skill_id(PanelKind::Publishing), None);
+        assert_eq!(
+            skill_id(PanelKind::Publishing),
+            Some(crate::agent::PANELS_SKILL_ID)
+        );
         let selection =
             selection_for_bootstrap(&paths, &publishing, json!({})).expect("selection envelope");
         assert!(!selection.supported);

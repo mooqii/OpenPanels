@@ -17,8 +17,6 @@ pub(super) async fn api_wiki_selection(State(state): State<Arc<AppState>>) -> Re
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WikiSelectionBody {
-    is_wiki_selected: Option<bool>,
-    selected_raw_document_ids: Option<Vec<String>>,
     selected_generated_document_ids: Option<Vec<String>>,
 }
 
@@ -28,8 +26,6 @@ pub(super) async fn api_wiki_set_selection(
 ) -> Response {
     match wiki::write_agent_selection(
         &state.paths,
-        body.is_wiki_selected.unwrap_or(false),
-        body.selected_raw_document_ids.as_deref().unwrap_or(&[]),
         body.selected_generated_document_ids
             .as_deref()
             .unwrap_or(&[]),
@@ -64,6 +60,7 @@ pub(super) async fn api_wiki_generated_documents(State(state): State<Arc<AppStat
 #[serde(rename_all = "camelCase")]
 pub(super) struct GeneratedDocumentBody {
     content: Option<String>,
+    data_url: Option<String>,
     file_name: Option<String>,
     mime_type: Option<String>,
     task_id: Option<String>,
@@ -76,15 +73,29 @@ pub(super) async fn api_wiki_create_generated_document(
     Json(body): Json<GeneratedDocumentBody>,
 ) -> Response {
     let file_name = body.file_name.as_deref().unwrap_or("document.md");
-    match wiki::create_generated_document(
-        &state.paths,
-        file_name,
-        body.title.as_deref(),
-        body.mime_type.as_deref(),
-        body.task_id.as_deref(),
-        body.thread_id.as_deref(),
-        body.content.unwrap_or_default().as_bytes(),
-    ) {
+    let result = if let Some(data_url) = body.data_url.as_deref() {
+        match data_url_to_buffer(data_url) {
+            Ok(data) => wiki::import_generated_document(
+                &state.paths,
+                file_name,
+                body.title.as_deref(),
+                body.mime_type.as_deref().or(Some(data.mime_type.as_str())),
+                &data.bytes,
+            ),
+            Err(error) => return json_error(StatusCode::BAD_REQUEST, error.message()),
+        }
+    } else {
+        wiki::create_generated_document(
+            &state.paths,
+            file_name,
+            body.title.as_deref(),
+            body.mime_type.as_deref(),
+            body.task_id.as_deref(),
+            body.thread_id.as_deref(),
+            body.content.unwrap_or_default().as_bytes(),
+        )
+    };
+    match result {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => wiki_document_error(error),
     }
@@ -95,6 +106,51 @@ pub(super) async fn api_wiki_read_generated_document(
     Path(document_id): Path<String>,
 ) -> Response {
     match wiki::read_generated_document(&state.paths, &document_id) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => wiki_document_error(error),
+    }
+}
+
+pub(super) async fn api_wiki_generated_document_original(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<String>,
+) -> Response {
+    match wiki::generated_import_original(&state.paths, &document_id) {
+        Ok(original) => {
+            let bytes = match fs::read(&original.file_path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return json_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string())
+                }
+            };
+            let mut response = bytes_response(StatusCode::OK, bytes, &original.mime_type);
+            response.headers_mut().insert(
+                header::CONTENT_LENGTH,
+                HeaderValue::from_str(&original.size_bytes.to_string())
+                    .unwrap_or_else(|_| HeaderValue::from_static("0")),
+            );
+            if let Some(file_name) = original
+                .document
+                .pointer("/importSource/fileName")
+                .and_then(Value::as_str)
+            {
+                if let Ok(value) = HeaderValue::from_str(&content_disposition_inline(file_name)) {
+                    response
+                        .headers_mut()
+                        .insert(header::CONTENT_DISPOSITION, value);
+                }
+            }
+            response
+        }
+        Err(error) => wiki_document_error(error),
+    }
+}
+
+pub(super) async fn api_wiki_reveal_generated_document_original(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<String>,
+) -> Response {
+    match wiki::reveal_generated_import_original(&state.paths, &document_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => wiki_document_error(error),
     }

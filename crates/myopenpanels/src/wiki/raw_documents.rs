@@ -12,7 +12,7 @@ pub fn add_raw_document(
     let now = now_iso();
     let wiki_space = resolve_wiki_space(&wiki.state, wiki_space_id)?;
     let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space.id);
-    let safe_file_name = sanitize_path_part(file_name);
+    let safe_file_name = sanitize_file_name(file_name);
     let document_id = create_id("raw");
     let original_ref = wiki_ref(&["raw", &document_id, "original", &safe_file_name]);
     let markdown_ref = wiki_ref(&["raw", &document_id, "source.md"]);
@@ -261,6 +261,10 @@ pub fn reveal_raw_document_original(
     document_id: &str,
 ) -> Result<Value, CliError> {
     let original = raw_document_original(paths, document_id)?;
+    reveal_wiki_original(original)
+}
+
+fn reveal_wiki_original(original: WikiOriginalFile) -> Result<Value, CliError> {
     let command = if cfg!(target_os = "macos") {
         Some((
             "open",
@@ -369,16 +373,6 @@ pub fn delete_raw_document(
         })
         .map_err(to_cli_error)?;
     save_wiki_state(paths, &wiki)?;
-    if let Some(mut selection) = storage.read_panel_selection(&wiki.project.id, &wiki.panel.id)? {
-        if let Some(selected_ids) = selection
-            .get_mut("selectedRawDocumentIds")
-            .and_then(Value::as_array_mut)
-        {
-            selected_ids.retain(|value| value.as_str() != Some(document_id));
-            selection["updatedAt"] = json!(now_iso());
-            storage.write_panel_selection(&wiki.project.id, &wiki.panel.id, &selection)?;
-        }
-    }
     Ok(json!({ "document": document, "task": task, "state": wiki.state }))
 }
 
@@ -387,7 +381,7 @@ pub fn rename_raw_document(
     document_id: &str,
     file_name: &str,
 ) -> Result<Value, CliError> {
-    let safe_file_name = sanitize_path_part(file_name.trim());
+    let safe_file_name = sanitize_file_name(file_name);
     if safe_file_name.is_empty() {
         return Err(CliError::new("Raw document file name cannot be empty."));
     }

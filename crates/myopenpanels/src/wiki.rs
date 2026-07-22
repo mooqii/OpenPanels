@@ -1,4 +1,5 @@
 include!("wiki/selection_generated.rs");
+include!("wiki/generated_imports.rs");
 include!("wiki/materialization.rs");
 include!("wiki/raw_documents.rs");
 include!("wiki/task_lifecycle.rs");

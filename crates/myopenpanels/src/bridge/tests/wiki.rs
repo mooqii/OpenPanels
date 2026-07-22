@@ -49,7 +49,7 @@
         assert!(prompt.contains("# Runtime Contract"));
         assert!(prompt.contains("# Source material"));
         assert!(prompt.contains("custom/home.md"));
-        assert!(prompt.contains("Karpathy LLM Wiki"));
+        assert!(prompt.contains("Default Wiki"));
         assert!(!prompt.contains("wiki page create"));
         assert!(prompt.contains("outputs/wiki/<path.md>"));
         assert!(prompt.contains(&format!(
@@ -66,7 +66,7 @@
         assert!(workspace.join("inputs/source.md").is_file());
         assert!(workspace.join("wiki-paths.txt").is_file());
         assert!(workspace
-            .join("skills/karpathy-llm-wiki/references/wiki-conventions.md")
+            .join("skills/wiki-default/references/wiki-conventions.md")
             .is_file());
         assert!(prompt.len() <= MAX_AGENT_PROMPT_BYTES);
     }
@@ -173,6 +173,8 @@
         assert!(!prompt.contains("wiki:noise"));
         assert!(!prompt.contains("mutationSequence"));
         assert!(!prompt.contains("executionGeneration"));
+        assert!(workspace.join("skills/wiki-default/SKILL.md").is_file());
+        assert!(!workspace.join("skills/karpathy-llm-wiki").exists());
 
         let invalid = json!({
             "id": "task:missing-events",
@@ -181,7 +183,7 @@
             "type": "maintain_wiki",
             "source": {
                 "wikiSpaceId": "wiki:default",
-                "agentSkillId": "karpathy-llm-wiki"
+                "agentSkillId": "wiki-default"
             },
             "input": { "wikiSpaceId": "wiki:default" }
         });

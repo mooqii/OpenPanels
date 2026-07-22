@@ -129,7 +129,15 @@ fn declared_output<'a>(
             input
                 .get("documentId")
                 .and_then(Value::as_str)
-                .map(|key| (ResourceKind::WikiMarkdown, key))
+                .map(|key| {
+                    if input.get("documentKind").and_then(Value::as_str)
+                        == Some("generated")
+                    {
+                        (ResourceKind::GeneratedDocument, key)
+                    } else {
+                        (ResourceKind::WikiMarkdown, key)
+                    }
+                })
         }
         "ingest_markdown_into_wiki" | "maintain_wiki" => {
             source

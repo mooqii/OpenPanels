@@ -1,10 +1,12 @@
-const MANAGED_CUSTOM_MODULES: [&str; 6] = [
+const MANAGED_CUSTOM_MODULES: [&str; 8] = [
     "wiki-update",
     "writing",
     "writing-refinement",
     "publishing",
     "publishing-xiaohongshu",
     "typesetting-cover",
+    "typesetting-title",
+    "typesetting-layout",
 ];
 
 pub fn install_device_skill(

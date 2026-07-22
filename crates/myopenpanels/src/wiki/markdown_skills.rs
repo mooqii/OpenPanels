@@ -1,3 +1,7 @@
+pub const DEFAULT_WIKI_AGENT_SKILL_ID: &str = "wiki-default";
+pub const LEGACY_WIKI_AGENT_SKILL_ID: &str = "karpathy-llm-wiki";
+pub const LEGACY_ZH_WIKI_AGENT_SKILL_ID: &str = "karpathy-llm-wiki-zh";
+
 pub fn read_markdown(paths: &MyOpenPanelsPaths, document_id: &str) -> Result<Value, CliError> {
     if crate::content::broker_execution_available() {
         let payload = crate::content::broker_read_file(&crate::content::ReadFileRequest {
@@ -179,6 +183,7 @@ pub fn set_agent_skill(
     skill_id: &str,
     rebuild_confirmed: bool,
 ) -> Result<Value, CliError> {
+    let skill_id = crate::agent::canonical_agent_skill_id(skill_id);
     let wiki = get_wiki_bootstrap(paths)?;
     crate::agent::wiki_agent_skill_for_project(paths, &wiki.project.id, skill_id)?;
     let current_skill_id = selected_agent_skill_id(&wiki.state);
@@ -385,11 +390,13 @@ pub fn set_agent_skill(
 }
 
 pub fn selected_agent_skill_id(state: &Value) -> &str {
-    state
-        .get("wikiAgentSkillId")
-        .and_then(Value::as_str)
-        .filter(|skill_id| !skill_id.is_empty())
-        .unwrap_or("karpathy-llm-wiki")
+    crate::agent::canonical_agent_skill_id(
+        state
+            .get("wikiAgentSkillId")
+            .and_then(Value::as_str)
+            .filter(|skill_id| !skill_id.is_empty())
+            .unwrap_or(DEFAULT_WIKI_AGENT_SKILL_ID),
+    )
 }
 
 fn active_conversion_task_id(tasks: &[Value], document_id: &str) -> Option<String> {

@@ -34,6 +34,20 @@ async fn api_typesetting_cover_skills(State(state): State<Arc<AppState>>) -> Res
     }
 }
 
+async fn api_typesetting_title_skills(State(state): State<Arc<AppState>>) -> Response {
+    match typesetting::title_skills(&state.paths) {
+        Ok(skills) => json_response(StatusCode::OK, &json!({ "skills": skills })),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+async fn api_typesetting_layout_skills(State(state): State<Arc<AppState>>) -> Response {
+    match typesetting::layout_skills(&state.paths) {
+        Ok(skills) => json_response(StatusCode::OK, &json!({ "skills": skills })),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
@@ -50,6 +64,60 @@ async fn api_typesetting_cover_request(
     Json(body): Json<TypesettingCoverRequestBody>,
 ) -> Response {
     match typesetting::create_cover_request(
+        &state.paths,
+        &body.publication_id,
+        &body.skill_id,
+        &body.instruction,
+        &body.request_id,
+    ) {
+        Ok(payload) => json_response(StatusCode::CREATED, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+struct TypesettingTitleRequestBody {
+    publication_id: String,
+    skill_id: String,
+    #[serde(default)]
+    instruction: String,
+    request_id: String,
+}
+
+async fn api_typesetting_title_request(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TypesettingTitleRequestBody>,
+) -> Response {
+    match typesetting::create_title_request(
+        &state.paths,
+        &body.publication_id,
+        &body.skill_id,
+        &body.instruction,
+        &body.request_id,
+    ) {
+        Ok(payload) => json_response(StatusCode::CREATED, &payload),
+        Err(error) => json_error(status_for_cli_error(&error), error.message()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+struct TypesettingLayoutRequestBody {
+    publication_id: String,
+    skill_id: String,
+    #[serde(default)]
+    instruction: String,
+    request_id: String,
+}
+
+async fn api_typesetting_layout_request(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TypesettingLayoutRequestBody>,
+) -> Response {
+    match typesetting::create_layout_request(
         &state.paths,
         &body.publication_id,
         &body.skill_id,

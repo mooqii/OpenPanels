@@ -39,10 +39,15 @@
   pointer-events: auto;
 }
 
+.op-panel-tabs__tabs [role="tablist"] {
+  gap: 4px;
+  padding: 4px;
+}
+
 .op-panel-tabs__tab {
-  gap: 6px;
-  min-width: 88px;
-  padding-inline: 10px;
+  gap: 7px;
+  min-width: 100px;
+  padding-inline: 14px;
   letter-spacing: 0;
 }
 
@@ -58,6 +63,11 @@
 }
 
 @media (max-width: 900px) {
+  .op-panel-tabs__tabs [role="tablist"] {
+    gap: 0;
+    padding: 4px;
+  }
+
   .op-panel-tabs__tab {
     min-width: 44px;
     padding-inline: 10px;

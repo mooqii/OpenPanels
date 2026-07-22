@@ -312,7 +312,7 @@ function writingState(): WritingState {
     revisionDraft: "",
     schemaVersion: 5,
     selectedCreateWritingSkillIds: ["writing-default"],
-    selectedRefinementSkillId: "writing-skill-refiner",
+    selectedRefinementSkillId: "writing-refinement-default",
     selectedRevisionWritingSkillId: "writing-default",
     targetGeneratedDocumentId: null,
   }

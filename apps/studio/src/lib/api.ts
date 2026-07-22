@@ -12,6 +12,7 @@ import type {
   TraceEvent,
   TraceSnapshotResponse,
   TypesettingState,
+  WikiGeneratedDocument,
   WikiRawDocument,
   WikiState,
 } from "../types"
@@ -211,7 +212,39 @@ function isTypesettingPublication(value: unknown): boolean {
     typeof publication.updatedAt === "string" &&
     isTypesettingJsonContent(publication.content) &&
     Array.isArray(publication.covers) &&
-    publication.covers.every(isTypesettingPublicationImage)
+    publication.covers.every(isTypesettingPublicationImage) &&
+    (publication.titles === undefined ||
+      (Array.isArray(publication.titles) &&
+        publication.titles.length > 0 &&
+        publication.titles.every(isTypesettingPublicationTitle))) &&
+    (publication.selectedTitleId === undefined ||
+      publication.selectedTitleId === null ||
+      (typeof publication.selectedTitleId === "string" &&
+        (publication.titles === undefined ||
+          publication.titles.some(
+            (title) =>
+              typeof title === "object" &&
+              title !== null &&
+              title.id === publication.selectedTitleId
+          )))) &&
+    (publication.tags === undefined ||
+      (Array.isArray(publication.tags) &&
+        publication.tags.every((tag) => typeof tag === "string")))
+  )
+}
+
+function isTypesettingPublicationTitle(value: unknown): boolean {
+  if (!(typeof value === "object" && value !== null)) return false
+  const title = value as Record<string, unknown>
+  const source = title.source
+  return (
+    typeof title.id === "string" &&
+    typeof title.value === "string" &&
+    (source === undefined ||
+      (isPlainObject(source) &&
+        source.kind === "generated" &&
+        typeof source.skillId === "string" &&
+        typeof source.taskId === "string"))
   )
 }
 
@@ -260,7 +293,7 @@ function isTypesettingPublicationImage(value: unknown): boolean {
       : source?.kind === "generated"
         ? typeof source.taskId === "string" &&
           typeof source.skillId === "string"
-        : false
+        : source?.kind === "upload"
   return (
     typeof image.assetRef === "string" &&
     typeof image.src === "string" &&
@@ -286,7 +319,7 @@ export function emptyWritingState(): import("../types").WritingState {
     refinementName: "",
     revisionDraft: "",
     selectedCreateWritingSkillIds: ["writing-default"],
-    selectedRefinementSkillId: "writing-skill-refiner",
+    selectedRefinementSkillId: "writing-refinement-default",
     selectedRevisionWritingSkillId: "writing-default",
     targetGeneratedDocumentId: null,
   }
@@ -436,9 +469,20 @@ export function wikiRawOriginalUrl(
   ).toString()
 }
 
-export function originalPreviewKind(
-  document: Pick<WikiRawDocument, "mimeType" | "originalFileName">
-): OriginalPreviewKind | null {
+export function wikiGeneratedOriginalUrl(
+  apiBase: string,
+  document: Pick<WikiGeneratedDocument, "id">
+): string {
+  return apiUrl(
+    apiBase,
+    `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/original`
+  ).toString()
+}
+
+export function originalPreviewKind(document: {
+  mimeType: string
+  originalFileName: string
+}): OriginalPreviewKind | null {
   const mimeType = (document.mimeType ?? "").toLowerCase()
   const extension = extensionFromFileName(document.originalFileName ?? "")
   if (

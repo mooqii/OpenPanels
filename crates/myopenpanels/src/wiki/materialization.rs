@@ -301,44 +301,18 @@ fn materialize_generated_content(
     }
 }
 
-fn selected_document_context(
+fn selected_generated_document_context(
     paths: &MyOpenPanelsPaths,
     wiki: &WikiBootstrapValue,
-    raw_document_ids: &[String],
     generated_document_ids: &[String],
-) -> (Vec<Value>, Vec<Value>) {
-    let panel_dir = Storage::open(paths)
-        .map(|storage| storage.panel_dir(&wiki.project.id, &wiki.panel.id))
-        .unwrap_or_default();
-    let raw_documents = wiki
-        .state
-        .get("rawDocuments")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten();
-    let selected_raw = raw_document_ids
-        .iter()
-        .filter_map(|id| {
-            let document = raw_documents
-                .clone()
-                .find(|document| document.get("id").and_then(Value::as_str) == Some(id))?;
-            let mut item = document.clone();
-            let (original_path, original_access) = raw_original_access(&panel_dir, document);
-            let (markdown_path, markdown_access) = materialize_raw_markdown(paths, wiki, document);
-            item["originalFilePath"] = original_path.map_or(Value::Null, |path| json!(path));
-            item["markdownFilePath"] = markdown_path.map_or(Value::Null, |path| json!(path));
-            item["originalAccess"] = original_access;
-            item["markdownAccess"] = markdown_access;
-            Some(item)
-        })
-        .collect::<Vec<_>>();
+) -> Vec<Value> {
     let generated_documents = wiki
         .state
         .get("generatedDocuments")
         .and_then(Value::as_array)
         .into_iter()
         .flatten();
-    let selected_generated = generated_document_ids
+    generated_document_ids
         .iter()
         .filter_map(|id| {
             let document = generated_documents
@@ -350,25 +324,19 @@ fn selected_document_context(
             item["contentAccess"] = content_access;
             Some(item)
         })
-        .collect::<Vec<_>>();
-    (selected_raw, selected_generated)
+        .collect::<Vec<_>>()
 }
 
 pub(crate) fn agent_content_context(
     paths: &MyOpenPanelsPaths,
     project_id: &str,
     wiki_panel_id: &str,
-    raw_document_ids: &[String],
     generated_document_ids: &[String],
     is_wiki_selected: bool,
 ) -> Result<Value, CliError> {
     let wiki = get_wiki_target(paths, project_id, wiki_panel_id)?;
-    let (selected_raw, selected_generated) = selected_document_context(
-        paths,
-        &wiki,
-        raw_document_ids,
-        generated_document_ids,
-    );
+    let selected_generated =
+        selected_generated_document_context(paths, &wiki, generated_document_ids);
     let wiki_space = resolve_wiki_space(&wiki.state, None)?;
     let page_count = wiki_space
         .value
@@ -378,7 +346,6 @@ pub(crate) fn agent_content_context(
         .unwrap_or(0);
     let local_access = wiki_local_access(paths, &wiki, &wiki_space.id, is_wiki_selected);
     Ok(json!({
-        "selectedRawDocuments": selected_raw,
         "selectedGeneratedDocuments": selected_generated,
         "wiki": {
             "available": true,

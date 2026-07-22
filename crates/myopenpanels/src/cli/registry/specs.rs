@@ -189,6 +189,24 @@ const SPECS: &[CommandDefinition] = &[
         panel = "publishing"
     ),
     spec!(
+        "typesetting.title.skill.list",
+        ["typesetting", "title", "skill", "list"],
+        "List title generation Skills",
+        "typesetting",
+        "panel-kind",
+        false,
+        panel = "typesetting"
+    ),
+    spec!(
+        "typesetting.title.generate",
+        ["typesetting", "title", "generate"],
+        "Create a title generation Task",
+        "typesetting",
+        "panel-kind",
+        true,
+        panel = "typesetting"
+    ),
+    spec!(
         "wiki.raw.create",
         ["wiki", "raw", "create"],
         "Create a Wiki Raw Document",

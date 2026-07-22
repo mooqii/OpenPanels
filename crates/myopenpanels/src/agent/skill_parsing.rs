@@ -107,6 +107,12 @@ pub(crate) fn custom_writing_skill_from_source(
                     "typesetting-cover" => {
                         ("typesetting", &[crate::typesetting::COVER_TASK_TYPE])
                     }
+                    "typesetting-title" => {
+                        ("typesetting", &[crate::typesetting::TITLE_TASK_TYPE])
+                    }
+                    "typesetting-layout" => {
+                        ("typesetting", &[crate::typesetting::LAYOUT_TASK_TYPE])
+                    }
                     _ => {
                         return Err(CliError::with_code(
                             "invalid_custom_skill",

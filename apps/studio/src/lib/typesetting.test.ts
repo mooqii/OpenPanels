@@ -6,20 +6,35 @@ import type {
 } from "../types"
 import { isTypesettingState, normalizePanelState } from "./api"
 import {
+  addTypesettingTitle,
+  appendTypesettingTags,
   countTypesettingCharacters,
   createTypesettingPublication,
   groupTypesettingAssets,
+  isInsertableTypesettingDocument,
+  isSupportedTypesettingCoverImage,
   isTypesettingDocumentEmpty,
+  isTypesettingLayoutTaskActive,
+  latestTypesettingLayoutTask,
   mergeTypesettingConflict,
   moveTypesettingCover,
   parseTypesettingAssetDrag,
   plainTextToTypesettingContent,
+  removeTypesettingTitle,
+  selectTypesettingTitle,
   TYPESETTING_ASSET_DRAG_TYPE,
   TYPESETTING_AUTOSAVE_DELAY_MS,
   typesettingCoverRequestPayload,
   typesettingCoverTaskStatus,
+  typesettingImageClickSide,
+  typesettingImagesToContent,
   typesettingInsertPosition,
+  typesettingLayoutRequestPayload,
+  typesettingLayoutTaskStatus,
+  typesettingTagsFromInput,
   typesettingTitleAfterDocumentInsert,
+  typesettingTitleRequestPayload,
+  updateTypesettingTitle,
 } from "./typesetting"
 
 describe("Typesetting state", () => {
@@ -52,6 +67,35 @@ describe("Typesetting state", () => {
         ],
       })
     ).toBe(false)
+    expect(
+      isTypesettingState({
+        schemaVersion: 2,
+        publications: [{ ...publication, tags: ["valid", 42] }],
+      })
+    ).toBe(false)
+    expect(
+      isTypesettingState({
+        schemaVersion: 2,
+        publications: [
+          {
+            ...publication,
+            selectedTitleId: "title:missing",
+          },
+        ],
+      })
+    ).toBe(false)
+    const {
+      selectedTitleId: _selectedTitleId,
+      tags: _tags,
+      titles: _titles,
+      ...legacyPublication
+    } = publication
+    expect(
+      isTypesettingState({
+        schemaVersion: 2,
+        publications: [legacyPublication],
+      })
+    ).toBe(true)
   })
 
   it("detects text and image content while treating an empty paragraph as empty", () => {
@@ -97,6 +141,37 @@ describe("Typesetting state", () => {
 })
 
 describe("Typesetting document insertion", () => {
+  it("offers insertion only for text content that is ready", () => {
+    expect(
+      isInsertableTypesettingDocument({
+        conversion: undefined,
+        mimeType: "text/plain",
+      })
+    ).toBe(true)
+    expect(
+      isInsertableTypesettingDocument({
+        conversion: {
+          status: "ready",
+        },
+        mimeType: "text/markdown",
+      })
+    ).toBe(true)
+    expect(
+      isInsertableTypesettingDocument({
+        conversion: {
+          status: "converting",
+        },
+        mimeType: "text/markdown",
+      })
+    ).toBe(false)
+    expect(
+      isInsertableTypesettingDocument({
+        conversion: undefined,
+        mimeType: "image/png",
+      })
+    ).toBe(false)
+  })
+
   it("converts plain text paragraphs and hard breaks", () => {
     expect(plainTextToTypesettingContent("First\nline\n\nSecond")).toEqual([
       {
@@ -124,6 +199,92 @@ describe("Typesetting document insertion", () => {
     expect(
       typesettingTitleAfterDocumentInsert("Publication title", "Document title")
     ).toBe("Publication title")
+  })
+
+  it("builds image nodes that retain their managed asset metadata", () => {
+    expect(
+      typesettingImagesToContent([
+        {
+          assetRef: "projects/project:1/panels/panel:1/assets/photo.png",
+          fileName: "photo.png",
+          height: 900,
+          mimeType: "image/png",
+          source: { kind: "upload" },
+          src: "/api/assets/photo.png",
+          width: 1200,
+        },
+      ])
+    ).toEqual([
+      {
+        type: "image",
+        attrs: {
+          alt: "photo.png",
+          assetRef: "projects/project:1/panels/panel:1/assets/photo.png",
+          height: 900,
+          src: "/api/assets/photo.png",
+          title: "photo.png",
+          width: 1200,
+        },
+      },
+    ])
+  })
+
+  it("maps clicks beside an image to insertion positions", () => {
+    expect(typesettingImageClickSide(99, 100, 300)).toBe("before")
+    expect(typesettingImageClickSide(100, 100, 300)).toBe("inside")
+    expect(typesettingImageClickSide(200, 100, 300)).toBe("inside")
+    expect(typesettingImageClickSide(300, 100, 300)).toBe("inside")
+    expect(typesettingImageClickSide(301, 100, 300)).toBe("after")
+  })
+
+  it("normalizes, splits, and deduplicates publication tags", () => {
+    expect(typesettingTagsFromInput(" #AI， 写作,AI\n效率 ")).toEqual([
+      "AI",
+      "写作",
+      "效率",
+    ])
+    expect(appendTypesettingTags(["设计"], "设计, Design, DESIGN")).toEqual([
+      "设计",
+      "Design",
+    ])
+  })
+
+  it("adds, selects, edits, and removes title alternatives", () => {
+    const publication = createTypesettingPublication(
+      "publication:titles",
+      "2026-07-22T00:00:00Z"
+    )
+    const primaryId = publication.selectedTitleId as string
+    const withPrimary = updateTypesettingTitle(
+      publication,
+      primaryId,
+      "Primary title"
+    )
+    const withAlternative = addTypesettingTitle(withPrimary, {
+      id: "title:alternative",
+      value: "Channel title",
+    })
+    expect(withAlternative.title).toBe("Channel title")
+    const editedPrimary = updateTypesettingTitle(
+      withAlternative,
+      primaryId,
+      "Edited primary"
+    )
+    expect(editedPrimary.title).toBe("Channel title")
+    const selectedPrimary = selectTypesettingTitle(editedPrimary, primaryId)
+    expect(selectedPrimary.title).toBe("Edited primary")
+    const removedPrimary = removeTypesettingTitle(selectedPrimary, primaryId)
+    expect(removedPrimary.title).toBe("Channel title")
+    expect(removedPrimary.selectedTitleId).toBe("title:alternative")
+
+    const replacement = removeTypesettingTitle(
+      removedPrimary,
+      "title:alternative",
+      "title:replacement"
+    )
+    expect(replacement.title).toBe("")
+    expect(replacement.selectedTitleId).toBe("title:replacement")
+    expect(replacement.titles).toEqual([{ id: "title:replacement", value: "" }])
   })
 })
 
@@ -153,6 +314,43 @@ describe("Typesetting assets and persistence", () => {
     const covers = [first, second]
     expect(moveTypesettingCover(covers, 1, 0)).toEqual([second, first])
     expect(covers).toEqual([first, second])
+  })
+
+  it("accepts only supported cover image formats", () => {
+    expect(
+      isSupportedTypesettingCoverImage({ name: "cover.PNG", type: "" })
+    ).toBe(true)
+    expect(
+      isSupportedTypesettingCoverImage({
+        name: "cover.bin",
+        type: "image/webp",
+      })
+    ).toBe(true)
+    expect(
+      isSupportedTypesettingCoverImage({
+        name: "cover.svg",
+        type: "image/svg+xml",
+      })
+    ).toBe(false)
+    expect(
+      isSupportedTypesettingCoverImage({
+        name: "notes.txt",
+        type: "text/plain",
+      })
+    ).toBe(false)
+  })
+
+  it("accepts uploaded cover sources in schema v2 state", () => {
+    const publication = {
+      ...createTypesettingPublication(
+        "publication:upload",
+        "2026-07-22T00:00:00Z"
+      ),
+      covers: [{ ...first, source: { kind: "upload" as const } }],
+    }
+    expect(
+      isTypesettingState({ schemaVersion: 2, publications: [publication] })
+    ).toBe(true)
   })
 
   it("merges only dirty publication ids and preserves remote work", () => {
@@ -271,6 +469,90 @@ describe("Typesetting cover tasks", () => {
   })
 })
 
+describe("Typesetting title tasks", () => {
+  it("builds a normalized title generation request", () => {
+    expect(
+      typesettingTitleRequestPayload({
+        instruction: "  concise and curious  ",
+        publicationId: "publication:1",
+        requestId: "title-request:1",
+        skillId: "typesetting-title-default",
+      })
+    ).toEqual({
+      instruction: "concise and curious",
+      publicationId: "publication:1",
+      requestId: "title-request:1",
+      skillId: "typesetting-title-default",
+    })
+  })
+})
+
+describe("Typesetting layout tasks", () => {
+  it("builds layout payloads and maps terminal status to an unlocked state", () => {
+    expect(
+      typesettingLayoutRequestPayload({
+        instruction: "  emphasize headings  ",
+        publicationId: "publication:1",
+        requestId: "layout-request:1",
+        skillId: "typesetting-layout-default",
+      })
+    ).toEqual({
+      instruction: "emphasize headings",
+      publicationId: "publication:1",
+      requestId: "layout-request:1",
+      skillId: "typesetting-layout-default",
+    })
+    expect(typesettingLayoutTaskStatus(layoutTask("queued"))).toBe("waiting")
+    expect(typesettingLayoutTaskStatus(layoutTask("running"))).toBe("running")
+    expect(typesettingLayoutTaskStatus(layoutTask("succeeded"))).toBe(
+      "completed"
+    )
+    expect(isTypesettingLayoutTaskActive(layoutTask("failed"))).toBe(false)
+    expect(isTypesettingLayoutTaskActive(layoutTask("cancelled"))).toBe(false)
+    expect(isTypesettingLayoutTaskActive(layoutTask("queued"))).toBe(true)
+  })
+
+  it("selects the latest layout task for the publication", () => {
+    const older = { ...layoutTask("failed"), createdAt: "2026-07-20T00:00:00Z" }
+    const latest = {
+      ...layoutTask("queued"),
+      createdAt: "2026-07-22T00:00:00Z",
+    }
+    expect(
+      latestTypesettingLayoutTask([older, latest], "publication:1")?.createdAt
+    ).toBe(latest.createdAt)
+  })
+
+  it("preserves remote layout content while merging a local title edit", () => {
+    const localPublication = {
+      ...createTypesettingPublication("publication:1", "2026-07-21T00:00:00Z"),
+      title: "Local title",
+    }
+    const remoteContent = {
+      type: "doc",
+      content: [
+        {
+          type: "heading",
+          attrs: { level: 2 },
+          content: [{ type: "text", text: "Section" }],
+        },
+      ],
+    }
+    const merged = mergeTypesettingConflict({
+      contentDirtyIds: new Set(),
+      deletedIds: new Set(),
+      dirtyIds: new Set([localPublication.id]),
+      local: { publications: [localPublication], schemaVersion: 2 },
+      remote: {
+        publications: [{ ...localPublication, content: remoteContent }],
+        schemaVersion: 2,
+      },
+    })
+    expect(merged.publications[0]?.title).toBe("Local title")
+    expect(merged.publications[0]?.content).toEqual(remoteContent)
+  })
+})
+
 function image(assetRef: string): TypesettingPublicationImage {
   return {
     assetRef,
@@ -333,4 +615,8 @@ function task(status: string) {
     type: "generate_typesetting_cover",
     updatedAt: "2026-07-21T00:00:00Z",
   }
+}
+
+function layoutTask(status: string) {
+  return { ...task(status), type: "format_typesetting_content" }
 }

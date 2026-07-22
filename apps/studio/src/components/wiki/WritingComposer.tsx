@@ -14,7 +14,6 @@ import {
   BookOpen,
   Eye,
   FileOutput,
-  FileText,
   MoreHorizontal,
   PanelLeft,
   Pencil,
@@ -38,7 +37,6 @@ import type {
   MyOpenPanelsTransport,
   ProjectTask,
   WikiGeneratedDocument,
-  WikiRawDocument,
   WritingState,
 } from "../../types"
 import { ConfirmDialog, SkillFilesDialog, type SkillTextFile } from "./Dialogs"
@@ -46,7 +44,6 @@ import { ConfirmDialog, SkillFilesDialog, type SkillTextFile } from "./Dialogs"
 interface WikiAgentSelection {
   isWikiSelected: boolean
   selectedGeneratedDocumentIds: string[]
-  selectedRawDocumentIds: string[]
 }
 
 export function WritingComposer({
@@ -56,7 +53,6 @@ export function WritingComposer({
   onOpenLibrary,
   onManageSkills,
   onReload,
-  rawDocuments,
   selection,
   skillsRevision,
   state,
@@ -72,7 +68,6 @@ export function WritingComposer({
   onOpenLibrary: () => void
   onManageSkills: () => void
   onReload: () => Promise<void>
-  rawDocuments: WikiRawDocument[]
   selection: WikiAgentSelection
   skillsRevision: number
   state: WritingState
@@ -96,7 +91,7 @@ export function WritingComposer({
   const [selectedRevisionWritingSkillId, setSelectedRevisionWritingSkillId] =
     useState<string | null>(state.selectedRevisionWritingSkillId)
   const [selectedRefinementSkillId, setSelectedRefinementSkillId] = useState(
-    state.selectedRefinementSkillId || "writing-skill-refiner"
+    state.selectedRefinementSkillId || "writing-refinement-default"
   )
   const selectedWritingSkillIds = activeWritingSkillIds(
     mode,
@@ -200,21 +195,15 @@ export function WritingComposer({
     selectedWritingSkillIds
   )
   const hasValidSkillSelection = skillSelectionError === null
-  const selectedRawDocuments = rawDocuments.filter((document) =>
-    selection.selectedRawDocumentIds.includes(document.id)
-  )
   const selectedGeneratedDocuments = documents.filter((document) =>
     selection.selectedGeneratedDocumentIds.includes(document.id)
   )
-  const unreadySourceCount =
-    selectedRawDocuments.filter((document) => !document.markdownRef).length +
-    selectedGeneratedDocuments.filter(
-      (document) =>
-        document.generation !== undefined &&
-        document.generation.status !== "completed"
-    ).length
-  const selectedSourceCount =
-    selectedRawDocuments.length + selectedGeneratedDocuments.length
+  const unreadySourceCount = selectedGeneratedDocuments.filter(
+    (document) =>
+      document.generation !== undefined &&
+      document.generation.status !== "completed"
+  ).length
+  const selectedSourceCount = selectedGeneratedDocuments.length
   const selectedReferenceCount =
     selectedSourceCount + Number(selection.isWikiSelected)
   const referenceSelectionError = writingReferenceSelectionError(
@@ -423,7 +412,10 @@ export function WritingComposer({
           {title}: {count}
         </strong>
         {count === 0 && emptyMessage ? (
-          <Alert className="op-writing-refinement__warning" status="warning">
+          <Alert
+            className="op-writing-refinement__warning op-writing-refinement__warning--empty"
+            status="warning"
+          >
             <Alert.Indicator />
             <Alert.Content>
               <Alert.Title className="op-writing-refinement__warning-text">
@@ -445,18 +437,11 @@ export function WritingComposer({
                   <small>{t`Wiki`}</small>
                 </li>
               ) : null}
-              {selectedRawDocuments.map((document) => (
-                <li key={document.id}>
-                  <FileText aria-hidden size={14} />
-                  <span title={document.title}>{document.title}</span>
-                  <small>{t`Raw Documents`}</small>
-                </li>
-              ))}
               {selectedGeneratedDocuments.map((document) => (
                 <li key={document.id}>
                   <FileOutput aria-hidden size={14} />
                   <span title={document.title}>{document.title}</span>
-                  <small>{t`Generated Documents`}</small>
+                  <small>{t`My Documents`}</small>
                 </li>
               ))}
             </ul>
@@ -644,14 +629,14 @@ export function WritingComposer({
               <div>
                 <strong>{t`Turn selected articles into a Writing Skill`}</strong>
                 <p>
-                  {t`The Agent will extract reusable voice, structure, pacing, and techniques from all selected raw and generated documents.`}
+                  {t`The Agent will extract reusable voice, structure, pacing, and techniques from all selected documents in My Documents.`}
                 </p>
               </div>
             </div>
             {renderSelectedSources(
               false,
               t`Selected articles`,
-              t`Select at least one raw or generated document`
+              t`Select at least one document from My Documents`
             )}
             <div className="op-writing-skills">
               <div className="op-writing-skills__header">
@@ -719,7 +704,7 @@ export function WritingComposer({
                   <Select.Trigger>
                     <Select.Value>
                       {documents.find((document) => document.id === targetId)
-                        ?.title ?? t`Select a generated document`}
+                        ?.title ?? t`Select a document from My Documents`}
                     </Select.Value>
                     <Select.Indicator />
                   </Select.Trigger>

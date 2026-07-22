@@ -1,22 +1,20 @@
 import { Button, Tooltip } from "@heroui/react"
 import { ChevronRight, FileText, Folder, FolderOpen, Info } from "lucide-react"
 import {
-  type DragEvent,
   type ReactNode,
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import {
   apiFetch,
   apiJson,
-  fileToDataUrl,
   originalPreviewKind,
   titleFromFileName,
   tryOpenBrowserWindow,
+  wikiGeneratedOriginalUrl,
   wikiRawOriginalUrl,
 } from "../../lib/api"
 import { sortGeneratedDocumentsByActivity } from "../../lib/writing"
@@ -25,27 +23,23 @@ import type {
   MyOpenPanelsTransport,
   ProjectTask,
   WikiGeneratedDocument,
+  WikiOriginalPreviewDocument,
   WikiRawDocument,
   WikiState,
   WritingState,
 } from "../../types"
-import {
-  nextCollapsedModules,
-  serializeWikiCollapsedModules,
-  WIKI_COLLAPSED_MODULES_STORAGE_KEY,
-  type WikiModule,
-  wikiCollapsedModulesFromStorage,
-} from "./module-collapse"
+import { nextCollapsedModules, type WikiModule } from "./module-collapse"
 import { buildWikiPageTree, type WikiPageTreeNode } from "./page-tree"
+import { useGeneratedDocumentDrop } from "./useGeneratedDocumentDrop"
+import { useRawDocumentDrop } from "./useRawDocumentDrop"
 import { WikiPageMeta } from "./WikiPageMeta"
+import {
+  normalizeWikiAgentSelection,
+  type WikiAgentSelection,
+  wikiAgentSelectionRequest,
+} from "./wiki-selection"
 
-const DEFAULT_WIKI_AGENT_SKILL_ID = "karpathy-llm-wiki"
-const DEFAULT_ZH_WIKI_AGENT_SKILL_ID = "karpathy-llm-wiki-zh"
-interface WikiAgentSelection {
-  isWikiSelected: boolean
-  selectedGeneratedDocumentIds: string[]
-  selectedRawDocumentIds: string[]
-}
+const DEFAULT_WIKI_AGENT_SKILL_ID = "wiki-default"
 
 export interface WikiPanelProps {
   chromeContent: ReactNode
@@ -69,10 +63,11 @@ export function useWikiPanelController({
   transport,
   writing,
 }: WikiPanelProps) {
-  const { locale, t } = useMyOpenPanelsI18n()
+  const { t } = useMyOpenPanelsI18n()
   const selectionPath = writing
     ? "/api/writing/selection"
     : "/api/wiki/selection"
+  const isWritingPanel = Boolean(writing)
   const activeSpace =
     state.wikiSpaces.find((space) => space.id === state.activeWikiSpaceId) ??
     state.wikiSpaces[0]
@@ -106,8 +101,10 @@ export function useWikiPanelController({
     document: WikiGeneratedDocument
     originalContent: string
   } | null>(null)
-  const [originalPreviewDocument, setOriginalPreviewDocument] =
-    useState<WikiRawDocument | null>(null)
+  const [originalPreview, setOriginalPreview] = useState<{
+    document: WikiOriginalPreviewDocument
+    previewUrl: string
+  } | null>(null)
   const [isBusy, setIsBusy] = useState(false)
   const [retryingGeneratedDocumentId, setRetryingGeneratedDocumentId] =
     useState<string | null>(null)
@@ -117,30 +114,17 @@ export function useWikiPanelController({
   const [agentSelection, setAgentSelection] = useState<WikiAgentSelection>({
     isWikiSelected: false,
     selectedGeneratedDocumentIds: [],
-    selectedRawDocumentIds: [],
   })
-  const [isRawDragActive, setIsRawDragActive] = useState(false)
   const [isDocumentLibraryOpen, setIsDocumentLibraryOpen] = useState(false)
   const [collapsedWikiFolders, setCollapsedWikiFolders] = useState<Set<string>>(
     () => new Set()
-  )
-  const [wikiCollapsedModules, setWikiCollapsedModules] = useState<
-    Set<WikiModule>
-  >(() =>
-    wikiCollapsedModulesFromStorage(
-      typeof window === "undefined"
-        ? null
-        : window.localStorage.getItem(WIKI_COLLAPSED_MODULES_STORAGE_KEY)
-    )
   )
   const [writingCollapsedModules, setWritingCollapsedModules] = useState<
     Set<WikiModule>
   >(() => new Set())
   const collapsedModules = writing
     ? writingCollapsedModules
-    : wikiCollapsedModules
-  const rawDragDepthRef = useRef(0)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
+    : new Set<WikiModule>()
   const markdownDialogDocumentId = markdownDialog?.document.id
   const pageDialogPath = pageDialog?.pagePath
   const pageDialogTitle = pageDialog?.title
@@ -148,6 +132,33 @@ export function useWikiPanelController({
   const generatedDialogFileName =
     generatedDocumentDialog?.document.originalFileName
   const generatedDialogMimeType = generatedDocumentDialog?.document.mimeType
+  const {
+    addGeneratedFiles,
+    generatedFileInputRef,
+    handleGeneratedDragEnter,
+    handleGeneratedDragLeave,
+    handleGeneratedDragOver,
+    handleGeneratedDrop,
+    isGeneratedDragActive,
+  } = useGeneratedDocumentDrop({
+    apiBase: transport.apiBase,
+    onReload,
+    setIsBusy,
+  })
+  const {
+    addFiles,
+    fileInputRef,
+    handleRawDragEnter,
+    handleRawDragLeave,
+    handleRawDragOver,
+    handleRawDrop,
+    isRawDragActive,
+  } = useRawDocumentDrop({
+    activeSpaceId: activeSpace?.id,
+    apiBase: transport.apiBase,
+    onReload,
+    setIsBusy,
+  })
   const wikiPageTree = useMemo(
     () => buildWikiPageTree(activeSpace?.pageIndex ?? []),
     [activeSpace?.pageIndex]
@@ -162,23 +173,11 @@ export function useWikiPanelController({
     })
   }, [])
 
-  useEffect(() => {
-    window.localStorage.setItem(
-      WIKI_COLLAPSED_MODULES_STORAGE_KEY,
-      serializeWikiCollapsedModules(wikiCollapsedModules)
-    )
-  }, [wikiCollapsedModules])
-
   const toggleModule = useCallback(
     (module: WikiModule) => {
-      if (writing) {
-        setWritingCollapsedModules((current) =>
-          nextCollapsedModules(current, module, true)
-        )
-        return
-      }
-      setWikiCollapsedModules((current) =>
-        nextCollapsedModules(current, module, false)
+      if (!writing) return
+      setWritingCollapsedModules((current) =>
+        nextCollapsedModules(current, module)
       )
     },
     [writing]
@@ -186,18 +185,11 @@ export function useWikiPanelController({
 
   const moduleHeaderToggle = (module: WikiModule, title: string) => {
     const isCollapsed = collapsedModules.has(module)
-    const isAccordionModule = writing
-      ? module === "generated" || module === "structured" || module === "raw"
-      : module === "raw" || module === "generated"
     return (
       <button
         aria-expanded={!isCollapsed}
         aria-label={`${isCollapsed ? t`Expand module` : t`Collapse module`}: ${title}`}
-        className={
-          isAccordionModule
-            ? "op-wiki-column__header-toggle op-wiki-column__header-toggle--accordion"
-            : "op-wiki-column__header-toggle"
-        }
+        className="op-wiki-column__header-toggle op-wiki-column__header-toggle--accordion"
         onClick={() => toggleModule(module)}
         type="button"
       />
@@ -313,13 +305,9 @@ export function useWikiPanelController({
           selection?: Partial<WikiAgentSelection>
         }
         if (!isCancelled) {
-          setAgentSelection({
-            isWikiSelected: Boolean(data.selection?.isWikiSelected),
-            selectedGeneratedDocumentIds:
-              data.selection?.selectedGeneratedDocumentIds ?? [],
-            selectedRawDocumentIds:
-              data.selection?.selectedRawDocumentIds ?? [],
-          })
+          setAgentSelection(
+            normalizeWikiAgentSelection(data.selection, isWritingPanel)
+          )
         }
       })
       .catch((error) => {
@@ -333,28 +321,28 @@ export function useWikiPanelController({
     return () => {
       isCancelled = true
     }
-  }, [selectionPath, selectionVersion, transport.apiBase])
+  }, [isWritingPanel, selectionPath, selectionVersion, transport.apiBase])
 
   const updateAgentSelection = useCallback(
     async (next: WikiAgentSelection) => {
       const previous = agentSelection
-      setAgentSelection(next)
+      const normalizedNext = normalizeWikiAgentSelection(next, isWritingPanel)
+      setAgentSelection(normalizedNext)
       setIsSelectionBusy(true)
       try {
         const response = await apiFetch(transport.apiBase, selectionPath, {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(next),
+          body: JSON.stringify(
+            wikiAgentSelectionRequest(normalizedNext, isWritingPanel)
+          ),
         })
         const data = (await response.json()) as {
           selection?: Partial<WikiAgentSelection>
         }
-        setAgentSelection({
-          isWikiSelected: Boolean(data.selection?.isWikiSelected),
-          selectedGeneratedDocumentIds:
-            data.selection?.selectedGeneratedDocumentIds ?? [],
-          selectedRawDocumentIds: data.selection?.selectedRawDocumentIds ?? [],
-        })
+        setAgentSelection(
+          normalizeWikiAgentSelection(data.selection, isWritingPanel)
+        )
       } catch (error) {
         setAgentSelection(previous)
         throw error
@@ -362,7 +350,7 @@ export function useWikiPanelController({
         setIsSelectionBusy(false)
       }
     },
-    [agentSelection, selectionPath, transport.apiBase]
+    [agentSelection, isWritingPanel, selectionPath, transport.apiBase]
   )
 
   const openMarkdown = useCallback(
@@ -531,39 +519,49 @@ export function useWikiPanelController({
   const openRawOriginal = useCallback(
     (document: WikiRawDocument) => {
       if (originalPreviewKind(document)) {
-        setOriginalPreviewDocument(document)
+        setOriginalPreview({
+          document,
+          previewUrl: wikiRawOriginalUrl(transport.apiBase, document),
+        })
         return
       }
       openOriginalInNewWindow(document)
     },
-    [openOriginalInNewWindow]
+    [openOriginalInNewWindow, transport.apiBase]
   )
 
-  const addFiles = useCallback(
-    async (files: FileList | null) => {
-      if (!files?.length) return
-      setIsBusy(true)
-      try {
-        for (const file of [...files]) {
-          await apiFetch(transport.apiBase, "/api/wiki/raw-documents", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              dataUrl: await fileToDataUrl(file),
-              fileName: file.name,
-              mimeType: file.type || "application/octet-stream",
-              title: titleFromFileName(file.name),
-              source: "user",
-              wikiSpaceId: activeSpace?.id,
-            }),
-          })
-        }
-        await onReload()
-      } finally {
-        setIsBusy(false)
-      }
+  const revealGeneratedOriginal = useCallback(
+    async (document: WikiGeneratedDocument) => {
+      await apiFetch(
+        transport.apiBase,
+        `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/reveal`,
+        { method: "POST" }
+      )
     },
-    [activeSpace?.id, onReload, transport]
+    [transport.apiBase]
+  )
+
+  const openGeneratedOriginal = useCallback(
+    (document: WikiGeneratedDocument) => {
+      if (!document.importSource) return
+      const previewDocument: WikiOriginalPreviewDocument = {
+        id: document.id,
+        mimeType: document.importSource.mimeType,
+        originalFileName: document.importSource.fileName,
+        sizeBytes: document.importSource.sizeBytes,
+        title: document.title,
+      }
+      const previewUrl = wikiGeneratedOriginalUrl(transport.apiBase, document)
+      if (originalPreviewKind(previewDocument)) {
+        setOriginalPreview({ document: previewDocument, previewUrl })
+        return
+      }
+      if (tryOpenBrowserWindow(previewUrl)) return
+      revealGeneratedOriginal(document).catch((error) => {
+        console.error("Failed to reveal imported generated document", error)
+      })
+    },
+    [revealGeneratedOriginal, transport.apiBase]
   )
 
   const createRawMarkdownDocument = useCallback(async () => {
@@ -595,39 +593,6 @@ export function useWikiPanelController({
       setIsBusy(false)
     }
   }, [activeSpace?.id, onReload, t, transport.apiBase])
-
-  const handleRawDragEnter = useCallback((event: DragEvent<HTMLElement>) => {
-    if (!event.dataTransfer.types.includes("Files")) return
-    event.preventDefault()
-    rawDragDepthRef.current += 1
-    setIsRawDragActive(true)
-  }, [])
-
-  const handleRawDragOver = useCallback((event: DragEvent<HTMLElement>) => {
-    if (!event.dataTransfer.types.includes("Files")) return
-    event.preventDefault()
-    event.dataTransfer.dropEffect = "copy"
-  }, [])
-
-  const handleRawDragLeave = useCallback((event: DragEvent<HTMLElement>) => {
-    if (!event.dataTransfer.types.includes("Files")) return
-    event.preventDefault()
-    rawDragDepthRef.current = Math.max(0, rawDragDepthRef.current - 1)
-    if (rawDragDepthRef.current === 0) {
-      setIsRawDragActive(false)
-    }
-  }, [])
-
-  const handleRawDrop = useCallback(
-    async (event: DragEvent<HTMLElement>) => {
-      if (!event.dataTransfer.types.includes("Files")) return
-      event.preventDefault()
-      rawDragDepthRef.current = 0
-      setIsRawDragActive(false)
-      await addFiles(event.dataTransfer.files)
-    },
-    [addFiles]
-  )
 
   const openWikiPage = useCallback(
     async (pagePath: string) => {
@@ -728,23 +693,6 @@ export function useWikiPanelController({
     },
     [onReload, transport.apiBase]
   )
-
-  useEffect(() => {
-    if (state.wikiAgentSkillConfigured || agentSkills.length === 0) return
-    const defaultSkillId =
-      locale === "zh-CN"
-        ? DEFAULT_ZH_WIKI_AGENT_SKILL_ID
-        : DEFAULT_WIKI_AGENT_SKILL_ID
-    if (!agentSkills.some((item) => item.skill.id === defaultSkillId)) return
-    updateWikiAgentSkill(defaultSkillId, true).catch((error) => {
-      console.error("Failed to set the locale-aware Wiki agent skill", error)
-    })
-  }, [
-    agentSkills,
-    locale,
-    state.wikiAgentSkillConfigured,
-    updateWikiAgentSkill,
-  ])
 
   const openGeneratedDocument = useCallback(
     async (document: WikiGeneratedDocument) => {
@@ -921,7 +869,10 @@ export function useWikiPanelController({
         const path =
           writingTask?.status === "failed"
             ? `/api/tasks/${encodeURIComponent(writingTask.id)}/retry`
-            : `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/retry`
+            : document.conversion?.status === "failed" &&
+                document.conversion.taskId
+              ? `/api/tasks/${encodeURIComponent(document.conversion.taskId)}/retry`
+              : `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/retry`
         await apiJson(transport.apiBase, path, { method: "POST" })
         await onReload()
       } catch (error) {
@@ -959,18 +910,20 @@ export function useWikiPanelController({
     setPendingRenameGeneratedDocument,
     generatedDocumentDialog,
     setGeneratedDocumentDialog,
-    originalPreviewDocument,
-    setOriginalPreviewDocument,
+    originalPreview,
+    setOriginalPreview,
     isBusy,
     retryingGeneratedDocumentId,
     generatedDocumentRetryError,
     isSelectionBusy,
     agentSelection,
     isRawDragActive,
+    isGeneratedDragActive,
     isDocumentLibraryOpen,
     setIsDocumentLibraryOpen,
     collapsedModules,
     fileInputRef,
+    generatedFileInputRef,
     wikiPageTree,
     moduleHeaderToggle,
     moduleInfo,
@@ -996,7 +949,13 @@ export function useWikiPanelController({
     renameWikiPageFile,
     updateWikiAgentSkill,
     openGeneratedDocument,
+    openGeneratedOriginal,
     createGeneratedMarkdownDocument,
+    addGeneratedFiles,
+    handleGeneratedDragEnter,
+    handleGeneratedDragOver,
+    handleGeneratedDragLeave,
+    handleGeneratedDrop,
     saveGeneratedMarkdown,
     renameGeneratedDocumentFile,
     publishGeneratedDocument,

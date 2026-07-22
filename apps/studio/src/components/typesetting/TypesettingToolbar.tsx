@@ -7,16 +7,16 @@ import {
   Select,
   Tooltip,
 } from "@heroui/react"
+import type { Attribute, Attributes } from "@tiptap/core"
 import Image from "@tiptap/extension-image"
-import {
-  NodeViewWrapper,
-  ReactNodeViewRenderer,
-  type useEditor,
-  useEditorState,
-} from "@tiptap/react"
+import { type useEditor, useEditorState } from "@tiptap/react"
 import {
   AlertCircle,
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
   Bold,
+  ImagePlus,
   Italic,
   Link as LinkIcon,
   List,
@@ -61,9 +61,13 @@ type DocumentPreview =
     }
 
 export function TypesettingToolbar({
+  disabled = false,
   editor,
+  onInsertImages,
 }: {
+  disabled?: boolean
   editor: ReturnType<typeof useEditor>
+  onInsertImages: () => void
 }) {
   const { t } = useMyOpenPanelsI18n()
   const [isLinkOpen, setIsLinkOpen] = useState(false)
@@ -84,6 +88,11 @@ export function TypesettingToolbar({
       canUndo: current?.can().undo() ?? false,
       italic: current?.isActive("italic") ?? false,
       link: current?.isActive("link") ?? false,
+      textAlign: current?.isActive({ textAlign: "center" })
+        ? "center"
+        : current?.isActive({ textAlign: "right" })
+          ? "right"
+          : "left",
       orderedList: current?.isActive("orderedList") ?? false,
       quote: current?.isActive("blockquote") ?? false,
     }),
@@ -98,10 +107,14 @@ export function TypesettingToolbar({
   }
 
   return (
-    <div className="op-typesetting-toolbar">
+    <div
+      aria-disabled={disabled}
+      className="op-typesetting-toolbar"
+      inert={disabled || undefined}
+    >
       <Select
         aria-label={t`Text style`}
-        className="w-24 shrink-0"
+        className="op-typesetting-toolbar__text-style w-32 shrink-0"
         onChange={(key) => {
           const value = String(key)
           if (value === "p") editor.chain().focus().setParagraph().run()
@@ -173,6 +186,29 @@ export function TypesettingToolbar({
       >
         <Quote size={16} />
       </ToolbarButton>
+      <span className="op-typesetting-toolbar__divider" />
+      <ToolbarButton
+        active={state?.textAlign === "left"}
+        label={t`Align left`}
+        onPress={() => editor.chain().focus().setTextAlign("left").run()}
+      >
+        <AlignLeft size={18} />
+      </ToolbarButton>
+      <ToolbarButton
+        active={state?.textAlign === "center"}
+        label={t`Align center`}
+        onPress={() => editor.chain().focus().setTextAlign("center").run()}
+      >
+        <AlignCenter size={18} />
+      </ToolbarButton>
+      <ToolbarButton
+        active={state?.textAlign === "right"}
+        label={t`Align right`}
+        onPress={() => editor.chain().focus().setTextAlign("right").run()}
+      >
+        <AlignRight size={18} />
+      </ToolbarButton>
+      <span className="op-typesetting-toolbar__divider" />
       <Popover
         isOpen={isLinkOpen}
         onOpenChange={(isOpen) => {
@@ -222,6 +258,9 @@ export function TypesettingToolbar({
           </Popover.Dialog>
         </Popover.Content>
       </Popover>
+      <ToolbarButton label={t`Insert images`} onPress={onInsertImages}>
+        <ImagePlus size={18} />
+      </ToolbarButton>
       <span className="op-typesetting-toolbar__spacer" />
       <ToolbarButton
         disabled={!state?.canUndo}
@@ -261,7 +300,7 @@ function ToolbarButton({
         isDisabled={disabled}
         isIconOnly
         onPress={onPress}
-        size="sm"
+        size="md"
         variant={active ? "primary" : "ghost"}
       >
         {children}
@@ -305,12 +344,14 @@ export function SaveIndicator({
 
 export function DocumentPreviewDialog({
   activePublication,
+  isInsertDisabled = false,
   onClose,
   onInsert,
   preview,
   transport,
 }: {
   activePublication: boolean
+  isInsertDisabled?: boolean
   onClose: () => void
   onInsert: () => void
   preview: DocumentPreview
@@ -323,6 +364,7 @@ export function DocumentPreviewDialog({
       : null
   const canInsert =
     activePublication &&
+    !isInsertDisabled &&
     !preview.loading &&
     !preview.error &&
     preview.content !== null
@@ -339,7 +381,7 @@ export function DocumentPreviewDialog({
                   ? preview.source === "markdown"
                     ? t`Markdown`
                     : t`Original file`
-                  : t`Generated Documents`}
+                  : t`My Documents`}
               </div>
               <Modal.Heading>{preview.document.title}</Modal.Heading>
               {preview.kind === "raw" ? (
@@ -434,8 +476,20 @@ function RawDocumentMedia({
 export function createTypesettingImageExtension(apiBase: string) {
   return Image.extend({
     addAttributes() {
+      const parent = (this.parent?.() ?? {}) as Attributes
+      const sourceAttribute = parent.src as Attribute | undefined
       return {
-        ...this.parent?.(),
+        ...parent,
+        src: {
+          ...sourceAttribute,
+          renderHTML: (attributes) => ({
+            src:
+              typeof attributes.src === "string" &&
+              attributes.src.startsWith("/")
+                ? apiUrl(apiBase, attributes.src).toString()
+                : attributes.src,
+          }),
+        },
         assetRef: {
           default: null,
           parseHTML: (element) => element.getAttribute("data-asset-ref"),
@@ -447,32 +501,47 @@ export function createTypesettingImageExtension(apiBase: string) {
       }
     },
     addNodeView() {
-      return ReactNodeViewRenderer(({ node, selected }) => (
-        <NodeViewWrapper
-          className={
-            selected
-              ? "is-selected op-typesetting-editor-image"
-              : "op-typesetting-editor-image"
+      const parentNodeView = this.parent?.()
+      if (!parentNodeView) return null
+
+      return (props) => {
+        const nodeView = parentNodeView(props)
+        const dom = nodeView.dom
+        if (!(dom instanceof HTMLElement)) return nodeView
+
+        const syncAppearance = (node: typeof props.node) => {
+          const alignment = String(node.attrs.textAlign ?? "left")
+          dom.classList.add("op-typesetting-editor-image")
+          dom.dataset.textAlign = alignment
+          dom.draggable = true
+          dom.style.justifyContent =
+            alignment === "center"
+              ? "center"
+              : alignment === "right"
+                ? "flex-end"
+                : "flex-start"
+          const image = dom.querySelector("img")
+          if (image) image.draggable = false
+        }
+
+        syncAppearance(props.node)
+        const update = nodeView.update?.bind(nodeView)
+        if (update) {
+          nodeView.update = (node, decorations, innerDecorations) => {
+            const updated = update(node, decorations, innerDecorations)
+            if (updated) syncAppearance(node)
+            return updated
           }
-          contentEditable={false}
-        >
-          <img
-            alt={node.attrs.alt ?? ""}
-            src={
-              typeof node.attrs.src === "string" &&
-              node.attrs.src.startsWith("/")
-                ? apiUrl(apiBase, node.attrs.src).toString()
-                : node.attrs.src
-            }
-          />
-        </NodeViewWrapper>
-      ))
+        }
+        return nodeView
+      }
     },
   }).configure({
     allowBase64: false,
     inline: false,
     resize: {
       alwaysPreserveAspectRatio: true,
+      directions: ["top-left", "top-right", "bottom-left", "bottom-right"],
       enabled: true,
       minHeight: 80,
       minWidth: 80,

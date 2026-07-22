@@ -72,7 +72,7 @@ mod skill_management_tests {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|skill| skill["id"] == "karpathy-llm-wiki")
+                    .any(|skill| skill["id"] == "wiki-default")
         }));
         assert!(modules.iter().any(|module| {
             module["kind"] == "writing-refinement"
@@ -80,7 +80,7 @@ mod skill_management_tests {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|skill| skill["id"] == "writing-skill-refiner")
+                    .any(|skill| skill["id"] == "writing-refinement-default")
         }));
         assert!(modules.iter().any(|module| {
             module["kind"] == "writing"
@@ -89,6 +89,14 @@ mod skill_management_tests {
                     .unwrap()
                     .iter()
                     .any(|skill| skill["id"] == "writing-default")
+        }));
+        assert!(modules.iter().any(|module| {
+            module["kind"] == "typesetting-title"
+                && module["skills"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|skill| skill["id"] == "typesetting-title-default")
         }));
         assert!(modules.iter().any(|module| {
             module["kind"] == "publishing"
@@ -126,6 +134,22 @@ mod skill_management_tests {
         let error = write_managed_skill_file(&paths, "writing-default", "SKILL.md", "not allowed")
             .expect_err("preset is read only");
         assert_eq!(error.code(), Some("skill_read_only"));
+    }
+
+    #[test]
+    fn retired_builtin_writing_skills_are_removed_from_local_storage() {
+        let (_temp, paths) = test_paths();
+        for skill_id in ["writing-long-article", "writing-xiaohongshu-note"] {
+            let directory = paths.storage_dir.join("skills").join(skill_id);
+            fs::create_dir_all(&directory).expect("retired Skill dir");
+            fs::write(directory.join("SKILL.md"), "retired").expect("retired Skill");
+        }
+
+        sync_builtin_agent_skills(&paths).expect("sync built-in Skills");
+
+        for skill_id in ["writing-long-article", "writing-xiaohongshu-note"] {
+            assert!(!paths.storage_dir.join("skills").join(skill_id).exists());
+        }
     }
 
     #[test]

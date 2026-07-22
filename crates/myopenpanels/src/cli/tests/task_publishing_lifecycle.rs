@@ -101,6 +101,7 @@ fn add_scope_publishing_task(
         max_attempts: 1,
         dispatch_mode: "manual".to_owned(),
         idempotency_key: Some(format!("publishing-request:{platform}")),
+        exclusive_non_terminal: false,
     };
     storage
         .insert_tasks_with_panel_states(
@@ -157,11 +158,26 @@ fn publishing_task_handoff_claims_heartbeats_and_completes_supported_platforms()
         let delivery_prompt = started["delivery"]["prompt"].as_str().unwrap();
         assert!(delivery_prompt.contains("limited to this claimed Task"));
         assert!(!delivery_prompt.contains("continue with every Task returned"));
+        let handoff_id = started["handoff"]["id"].as_str().unwrap();
+        assert!(delivery_prompt.contains(&format!(
+            "task handoff complete --handoff-id {handoff_id} --format json"
+        )));
+        assert!(delivery_prompt.contains(&format!(
+            "publishing checkpoint --task-id {task_id} --phase prepared --format json"
+        )));
+        assert!(delivery_prompt.contains("# Publishing Panel Contract"));
+        let agent_cli_instructions = started["executionBundle"]["instructions"]
+            .as_str()
+            .unwrap();
+        assert!(agent_cli_instructions.contains(&format!(
+            "publishing checkpoint --task-id {task_id} --phase prepared --format json"
+        )));
+        assert!(!agent_cli_instructions.contains("task handoff exec"));
+        assert!(delivery_prompt.contains("task handoff exec"));
         assert_eq!(
             started["executionBundle"]["allowedAgentCommandIntents"],
             json!(["publishing.checkpoint"])
         );
-        let handoff_id = started["handoff"]["id"].as_str().unwrap();
         tasks::heartbeat_task_handoff(&paths, handoff_id).expect("publishing heartbeat");
         crate::publishing::checkpoint_attempt_for_broker(&paths, &task_id, "prepared")
             .expect("prepared checkpoint");

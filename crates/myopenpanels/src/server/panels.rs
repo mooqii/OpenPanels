@@ -101,6 +101,12 @@ async fn api_save_panel_state(
         })?;
         if panel.kind == PanelKind::Typesetting {
             validate_typesetting_state(&panel_state)?;
+            crate::typesetting::validate_content_write(
+                &state.paths,
+                &project_id,
+                &panel_id,
+                &panel_state,
+            )?;
         }
         if panel.kind == PanelKind::Publishing {
             panel_state = crate::publishing::normalize_state(panel_state.clone());

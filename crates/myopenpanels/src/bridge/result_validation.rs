@@ -25,17 +25,16 @@ fn build_conversion_output_plan(
         .and_then(Value::as_str)
         .or_else(|| task.get("documentId").and_then(Value::as_str))
         .ok_or_else(|| CliError::with_code("invalid_output", "Conversion target is missing."))?;
+    let (resource_kind, logical_path, document_kind) = conversion_output_target(task);
     Ok(TaskOutputPlanDraft {
         result,
         actions: vec![TaskOutputAction::StageText {
-            resource_kind: crate::content::ResourceKind::WikiMarkdown
-                .as_str()
-                .to_owned(),
+            resource_kind: resource_kind.to_owned(),
             resource_key: document_id.to_owned(),
-            logical_path: "source.md".to_owned(),
+            logical_path: logical_path.to_owned(),
             artifact,
             mime_type: "text/markdown".to_owned(),
-            metadata: json!({ "documentId": document_id }),
+            metadata: json!({ "documentId": document_id, "documentKind": document_kind }),
         }],
     })
 }
@@ -199,6 +198,95 @@ fn build_typesetting_cover_output_plan(
     })
 }
 
+fn build_typesetting_title_output_plan(
+    _paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    _attempt_id: &str,
+    _execution_generation: i64,
+    _execution_unit: &Value,
+) -> Result<TaskOutputPlanDraft, CliError> {
+    let result = read_execution_result_v2(workspace, "Typesetting Title")?;
+    validate_result_keys(
+        &result,
+        &["schemaVersion", "outcome", "summary", "artifacts"],
+        "Typesetting Title",
+    )?;
+    require_outcome(&result, "generated", "Typesetting Title")?;
+    let artifact = exactly_one_artifact(workspace, &result, "Typesetting Title")?;
+    validate_fixed_artifact(
+        &artifact,
+        "typesetting-titles",
+        "outputs/titles.json",
+        "Typesetting Title",
+    )?;
+    let payload: Value = serde_json::from_slice(
+        &fs::read(&artifact.absolute_path).map_err(to_cli_error)?,
+    )
+    .map_err(|_| {
+        CliError::with_code(
+            "invalid_output",
+            "Typesetting Title output must be valid JSON.",
+        )
+    })?;
+    validate_result_keys(&payload, &["titles"], "Typesetting Title artifact")?;
+    let values = payload
+        .get("titles")
+        .and_then(Value::as_array)
+        .filter(|titles| titles.len() == 10)
+        .ok_or_else(|| {
+            CliError::with_code(
+                "invalid_output",
+                "Typesetting Title output must contain exactly 10 titles.",
+            )
+        })?;
+    let existing = task
+        .pointer("/input/snapshot/existingTitles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|title| title.trim().to_lowercase())
+        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    let mut titles = Vec::with_capacity(10);
+    for value in values {
+        let title = value.as_str().map(str::trim).filter(|title| {
+            !title.is_empty()
+                && title.chars().count() <= 200
+                && !title.chars().any(char::is_control)
+        });
+        let Some(title) = title else {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "Every generated title must be a non-empty string of at most 200 characters.",
+            ));
+        };
+        let normalized = title.to_lowercase();
+        if existing.contains(&normalized) || !seen.insert(normalized) {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "Generated titles must be distinct and must not repeat an existing title.",
+            ));
+        }
+        titles.push(title.to_owned());
+    }
+    let task_id = task
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::with_code("invalid_output", "Title Task id is missing."))?;
+    Ok(TaskOutputPlanDraft {
+        result,
+        actions: vec![TaskOutputAction::PrepareTypesettingTitles {
+            task_id: task_id.to_owned(),
+            artifact,
+            titles,
+        }],
+    })
+}
+
+include!("typesetting_layout_output.rs");
 fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() < 8 || bytes[..8] != [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a] {
         return None;
@@ -1210,5 +1298,116 @@ mod typesetting_cover_png_tests {
         )
         .expect_err("oversized output must fail");
         assert_eq!(error.code(), Some("content_too_large"));
+    }
+}
+
+#[cfg(test)]
+mod typesetting_title_output_tests {
+    use super::*;
+
+    #[test]
+    fn title_output_requires_ten_new_distinct_strings() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().join("project");
+        let storage = temp.path().join("storage");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("outputs")).expect("workspace");
+        fs::create_dir_all(&project).expect("project");
+        let paths = crate::paths::resolve_myopenpanels_paths(
+            Some(project.to_str().unwrap()),
+            Some(storage.to_str().unwrap()),
+            Some("title-output-test"),
+        )
+        .expect("paths");
+        let task = json!({
+            "id": "task:title",
+            "input": {
+                "snapshot": { "existingTitles": ["Existing title"] }
+            }
+        });
+        write_test_result(
+            &workspace,
+            &json!({
+                "schemaVersion": 2,
+                "outcome": "generated",
+                "summary": "titles",
+                "artifacts": [{
+                    "role": "typesetting-titles",
+                    "relativePath": "outputs/titles.json"
+                }]
+            }),
+        )
+        .expect("execution result");
+        let write_titles = |titles: Vec<Value>| {
+            fs::write(
+                workspace.join("outputs/titles.json"),
+                serde_json::to_vec(&json!({ "titles": titles })).expect("serialize titles"),
+            )
+            .expect("title artifact");
+        };
+
+        write_titles(
+            (1..=10)
+                .map(|index| json!(format!("Candidate {index}")))
+                .collect(),
+        );
+        let plan = build_typesetting_title_output_plan(
+            &paths,
+            &task,
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .expect("valid titles");
+        assert!(matches!(
+            &plan.actions[0],
+            TaskOutputAction::PrepareTypesettingTitles { titles, .. } if titles.len() == 10
+        ));
+
+        write_titles(
+            (1..=9)
+                .map(|index| json!(format!("Candidate {index}")))
+                .collect(),
+        );
+        assert!(build_typesetting_title_output_plan(
+            &paths,
+            &task,
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .is_err());
+
+        let mut duplicates = (1..=10)
+            .map(|index| json!(format!("Candidate {index}")))
+            .collect::<Vec<_>>();
+        duplicates[9] = json!("candidate 1");
+        write_titles(duplicates);
+        assert!(build_typesetting_title_output_plan(
+            &paths,
+            &task,
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .is_err());
+
+        let mut existing = (1..=10)
+            .map(|index| json!(format!("Candidate {index}")))
+            .collect::<Vec<_>>();
+        existing[0] = json!(" existing TITLE ");
+        write_titles(existing);
+        assert!(build_typesetting_title_output_plan(
+            &paths,
+            &task,
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .is_err());
     }
 }

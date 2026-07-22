@@ -4,12 +4,52 @@ import type {
   TypesettingCanvasAsset,
   TypesettingPublication,
   TypesettingPublicationImage,
+  TypesettingPublicationTitle,
   TypesettingState,
+  WikiGeneratedDocument,
 } from "../types"
 
 export const TYPESETTING_ASSET_DRAG_TYPE =
   "application/x-myopenpanels-canvas-asset"
 export const TYPESETTING_AUTOSAVE_DELAY_MS = 500
+export const TYPESETTING_COVER_IMAGE_ACCEPT =
+  ".png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif"
+
+const TYPESETTING_COVER_IMAGE_MIME_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+])
+const TYPESETTING_COVER_IMAGE_EXTENSIONS = new Set([
+  "gif",
+  "jpeg",
+  "jpg",
+  "png",
+  "webp",
+])
+
+export function isInsertableTypesettingDocument(document: {
+  conversion?: Pick<NonNullable<WikiGeneratedDocument["conversion"]>, "status">
+  mimeType: string
+}): boolean {
+  const conversionReady =
+    !document.conversion ||
+    document.conversion.status === "not_required" ||
+    document.conversion.status === "ready"
+  return document.mimeType.startsWith("text/") && conversionReady
+}
+
+export function isSupportedTypesettingCoverImage(file: {
+  name: string
+  type: string
+}): boolean {
+  if (TYPESETTING_COVER_IMAGE_MIME_TYPES.has(file.type.toLowerCase())) {
+    return true
+  }
+  const extension = file.name.split(".").pop()?.toLowerCase()
+  return Boolean(extension && TYPESETTING_COVER_IMAGE_EXTENSIONS.has(extension))
+}
 
 export type TypesettingCoverTaskDisplayStatus =
   | "waiting"
@@ -17,6 +57,144 @@ export type TypesettingCoverTaskDisplayStatus =
   | "saving"
   | "failed"
   | "cancelled"
+
+export type TypesettingLayoutTaskDisplayStatus =
+  | "waiting"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+export type TypesettingTitleTaskDisplayStatus =
+  | "waiting"
+  | "running"
+  | "saving"
+  | "failed"
+  | "cancelled"
+
+export function typesettingTitleRequestPayload({
+  instruction,
+  publicationId,
+  requestId,
+  skillId,
+}: {
+  instruction: string
+  publicationId: string
+  requestId: string
+  skillId: string
+}): {
+  instruction?: string
+  publicationId: string
+  requestId: string
+  skillId: string
+} {
+  const trimmedInstruction = instruction.trim()
+  return {
+    ...(trimmedInstruction ? { instruction: trimmedInstruction } : {}),
+    publicationId,
+    requestId,
+    skillId,
+  }
+}
+
+export function typesettingTitleTaskStatus(
+  task: ProjectTask
+): TypesettingTitleTaskDisplayStatus {
+  if (task.status === "succeeded") return "saving"
+  if (task.status === "failed") return "failed"
+  if (
+    task.status === "cancelled" ||
+    task.status === "stale" ||
+    task.status === "superseded"
+  ) {
+    return "cancelled"
+  }
+  if (
+    task.status === "running" ||
+    task.status === "claimed" ||
+    task.status === "reserved" ||
+    task.status === "converting" ||
+    task.status === "indexing" ||
+    task.status === "cancel_requested"
+  ) {
+    return "running"
+  }
+  return "waiting"
+}
+
+export function typesettingLayoutRequestPayload({
+  instruction,
+  publicationId,
+  requestId,
+  skillId,
+}: {
+  instruction: string
+  publicationId: string
+  requestId: string
+  skillId: string
+}): {
+  instruction?: string
+  publicationId: string
+  requestId: string
+  skillId: string
+} {
+  const trimmedInstruction = instruction.trim()
+  return {
+    ...(trimmedInstruction ? { instruction: trimmedInstruction } : {}),
+    publicationId,
+    requestId,
+    skillId,
+  }
+}
+
+export function typesettingLayoutTaskStatus(
+  task: ProjectTask
+): TypesettingLayoutTaskDisplayStatus {
+  if (task.status === "succeeded") return "completed"
+  if (task.status === "failed") return "failed"
+  if (
+    task.status === "cancelled" ||
+    task.status === "stale" ||
+    task.status === "superseded"
+  ) {
+    return "cancelled"
+  }
+  if (
+    task.status === "running" ||
+    task.status === "claimed" ||
+    task.status === "reserved" ||
+    task.status === "converting" ||
+    task.status === "indexing" ||
+    task.status === "cancel_requested"
+  ) {
+    return "running"
+  }
+  return "waiting"
+}
+
+export function isTypesettingLayoutTaskActive(task: ProjectTask): boolean {
+  return !["failed", "succeeded", "cancelled", "stale", "superseded"].includes(
+    task.status
+  )
+}
+
+export function latestTypesettingLayoutTask(
+  tasks: ProjectTask[],
+  publicationId: string
+): ProjectTask | null {
+  return (
+    tasks
+      .filter(
+        (task) =>
+          task.queue === "typesetting" &&
+          task.type === "format_typesetting_content" &&
+          task.targetId === publicationId
+      )
+      .sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt)
+      )[0] ?? null
+  )
+}
 
 export function typesettingCoverRequestPayload({
   instruction,
@@ -76,14 +254,144 @@ export function createTypesettingPublication(
   id: string,
   timestamp: string
 ): TypesettingPublication {
+  const selectedTitleId = `${id}:title:primary`
   return {
     content: emptyTypesettingDocument(),
     covers: [],
     createdAt: timestamp,
     id,
+    selectedTitleId,
+    tags: [],
     title: "",
+    titles: [{ id: selectedTitleId, value: "" }],
     updatedAt: timestamp,
   }
+}
+
+export function typesettingPublicationTitles(
+  publication: TypesettingPublication
+): TypesettingPublicationTitle[] {
+  if (publication.titles?.length) return publication.titles
+  return [
+    {
+      id: `${publication.id}:title:primary`,
+      value: publication.title,
+    },
+  ]
+}
+
+export function selectedTypesettingTitleId(
+  publication: TypesettingPublication
+): string {
+  const titles = typesettingPublicationTitles(publication)
+  return titles.some(({ id }) => id === publication.selectedTitleId)
+    ? (publication.selectedTitleId as string)
+    : titles[0].id
+}
+
+export function selectTypesettingTitle(
+  publication: TypesettingPublication,
+  titleId: string
+): TypesettingPublication {
+  const titles = typesettingPublicationTitles(publication)
+  const selected = titles.find(({ id }) => id === titleId)
+  if (!selected) return publication
+  return {
+    ...publication,
+    selectedTitleId: selected.id,
+    title: selected.value,
+    titles,
+  }
+}
+
+export function updateTypesettingTitle(
+  publication: TypesettingPublication,
+  titleId: string,
+  value: string
+): TypesettingPublication {
+  const selectedTitleId = selectedTypesettingTitleId(publication)
+  const titles = typesettingPublicationTitles(publication).map((title) =>
+    title.id === titleId ? { ...title, value } : title
+  )
+  return {
+    ...publication,
+    selectedTitleId,
+    title: titleId === selectedTitleId ? value : publication.title,
+    titles,
+  }
+}
+
+export function addTypesettingTitle(
+  publication: TypesettingPublication,
+  title: TypesettingPublicationTitle
+): TypesettingPublication {
+  const titles = [...typesettingPublicationTitles(publication), title]
+  return {
+    ...publication,
+    selectedTitleId: title.id,
+    title: title.value,
+    titles,
+  }
+}
+
+export function removeTypesettingTitle(
+  publication: TypesettingPublication,
+  titleId: string,
+  replacementTitleId?: string
+): TypesettingPublication {
+  const titles = typesettingPublicationTitles(publication)
+  const removedIndex = titles.findIndex(({ id }) => id === titleId)
+  if (removedIndex < 0) return publication
+  if (titles.length === 1) {
+    if (!replacementTitleId) return publication
+    return {
+      ...publication,
+      selectedTitleId: replacementTitleId,
+      title: "",
+      titles: [{ id: replacementTitleId, value: "" }],
+    }
+  }
+  const remaining = titles.filter(({ id }) => id !== titleId)
+  const currentSelectedTitleId = selectedTypesettingTitleId(publication)
+  const selectedTitleId =
+    currentSelectedTitleId === titleId
+      ? remaining[Math.min(removedIndex, remaining.length - 1)].id
+      : currentSelectedTitleId
+  const selected = remaining.find(({ id }) => id === selectedTitleId)
+  return {
+    ...publication,
+    selectedTitleId,
+    title: selected?.value ?? remaining[0].value,
+    titles: remaining,
+  }
+}
+
+export function typesettingTagsFromInput(value: string): string[] {
+  const tags: string[] = []
+  const seen = new Set<string>()
+  for (const part of value.split(/[,，\n]+/u)) {
+    const tag = part.trim().replace(/^#+/u, "").trim()
+    const key = tag.toLocaleLowerCase()
+    if (!(tag && !seen.has(key))) continue
+    seen.add(key)
+    tags.push(tag)
+  }
+  return tags
+}
+
+export function appendTypesettingTags(
+  current: string[],
+  input: string
+): string[] {
+  const result = [...current]
+  const seen = new Set(current.map((tag) => tag.toLocaleLowerCase()))
+  for (const tag of typesettingTagsFromInput(input)) {
+    const key = tag.toLocaleLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(tag)
+  }
+  return result
 }
 
 export function isTypesettingDocumentEmpty(content: JSONContent): boolean {
@@ -119,6 +427,32 @@ export function plainTextToTypesettingContent(text: string): JSONContent[] {
       ? { type: "paragraph", content }
       : { type: "paragraph" }
   })
+}
+
+export function typesettingImagesToContent(
+  images: TypesettingPublicationImage[]
+): JSONContent[] {
+  return images.map((image) => ({
+    type: "image",
+    attrs: {
+      alt: image.fileName,
+      assetRef: image.assetRef,
+      height: image.height,
+      src: image.src,
+      title: image.fileName,
+      width: image.width,
+    },
+  }))
+}
+
+export function typesettingImageClickSide(
+  clientX: number,
+  imageLeft: number,
+  imageRight: number
+): "after" | "before" | "inside" {
+  if (clientX < imageLeft) return "before"
+  if (clientX > imageRight) return "after"
+  return "inside"
 }
 
 export function typesettingInsertPosition(
@@ -205,12 +539,14 @@ export function groupTypesettingAssets(
 }
 
 export function mergeTypesettingConflict({
+  contentDirtyIds,
   deletedCoverAssetRefs,
   deletedIds,
   dirtyIds,
   local,
   remote,
 }: {
+  contentDirtyIds?: ReadonlySet<string>
   deletedCoverAssetRefs?: ReadonlyMap<string, ReadonlySet<string>>
   deletedIds: ReadonlySet<string>
   dirtyIds: ReadonlySet<string>
@@ -236,12 +572,14 @@ export function mergeTypesettingConflict({
           !localAssetRefs.has(cover.assetRef) &&
           !deletedCovers?.has(cover.assetRef)
       )
-      return generatedCovers.length
-        ? {
-            ...localPublication,
-            covers: [...localPublication.covers, ...generatedCovers],
-          }
-        : localPublication
+      return {
+        ...localPublication,
+        content:
+          contentDirtyIds === undefined || contentDirtyIds.has(publication.id)
+            ? localPublication.content
+            : publication.content,
+        covers: [...localPublication.covers, ...generatedCovers],
+      }
     })
   const remoteIds = new Set(publications.map((publication) => publication.id))
   for (const id of dirtyIds) {

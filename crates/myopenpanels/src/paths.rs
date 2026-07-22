@@ -148,6 +148,27 @@ pub fn sanitize_path_part(value: &str) -> String {
     }
 }
 
+pub fn sanitize_file_name(value: &str) -> String {
+    let sanitized = value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim_end_matches([' ', '.']).to_owned();
+    if sanitized.is_empty() || matches!(sanitized.as_str(), "." | "..") {
+        "default".to_owned()
+    } else {
+        sanitized
+    }
+}
+
 fn resolve_context_id(explicit_context_id: Option<&str>) -> (String, String) {
     if let Some(value) = explicit_context_id {
         if !value.trim().is_empty() {
@@ -222,6 +243,15 @@ fn to_cli_error(error: impl std::fmt::Display) -> CliError {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn file_names_keep_human_readable_characters() {
+        assert_eq!(
+            sanitize_file_name("  Final 版本 (v2) [approved].md  "),
+            "Final 版本 (v2) [approved].md"
+        );
+        assert_eq!(sanitize_file_name("notes/report?.md"), "notes_report_.md");
+    }
 
     #[test]
     fn studio_and_focus_paths_are_shared_while_agent_contexts_remain_distinct() {

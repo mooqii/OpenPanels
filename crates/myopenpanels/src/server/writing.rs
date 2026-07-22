@@ -10,8 +10,6 @@ async fn api_agent_skills(State(state): State<Arc<AppState>>) -> Response {
 struct WritingSelectionBody {
     is_wiki_selected: bool,
     #[serde(default)]
-    selected_raw_document_ids: Vec<String>,
-    #[serde(default)]
     selected_generated_document_ids: Vec<String>,
 }
 
@@ -29,7 +27,6 @@ async fn api_writing_set_selection(
     match crate::writing::write_selection(
         &state.paths,
         body.is_wiki_selected,
-        &body.selected_raw_document_ids,
         &body.selected_generated_document_ids,
     ) {
         Ok(payload) => json_response(StatusCode::OK, &payload),

@@ -20,15 +20,42 @@ mod tests {
         (temp, paths)
     }
 
-    fn long_article_skill_ids() -> Vec<String> {
-        vec!["writing-long-article".to_owned()]
+    fn default_writing_skill_ids() -> Vec<String> {
+        vec!["writing-default".to_owned()]
+    }
+
+    fn write_custom_writing_skill(paths: &MyOpenPanelsPaths) {
+        let skill_id = "writing-custom-test-style";
+        let directory = paths.storage_dir.join("skills").join(skill_id);
+        fs::create_dir_all(&directory).expect("custom Writing Skill dir");
+        fs::write(
+            directory.join("SKILL.md"),
+            "---\nname: writing-custom-test-style\ndescription: Write concise test prose.\n---\n\nLead with the main point.\n",
+        )
+        .expect("custom Writing Skill");
+        fs::write(
+            directory.join("manifest.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 2,
+                "source": "custom",
+                "skillId": skill_id,
+                "name": "Test Style",
+                "binding": {
+                    "appliesTo": ["writing"],
+                    "taskTypes": ["generate_document"],
+                },
+            }))
+            .expect("custom Writing Skill manifest"),
+        )
+        .expect("custom Writing Skill manifest file");
     }
 
     #[test]
     fn writing_selection_is_independent_and_request_captures_it() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        crate::wiki::write_agent_selection(&paths, true, &[], &[]).expect("wiki selection");
+        write_custom_writing_skill(&paths);
+        crate::wiki::write_agent_selection(&paths, &[]).expect("wiki selection");
         let writing = ensure_project_bootstrap(
             &paths,
             BootstrapRequest {
@@ -38,7 +65,7 @@ mod tests {
             },
         )
         .expect("writing panel");
-        write_selection(&paths, false, &[], &[]).expect("writing selection");
+        write_selection(&paths, false, &[]).expect("writing selection");
 
         let storage = Storage::open(&paths).expect("storage");
         let wiki_panel = writing
@@ -54,12 +81,12 @@ mod tests {
             .read_panel_selection(&writing.project.id, &writing.panel.id)
             .expect("read writing selection")
             .expect("stored writing selection");
-        assert_eq!(wiki_selection["isWikiSelected"], json!(true));
+        assert!(wiki_selection.get("isWikiSelected").is_none());
         assert_eq!(writing_selection["isWikiSelected"], json!(false));
 
         let skill_ids = vec![
-            "writing-xiaohongshu-note".to_owned(),
-            "writing-long-article".to_owned(),
+            "writing-custom-test-style".to_owned(),
+            "writing-default".to_owned(),
         ];
         let created = create_requests(&paths, "Write a concise report", "create", None, &skill_ids)
             .expect("writing requests");
@@ -83,7 +110,7 @@ mod tests {
         );
         assert_eq!(
             created["tasks"][0]["input"]["writingSkillId"],
-            json!("writing-xiaohongshu-note")
+            json!("writing-custom-test-style")
         );
         assert!(
             created["tasks"][0]["input"]["writingSkillSnapshot"]["markdown"]
@@ -106,36 +133,36 @@ mod tests {
 
         let request = read_request(&paths, created["tasks"][0]["id"].as_str().unwrap())
             .expect("read request");
-        assert_eq!(request["writingSkill"]["name"], json!("小红书笔记"));
+        assert_eq!(request["writingSkill"]["name"], json!("Test Style"));
         assert_eq!(
             request["actions"]["required"][0]["intent"],
             "agent.skill.read"
         );
         let loaded = crate::agent::read_agent_skill(
             &paths,
-            "writing-xiaohongshu-note",
+            "writing-custom-test-style",
             Some(created["tasks"][0]["id"].as_str().unwrap()),
         )
         .expect("task Writing Skill");
         assert!(loaded
             .markdown
-            .contains("writing skill: writing-xiaohongshu-note"));
+            .contains("writing skill: writing-custom-test-style"));
     }
 
     #[test]
-    fn writing_selection_exposes_materialized_document_access() {
+    fn writing_selection_exposes_materialized_generated_document_access() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let raw = crate::wiki::add_raw_document(
+        let generated = crate::wiki::create_generated_document(
             &paths,
             "reference.md",
             Some("Reference"),
             Some("text/markdown"),
-            "user",
-            Some("wiki:default"),
+            None,
+            None,
             b"# Reference\n",
         )
-        .expect("raw document");
+        .expect("generated document");
         let writing = ensure_project_bootstrap(
             &paths,
             BootstrapRequest {
@@ -148,18 +175,20 @@ mod tests {
         write_selection(
             &paths,
             false,
-            &[raw["document"]["id"].as_str().unwrap().to_owned()],
-            &[],
+            &[generated["document"]["id"].as_str().unwrap().to_owned()],
         )
         .expect("selection");
 
         let selection = panel_selection(&paths, &writing).expect("agent selection");
-        assert_eq!(selection["selectedRawDocuments"][0]["title"], "Reference");
         assert_eq!(
-            selection["selectedRawDocuments"][0]["markdownAccess"]["status"],
+            selection["selectedGeneratedDocuments"][0]["title"],
+            "Reference"
+        );
+        assert_eq!(
+            selection["selectedGeneratedDocuments"][0]["contentAccess"]["status"],
             "ready"
         );
-        assert!(selection["selectedRawDocuments"][0]["markdownFilePath"]
+        assert!(selection["selectedGeneratedDocuments"][0]["contentFilePath"]
             .as_str()
             .is_some_and(|path| std::path::Path::new(path).is_file()));
         assert_eq!(selection["wiki"]["localAccess"]["status"], "on_demand");
@@ -192,17 +221,14 @@ mod tests {
             },
         )
         .expect("writing panel");
+        write_custom_writing_skill(&paths);
         let skills = crate::agent::list_writing_agent_skills(&paths).expect("writing skills");
         assert_eq!(
             skills
                 .iter()
                 .map(|item| item.skill.id.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "writing-default",
-                "writing-long-article",
-                "writing-xiaohongshu-note"
-            ]
+            vec!["writing-default", "writing-custom-test-style"]
         );
         assert!(skills
             .iter()
@@ -212,8 +238,8 @@ mod tests {
             create_requests(&paths, "Write", "create", None, &[]).expect_err("skill required");
         assert_eq!(empty.code(), Some("writing_skill_required"));
         let duplicate_ids = vec![
-            "writing-long-article".to_owned(),
-            "writing-long-article".to_owned(),
+            "writing-default".to_owned(),
+            "writing-default".to_owned(),
         ];
         let duplicate = create_requests(&paths, "Write", "create", None, &duplicate_ids)
             .expect_err("duplicate skill");
@@ -233,8 +259,8 @@ mod tests {
             "revise",
             Some(&revision_target_id),
             &[
-                "writing-long-article".to_owned(),
-                "writing-xiaohongshu-note".to_owned(),
+                "writing-default".to_owned(),
+                "writing-custom-test-style".to_owned(),
             ],
         )
         .expect_err("revision limit");
@@ -283,7 +309,7 @@ mod tests {
             "This request must roll back",
             "create",
             None,
-            &long_article_skill_ids(),
+            &default_writing_skill_ids(),
         )
         .expect_err("forced task failure");
 
@@ -322,17 +348,14 @@ mod tests {
             },
         )
         .expect("writing panel");
-        let skill_ids = long_article_skill_ids();
+        let skill_ids = default_writing_skill_ids();
         let draft = save_draft(
             &paths,
             "Revise this",
             "revise",
             "",
             None,
-            &[
-                "writing-default".to_owned(),
-                "writing-xiaohongshu-note".to_owned(),
-            ],
+            &["writing-default".to_owned()],
             skill_ids.first().map(String::as_str),
         )
         .expect("incomplete revision draft");
@@ -340,11 +363,11 @@ mod tests {
         assert_eq!(draft["state"]["targetGeneratedDocumentId"], Value::Null);
         assert_eq!(
             draft["state"]["selectedCreateWritingSkillIds"],
-            json!(["writing-default", "writing-xiaohongshu-note"])
+            json!(["writing-default"])
         );
         assert_eq!(
             draft["state"]["selectedRevisionWritingSkillId"],
-            json!("writing-long-article")
+            json!("writing-default")
         );
         let error = create_requests(
             &paths,
@@ -371,7 +394,7 @@ mod tests {
         )
         .expect("writing panel");
         let create_skills = vec!["writing-default".to_owned()];
-        let revision_skill = "writing-long-article";
+        let revision_skill = "writing-default";
 
         save_draft(
             &paths,
@@ -418,7 +441,7 @@ mod tests {
             },
         )
         .expect("writing panel");
-        let skill_ids = long_article_skill_ids();
+        let skill_ids = default_writing_skill_ids();
         let created = create_requests(&paths, "Write the report", "create", None, &skill_ids)
             .expect("writing request");
         let task_id = created["tasks"][0]["id"].as_str().unwrap();
@@ -577,7 +600,7 @@ mod tests {
             "Revise the draft",
             "revise",
             Some(&document_id),
-            &long_article_skill_ids(),
+            &default_writing_skill_ids(),
         )
         .expect("writing request");
         assert_eq!(created["documents"].as_array().unwrap().len(), 1);
@@ -656,17 +679,6 @@ mod tests {
     fn refinement_ignores_wiki_and_requires_ready_selected_documents() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let unready = crate::wiki::add_raw_document(
-            &paths,
-            "sample.pdf",
-            Some("Sample PDF"),
-            Some("application/pdf"),
-            "user",
-            None,
-            b"not converted yet",
-        )
-        .expect("unready raw document");
-        let unready_id = unready["document"]["id"].as_str().unwrap().to_owned();
         let generated = crate::wiki::create_generated_document(
             &paths,
             "ready.md",
@@ -687,16 +699,11 @@ mod tests {
             },
         )
         .expect("writing panel");
-        write_selection(&paths, true, &[], &[]).expect("wiki-only selection");
+        write_selection(&paths, true, &[]).expect("wiki-only selection");
         let missing = create_refinement_request(&paths, "My style").expect_err("source required");
         assert_eq!(missing.code(), Some("writing_refinement_source_required"));
 
-        write_selection(&paths, true, std::slice::from_ref(&unready_id), &[])
-            .expect("unready source selected");
-        let unready = create_refinement_request(&paths, "My style").expect_err("unready source");
-        assert_eq!(unready.code(), Some("writing_refinement_source_not_ready"));
-
-        write_selection(&paths, true, &[], std::slice::from_ref(&generated_id))
+        write_selection(&paths, true, std::slice::from_ref(&generated_id))
             .expect("ready source selected");
         assert_eq!(
             create_refinement_request(&paths, "  ")
@@ -767,7 +774,6 @@ mod tests {
         write_selection(
             &paths,
             true,
-            &[],
             &[generated_id.clone(), second_generated_id.clone()],
         )
         .expect("writing selection");
@@ -792,7 +798,7 @@ mod tests {
             .is_none());
         assert_eq!(
             task["input"]["refinerSkillSnapshot"]["id"],
-            json!(WRITING_SKILL_REFINER_ID)
+            json!(DEFAULT_WRITING_REFINEMENT_SKILL_ID)
         );
         assert!(task["input"]["refinerSkillSnapshot"]["markdown"]
             .as_str()

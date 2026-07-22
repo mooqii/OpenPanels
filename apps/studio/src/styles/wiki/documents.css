@@ -29,6 +29,150 @@
   grid-template-rows: minmax(0, 1fr);
 }
 
+.op-wiki-raw-strip {
+  position: relative;
+  display: flex;
+  flex: 0 0 180px;
+  flex-direction: column;
+  min-width: 0;
+  height: 180px;
+  padding: 10px 16px 14px;
+  overflow: hidden;
+  border-top: 1px solid var(--op-divider);
+}
+
+.op-wiki-raw-strip__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+}
+
+.op-wiki-raw-strip__title {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  min-width: 0;
+}
+
+.op-wiki-raw-strip__title h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--op-text-tertiary);
+  letter-spacing: 0;
+}
+
+.op-wiki-raw-strip__title .op-wiki-module-info {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+}
+
+.op-wiki-raw-strip__list {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 0 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.op-wiki-raw-strip__list--empty {
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.op-wiki-raw-card {
+  position: relative;
+  display: flex;
+  flex: 0 0 120px;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 120px;
+  max-width: 120px;
+  min-height: 0;
+  padding: 9px;
+  overflow: hidden;
+  background: var(--op-bg-muted);
+  border: 1px solid var(--op-border-subtle);
+  border-radius: 7px;
+}
+
+.op-wiki-raw-card:hover,
+.op-wiki-raw-card:focus-within {
+  background: var(--op-row-hover-bg);
+  border-color: var(--op-row-hover-border);
+}
+
+.op-wiki-raw-card__open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.op-wiki-raw-card__copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 5px;
+  min-width: 0;
+  height: 100%;
+  pointer-events: none;
+}
+
+.op-wiki-raw-card__title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  align-self: center;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.op-wiki-raw-card__statuses {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  min-width: 0;
+  padding-right: 22px;
+  overflow: visible;
+  pointer-events: auto;
+}
+
+.op-wiki-raw-card__subtitle {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.op-wiki-raw-card__menu {
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  z-index: 2;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+}
+
 .op-wiki-list {
   display: grid;
   flex: 1 1 auto;
@@ -248,6 +392,16 @@
   margin-top: 0;
 }
 
+.op-wiki-raw-card .op-raw-document-meta {
+  flex: 0 1 auto;
+  margin-top: 0;
+  font-size: 10px;
+}
+
+.op-wiki-raw-card__subtitle > .op-wiki-task-status {
+  flex: 0 0 auto;
+}
+
 .op-raw-document-meta__original {
   position: relative;
   z-index: 2;
@@ -279,6 +433,52 @@
   font-size: 12px;
   color: var(--op-text-secondary);
   white-space: nowrap;
+}
+
+.op-generated-document-meta__original {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  pointer-events: auto;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.op-generated-document-meta__original:hover,
+.op-generated-document-meta__original:focus-visible {
+  color: var(--accent-soft-foreground);
+  text-decoration: underline;
+  outline: none;
+}
+
+.op-generated-document-meta__status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: 1px;
+  pointer-events: auto;
+}
+
+.op-generated-document-open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.op-generated-document-copy {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  pointer-events: none;
 }
 
 .op-wiki-list-item__tools {
@@ -339,11 +539,9 @@
   display: block;
 }
 
-.op-wiki-agent-skill-footer {
-  display: flex;
-  flex: 0 0 auto;
-  justify-content: flex-start;
-  padding-top: 10px;
+.op-wiki-raw-strip__list--empty .op-wiki-module-empty {
+  width: 100%;
+  padding: 8px;
 }
 
 .op-wiki-agent-skill-trigger {
@@ -385,10 +583,6 @@
   display: none;
 }
 
-.op-wiki-column--collapsed .op-wiki-agent-skill-footer {
-  display: none;
-}
-
 @container (max-width: 459px) {
   .op-wiki-workbench {
     display: flex;
@@ -399,18 +593,6 @@
   .op-wiki-column {
     height: max(280px, calc((100vh - 216px) / 3));
     min-height: 280px;
-  }
-
-  .op-wiki-workbench:not(.op-writing-workbench) .op-wiki-column--structured {
-    order: 1;
-  }
-
-  .op-wiki-workbench:not(.op-writing-workbench) .op-wiki-column--raw {
-    order: 2;
-  }
-
-  .op-wiki-workbench:not(.op-writing-workbench) .op-wiki-column--generated {
-    order: 3;
   }
 
   .op-writing-workbench .op-wiki-column--structured {
@@ -483,7 +665,7 @@
     min-height: 0;
   }
 
-  .op-wiki-workbench:not(.op-writing-workbench) > .op-wiki-column--structured {
+  .op-wiki-workbench:not(.op-writing-workbench) > .op-wiki-knowledge-stack {
     width: 100%;
     height: 100%;
     min-height: 0;
@@ -492,6 +674,7 @@
   }
 
   .op-wiki-workbench:not(.op-writing-workbench)
+    > .op-wiki-knowledge-stack
     > .op-wiki-column--structured
     .op-wiki-column__header-toggle {
     display: none;

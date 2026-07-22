@@ -222,18 +222,23 @@ fn apply_task_output_plan(
                 let bytes = read_planned_artifact(artifact)?;
                 let mut metadata = metadata.clone();
                 metadata["runtimeOutputPlanHash"] = json!(plan.content_hash);
-                crate::content::stage_file(
-                    paths,
-                    execution_token,
-                    &crate::content::StageFileRequest {
+                let request = crate::content::StageFileRequest {
                         resource_kind: resource_kind.clone(),
                         resource_key: resource_key.clone(),
                         logical_path: logical_path.clone(),
                         content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
                         mime_type: mime_type.clone(),
                         metadata,
-                    },
-                )?;
+                    };
+                if resource_kind == crate::content::ResourceKind::GeneratedDocument.as_str() {
+                    crate::content::stage_runtime_validated_file(
+                        paths,
+                        execution_token,
+                        &request,
+                    )?;
+                } else {
+                    crate::content::stage_file(paths, execution_token, &request)?;
+                }
                 artifacts.push(finalized_artifact(artifact, Some(logical_path)));
             }
             TaskOutputAction::PrepareWritingSkill { skill_id, artifact } => {
@@ -348,6 +353,78 @@ fn apply_task_output_plan(
                     "mimeType": "image/png",
                     "width": width,
                     "height": height,
+                }));
+            }
+            TaskOutputAction::PrepareTypesettingTitles {
+                task_id,
+                artifact,
+                titles,
+            } => {
+                let bytes = read_planned_artifact(artifact)?;
+                let storage = crate::storage::Storage::open(paths)?;
+                let project_id = plan
+                    .execution_unit
+                    .get("projectId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let panel_id = plan
+                    .execution_unit
+                    .get("panelId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let requested = format!("title-tasks/{task_id}/titles.json");
+                let written = storage.write_asset_from_buffer(
+                    project_id,
+                    panel_id,
+                    &requested,
+                    &bytes,
+                    true,
+                )?;
+                artifacts.push(json!({
+                    "role": artifact.role,
+                    "logicalPath": "titles.json",
+                    "contentHash": artifact.content_hash,
+                    "sizeBytes": artifact.size_bytes,
+                    "assetRef": written.asset_ref,
+                    "fileName": written.file_name,
+                    "mimeType": "application/json",
+                    "titles": titles,
+                }));
+            }
+            TaskOutputAction::PrepareTypesettingLayout {
+                task_id,
+                artifact,
+                content,
+            } => {
+                let bytes = read_planned_artifact(artifact)?;
+                let storage = crate::storage::Storage::open(paths)?;
+                let project_id = plan
+                    .execution_unit
+                    .get("projectId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let panel_id = plan
+                    .execution_unit
+                    .get("panelId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let requested = format!("layout-tasks/{task_id}/content.json");
+                let written = storage.write_asset_from_buffer(
+                    project_id,
+                    panel_id,
+                    &requested,
+                    &bytes,
+                    true,
+                )?;
+                artifacts.push(json!({
+                    "role": artifact.role,
+                    "logicalPath": "content.json",
+                    "contentHash": artifact.content_hash,
+                    "sizeBytes": artifact.size_bytes,
+                    "assetRef": written.asset_ref,
+                    "fileName": written.file_name,
+                    "mimeType": "application/json",
+                    "content": content,
                 }));
             }
         }

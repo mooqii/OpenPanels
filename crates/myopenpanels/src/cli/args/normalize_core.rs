@@ -47,6 +47,7 @@ fn normalize_command(
         RootCommand::Canvas(args) => normalize_canvas(args.command, flags),
         RootCommand::Wiki(args) => normalize_wiki(args.command, flags),
         RootCommand::Writing(args) => normalize_writing(args.command, flags),
+        RootCommand::Typesetting(args) => normalize_typesetting(args.command, flags),
         RootCommand::Publishing(args) => match args.command {
             PublishingCommand::Checkpoint { task_id, phase } => {
                 put(flags, "task-id", Some(task_id));
@@ -75,6 +76,42 @@ fn normalize_command(
         },
         RootCommand::Operation(args) => normalize_operation(args.command, flags),
         RootCommand::Agent(args) => normalize_agent(args.command, flags),
+    }
+}
+
+fn normalize_typesetting(
+    command: TypesettingCommand,
+    flags: &mut BTreeMap<String, FlagValue>,
+) -> (Vec<String>, &'static str) {
+    match command {
+        TypesettingCommand::Title(args) => match args.command {
+            TypesettingTitleCommand::Generate {
+                publication_id,
+                skill_id,
+                instruction,
+                request_id,
+            } => {
+                put(flags, "publication-id", Some(publication_id));
+                put(flags, "skill-id", Some(skill_id));
+                put(flags, "instruction", instruction);
+                put(flags, "request-id", request_id);
+                (
+                    vec!["typesetting".into(), "title".into(), "generate".into()],
+                    "typesetting.title.generate",
+                )
+            }
+            TypesettingTitleCommand::Skill(args) => match args.command {
+                TypesettingTitleSkillCommand::List => (
+                    vec![
+                        "typesetting".into(),
+                        "title".into(),
+                        "skill".into(),
+                        "list".into(),
+                    ],
+                    "typesetting.title.skill.list",
+                ),
+            },
+        },
     }
 }
 

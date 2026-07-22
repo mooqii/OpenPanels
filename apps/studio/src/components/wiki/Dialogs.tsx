@@ -13,14 +13,14 @@ import {
   Trash2,
   X,
 } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import {
   clampImageScale,
   formatBytes,
   originalPreviewKind,
 } from "../../lib/api"
-import type { WikiRawDocument } from "../../types"
+import type { WikiOriginalPreviewDocument } from "../../types"
 
 export interface SkillTextFile {
   content: string
@@ -391,6 +391,7 @@ export function MarkdownDialog({
   onClose,
   onRenameFileName,
   onSave,
+  primaryAction,
   closeLabel,
 }: {
   closeLabel: string
@@ -400,6 +401,12 @@ export function MarkdownDialog({
   onClose: () => void
   onRenameFileName: (fileName: string) => Promise<void>
   onSave: (content: string) => Promise<void>
+  primaryAction?: {
+    icon?: ReactNode
+    isDisabled?: boolean
+    label: string
+    onPress: (content: string) => void | Promise<void>
+  }
 }) {
   const { t } = useMyOpenPanelsI18n()
   const [isEditingFileName, setIsEditingFileName] = useState(false)
@@ -559,6 +566,22 @@ export function MarkdownDialog({
               )}
             </div>
             <div className="op-markdown-dialog__actions">
+              {primaryAction ? (
+                <Button
+                  isDisabled={primaryAction.isDisabled}
+                  onPress={() => {
+                    const latestContent = latestContentRef.current
+                    closeAfterSave()
+                      .then(() => primaryAction.onPress(latestContent))
+                      .catch(() => undefined)
+                  }}
+                  size="sm"
+                  variant="primary"
+                >
+                  {primaryAction.icon}
+                  {primaryAction.label}
+                </Button>
+              ) : null}
               {saveStatus !== "idle" ? (
                 <span
                   className="op-markdown-dialog__save-status"
@@ -606,7 +629,7 @@ function ImagePreviewDialog({
   previewUrl,
 }: {
   closeLabel: string
-  document: WikiRawDocument
+  document: WikiOriginalPreviewDocument
   onClose: () => void
   previewUrl: string
 }) {
@@ -755,7 +778,7 @@ export function OriginalPreviewDialog({
   titleLabel,
 }: {
   closeLabel: string
-  document: WikiRawDocument
+  document: WikiOriginalPreviewDocument
   onClose: () => void
   previewUrl: string
   titleLabel: string

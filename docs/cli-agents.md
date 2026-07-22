@@ -30,7 +30,10 @@ memory.
 Claimed Task Broker execution and Studio-generated `task handoff start` Task
 Handoffs do not run Bootstrap. A Handoff returns ExecutionBundle v2 and a
 Delivery Contract with bound `exec`, heartbeat, completion, failure, and stop
-actions. Do not perform separate Catalog or Skill discovery and do not use
+actions. The Bundle inlines its required System References, captured Skill,
+workspace paths, identifiers, and work-command parameters so both Agent Message
+and automatic Agent CLI execution can submit one complete instruction set to
+the model. Do not perform separate Catalog or Skill discovery and do not use
 low-level Task lifecycle commands. Write only the declared workspace artifacts;
 the Runtime creates Operations, stages content, and completes the Task. The
 automatic Agent CLI uses the same Bundle, TaskOutputPlan, and Finalizer; only

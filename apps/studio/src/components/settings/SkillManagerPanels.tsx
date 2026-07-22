@@ -35,6 +35,8 @@ const ASSOCIATION_MODULES = [
   "writing",
   "writing-refinement",
   "typesetting-cover",
+  "typesetting-title",
+  "typesetting-layout",
   "publishing",
 ] as const
 
@@ -461,6 +463,8 @@ export function moduleLabel(
   if (kind === "writing") return t`Writing`
   if (kind === "writing-refinement") return t`Writing refinement`
   if (kind === "typesetting-cover") return t`Cover creation`
+  if (kind === "typesetting-title") return t`Title generation`
+  if (kind === "typesetting-layout") return t`Automatic layout`
   if (kind === "publishing" || kind === "publishing-xiaohongshu")
     return t`Content publishing`
   if (kind === "wiki") return t`Wiki`

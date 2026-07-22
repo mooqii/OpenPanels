@@ -1,15 +1,15 @@
 ---
-name: karpathy-llm-wiki
-description: Use when creating, adding to, editing, or maintaining a persistent, structured wiki from curated documents in the style of Karpathy's LLM Wiki pattern.
+name: wiki-default
+description: Use when creating, adding to, editing, or maintaining a persistent, structured wiki from curated documents with the default Wiki method.
 ---
 
 Use this skill to create, extend, edit, or maintain a persistent, compounding
 wiki from curated source documents.
 
-This skill follows Andrej Karpathy's LLM Wiki pattern: supplied documents remain
-the source-of-truth layer, while the model incrementally builds and maintains an
-interlinked Markdown wiki as the synthesis layer. The wiki should accumulate
-knowledge over time instead of rediscovering it from scratch for every question.
+Supplied documents remain the source-of-truth layer, while the model
+incrementally builds and maintains an interlinked Markdown wiki as the synthesis
+layer. The wiki should accumulate knowledge over time instead of rediscovering
+it from scratch for every question.
 
 This is a wiki-authoring skill only. It defines how the generated wiki is
 created and maintained; reading or using a completed wiki belongs in a separate

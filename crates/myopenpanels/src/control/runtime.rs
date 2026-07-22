@@ -17,7 +17,6 @@ const DEFAULT_PANEL_KINDS: &[PanelKind] = &[
 const DEFAULT_ACTIVE_PANEL_KIND: PanelKind = PanelKind::Wiki;
 const DEFAULT_WIKI_SPACE_ID: &str = "wiki:default";
 const DEFAULT_WRITING_SKILL_ID: &str = "writing-default";
-const DEFAULT_REFINEMENT_SKILL_ID: &str = "writing-skill-refiner";
 
 pub struct BootstrapRequest {
     pub requested_panel_id: Option<String>,
@@ -654,6 +653,8 @@ fn is_typesetting_state_v1(state: &Value) -> bool {
 fn is_typesetting_publication_v1(publication: &Value) -> bool {
     publication.get("id").is_some_and(Value::is_string)
         && publication.get("title").is_some_and(Value::is_string)
+        && publication_titles_are_valid(publication)
+        && publication_tags_are_valid(publication)
         && publication.get("createdAt").is_some_and(Value::is_string)
         && publication.get("updatedAt").is_some_and(Value::is_string)
         && publication
@@ -668,6 +669,8 @@ fn is_typesetting_publication_v1(publication: &Value) -> bool {
 fn is_typesetting_publication_v2(publication: &Value) -> bool {
     publication.get("id").is_some_and(Value::is_string)
         && publication.get("title").is_some_and(Value::is_string)
+        && publication_titles_are_valid(publication)
+        && publication_tags_are_valid(publication)
         && publication.get("createdAt").is_some_and(Value::is_string)
         && publication.get("updatedAt").is_some_and(Value::is_string)
         && publication
@@ -677,6 +680,35 @@ fn is_typesetting_publication_v2(publication: &Value) -> bool {
             .get("covers")
             .and_then(Value::as_array)
             .is_some_and(|covers| covers.iter().all(is_typesetting_image_v2))
+}
+
+fn publication_titles_are_valid(publication: &Value) -> bool {
+    let titles = match publication.get("titles") {
+        None => return publication.get("selectedTitleId").is_none_or(Value::is_null),
+        Some(Value::Array(titles)) if !titles.is_empty() => titles,
+        Some(_) => return false,
+    };
+    if !titles.iter().all(|title| {
+        title.get("id").is_some_and(Value::is_string)
+            && title.get("value").is_some_and(Value::is_string)
+    }) {
+        return false;
+    }
+    publication.get("selectedTitleId").is_none_or(|selected| {
+        selected.is_null()
+            || selected.as_str().is_some_and(|selected_id| {
+                titles
+                    .iter()
+                    .any(|title| title.get("id").and_then(Value::as_str) == Some(selected_id))
+            })
+    })
+}
+
+fn publication_tags_are_valid(publication: &Value) -> bool {
+    publication.get("tags").is_none_or(|tags| {
+        tags.as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string))
+    })
 }
 
 fn is_typesetting_document_v1(content: &Value) -> bool {
@@ -754,6 +786,7 @@ fn is_typesetting_image_v2(image: &Value) -> bool {
                     .iter()
                     .all(|key| source.get(key).is_some_and(Value::is_string))
             }),
+            Some("upload") => source.is_some_and(Value::is_object),
             _ => false,
         }
 }
@@ -785,7 +818,17 @@ fn resolve_writing_state(state: Option<Value>) -> Result<PanelStateResolution, C
             .get("selectedRefinementSkillId")
             .is_some_and(Value::is_string)
         {
-            state["selectedRefinementSkillId"] = json!(DEFAULT_REFINEMENT_SKILL_ID);
+            state["selectedRefinementSkillId"] =
+                json!(crate::writing::DEFAULT_WRITING_REFINEMENT_SKILL_ID);
+            changed = true;
+        }
+        if state
+            .get("selectedRefinementSkillId")
+            .and_then(Value::as_str)
+            == Some(crate::writing::LEGACY_WRITING_SKILL_REFINER_ID)
+        {
+            state["selectedRefinementSkillId"] =
+                json!(crate::writing::DEFAULT_WRITING_REFINEMENT_SKILL_ID);
             changed = true;
         }
         let mode = state
@@ -856,7 +899,7 @@ fn resolve_wiki_state(
     _panel: &Panel,
     state: Option<Value>,
 ) -> Result<PanelStateResolution, CliError> {
-    let Some(state) = state else {
+    let Some(mut state) = state else {
         return Ok(PanelStateResolution {
             state: empty_wiki_state(),
             changed: true,
@@ -869,9 +912,22 @@ fn resolve_wiki_state(
         && state.get("generatedDocuments").is_some_and(Value::is_array)
         && state.get("tasks").is_none();
     if valid {
+        let configured_skill_id = state
+            .get("wikiAgentSkillId")
+            .and_then(Value::as_str);
+        let changed = matches!(
+            configured_skill_id,
+            Some(
+                crate::wiki::LEGACY_WIKI_AGENT_SKILL_ID
+                    | crate::wiki::LEGACY_ZH_WIKI_AGENT_SKILL_ID
+            )
+        );
+        if changed {
+            state["wikiAgentSkillId"] = json!(crate::wiki::DEFAULT_WIKI_AGENT_SKILL_ID);
+        }
         Ok(PanelStateResolution {
             state,
-            changed: false,
+            changed,
         })
     } else {
         Err(CliError::new(
@@ -912,7 +968,7 @@ fn empty_writing_state() -> Value {
         "targetGeneratedDocumentId": null,
         "selectedCreateWritingSkillIds": [DEFAULT_WRITING_SKILL_ID],
         "selectedRevisionWritingSkillId": DEFAULT_WRITING_SKILL_ID,
-        "selectedRefinementSkillId": DEFAULT_REFINEMENT_SKILL_ID,
+        "selectedRefinementSkillId": crate::writing::DEFAULT_WRITING_REFINEMENT_SKILL_ID,
     })
 }
 
@@ -958,7 +1014,7 @@ fn empty_wiki_state() -> Value {
         "activeWikiSpaceId": DEFAULT_WIKI_SPACE_ID,
         "activeWikiPagePath": null,
         "wikiAgentSkillConfigured": false,
-        "wikiAgentSkillId": "karpathy-llm-wiki",
+        "wikiAgentSkillId": crate::wiki::DEFAULT_WIKI_AGENT_SKILL_ID,
     })
 }
 

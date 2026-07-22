@@ -8,26 +8,26 @@ const collapsed = (...modules: TypesettingLibraryModule[]) => new Set(modules)
 
 describe("nextCollapsedLibraryModules", () => {
   it("collapses any module while another module remains open", () => {
-    expect([...nextCollapsedLibraryModules(collapsed(), "raw")]).toEqual([
-      "raw",
-    ])
     expect([
-      ...nextCollapsedLibraryModules(collapsed("raw"), "generated"),
-    ]).toEqual(["raw", "generated"])
+      ...nextCollapsedLibraryModules(collapsed(), "publications"),
+    ]).toEqual(["publications"])
+    expect([
+      ...nextCollapsedLibraryModules(collapsed("publications"), "generated"),
+    ]).toEqual(["publications", "generated"])
   })
 
   it("reopens a collapsed module", () => {
-    expect([...nextCollapsedLibraryModules(collapsed("raw"), "raw")]).toEqual(
-      []
-    )
+    expect([
+      ...nextCollapsedLibraryModules(collapsed("generated"), "generated"),
+    ]).toEqual([])
   })
 
   it("does not collapse the only expanded module", () => {
     expect([
       ...nextCollapsedLibraryModules(
-        collapsed("publications", "raw", "generated"),
+        collapsed("publications", "generated"),
         "assets"
       ),
-    ]).toEqual(["publications", "raw", "generated"])
+    ]).toEqual(["publications", "generated"])
   })
 })

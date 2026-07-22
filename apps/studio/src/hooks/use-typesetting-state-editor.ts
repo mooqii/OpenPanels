@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { apiJson, isTypesettingState, savePanelState } from "../lib/api"
+import {
+  apiJson,
+  fileToDataUrl,
+  isTypesettingState,
+  savePanelState,
+} from "../lib/api"
 import {
   mergeTypesettingConflict,
   TYPESETTING_AUTOSAVE_DELAY_MS,
@@ -21,6 +26,13 @@ interface ImportedTypesettingAsset {
   sourceAssetRef: string
   sourceCanvasPanelId: string
   sourceProjectId: string
+  src: string
+}
+
+interface UploadedTypesettingAsset {
+  assetRef: string
+  fileName: string
+  mimeType: string
   src: string
 }
 
@@ -46,6 +58,7 @@ export function useTypesettingStateEditor({
   const stateRef = useRef(state)
   const revisionRef = useRef(revision)
   const dirtyIdsRef = useRef(new Set<string>())
+  const contentDirtyIdsRef = useRef(new Set<string>())
   const deletedIdsRef = useRef(new Set<string>())
   const deletedCoverAssetRefsRef = useRef(new Map<string, Set<string>>())
   const changeGenerationRef = useRef(0)
@@ -97,6 +110,12 @@ export function useTypesettingStateEditor({
       const publications = current.publications.map((publication) => {
         if (publication.id !== publicationId) return publication
         const updated = updater(publication)
+        if (
+          JSON.stringify(updated.content) !==
+          JSON.stringify(publication.content)
+        ) {
+          contentDirtyIdsRef.current.add(publicationId)
+        }
         const nextRefs = new Set(updated.covers.map((cover) => cover.assetRef))
         const removed = publication.covers
           .filter((cover) => !nextRefs.has(cover.assetRef))
@@ -162,6 +181,7 @@ export function useTypesettingStateEditor({
             throw new Error("Invalid remote Typesetting state")
           }
           payloadState = mergeTypesettingConflict({
+            contentDirtyIds: contentDirtyIdsRef.current,
             deletedCoverAssetRefs: deletedCoverAssetRefsRef.current,
             deletedIds: deletedIdsRef.current,
             dirtyIds: dirtyIdsRef.current,
@@ -184,6 +204,7 @@ export function useTypesettingStateEditor({
         onStateSaved(payloadState, saved.revision)
         if (changeGenerationRef.current === generation) {
           dirtyIdsRef.current.clear()
+          contentDirtyIdsRef.current.clear()
           deletedIdsRef.current.clear()
           deletedCoverAssetRefsRef.current.clear()
           setSaveStatus("saved")
@@ -251,6 +272,32 @@ export function useTypesettingStateEditor({
     [panelId, projectId, transport.apiBase]
   )
 
+  const uploadAsset = useCallback(
+    async (file: File): Promise<TypesettingPublicationImage> => {
+      const uploaded = await apiJson<UploadedTypesettingAsset>(
+        transport.apiBase,
+        `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/assets`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            dataUrl: await fileToDataUrl(file),
+            fileName: file.name || "image.png",
+            mimeType: file.type || "image/png",
+          }),
+        }
+      )
+      return {
+        assetRef: uploaded.assetRef,
+        fileName: uploaded.fileName,
+        mimeType: uploaded.mimeType,
+        source: { kind: "upload" },
+        src: uploaded.src,
+      }
+    },
+    [panelId, projectId, transport.apiBase]
+  )
+
   return {
     flushSave,
     importAsset,
@@ -259,5 +306,6 @@ export function useTypesettingStateEditor({
     saveStatus,
     state,
     updatePublication,
+    uploadAsset,
   }
 }

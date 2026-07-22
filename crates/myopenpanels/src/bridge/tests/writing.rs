@@ -49,7 +49,6 @@
         crate::writing::write_selection(
             &paths,
             true,
-            &[raw_id.to_owned()],
             &[generated_id.to_owned()],
         )
         .expect("writing selection");
@@ -58,10 +57,19 @@
             "Write a concise report",
             "create",
             None,
-            &["writing-xiaohongshu-note".to_owned()],
+            &["writing-default".to_owned()],
         )
         .expect("writing request");
         let mut task = created["tasks"][0].clone();
+        let raw_content = "# Captured raw source\n";
+        let mut legacy_raw_snapshot = raw["document"].clone();
+        legacy_raw_snapshot["snapshotContent"] = json!(raw_content);
+        legacy_raw_snapshot["snapshotHash"] = json!(format!(
+            "{:x}",
+            Sha256::digest(raw_content.as_bytes())
+        ));
+        task["input"]["contextSnapshot"]["rawDocuments"] =
+            json!([legacy_raw_snapshot]);
         task["workflowRunId"] = json!("workflow:noise");
         task["mutationKey"] = json!("writing:noise");
         task["executionGeneration"] = json!(17);
@@ -71,7 +79,7 @@
         let prompt = document_generation_task_prompt(&paths, &task, &workspace).expect("prompt");
 
         assert!(prompt.contains("Write a concise report"));
-        assert!(prompt.contains("Write a polished Xiaohongshu-style note"));
+        assert!(prompt.contains("Follow the user's writing instruction directly"));
         assert!(prompt.contains("selected portable Writing Skill"));
         assert!(prompt.contains("# Captured raw source"));
         assert!(prompt.contains("# Captured generated source"));
@@ -86,7 +94,7 @@
         assert!(!prompt.contains("Task JSON:"));
         assert!(workspace.join("task-context.json").is_file());
         assert!(workspace
-            .join("skills/writing-xiaohongshu-note/SKILL.md")
+            .join("skills/writing-default/SKILL.md")
             .is_file());
         assert!(workspace
             .join("inputs/raw")

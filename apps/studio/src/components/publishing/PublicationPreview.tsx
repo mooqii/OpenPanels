@@ -1,5 +1,6 @@
-import { Button } from "@heroui/react"
+import { Button, Tag, TagGroup } from "@heroui/react"
 import { AlertTriangle, PanelLeft, Pencil } from "lucide-react"
+import type { ReactNode } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiUrl } from "../../lib/api"
 import {
@@ -13,12 +14,16 @@ export function PublicationPreview({
   onEdit,
   onOpenSources,
   publication,
+  modeHeader,
+  showHeader = true,
   transport,
 }: {
   className?: string
   onEdit: () => void
   onOpenSources: () => void
   publication: TypesettingPublication
+  modeHeader?: ReactNode
+  showHeader?: boolean
   transport: MyOpenPanelsTransport
 }) {
   const { t } = useMyOpenPanelsI18n()
@@ -32,25 +37,28 @@ export function PublicationPreview({
     <main
       className={`op-publishing-module op-publishing-preview ${className}`.trim()}
     >
-      <div className="op-publishing-preview__heading">
-        <div className="op-publishing-preview__title">
-          <Button
-            aria-label={t`Open publication content`}
-            className="op-publication-preview__sources-button"
-            isIconOnly
-            onPress={onOpenSources}
-            size="sm"
-            variant="ghost"
-          >
-            <PanelLeft size={17} />
+      {modeHeader}
+      {showHeader ? (
+        <div className="op-publishing-preview__heading">
+          <div className="op-publishing-preview__title">
+            <Button
+              aria-label={t`Open publication content`}
+              className="op-publication-preview__sources-button"
+              isIconOnly
+              onPress={onOpenSources}
+              size="sm"
+              variant="ghost"
+            >
+              <PanelLeft size={17} />
+            </Button>
+            <h2>{t`Publish preview`}</h2>
+          </div>
+          <Button onPress={onEdit} size="sm" variant="secondary">
+            <Pencil size={14} />
+            {t`Edit`}
           </Button>
-          <h2>{t`Publish preview`}</h2>
         </div>
-        <Button onPress={onEdit} size="sm" variant="secondary">
-          <Pencil size={14} />
-          {t`Edit`}
-        </Button>
-      </div>
+      ) : null}
       <div className="op-publishing-media-strip">
         {publication.covers.map((cover, index) => (
           <figure key={`${cover.assetRef}:${index}`}>
@@ -66,6 +74,27 @@ export function PublicationPreview({
       </div>
       <article className="op-publishing-note-preview">
         <h1>{publication.title || t`Untitled`}</h1>
+        {(publication.tags ?? []).length > 0 ? (
+          <TagGroup
+            aria-label={t`Tags`}
+            className="op-publishing-note-preview__tags"
+            size="sm"
+            variant="surface"
+          >
+            <TagGroup.List
+              items={(publication.tags ?? []).map((tag) => ({
+                id: tag,
+                name: tag,
+              }))}
+            >
+              {(tag) => (
+                <Tag id={tag.id} textValue={tag.name}>
+                  {tag.name}
+                </Tag>
+              )}
+            </TagGroup.List>
+          </TagGroup>
+        ) : null}
         <pre>{bodyText || t`Empty body`}</pre>
       </article>
       {sourceComplete ? null : (

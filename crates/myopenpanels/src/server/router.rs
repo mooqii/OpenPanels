@@ -293,6 +293,22 @@ fn build_router(
             post(api_typesetting_cover_request),
         )
         .route(
+            "/api/typesetting/title-skills",
+            get(api_typesetting_title_skills),
+        )
+        .route(
+            "/api/typesetting/title-requests",
+            post(api_typesetting_title_request),
+        )
+        .route(
+            "/api/typesetting/layout-skills",
+            get(api_typesetting_layout_skills),
+        )
+        .route(
+            "/api/typesetting/layout-requests",
+            post(api_typesetting_layout_request),
+        )
+        .route(
             "/api/publishing/preferences",
             put(api_publishing_preferences),
         )
@@ -334,6 +350,14 @@ fn build_router(
         .route(
             "/api/wiki/raw-documents",
             get(api_wiki_raw_documents).post(api_wiki_add_raw_document),
+        )
+        .route(
+            "/api/wiki/generated-documents/{document_id}/original",
+            get(api_wiki_generated_document_original),
+        )
+        .route(
+            "/api/wiki/generated-documents/{document_id}/reveal",
+            post(api_wiki_reveal_generated_document_original),
         )
         .route(
             "/api/wiki/raw-documents/{document_id}/markdown",

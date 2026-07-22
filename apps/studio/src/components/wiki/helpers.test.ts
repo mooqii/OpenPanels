@@ -56,7 +56,17 @@ describe("document task-list filters", () => {
       "wiki:default"
     )
 
-    expect(status).toEqual({ kind: "cancelled", label: "Index cancelled" })
+    expect(status).toEqual({
+      kind: "cancelled",
+      label: "Index cancelled",
+      taskId: "task:cancelled",
+    })
     expect(indexStatusTaskFilter(status)).toBe("done")
+  })
+
+  it("opens completed tasks for indexed documents", () => {
+    expect(indexStatusTaskFilter({ kind: "done", label: "Indexed" })).toBe(
+      "done"
+    )
   })
 })

@@ -1,3 +1,8 @@
+fn is_generated_conversion_task(task: &Value) -> bool {
+    task.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown")
+        && task.get("documentKind").and_then(Value::as_str) == Some("generated")
+}
+
 pub fn claim_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     let mut wiki = get_wiki_task_target(paths, task_id)?;
     let task = task_mut(&mut wiki.tasks, task_id)?;
@@ -28,7 +33,11 @@ pub fn claim_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
     let task_snapshot = task.clone();
     if task_snapshot.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown") {
         if let Some(document_id) = task_snapshot.get("documentId").and_then(Value::as_str) {
-            let document = find_document_mut(&mut wiki.state, document_id)?;
+            let document = if is_generated_conversion_task(&task_snapshot) {
+                find_generated_document_mut(&mut wiki.state, document_id)?
+            } else {
+                find_document_mut(&mut wiki.state, document_id)?
+            };
             document["conversion"]["status"] = json!("converting");
             document["conversion"]["updatedAt"] = json!(now);
             document["updatedAt"] = json!(now);
@@ -155,6 +164,46 @@ fn complete_task_internal(
         document["wordCount"] = json!(character_count(markdown));
         document["updatedAt"] = json!(now);
     }
+    let staged_generated = crate::content::staged_files_for_task(
+        paths,
+        task_id,
+        crate::content::ResourceKind::GeneratedDocument,
+    )?;
+    if is_generated_conversion_task(&current_task) {
+        let (document_id, logical_path, bytes, _) = staged_generated.first().ok_or_else(|| {
+            CliError::with_code(
+                "invalid_output",
+                "Conversion completed without a generated Markdown artifact.",
+            )
+        })?;
+        if logical_path != "content.md" {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "Imported document conversion must produce content.md.",
+            ));
+        }
+        let markdown = std::str::from_utf8(bytes).map_err(|_| {
+            CliError::with_code("invalid_output", "Converted Markdown must be valid UTF-8.")
+        })?;
+        if markdown.trim().is_empty() {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "Converted Markdown cannot be empty.",
+            ));
+        }
+        let document = find_generated_document_mut(&mut wiki.state, document_id)?;
+        let version = document
+            .get("contentVersion")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            + 1;
+        document["contentRef"] = json!(wiki_ref(&["generated", document_id, "content.md"]));
+        document["contentVersion"] = json!(version);
+        document["format"] = json!("markdown");
+        document["mimeType"] = json!("text/markdown");
+        document["wordCount"] = json!(character_count(markdown));
+        document["updatedAt"] = json!(now);
+    }
     let staged_wiki = crate::content::staged_files_for_task(
         paths,
         task_id,
@@ -187,36 +236,55 @@ fn complete_task_internal(
             .ok_or_else(|| {
                 CliError::with_code("invalid_output", "Conversion Task has no source document.")
             })?;
-        let document = find_document(&wiki.state, document_id)?;
-        let markdown_version = document
-            .get("markdownVersion")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        let markdown_ref = document
-            .get("markdownRef")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                CliError::with_code(
-                    "invalid_output",
-                    "Conversion completed without a Markdown artifact.",
-                )
-            })?;
-        let storage = Storage::open(paths)?;
-        let markdown_path = wiki_panel_path(
-            &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
-            markdown_ref,
-        )?;
-        if markdown_version
-            <= current_task
-                .get("markdownVersion")
+        if is_generated_conversion_task(&current_task) {
+            let document = find_generated_document(&wiki.state, document_id)?;
+            if document
+                .get("contentVersion")
                 .and_then(Value::as_i64)
                 .unwrap_or(0)
-            || (staged_markdown.is_empty() && !markdown_path.is_file())
-        {
-            return Err(CliError::with_code(
-                "invalid_output",
-                "Conversion completed without advancing a valid Markdown artifact.",
-            ));
+                <= current_task
+                    .get("markdownVersion")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                || staged_generated.is_empty()
+            {
+                return Err(CliError::with_code(
+                    "invalid_output",
+                    "Conversion completed without advancing the imported document.",
+                ));
+            }
+        } else {
+            let document = find_document(&wiki.state, document_id)?;
+            let markdown_version = document
+                .get("markdownVersion")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let markdown_ref = document
+                .get("markdownRef")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    CliError::with_code(
+                        "invalid_output",
+                        "Conversion completed without a Markdown artifact.",
+                    )
+                })?;
+            let storage = Storage::open(paths)?;
+            let markdown_path = wiki_panel_path(
+                &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
+                markdown_ref,
+            )?;
+            if markdown_version
+                <= current_task
+                    .get("markdownVersion")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                || (staged_markdown.is_empty() && !markdown_path.is_file())
+            {
+                return Err(CliError::with_code(
+                    "invalid_output",
+                    "Conversion completed without advancing a valid Markdown artifact.",
+                ));
+            }
         }
     }
     let task_snapshot = {
@@ -234,6 +302,13 @@ fn complete_task_internal(
     let mut follow_up_task_ids = Vec::new();
     if task_snapshot.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown") {
         if let Some(document_id) = task_snapshot.get("documentId").and_then(Value::as_str) {
+            if is_generated_conversion_task(&task_snapshot) {
+                let document = find_generated_document_mut(&mut wiki.state, document_id)?;
+                document["conversion"]["status"] = json!("ready");
+                document["conversion"]["error"] = Value::Null;
+                document["conversion"]["updatedAt"] = json!(now);
+                document["updatedAt"] = json!(now);
+            } else {
             let markdown_version = {
                 let document = find_document_mut(&mut wiki.state, document_id)?;
                 document["conversion"]["status"] = json!("ready");
@@ -302,6 +377,7 @@ fn complete_task_internal(
                 create_ingestion_state(&ingest_task, markdown_version),
             );
             document["updatedAt"] = json!(now);
+            }
         }
     }
     if task_snapshot.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki") {
@@ -381,7 +457,11 @@ pub fn fail_task_with_retry(
     };
     if task_snapshot.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown") {
         if let Some(document_id) = task_snapshot.get("documentId").and_then(Value::as_str) {
-            let document = find_document_mut(&mut wiki.state, document_id)?;
+            let document = if is_generated_conversion_task(&task_snapshot) {
+                find_generated_document_mut(&mut wiki.state, document_id)?
+            } else {
+                find_document_mut(&mut wiki.state, document_id)?
+            };
             document["conversion"]["status"] = json!("failed");
             document["conversion"]["error"] = json!(message);
             document["conversion"]["updatedAt"] = json!(now);
@@ -533,7 +613,11 @@ fn reset_document_task_state(
         return Ok(());
     };
     if task.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown") {
-        let document = find_document_mut(state, document_id)?;
+        let document = if is_generated_conversion_task(task) {
+            find_generated_document_mut(state, document_id)?
+        } else {
+            find_document_mut(state, document_id)?
+        };
         document["conversion"]["status"] = json!(status);
         document["conversion"]["error"] = error.map_or(Value::Null, Value::from);
         document["conversion"]["updatedAt"] = json!(now);
@@ -572,4 +656,3 @@ fn task_lease_expired(task: &Value) -> bool {
         .map(|expires_at| expires_at.with_timezone(&chrono::Utc) <= chrono::Utc::now())
         .unwrap_or(false)
 }
-

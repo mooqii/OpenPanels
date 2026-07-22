@@ -6,7 +6,6 @@ import {
   CircleX,
   Clock3,
   LoaderCircle,
-  Play,
   Plus,
   Send,
   X,
@@ -37,7 +36,11 @@ import type {
   TypesettingState,
 } from "../../types"
 import { PublicationContentModule } from "../typesetting/TypesettingLibrary"
-import { PublicationDetail } from "../typesetting/TypesettingPublication"
+import {
+  PublicationDetail,
+  PublicationModeHeader,
+  type PublicationView,
+} from "../typesetting/TypesettingPublication"
 import { ConfirmDialog } from "../wiki/Dialogs"
 import { PublicationPreview } from "./PublicationPreview"
 
@@ -101,7 +104,10 @@ export function PublishingPanel({
   const [skillsLoading, setSkillsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isEditing, setIsEditing] = useState(false)
+  const [submittingSkillId, setSubmittingSkillId] = useState<string | null>(
+    null
+  )
+  const [view, setView] = useState<PublicationView>("preview")
   const [isPublicationModuleCollapsed, setIsPublicationModuleCollapsed] =
     useState(false)
   const [isSourceListOpen, setIsSourceListOpen] = useState(false)
@@ -117,6 +123,7 @@ export function PublishingPanel({
     saveStatus: typesettingSaveStatus,
     state: editableTypesetting,
     updatePublication,
+    uploadAsset,
   } = useTypesettingStateEditor({
     initialState: typesetting,
     onStateSaved: onTypesettingStateSaved,
@@ -222,6 +229,94 @@ export function PublishingPanel({
         name: attempts[0]?.attempt.skillName ?? skillId,
       })),
   ]
+  const publishingStatusModule = (
+    <div className="op-publishing-side-stack">
+      <section className="op-publishing-module op-publishing-status-module">
+        <div className="op-publishing-section-heading">
+          <h2>{t`Publishing status`}</h2>
+          <Button
+            aria-label={t`Add content publishing Skill`}
+            isIconOnly
+            onPress={onAddSkill}
+            size="sm"
+            variant="ghost"
+          >
+            <Plus size={16} />
+          </Button>
+        </div>
+        {skillsLoading ? (
+          <div className="op-publishing-skill-loading">
+            <Spinner size="sm" /> {t`Loading...`}
+          </div>
+        ) : skillRows.length ? (
+          <div className="op-publishing-status-list">
+            {skillRows.map((skill) => {
+              const attempts = attemptsBySkill.get(skill.id) ?? []
+              const hasActiveAttempt = attempts.some(({ attempt }) =>
+                publishingAttemptIsActive(attempt, taskById.get(attempt.taskId))
+              )
+              return (
+                <section className="op-publishing-skill-status" key={skill.id}>
+                  <div className="op-publishing-skill-status__header">
+                    <strong className="op-publishing-skill-status__name">
+                      {skill.name}
+                    </strong>
+                    {skill.isInstalled ? (
+                      <Button
+                        isDisabled={
+                          !sourceComplete || hasActiveAttempt || isSubmitting
+                        }
+                        isPending={submittingSkillId === skill.id}
+                        onPress={() => {
+                          void executeAction({
+                            kind: "release",
+                            skillId: skill.id,
+                            skillName: skill.name,
+                          })
+                        }}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        <Send size={14} />
+                        {hasActiveAttempt ? t`In progress` : t`Publish`}
+                      </Button>
+                    ) : (
+                      <Chip size="sm" variant="soft">
+                        {t`Unavailable`}
+                      </Chip>
+                    )}
+                  </div>
+                  {attempts.length ? (
+                    <div className="op-publishing-skill-attempts">
+                      {attempts.map(({ attempt }) => (
+                        <AttemptRow
+                          attempt={attempt}
+                          key={attempt.id}
+                          onOpenTask={() => onOpenAgentTasks([attempt.taskId])}
+                          t={t}
+                          task={taskById.get(attempt.taskId)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="op-publishing-skill-status__empty">
+                      {t`No publishing tasks yet`}
+                    </p>
+                  )}
+                </section>
+              )
+            })}
+          </div>
+        ) : (
+          <EmptyMessage
+            icon={<Send size={21} />}
+            message={t`No content publishing Skills installed`}
+          />
+        )}
+        {error ? <p className="op-publishing-error">{error}</p> : null}
+      </section>
+    </div>
+  )
 
   async function savePreference(
     publicationId: string | null,
@@ -248,13 +343,15 @@ export function PublishingPanel({
     }
   }
 
-  async function executePendingAction() {
-    if (!(pendingAction && selectedPublication)) return
+  async function executeAction(action: PendingAction) {
+    if (!selectedPublication) return
     setIsSubmitting(true)
+    setSubmittingSkillId(action.skillId)
     setError(null)
     try {
+      if (action.kind === "release") await flushTypesettingSave()
       const response =
-        pendingAction.kind === "release"
+        action.kind === "release"
           ? await apiJson<PublishingResponse>(
               transport.apiBase,
               "/api/publishing/releases",
@@ -262,7 +359,7 @@ export function PublishingPanel({
                 body: JSON.stringify({
                   publicationId: selectedPublication.id,
                   requestId: randomId("publishing-request"),
-                  skillId: pendingAction.skillId,
+                  skillId: action.skillId,
                 }),
                 headers: { "content-type": "application/json" },
                 method: "POST",
@@ -270,13 +367,13 @@ export function PublishingPanel({
             )
           : await apiJson<PublishingResponse>(
               transport.apiBase,
-              `/api/publishing/releases/${encodeURIComponent(pendingAction.release.id)}/attempts`,
+              `/api/publishing/releases/${encodeURIComponent(action.release.id)}/attempts`,
               {
                 body: JSON.stringify({
-                  acknowledgedUnknown: pendingAction.acknowledgedUnknown,
-                  mode: pendingAction.mode,
+                  acknowledgedUnknown: action.acknowledgedUnknown,
+                  mode: action.mode,
                   requestId: randomId("publishing-request"),
-                  skillId: pendingAction.skillId,
+                  skillId: action.skillId,
                 }),
                 headers: { "content-type": "application/json" },
                 method: "POST",
@@ -284,7 +381,7 @@ export function PublishingPanel({
             )
       setState(response.state)
       onStateSaved(response.state, response.revision, response.task)
-      if (pendingAction.kind === "attempt" && pendingAction.mode === "manual") {
+      if (action.kind === "attempt" && action.mode === "manual") {
         const taskId = response.task?.id ?? response.attempt?.taskId
         if (taskId) onOpenManualTask({ kind: "exact-task", taskId })
       }
@@ -293,6 +390,7 @@ export function PublishingPanel({
       setError(String((cause as Error)?.message || cause))
     } finally {
       setIsSubmitting(false)
+      setSubmittingSkillId(null)
     }
   }
 
@@ -361,42 +459,76 @@ export function PublishingPanel({
 
         <section
           className={
-            isEditing
+            view === "edit"
               ? "is-editing op-publishing-detail"
               : "op-publishing-detail"
           }
         >
-          {isEditing && selectedPublication ? (
-            <main className="op-publishing-editor op-publishing-module">
-              <PublicationDetail
-                importAsset={importAsset}
-                key={selectedPublication.id}
-                onDelete={() => setPendingDelete(selectedPublication)}
-                onFlushSave={flushTypesettingSave}
-                onInsertHandlerChange={() => undefined}
-                onOpenAgentTasks={onOpenAgentTasks}
-                onOpenLibrary={() => setIsSourceListOpen(true)}
-                onPreview={() => setIsEditing(false)}
-                onRetrySave={() =>
-                  flushTypesettingSave().catch(() => undefined)
-                }
-                onUpdate={(updater) =>
-                  updatePublication(selectedPublication.id, updater)
-                }
-                publication={selectedPublication}
-                saveError={typesettingSaveError}
-                saveStatus={typesettingSaveStatus}
-                tasks={tasks}
-                transport={transport}
-              />
-            </main>
+          {view === "edit" && selectedPublication ? (
+            <>
+              <main className="op-publishing-editor op-publishing-module">
+                <PublicationModeHeader
+                  onDelete={() => setPendingDelete(selectedPublication)}
+                  onOpenLibrary={() => setIsSourceListOpen(true)}
+                  onRetrySave={() =>
+                    flushTypesettingSave().catch(() => undefined)
+                  }
+                  onViewChange={setView}
+                  publication={selectedPublication}
+                  saveError={typesettingSaveError}
+                  saveStatus={typesettingSaveStatus}
+                  view={view}
+                />
+                <PublicationDetail
+                  importAsset={importAsset}
+                  key={selectedPublication.id}
+                  onDelete={() => setPendingDelete(selectedPublication)}
+                  onFlushSave={flushTypesettingSave}
+                  onInsertHandlerChange={() => undefined}
+                  onOpenAgentTasks={onOpenAgentTasks}
+                  onOpenLibrary={() => setIsSourceListOpen(true)}
+                  onPreview={() => setView("preview")}
+                  onRetrySave={() =>
+                    flushTypesettingSave().catch(() => undefined)
+                  }
+                  onUpdate={(updater) =>
+                    updatePublication(selectedPublication.id, updater)
+                  }
+                  projectId={projectId}
+                  publication={selectedPublication}
+                  saveError={typesettingSaveError}
+                  saveStatus={typesettingSaveStatus}
+                  showHeader={false}
+                  tasks={tasks}
+                  transport={transport}
+                  uploadAsset={uploadAsset}
+                />
+              </main>
+              {publishingStatusModule}
+            </>
           ) : (
             <>
               {selectedPublication ? (
                 <PublicationPreview
-                  onEdit={() => setIsEditing(true)}
+                  className="op-publishing-preview--with-mode-header"
+                  modeHeader={
+                    <PublicationModeHeader
+                      onDelete={() => setPendingDelete(selectedPublication)}
+                      onOpenLibrary={() => setIsSourceListOpen(true)}
+                      onRetrySave={() =>
+                        flushTypesettingSave().catch(() => undefined)
+                      }
+                      onViewChange={setView}
+                      publication={selectedPublication}
+                      saveError={typesettingSaveError}
+                      saveStatus={typesettingSaveStatus}
+                      view={view}
+                    />
+                  }
+                  onEdit={() => setView("edit")}
                   onOpenSources={() => setIsSourceListOpen(true)}
                   publication={selectedPublication}
+                  showHeader={false}
                   transport={transport}
                 />
               ) : (
@@ -408,115 +540,17 @@ export function PublishingPanel({
                 </main>
               )}
 
-              <div className="op-publishing-side-stack">
-                <section className="op-publishing-module op-publishing-status-module">
-                  <div className="op-publishing-section-heading">
-                    <h2>{t`Publishing status`}</h2>
-                    <Button
-                      aria-label={t`Add content publishing Skill`}
-                      isIconOnly
-                      onPress={onAddSkill}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <Plus size={16} />
-                    </Button>
-                  </div>
-                  {skillsLoading ? (
-                    <div className="op-publishing-skill-loading">
-                      <Spinner size="sm" /> {t`Loading...`}
-                    </div>
-                  ) : skillRows.length ? (
-                    <div className="op-publishing-status-list">
-                      {skillRows.map((skill) => {
-                        const attempts = attemptsBySkill.get(skill.id) ?? []
-                        const hasActiveAttempt = attempts.some(({ attempt }) =>
-                          publishingAttemptIsActive(
-                            attempt,
-                            taskById.get(attempt.taskId)
-                          )
-                        )
-                        return (
-                          <section
-                            className="op-publishing-skill-status"
-                            key={skill.id}
-                          >
-                            <div className="op-publishing-skill-status__header">
-                              <strong className="op-publishing-skill-status__name">
-                                {skill.name}
-                              </strong>
-                              {skill.isInstalled ? (
-                                <Button
-                                  isDisabled={
-                                    !sourceComplete || hasActiveAttempt
-                                  }
-                                  isPending={
-                                    isSubmitting &&
-                                    pendingAction?.skillId === skill.id
-                                  }
-                                  onPress={() =>
-                                    setPendingAction({
-                                      kind: "release",
-                                      skillId: skill.id,
-                                      skillName: skill.name,
-                                    })
-                                  }
-                                  size="sm"
-                                  variant="secondary"
-                                >
-                                  <Play size={14} />
-                                  {hasActiveAttempt ? t`In progress` : t`Start`}
-                                </Button>
-                              ) : (
-                                <Chip size="sm" variant="soft">
-                                  {t`Unavailable`}
-                                </Chip>
-                              )}
-                            </div>
-                            {attempts.length ? (
-                              <div className="op-publishing-skill-attempts">
-                                {attempts.map(({ attempt }) => (
-                                  <AttemptRow
-                                    attempt={attempt}
-                                    key={attempt.id}
-                                    onOpenTask={() =>
-                                      onOpenAgentTasks([attempt.taskId])
-                                    }
-                                    t={t}
-                                    task={taskById.get(attempt.taskId)}
-                                  />
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="op-publishing-skill-status__empty">
-                                {t`No publishing tasks yet`}
-                              </p>
-                            )}
-                          </section>
-                        )
-                      })}
-                    </div>
-                  ) : (
-                    <EmptyMessage
-                      icon={<Send size={21} />}
-                      message={t`No content publishing Skills installed`}
-                    />
-                  )}
-                  {error ? (
-                    <p className="op-publishing-error">{error}</p>
-                  ) : null}
-                </section>
-              </div>
+              {publishingStatusModule}
             </>
           )}
         </section>
       </div>
-      {pendingAction ? (
+      {pendingAction?.kind === "attempt" ? (
         <PublishingConfirmDialog
           action={pendingAction}
           isBusy={isSubmitting}
           onCancel={() => setPendingAction(null)}
-          onConfirm={executePendingAction}
+          onConfirm={() => executeAction(pendingAction)}
           publication={selectedPublication}
           t={t}
         />
@@ -538,7 +572,7 @@ export function PublishingPanel({
               { deleted: true }
             )
             setPendingDelete(null)
-            setIsEditing(false)
+            setView("preview")
             savePreference(nextPublications[0]?.id ?? null).catch(
               () => undefined
             )

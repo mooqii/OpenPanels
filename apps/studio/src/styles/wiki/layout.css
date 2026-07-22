@@ -123,8 +123,24 @@
   border-radius: 8px;
 }
 
-.op-wiki-workbench > .op-wiki-column--structured {
+.op-wiki-knowledge-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--op-bg-base);
+  border-radius: 8px;
+}
+
+.op-wiki-workbench > .op-wiki-knowledge-stack {
   grid-area: structured;
+}
+
+.op-wiki-knowledge-stack > .op-wiki-column--structured {
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: 0;
 }
 
 .op-wiki-document-library__mobile-header,
@@ -243,6 +259,15 @@
 .op-writing-refinement__warning {
   padding: 8px 10px;
   border-radius: 6px;
+}
+
+.op-writing-refinement__warning--empty {
+  gap: 4px;
+  align-items: center;
+}
+
+.op-writing-refinement__warning--empty .alert__indicator {
+  padding: 0;
 }
 
 .op-writing-refinement__warning-text {
@@ -542,6 +567,46 @@
 }
 
 .op-wiki-task-status {
+  --button-bg: transparent;
+  --button-bg-hover: var(--op-row-hover-bg);
+  --button-bg-pressed: var(--op-row-hover-bg);
+
+  display: inline-flex;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  line-height: 1;
+  pointer-events: auto;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.op-wiki-task-status[data-status="done"] {
+  color: var(--success);
+}
+
+.op-wiki-task-status[data-status="failed"] {
+  color: var(--danger);
+}
+
+.op-wiki-task-status[data-status="cancelled"] {
+  color: var(--op-text-tertiary);
+}
+
+.op-wiki-task-status[data-status="pending"] {
+  color: var(--warning);
+}
+
+.op-wiki-task-status[data-status="running"] {
+  color: var(--accent);
+}
+
+.op-wiki-task-status-label {
   display: inline-flex;
   align-items: center;
   padding: 0;
@@ -553,28 +618,27 @@
   border-radius: 999px;
 }
 
-.op-wiki-task-status__chip {
+.op-wiki-task-status-label__chip {
+  box-sizing: border-box;
   min-height: 20px;
   padding: 2px 6px;
   line-height: 1;
+  border: 1px solid color-mix(in oklab, currentColor 38%, transparent);
   transition:
-    transform 120ms ease,
+    background-color 120ms ease,
+    border-color 120ms ease,
     box-shadow 120ms ease;
 }
 
-.op-wiki-task-status:hover .op-wiki-task-status__chip,
-.op-wiki-task-status:focus-visible .op-wiki-task-status__chip {
-  box-shadow: 0 0 0 1px color-mix(in oklab, currentColor 42%, transparent);
-  transform: translateY(-1px);
+.op-wiki-task-status-label:hover .op-wiki-task-status-label__chip,
+.op-wiki-task-status-label:focus-visible .op-wiki-task-status-label__chip {
+  border-color: color-mix(in oklab, currentColor 58%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, currentColor 10%, transparent);
 }
 
-.op-wiki-task-status:focus-visible {
+.op-wiki-task-status-label:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-.op-wiki-task-status:active .op-wiki-task-status__chip {
-  transform: translateY(0);
 }
 
 .op-wiki-spin {
@@ -600,17 +664,12 @@
 }
 
 .op-wiki-document-library > .op-wiki-column {
-  flex: 1 1 50%;
+  flex: 1 1 auto;
   min-height: 0;
   border: 0;
   border-radius: 0;
 }
 
-.op-wiki-document-library > .op-wiki-column--generated {
-  border-top: 0;
-}
-
-.op-wiki-document-library > .op-wiki-column--generated::before,
 .op-writing-source-library > .op-wiki-column--structured::before,
 .op-writing-source-library > .op-wiki-column--raw::before {
   position: absolute;

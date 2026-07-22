@@ -1,6 +1,6 @@
 use crate::control::{now_iso, read_project_bootstrap, BootstrapRequest};
 use crate::error::CliError;
-use crate::paths::{sanitize_path_part, MyOpenPanelsPaths};
+use crate::paths::{sanitize_file_name, sanitize_path_part, MyOpenPanelsPaths};
 use crate::storage::Storage;
 use crate::trace::{self, TraceEventInput};
 use crate::types::PanelKind;
@@ -57,14 +57,6 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
     let stored = storage
         .read_panel_selection(&wiki.project.id, &wiki.panel.id)?
         .unwrap_or_else(|| json!({}));
-    let requested_document_ids = stored
-        .get("selectedRawDocumentIds")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
     let requested_generated_document_ids = stored
         .get("selectedGeneratedDocumentIds")
         .and_then(Value::as_array)
@@ -73,16 +65,8 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
         .filter_map(Value::as_str)
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let (selected_documents, selected_generated_documents) = selected_document_context(
-        paths,
-        &wiki,
-        &requested_document_ids,
-        &requested_generated_document_ids,
-    );
-    let selected_document_ids = selected_documents
-        .iter()
-        .filter_map(|document| document.get("id").and_then(Value::as_str))
-        .collect::<Vec<_>>();
+    let selected_generated_documents =
+        selected_generated_document_context(paths, &wiki, &requested_generated_document_ids);
     let selected_generated_document_ids = selected_generated_documents
         .iter()
         .filter_map(|document| document.get("id").and_then(Value::as_str))
@@ -94,18 +78,12 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
-    let is_wiki_selected = stored
-        .get("isWikiSelected")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let local_access = wiki_local_access(paths, &wiki, &wiki_space.id, is_wiki_selected);
+    let local_access = wiki_local_access(paths, &wiki, &wiki_space.id, false);
     let selection = json!({
         "kind": "wiki",
         "projectId": wiki.project.id,
         "panelId": wiki.panel.id,
-        "isExplicitSelection": is_wiki_selected || !selected_document_ids.is_empty() || !selected_generated_document_ids.is_empty(),
-        "isWikiSelected": is_wiki_selected,
-        "selectedRawDocumentIds": selected_document_ids,
+        "isExplicitSelection": !selected_generated_document_ids.is_empty(),
         "selectedGeneratedDocumentIds": selected_generated_document_ids,
         "updatedAt": stored.get("updatedAt").cloned().unwrap_or(Value::Null),
     });
@@ -127,7 +105,6 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
         "selection": selection,
         "wiki": {
             "available": true,
-            "selected": is_wiki_selected,
             "wikiSpaceId": wiki_space.id,
             "title": wiki_space.value.get("title").cloned().unwrap_or_else(|| json!("Wiki")),
             "pageCount": page_count,
@@ -135,35 +112,15 @@ pub fn read_agent_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError
             "localAccess": local_access,
         },
         "actions": { "required": [], "suggested": [skill_action] },
-        "selectedRawDocuments": selected_documents,
         "selectedGeneratedDocuments": selected_generated_documents,
     }))
 }
 
 pub fn write_agent_selection(
     paths: &MyOpenPanelsPaths,
-    is_wiki_selected: bool,
-    selected_raw_document_ids: &[String],
     selected_generated_document_ids: &[String],
 ) -> Result<Value, CliError> {
     let wiki = get_wiki_bootstrap(paths)?;
-    let documents = wiki
-        .state
-        .get("rawDocuments")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let known_ids = documents
-        .iter()
-        .filter_map(|document| document.get("id").and_then(Value::as_str))
-        .collect::<BTreeSet<_>>();
-    let mut seen = BTreeSet::new();
-    let selected_ids = selected_raw_document_ids
-        .iter()
-        .filter(|document_id| known_ids.contains(document_id.as_str()))
-        .filter(|document_id| seen.insert((*document_id).clone()))
-        .cloned()
-        .collect::<Vec<_>>();
     let generated_documents = wiki
         .state
         .get("generatedDocuments")
@@ -185,8 +142,6 @@ pub fn write_agent_selection(
         "kind": "wiki",
         "projectId": wiki.project.id,
         "panelId": wiki.panel.id,
-        "isWikiSelected": is_wiki_selected,
-        "selectedRawDocumentIds": selected_ids,
         "selectedGeneratedDocumentIds": selected_generated_ids,
         "updatedAt": now_iso(),
     });
@@ -244,7 +199,7 @@ pub fn create_generated_document(
     };
     let storage = Storage::open(paths)?;
     let document_id = create_id("generated");
-    let safe_file_name = sanitize_path_part(file_name);
+    let safe_file_name = sanitize_file_name(file_name);
     let extension = if format == "markdown" { "md" } else { "txt" };
     let content_ref = wiki_ref(&["generated", &document_id, &format!("content.{extension}")]);
     let content_path = wiki_panel_path(
@@ -312,7 +267,7 @@ pub fn begin_generated_document_for_target(
                 let extension = if format == "text" { "txt" } else { "md" };
                 document["title"] = json!(title);
                 document["originalFileName"] =
-                    json!(format!("{}.{}", sanitize_path_part(title), extension));
+                    json!(format!("{}.{}", sanitize_file_name(title), extension));
             }
         }
         document["generation"] = json!({
@@ -333,7 +288,7 @@ pub fn begin_generated_document_for_target(
         "text/markdown"
     };
     let document_id = create_id("generated");
-    let file_name = format!("{}.{}", sanitize_path_part(title), extension);
+    let file_name = format!("{}.{}", sanitize_file_name(title), extension);
     let content_ref = wiki_ref(&["generated", &document_id, &format!("content.{extension}")]);
     let storage = Storage::open(paths)?;
     let content_path = wiki_panel_path(&storage.panel_dir(project_id, panel_id), &content_ref)?;
@@ -420,7 +375,7 @@ pub fn complete_generated_document_for_target(
     document["contentVersion"] = json!(base_content_version + 1);
     document["format"] = json!(format);
     document["mimeType"] = json!(mime_type);
-    document["originalFileName"] = json!(sanitize_path_part(file_name));
+    document["originalFileName"] = json!(sanitize_file_name(file_name));
     document["wordCount"] = json!(character_count(text));
     document["generation"] = json!({ "status": "completed", "error": null });
     document["updatedAt"] = json!(now_iso());
@@ -642,7 +597,7 @@ pub fn write_generated_document(
     document["contentVersion"] = json!(document["contentVersion"].as_u64().unwrap_or(0) + 1);
     document["format"] = json!(format);
     document["mimeType"] = json!(normalized_mime_type);
-    document["originalFileName"] = json!(sanitize_path_part(file_name));
+    document["originalFileName"] = json!(sanitize_file_name(file_name));
     document["wordCount"] = json!(character_count(text));
     if document
         .pointer("/generation/status")
@@ -738,6 +693,13 @@ pub fn delete_generated_document(
         paths,
         &wiki.project.id,
         "writing.targetDocument",
+        document_id,
+        "prerequisite_deleted",
+    )?;
+    crate::tasks::cancel_tasks_for_resource(
+        paths,
+        &wiki.project.id,
+        "wiki.generatedDocument",
         document_id,
         "prerequisite_deleted",
     )?;

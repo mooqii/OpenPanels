@@ -94,6 +94,7 @@ Wiki:
 Writing and Task queue:
 
 - `panel.writing.context.read`: inspect selected Writing source context.
+- `panel.typesetting.title.request`: create a title-generation Task for an explicitly identified Typesetting publication.
 - `task.queue.inspect`: inspect Tasks, attempts, events, or persisted Workflow Runs.
 - `task.queue.retry`: retry an explicitly identified failed Task.
 - `task.queue.cancel`: cancel an explicitly identified Task.
@@ -101,8 +102,10 @@ Writing and Task queue:
 
 Task Handoffs must never be passed to Procedure Bootstrap:
 `task.scope.execute`, `panel.wiki.raw.convert`, `panel.wiki.pages.maintain`,
-`panel.writing.request.execute`, and `panel.writing.skill.refine`. Execute their
-exact Studio or claimed Task handoff instead.
+`panel.writing.request.execute`, `panel.writing.skill.refine`,
+`panel.publishing.request.execute`, `panel.typesetting.cover.generate`,
+`panel.typesetting.title.generate`, and `panel.typesetting.content.format`.
+Execute their exact Studio or claimed Task handoff instead.
 
 When intent is ambiguous, no Procedure matches, or the CLI reports
 `agent_procedure_not_found`, run the generic fallback:

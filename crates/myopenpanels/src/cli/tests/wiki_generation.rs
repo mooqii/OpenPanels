@@ -50,7 +50,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(code, 0, "{stderr}");
     let next = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(next["task"]["type"], "ingest_markdown_into_wiki");
-    assert_eq!(next["task"]["source"]["agentSkillId"], "karpathy-llm-wiki");
+    assert_eq!(next["task"]["source"]["agentSkillId"], "wiki-default");
     let task_id = next["task"]["id"].as_str().unwrap();
 
     let (code, stdout, stderr) = run(&[
@@ -124,7 +124,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let authoring_skills = serde_json::from_str::<Value>(&stdout).expect("authoring skills");
-    assert_eq!(authoring_skills["skills"].as_array().unwrap().len(), 2);
+    assert_eq!(authoring_skills["skills"].as_array().unwrap().len(), 1);
     for skill in authoring_skills["skills"].as_array().unwrap() {
         assert!(skill.get("name").and_then(Value::as_str).is_some());
         assert!(skill.get("title").is_none());
@@ -534,7 +534,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "skill",
         "read",
         "--skill-id",
-        "karpathy-llm-wiki",
+        "wiki-default",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -548,7 +548,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert!(stdout.contains(&format!("- task id: {task_id}")));
     assert!(!stdout.contains("`task.claim`"));
     assert!(stdout.contains("Read `SKILL.md` directly from the local path above"));
-    assert!(stdout.contains("# Skill: karpathy-llm-wiki"));
+    assert!(stdout.contains("# Skill: wiki-default"));
 
     let (code, panel_stdout, stderr) = run(&[
         "agent",
@@ -573,7 +573,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "skill",
         "read",
         "--skill-id",
-        "karpathy-llm-wiki",
+        "wiki-default",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -587,12 +587,12 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let skill_payload = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(skill_payload["skill"]["id"], "karpathy-llm-wiki");
+    assert_eq!(skill_payload["skill"]["id"], "wiki-default");
     assert!(
         Path::new(skill_payload["localPath"].as_str().unwrap_or("")).ends_with(
             Path::new(".myopenpanels")
                 .join("skills")
-                .join("karpathy-llm-wiki")
+                .join("wiki-default")
                 .join("SKILL.md")
         )
     );

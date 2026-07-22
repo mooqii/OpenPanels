@@ -14,7 +14,21 @@ fn document_conversion_task_prompt(
                 "Document conversion Task has no source document id.",
             )
         })?;
-    let original = crate::wiki::raw_document_original(paths, document_id)?;
+    let document_kind = task
+        .pointer("/input/documentKind")
+        .or_else(|| task.get("documentKind"))
+        .and_then(Value::as_str)
+        .unwrap_or("raw");
+    let original = if document_kind == "generated" {
+        crate::wiki::generated_import_original_for_target(
+            paths,
+            task.get("projectId").and_then(Value::as_str).unwrap_or_default(),
+            task.get("panelId").and_then(Value::as_str).unwrap_or_default(),
+            document_id,
+        )?
+    } else {
+        crate::wiki::raw_document_original(paths, document_id)?
+    };
     let execution_input = task
         .pointer("/executionInputs/originalDocument")
         .ok_or_else(|| {
@@ -45,6 +59,7 @@ fn document_conversion_task_prompt(
     let task_context = json!({
         "taskId": task_id,
         "taskType": "convert_document_to_markdown",
+        "documentKind": document_kind,
         "sourceDocument": {
             "id": document_id,
             "title": title,
@@ -232,15 +247,16 @@ fn document_generation_task_prompt(
             "content.md",
         ),
     ] {
-        let documents = context_snapshot
-            .get(collection)
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                CliError::with_code(
+        let documents = match context_snapshot.get(collection).and_then(Value::as_array) {
+            Some(documents) => documents.as_slice(),
+            None if collection == "rawDocuments" => &[],
+            None => {
+                return Err(CliError::with_code(
                     "invalid_task_input",
                     format!("Writing Task captured {collection} are missing."),
-                )
-            })?;
+                ));
+            }
+        };
         for document in documents {
             let document_id = document
                 .get("id")

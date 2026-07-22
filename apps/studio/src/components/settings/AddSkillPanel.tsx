@@ -53,6 +53,8 @@ const ASSOCIATION_MODULES = [
   "writing",
   "writing-refinement",
   "typesetting-cover",
+  "typesetting-title",
+  "typesetting-layout",
   "publishing",
 ] as const
 

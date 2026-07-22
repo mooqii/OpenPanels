@@ -22,20 +22,22 @@ fn finalize_task_runtime(
         .map(serde_json::to_string)
         .transpose()
         .map_err(to_cli_error)?;
-    let (previous_status, workflow_run_id, attempt_id, attempts, max_attempts, execution_generation): (
-        String,
-        String,
-        Option<String>,
-        i64,
-        i64,
-        i64,
-    ) = tx
+    let (
+        previous_status,
+        workflow_run_id,
+        attempt_id,
+        attempts,
+        max_attempts,
+        execution_generation,
+        task_type,
+        task_input,
+    ): (String, String, Option<String>, i64, i64, i64, String, String) = tx
         .query_row(
             r#"
             SELECT t.status, t.workflow_run_id,
                    (SELECT id FROM task_attempts a
                     WHERE a.task_id = t.id AND a.execution_generation = t.execution_generation),
-                   t.attempts, t.max_attempts, t.execution_generation
+                   t.attempts, t.max_attempts, t.execution_generation, t.type, t.input_json
             FROM tasks t WHERE t.id = ? AND t.project_id = ?
             "#,
             params![task_id, project_id],
@@ -47,6 +49,8 @@ fn finalize_task_runtime(
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
                 ))
             },
         )
@@ -56,6 +60,80 @@ fn finalize_task_runtime(
             "execution_fenced",
             "The Task is now owned by a newer execution generation.",
         ));
+    }
+    let mut merged_layout_panel_state = None;
+    if status == "succeeded" && task_type == crate::typesetting::LAYOUT_TASK_TYPE {
+        let (panel_id, formatted_state) = panel_state.ok_or_else(|| {
+            CliError::with_code(
+                "invalid_output",
+                "Typesetting Layout completion requires a panel state.",
+            )
+        })?;
+        let input: Value = serde_json::from_str(&task_input).map_err(to_cli_error)?;
+        let publication_id = input
+            .get("publicationId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let expected_hash = input
+            .pointer("/snapshot/contentHash")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let current_state_json: String = tx
+            .query_row(
+                "SELECT state_json FROM panel_states WHERE project_id = ? AND panel_id = ?",
+                params![project_id, panel_id],
+                |row| row.get(0),
+            )
+            .map_err(to_cli_error)?;
+        let mut current_state: Value =
+            serde_json::from_str(&current_state_json).map_err(to_cli_error)?;
+        let current_publication = current_state
+            .get_mut("publications")
+            .and_then(Value::as_array_mut)
+            .and_then(|publications| {
+                publications.iter_mut().find(|publication| {
+                    publication.get("id").and_then(Value::as_str) == Some(publication_id)
+                })
+            })
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "typesetting_publication_not_found",
+                    format!("Typesetting publication not found: {publication_id}"),
+                )
+            })?;
+        let current_content = current_publication
+            .get("content")
+            .cloned()
+            .unwrap_or(Value::Null);
+        if crate::typesetting::hash_json(&current_content)? != expected_hash {
+            return Err(CliError::with_code(
+                "content_conflict",
+                format!("Publication content changed before Layout Task {task_id} completed."),
+            ));
+        }
+        let formatted_publication = formatted_state
+            .get("publications")
+            .and_then(Value::as_array)
+            .and_then(|publications| {
+                publications.iter().find(|publication| {
+                    publication.get("id").and_then(Value::as_str) == Some(publication_id)
+                })
+            })
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "invalid_output",
+                    "Typesetting Layout completion is missing its publication.",
+                )
+            })?;
+        current_publication["content"] = formatted_publication
+            .get("content")
+            .cloned()
+            .unwrap_or(Value::Null);
+        current_publication["updatedAt"] = formatted_publication
+            .get("updatedAt")
+            .cloned()
+            .unwrap_or_else(|| json!(now));
+        merged_layout_panel_state = Some((panel_id.to_owned(), current_state));
     }
     let has_staging = attempt_id.as_deref().is_some_and(|attempt_id| {
         tx.query_row(
@@ -181,6 +259,10 @@ fn finalize_task_runtime(
         propagate_prerequisite_failure(&tx, task_id, status, &now)?;
     }
     refresh_workflow_run_status(&tx, &workflow_run_id, &now)?;
+    let panel_state = merged_layout_panel_state
+        .as_ref()
+        .map(|(panel_id, state)| (panel_id.as_str(), state))
+        .or(panel_state);
     if let Some((panel_id, state)) = panel_state {
         Storage::write_panel_state_in_transaction(&tx, project_id, panel_id, state)?;
     }

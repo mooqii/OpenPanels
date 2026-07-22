@@ -9,6 +9,12 @@ fn project_task_capability(queue: &str, task_type: &str) -> String {
         ("wiki", "convert_document_to_markdown") => "wiki.convertDocument".to_owned(),
         ("wiki", "ingest_markdown_into_wiki") => "wiki.ingestMarkdown".to_owned(),
         ("wiki", "maintain_wiki") => "wiki.maintain".to_owned(),
+        ("typesetting", "format_typesetting_content") => {
+            "typesetting.formatContent".to_owned()
+        }
+        ("typesetting", "generate_typesetting_titles") => {
+            "typesetting.generateTitles".to_owned()
+        }
         ("writing", "refine_writing_skill") => "writing.refineSkill".to_owned(),
         _ => format!("{}.{}", queue, task_type.replace('_', ".")),
     }
@@ -71,17 +77,25 @@ fn insert_task_created_records(
         )
         .map_err(to_cli_error)?;
     if let Some(document_id) = input.get("documentId").and_then(Value::as_str) {
+        let resource_kind = if input.get("documentKind").and_then(Value::as_str)
+            == Some("generated")
+        {
+            "wiki.generatedDocument"
+        } else {
+            "wiki.rawDocument"
+        };
         connection
             .execute(
                 r#"
                 INSERT OR IGNORE INTO task_inputs (
                   id, task_id, resource_kind, resource_id, resource_version,
                   content_hash, snapshot_ref, missing_policy, changed_policy, created_at
-                ) VALUES (?, ?, 'wiki.rawDocument', ?, ?, ?, ?, 'cancel', 'supersede', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'cancel', 'supersede', ?)
                 "#,
                 params![
                     crate::ids::random_id("task-input"),
                     task_id,
+                    resource_kind,
                     document_id,
                     input
                         .get("markdownVersion")

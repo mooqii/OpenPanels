@@ -366,6 +366,7 @@ export interface PublishingRelease {
   snapshot: {
     bodyText: string
     media: PublishingMediaSnapshot[]
+    tags?: string[]
     title: string
   }
   sourcePublicationId: string
@@ -378,8 +379,21 @@ export interface TypesettingPublication {
   covers: TypesettingPublicationImage[]
   createdAt: string
   id: string
+  selectedTitleId?: string | null
+  tags?: string[]
   title: string
+  titles?: TypesettingPublicationTitle[]
   updatedAt: string
+}
+
+export interface TypesettingPublicationTitle {
+  id: string
+  source?: {
+    kind: "generated"
+    skillId: string
+    taskId: string
+  }
+  value: string
 }
 
 export interface TypesettingPublicationImage {
@@ -398,6 +412,9 @@ export interface TypesettingPublicationImage {
         kind: "generated"
         skillId: string
         taskId: string
+      }
+    | {
+        kind: "upload"
       }
   src: string
   width?: number | null
@@ -420,6 +437,18 @@ export interface TypesettingCanvasAsset {
 export interface WikiGeneratedDocument {
   contentRef: string
   contentVersion: number
+  conversion?: {
+    error: string | null
+    status:
+      | "cancelled"
+      | "failed"
+      | "not_required"
+      | "queued"
+      | "converting"
+      | "ready"
+    taskId: string | null
+    updatedAt: string
+  }
   createdAt: string
   format: "markdown" | "text"
   generation?: {
@@ -428,6 +457,13 @@ export interface WikiGeneratedDocument {
     status: "generating" | "completed" | "failed"
   }
   id: string
+  importSource?: {
+    fileName: string
+    mimeType: string
+    originalRef: string
+    sha256: string
+    sizeBytes: number
+  }
   mimeType: "text/markdown" | "text/plain"
   originalFileName: string
   publishHistory: Array<{
@@ -610,6 +646,14 @@ export interface WikiTask {
 }
 
 export type OriginalPreviewKind = "audio" | "image" | "pdf" | "text" | "video"
+
+export interface WikiOriginalPreviewDocument {
+  id: string
+  mimeType: string
+  originalFileName: string
+  sizeBytes: number
+  title: string
+}
 
 export type MyOpenPanelsTransport = {
   apiBase: string

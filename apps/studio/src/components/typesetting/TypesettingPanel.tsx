@@ -1,5 +1,5 @@
 import { Button } from "@heroui/react"
-import { FileText, PanelLeft } from "lucide-react"
+import { FileInput, FileText, PanelLeft } from "lucide-react"
 import { type ReactNode, useCallback, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { useTypesettingStateEditor } from "../../hooks/use-typesetting-state-editor"
@@ -8,44 +8,47 @@ import {
   apiJson,
   originalPreviewKind,
   tryOpenBrowserWindow,
-  wikiRawOriginalUrl,
+  wikiGeneratedOriginalUrl,
 } from "../../lib/api"
 import { randomId } from "../../lib/id"
-import { createTypesettingPublication } from "../../lib/typesetting"
+import {
+  createTypesettingPublication,
+  isInsertableTypesettingDocument,
+  isTypesettingLayoutTaskActive,
+} from "../../lib/typesetting"
 import type {
   MyOpenPanelsTransport,
   ProjectTask,
   TypesettingPublication,
   TypesettingState,
   WikiGeneratedDocument,
-  WikiRawDocument,
+  WikiOriginalPreviewDocument,
   WikiState,
 } from "../../types"
 import { PublicationPreview } from "../publishing/PublicationPreview"
-import { ConfirmDialog } from "../wiki/Dialogs"
+import {
+  ConfirmDialog,
+  MarkdownDialog,
+  OriginalPreviewDialog,
+} from "../wiki/Dialogs"
 
 import { TypesettingLibrary } from "./TypesettingLibrary"
-import { PublicationDetail } from "./TypesettingPublication"
-import { DocumentPreviewDialog } from "./TypesettingToolbar"
+import {
+  PublicationDetail,
+  PublicationModeHeader,
+  type PublicationView,
+} from "./TypesettingPublication"
 
-type DocumentPreview =
-  | {
-      content: string | null
-      document: WikiRawDocument
-      error: string | null
-      format: "markdown"
-      kind: "raw"
-      loading: boolean
-      source: "markdown" | "original"
-    }
-  | {
-      content: string | null
-      document: WikiGeneratedDocument
-      error: string | null
-      format: "markdown" | "text"
-      kind: "generated"
-      loading: boolean
-    }
+type GeneratedDocumentDialog = {
+  content: string
+  document: WikiGeneratedDocument
+}
+
+type InsertDocumentHandler = (
+  title: string,
+  content: string,
+  format: "markdown" | "text"
+) => void
 
 export function TypesettingPanel({
   chromeContent,
@@ -71,18 +74,30 @@ export function TypesettingPanel({
   wiki: WikiState
 }) {
   const { t } = useMyOpenPanelsI18n()
-  const [view, setView] = useState<"edit" | "preview">("edit")
+  const [view, setView] = useState<PublicationView>("edit")
   const [activePublicationId, setActivePublicationId] = useState<string | null>(
     null
   )
   const [pendingDelete, setPendingDelete] =
     useState<TypesettingPublication | null>(null)
-  const [preview, setPreview] = useState<DocumentPreview | null>(null)
+  const [documentDialog, setDocumentDialog] =
+    useState<GeneratedDocumentDialog | null>(null)
+  const [originalPreview, setOriginalPreview] = useState<{
+    document: WikiOriginalPreviewDocument
+    previewUrl: string
+  } | null>(null)
   const [isLibraryOpen, setIsLibraryOpen] = useState(false)
-  const insertDocumentRef = useRef<
-    | ((title: string, content: string, format: "markdown" | "text") => void)
-    | null
-  >(null)
+  const [insertingDocumentId, setInsertingDocumentId] = useState<string | null>(
+    null
+  )
+  const insertDocumentRef = useRef<InsertDocumentHandler | null>(null)
+  const pendingInsertionRef = useRef<{
+    content: string
+    document: WikiGeneratedDocument
+    publicationId: string
+  } | null>(null)
+  const activePublicationIdRef = useRef(activePublicationId)
+  activePublicationIdRef.current = activePublicationId
   const {
     flushSave,
     importAsset,
@@ -91,6 +106,7 @@ export function TypesettingPanel({
     saveStatus,
     state,
     updatePublication,
+    uploadAsset,
   } = useTypesettingStateEditor({
     initialState,
     onStateSaved,
@@ -99,6 +115,9 @@ export function TypesettingPanel({
     revision,
     transport,
   })
+  const dialogDocumentId = documentDialog?.document.id
+  const dialogFileName = documentDialog?.document.originalFileName
+  const dialogMimeType = documentDialog?.document.mimeType
 
   const createPublication = useCallback(() => {
     const timestamp = new Date().toISOString()
@@ -110,6 +129,8 @@ export function TypesettingPanel({
       ...state,
       publications: [publication, ...state.publications],
     }
+    insertDocumentRef.current = null
+    pendingInsertionRef.current = null
     replaceState(next, publication.id)
     setActivePublicationId(publication.id)
     setView("edit")
@@ -126,6 +147,8 @@ export function TypesettingPanel({
       replaceState(next, publication.id, { deleted: true })
       setPendingDelete(null)
       if (activePublicationId === publication.id) {
+        insertDocumentRef.current = null
+        pendingInsertionRef.current = null
         setActivePublicationId(null)
         setView("edit")
       }
@@ -133,144 +156,172 @@ export function TypesettingPanel({
     [activePublicationId, replaceState, state]
   )
 
-  const openRawDocument = useCallback(
-    async (
-      document: WikiRawDocument,
-      requestedSource: "preferred" | "original" = "preferred"
-    ) => {
-      const source =
-        requestedSource === "preferred" && document.markdownRef
-          ? "markdown"
-          : "original"
-      const initial: DocumentPreview = {
-        content: null,
-        document,
-        error: null,
-        format: "markdown",
-        kind: "raw",
-        loading:
-          source === "markdown" ||
-          (source === "original" && originalPreviewKind(document) === "text"),
-        source,
-      }
-      setPreview(initial)
-      if (source === "original") {
-        if (originalPreviewKind(document) !== "text") return
-        try {
-          const response = await apiFetch(
-            transport.apiBase,
-            `/api/wiki/raw-documents/${encodeURIComponent(document.id)}/original`
-          )
-          if (!response.ok) throw new Error(`HTTP ${response.status}`)
-          const content = await response.text()
-          setPreview((current) =>
-            current?.kind === "raw" &&
-            current.document.id === document.id &&
-            current.source === "original"
-              ? { ...current, content, loading: false }
-              : current
-          )
-        } catch (error) {
-          setPreview((current) =>
-            current?.kind === "raw" &&
-            current.document.id === document.id &&
-            current.source === "original"
-              ? {
-                  ...current,
-                  error: String(error instanceof Error ? error.message : error),
-                  loading: false,
-                }
-              : current
-          )
-        }
-        return
-      }
-      try {
-        const data = await apiJson<{ markdown?: string }>(
-          transport.apiBase,
-          `/api/wiki/raw-documents/${encodeURIComponent(document.id)}/markdown`
-        )
-        setPreview((current) =>
-          current?.kind === "raw" && current.document.id === document.id
-            ? { ...current, content: data.markdown ?? "", loading: false }
-            : current
-        )
-      } catch (error) {
-        setPreview((current) =>
-          current?.kind === "raw" && current.document.id === document.id
-            ? {
-                ...current,
-                error: String(error instanceof Error ? error.message : error),
-                loading: false,
-              }
-            : current
-        )
-      }
-    },
-    [transport.apiBase]
-  )
-
-  const openRawOriginal = useCallback(
-    (document: WikiRawDocument) => {
-      if (originalPreviewKind(document)) {
-        openRawDocument(document, "original").catch((error) => {
-          console.error("Failed to preview raw document", error)
-        })
-        return
-      }
-      if (
-        tryOpenBrowserWindow(wikiRawOriginalUrl(transport.apiBase, document))
-      ) {
-        return
-      }
-      apiFetch(
-        transport.apiBase,
-        `/api/wiki/raw-documents/${encodeURIComponent(document.id)}/reveal`,
-        { method: "POST" }
-      ).catch((error) => {
-        console.error("Failed to reveal raw document", error)
-      })
-    },
-    [openRawDocument, transport.apiBase]
-  )
-
   const openGeneratedDocument = useCallback(
     async (document: WikiGeneratedDocument) => {
-      setPreview({
-        content: null,
-        document,
-        error: null,
-        format: document.format,
-        kind: "generated",
-        loading: true,
-      })
       try {
         const data = await apiJson<{ content?: string }>(
           transport.apiBase,
           `/api/wiki/generated-documents/${encodeURIComponent(document.id)}`
         )
-        setPreview((current) =>
-          current?.kind === "generated" && current.document.id === document.id
-            ? { ...current, content: data.content ?? "", loading: false }
-            : current
-        )
+        setDocumentDialog({ content: data.content ?? "", document })
       } catch (error) {
-        setPreview((current) =>
-          current?.kind === "generated" && current.document.id === document.id
-            ? {
-                ...current,
-                error: String(error instanceof Error ? error.message : error),
-                loading: false,
-              }
-            : current
-        )
+        console.error("Failed to open generated document", error)
       }
     },
     [transport.apiBase]
   )
 
+  const saveGeneratedDocument = useCallback(
+    async (content: string) => {
+      if (!(dialogDocumentId && dialogFileName && dialogMimeType)) return
+      const data = await apiJson<{ document: WikiGeneratedDocument }>(
+        transport.apiBase,
+        `/api/wiki/generated-documents/${encodeURIComponent(dialogDocumentId)}`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            content,
+            fileName: dialogFileName,
+            mimeType: dialogMimeType,
+          }),
+        }
+      )
+      setDocumentDialog((current) =>
+        current ? { ...current, content, document: data.document } : current
+      )
+    },
+    [dialogDocumentId, dialogFileName, dialogMimeType, transport.apiBase]
+  )
+
+  const renameGeneratedDocumentFile = useCallback(
+    async (fileName: string) => {
+      if (!dialogDocumentId) return
+      const data = await apiJson<{ document: WikiGeneratedDocument }>(
+        transport.apiBase,
+        `/api/wiki/generated-documents/${encodeURIComponent(dialogDocumentId)}`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ fileName }),
+        }
+      )
+      setDocumentDialog((current) =>
+        current ? { ...current, document: data.document } : current
+      )
+    },
+    [dialogDocumentId, transport.apiBase]
+  )
+
+  const revealGeneratedOriginal = useCallback(
+    async (document: WikiGeneratedDocument) => {
+      await apiFetch(
+        transport.apiBase,
+        `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/reveal`,
+        { method: "POST" }
+      )
+    },
+    [transport.apiBase]
+  )
+
+  const openGeneratedOriginal = useCallback(
+    (document: WikiGeneratedDocument) => {
+      if (!document.importSource) return
+      const previewDocument: WikiOriginalPreviewDocument = {
+        id: document.id,
+        mimeType: document.importSource.mimeType,
+        originalFileName: document.importSource.fileName,
+        sizeBytes: document.importSource.sizeBytes,
+        title: document.title,
+      }
+      const previewUrl = wikiGeneratedOriginalUrl(transport.apiBase, document)
+      if (originalPreviewKind(previewDocument)) {
+        setOriginalPreview({ document: previewDocument, previewUrl })
+        return
+      }
+      if (tryOpenBrowserWindow(previewUrl)) return
+      revealGeneratedOriginal(document).catch((error) => {
+        console.error("Failed to reveal imported generated document", error)
+      })
+    },
+    [revealGeneratedOriginal, transport.apiBase]
+  )
+
   const activePublication = state.publications.find(
     (publication) => publication.id === activePublicationId
+  )
+  const isContentLocked = Boolean(
+    activePublication &&
+      tasks.some(
+        (task) =>
+          task.type === "format_typesetting_content" &&
+          task.targetId === activePublication.id &&
+          isTypesettingLayoutTaskActive(task)
+      )
+  )
+
+  const queueDocumentInsertion = useCallback(
+    (document: WikiGeneratedDocument, content: string) => {
+      if (!(activePublication && !isContentLocked)) return
+      if (activePublicationIdRef.current !== activePublication.id) return
+      if (view === "edit" && insertDocumentRef.current) {
+        insertDocumentRef.current(document.title, content, document.format)
+        return
+      }
+      pendingInsertionRef.current = {
+        content,
+        document,
+        publicationId: activePublication.id,
+      }
+      setView("edit")
+    },
+    [activePublication, isContentLocked, view]
+  )
+
+  const insertGeneratedDocument = useCallback(
+    async (document: WikiGeneratedDocument) => {
+      if (
+        !activePublication ||
+        isContentLocked ||
+        !isInsertableTypesettingDocument(document)
+      ) {
+        return
+      }
+      setInsertingDocumentId(document.id)
+      try {
+        const data = await apiJson<{ content?: string }>(
+          transport.apiBase,
+          `/api/wiki/generated-documents/${encodeURIComponent(document.id)}`
+        )
+        queueDocumentInsertion(document, data.content ?? "")
+      } catch (error) {
+        console.error("Failed to insert generated document", error)
+      } finally {
+        setInsertingDocumentId(null)
+      }
+    },
+    [
+      activePublication,
+      isContentLocked,
+      queueDocumentInsertion,
+      transport.apiBase,
+    ]
+  )
+
+  const handleInsertHandlerChange = useCallback(
+    (handler: InsertDocumentHandler | null) => {
+      insertDocumentRef.current = handler
+      const pending = pendingInsertionRef.current
+      if (
+        !(handler && pending) ||
+        pending.publicationId !== activePublicationIdRef.current
+      ) {
+        return
+      }
+      pendingInsertionRef.current = null
+      handler(pending.document.title, pending.content, pending.document.format)
+    },
+    []
   )
 
   return (
@@ -288,53 +339,76 @@ export function TypesettingPanel({
         <TypesettingLibrary
           activePublicationId={activePublicationId}
           className={isLibraryOpen ? "is-open" : ""}
+          insertingDocumentId={insertingDocumentId}
+          isInsertDisabled={!activePublication || isContentLocked}
           onClose={() => setIsLibraryOpen(false)}
           onCreatePublication={createPublication}
+          onInsertGenerated={insertGeneratedDocument}
           onOpenGenerated={openGeneratedDocument}
+          onOpenGeneratedOriginal={openGeneratedOriginal}
           onOpenPublication={(publication) => {
+            insertDocumentRef.current = null
+            pendingInsertionRef.current = null
             setActivePublicationId(publication.id)
             setView("edit")
             setIsLibraryOpen(false)
           }}
-          onOpenRaw={openRawDocument}
-          onOpenRawOriginal={openRawOriginal}
           projectId={projectId}
           publications={state.publications}
           transport={transport}
           wiki={wiki}
         />
         <div className="op-typesetting-main">
-          {activePublication && view === "edit" ? (
-            <PublicationDetail
-              importAsset={importAsset}
-              key={activePublication.id}
-              onDelete={() => setPendingDelete(activePublication)}
-              onFlushSave={flushSave}
-              onInsertHandlerChange={(handler) => {
-                insertDocumentRef.current = handler
-              }}
-              onOpenAgentTasks={onOpenAgentTasks}
-              onOpenLibrary={() => setIsLibraryOpen(true)}
-              onPreview={() => setView("preview")}
-              onRetrySave={() => flushSave().catch(() => undefined)}
-              onUpdate={(updater) =>
-                updatePublication(activePublication.id, updater)
-              }
-              publication={activePublication}
-              saveError={saveError}
-              saveStatus={saveStatus}
-              tasks={tasks}
-              transport={transport}
-            />
-          ) : activePublication ? (
-            <PublicationPreview
-              className="op-typesetting-publication-preview"
-              key={activePublication.id}
-              onEdit={() => setView("edit")}
-              onOpenSources={() => setIsLibraryOpen(true)}
-              publication={activePublication}
-              transport={transport}
-            />
+          {activePublication ? (
+            <div className="op-typesetting-publication-workspace">
+              <PublicationModeHeader
+                onDelete={() => setPendingDelete(activePublication)}
+                onOpenLibrary={() => setIsLibraryOpen(true)}
+                onRetrySave={() => flushSave().catch(() => undefined)}
+                onViewChange={(nextView) => {
+                  if (nextView !== "edit") insertDocumentRef.current = null
+                  setView(nextView)
+                }}
+                publication={activePublication}
+                saveError={saveError}
+                saveStatus={saveStatus}
+                view={view}
+              />
+              {view === "edit" ? (
+                <PublicationDetail
+                  importAsset={importAsset}
+                  key={activePublication.id}
+                  onDelete={() => setPendingDelete(activePublication)}
+                  onFlushSave={flushSave}
+                  onInsertHandlerChange={handleInsertHandlerChange}
+                  onOpenAgentTasks={onOpenAgentTasks}
+                  onOpenLibrary={() => setIsLibraryOpen(true)}
+                  onPreview={() => setView("preview")}
+                  onRetrySave={() => flushSave().catch(() => undefined)}
+                  onUpdate={(updater) =>
+                    updatePublication(activePublication.id, updater)
+                  }
+                  projectId={projectId}
+                  publication={activePublication}
+                  saveError={saveError}
+                  saveStatus={saveStatus}
+                  showHeader={false}
+                  tasks={tasks}
+                  transport={transport}
+                  uploadAsset={uploadAsset}
+                />
+              ) : (
+                <PublicationPreview
+                  className="op-typesetting-publication-preview"
+                  key={activePublication.id}
+                  onEdit={() => setView("edit")}
+                  onOpenSources={() => setIsLibraryOpen(true)}
+                  publication={activePublication}
+                  showHeader={false}
+                  transport={transport}
+                />
+              )}
+            </div>
           ) : (
             <div className="op-typesetting-selection-empty">
               <FileText size={24} />
@@ -354,21 +428,41 @@ export function TypesettingPanel({
         </div>
       </div>
 
-      {preview ? (
-        <DocumentPreviewDialog
-          activePublication={Boolean(activePublication && view === "edit")}
-          onClose={() => setPreview(null)}
-          onInsert={() => {
-            if (preview.content === null) return
-            insertDocumentRef.current?.(
-              preview.document.title,
-              preview.content,
-              preview.format
+      {documentDialog ? (
+        <MarkdownDialog
+          closeLabel={t`Close`}
+          content={documentDialog.content}
+          fileName={documentDialog.document.originalFileName}
+          onChange={(content) =>
+            setDocumentDialog((current) =>
+              current ? { ...current, content } : current
             )
-            setPreview(null)
-          }}
-          preview={preview}
-          transport={transport}
+          }
+          onClose={() => setDocumentDialog(null)}
+          onRenameFileName={renameGeneratedDocumentFile}
+          onSave={saveGeneratedDocument}
+          primaryAction={
+            isInsertableTypesettingDocument(documentDialog.document)
+              ? {
+                  icon: <FileInput size={15} />,
+                  isDisabled: !activePublication || isContentLocked,
+                  label: t`Insert into content details`,
+                  onPress: (content) =>
+                    queueDocumentInsertion(documentDialog.document, content),
+                }
+              : undefined
+          }
+        />
+      ) : null}
+
+      {originalPreview ? (
+        <OriginalPreviewDialog
+          closeLabel={t`Close`}
+          document={originalPreview.document}
+          key={originalPreview.document.id}
+          onClose={() => setOriginalPreview(null)}
+          previewUrl={originalPreview.previewUrl}
+          titleLabel={t`Original file`}
         />
       ) : null}
 

@@ -1,20 +1,29 @@
-import { useEffect, useState } from "react"
+import { type ReactNode, useEffect, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiJson } from "../../lib/api"
 import { formatRelativeOrDate } from "../../lib/date-time"
 import type { WikiGeneratedDocument } from "../../types"
-import { countDocumentCharacters } from "./generated-document-display"
+import {
+  countDocumentCharacters,
+  generatedDocumentFormats,
+} from "./generated-document-display"
 
 export function GeneratedDocumentMeta({
   apiBase,
   document,
+  onOpenOriginal,
+  status,
 }: {
   apiBase: string
   document: WikiGeneratedDocument
+  onOpenOriginal?: () => void
+  status?: ReactNode
 }) {
   const { locale, t } = useMyOpenPanelsI18n()
   const [now, setNow] = useState(() => Date.now())
   const [wordCount, setWordCount] = useState(document.wordCount)
+  const formats = generatedDocumentFormats(document)
+  const hasOriginalFormat = Boolean(formats.original)
 
   useEffect(() => {
     setWordCount(document.wordCount)
@@ -51,6 +60,28 @@ export function GeneratedDocumentMeta({
 
   return (
     <span className="op-generated-document-meta">
+      {formats.original && onOpenOriginal ? (
+        <button
+          aria-label={`${t`Open original file`}: ${document.importSource?.fileName ?? ""}`}
+          className="op-generated-document-meta__original"
+          onClick={onOpenOriginal}
+          type="button"
+        >
+          {formats.original}
+        </button>
+      ) : formats.original ? (
+        <span>{formats.original}</span>
+      ) : null}
+      {formats.converted ? (
+        <>
+          <span aria-hidden="true">→</span>
+          <span>{formats.converted}</span>
+        </>
+      ) : null}
+      {status ? (
+        <span className="op-generated-document-meta__status">{status}</span>
+      ) : null}
+      {hasOriginalFormat || status ? <span aria-hidden="true">·</span> : null}
       {wordCount !== null && wordCount !== undefined ? (
         <>
           <span>

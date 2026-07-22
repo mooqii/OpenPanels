@@ -84,6 +84,70 @@ pub fn typesetting_cover_skill(
         })
 }
 
+pub fn list_typesetting_title_skills(
+    paths: &MyOpenPanelsPaths,
+) -> Result<Vec<AgentSkillListing>, CliError> {
+    sync_builtin_agent_skills(paths)?;
+    Ok(list_agent_skills(paths)?
+        .into_iter()
+        .filter(|item| {
+            metadata_matches(
+                &item.skill.applies_to,
+                &item.skill.task_types,
+                Some("typesetting"),
+                Some(crate::typesetting::TITLE_TASK_TYPE),
+            )
+        })
+        .collect())
+}
+
+pub fn typesetting_title_skill(
+    paths: &MyOpenPanelsPaths,
+    skill_id: &str,
+) -> Result<AgentSkillListing, CliError> {
+    list_typesetting_title_skills(paths)?
+        .into_iter()
+        .find(|item| item.skill.id == skill_id)
+        .ok_or_else(|| {
+            CliError::with_code(
+                "typesetting_title_skill_not_found",
+                format!("Typesetting Title Skill not found: {skill_id}"),
+            )
+        })
+}
+
+pub fn list_typesetting_layout_skills(
+    paths: &MyOpenPanelsPaths,
+) -> Result<Vec<AgentSkillListing>, CliError> {
+    sync_builtin_agent_skills(paths)?;
+    Ok(list_agent_skills(paths)?
+        .into_iter()
+        .filter(|item| {
+            metadata_matches(
+                &item.skill.applies_to,
+                &item.skill.task_types,
+                Some("typesetting"),
+                Some(crate::typesetting::LAYOUT_TASK_TYPE),
+            )
+        })
+        .collect())
+}
+
+pub fn typesetting_layout_skill(
+    paths: &MyOpenPanelsPaths,
+    skill_id: &str,
+) -> Result<AgentSkillListing, CliError> {
+    list_typesetting_layout_skills(paths)?
+        .into_iter()
+        .find(|item| item.skill.id == skill_id)
+        .ok_or_else(|| {
+            CliError::with_code(
+                "typesetting_layout_skill_not_found",
+                format!("Typesetting Layout Skill not found: {skill_id}"),
+            )
+        })
+}
+
 pub fn managed_skills(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     sync_builtin_agent_skills(paths)?;
     migrate_legacy_custom_agent_skills(paths)?;
@@ -305,6 +369,12 @@ fn managed_skill_module_kinds(listing: &AgentSkillListing) -> Vec<String> {
     if has_panel("typesetting") && has_task(crate::typesetting::COVER_TASK_TYPE) {
         module_kinds.push("typesetting-cover".to_owned());
     }
+    if has_panel("typesetting") && has_task(crate::typesetting::TITLE_TASK_TYPE) {
+        module_kinds.push("typesetting-title".to_owned());
+    }
+    if has_panel("typesetting") && has_task(crate::typesetting::LAYOUT_TASK_TYPE) {
+        module_kinds.push("typesetting-layout".to_owned());
+    }
     for applies_to in &listing.skill.applies_to {
         if !matches!(
             applies_to.as_str(),
@@ -422,7 +492,7 @@ fn clear_wiki_skill_selections(
                 continue;
             };
             if state.get("wikiAgentSkillId").and_then(Value::as_str) == Some(skill_id) {
-                state["wikiAgentSkillId"] = json!("karpathy-llm-wiki");
+                state["wikiAgentSkillId"] = json!(crate::wiki::DEFAULT_WIKI_AGENT_SKILL_ID);
                 storage.write_panel_state(&project.id, panel_id, &state)?;
             }
         }
@@ -477,7 +547,7 @@ fn clear_writing_skill_module_selections(
                 == Some(skill_id)
             {
                 state["selectedRefinementSkillId"] =
-                    json!(crate::writing::WRITING_SKILL_REFINER_ID);
+                    json!(crate::writing::DEFAULT_WRITING_REFINEMENT_SKILL_ID);
                 changed = true;
             }
             if changed {

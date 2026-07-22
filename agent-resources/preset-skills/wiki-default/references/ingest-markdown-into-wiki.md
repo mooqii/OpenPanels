@@ -1,4 +1,4 @@
-# Ingest Source Markdown Into A Karpathy LLM Wiki
+# Ingest Source Markdown Into The Default Wiki
 
 Use this reference when integrating one source markdown document into the
 structured wiki.

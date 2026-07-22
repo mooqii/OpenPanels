@@ -488,7 +488,7 @@ fn project_read_commands_bootstrap_project() {
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(bootstrap["protocolVersion"], 13);
-    assert_eq!(bootstrap["commandCatalogVersion"], 5);
+    assert_eq!(bootstrap["commandCatalogVersion"], 6);
     assert_eq!(bootstrap["panel"]["context"]["panelKind"], "canvas");
     assert_eq!(bootstrap["panel"]["selection"]["supported"], true);
     assert!(bootstrap.get("capabilities").is_none());
@@ -550,6 +550,80 @@ fn project_read_commands_bootstrap_project() {
         bootstrap["skills"][0]["id"],
         "myopenpanels-panels"
     );
+
+    let (code, stdout, stderr) = run(&[
+        "panel",
+        "activate",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--panel-kind",
+        "typesetting",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bootstrap",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(bootstrap["panel"]["context"]["panelKind"], "typesetting");
+    assert_eq!(bootstrap["skills"][0]["id"], "myopenpanels-panels");
+    assert!(bootstrap["skills"][0]["referencePaths"][0]
+        .as_str()
+        .unwrap()
+        .ends_with("references/typesetting-contract.md"));
+
+    let (code, stdout, stderr) = run(&[
+        "panel",
+        "activate",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--panel-kind",
+        "publishing",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bootstrap",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(bootstrap["panel"]["context"]["panelKind"], "publishing");
+    assert_eq!(bootstrap["skills"][0]["id"], "myopenpanels-panels");
+    assert!(bootstrap["skills"][0]["referencePaths"][0]
+        .as_str()
+        .unwrap()
+        .ends_with("references/publishing-contract.md"));
 }
 
 #[test]
@@ -701,7 +775,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert_eq!(payload["protocolVersion"], 13);
     assert!(payload.get("supportedProtocolVersions").is_none());
     assert_eq!(payload["cliVersion"], VERSION);
-    assert_eq!(payload["commandCatalogVersion"], 5);
+    assert_eq!(payload["commandCatalogVersion"], 6);
     assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
     assert!(payload.get("entrySkill").is_none());
     assert!(payload.get("entrySkillUpdate").is_none());
@@ -757,7 +831,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     let (code, stdout, stderr) = run(&["agent", "catalog", "--format", "json"]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let index = serde_json::from_str::<Value>(&stdout).expect("catalog index");
-    assert_eq!(index["catalogVersion"], 5);
+    assert_eq!(index["catalogVersion"], 6);
     assert!(index["domains"]
         .as_array()
         .unwrap()
@@ -824,7 +898,7 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
     let envelope = serde_json::from_str::<Value>(&stdout).expect("procedure bootstrap");
     let payload = &envelope["data"];
     assert_eq!(payload["protocolVersion"], 13);
-    assert_eq!(payload["procedureCatalogVersion"], 2);
+    assert_eq!(payload["procedureCatalogVersion"], 3);
     assert_eq!(payload["agentProcedure"]["key"], "panel.canvas.image.insert");
     assert!(payload["agentProcedure"].get("executionMode").is_none());
     assert!(payload.get("workflowCatalogVersion").is_none());
@@ -889,6 +963,7 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
         "panel.wiki.document.delete",
         "panel.wiki.space.manage",
         "panel.writing.context.read",
+        "panel.typesetting.title.request",
         "task.queue.inspect",
         "task.queue.retry",
         "task.queue.cancel",
@@ -940,12 +1015,12 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
                 .iter()
                 .find(|skill| skill["role"] == "selected-portable")
                 .expect("selected portable Skill");
-            assert_eq!(selected_skill["id"], "karpathy-llm-wiki");
+            assert_eq!(selected_skill["id"], "wiki-default");
             assert!(envelope["actions"]["required"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|action| action["id"] == "skill.karpathy-llm-wiki.body"));
+                .any(|action| action["id"] == "skill.wiki-default.body"));
         }
         assert!(envelope["actions"]["suggested"]
             .as_array()

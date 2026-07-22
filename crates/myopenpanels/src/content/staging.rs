@@ -267,6 +267,14 @@ pub fn stage_file(
     stage_file_internal(paths, execution_token, request, false)
 }
 
+pub(crate) fn stage_runtime_validated_file(
+    paths: &MyOpenPanelsPaths,
+    execution_token: &str,
+    request: &StageFileRequest,
+) -> Result<Value, CliError> {
+    stage_file_internal(paths, execution_token, request, true)
+}
+
 fn stage_file_internal(
     paths: &MyOpenPanelsPaths,
     execution_token: &str,

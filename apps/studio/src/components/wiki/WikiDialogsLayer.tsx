@@ -1,6 +1,4 @@
 import { useMyOpenPanelsI18n } from "../../canvas"
-import { wikiRawOriginalUrl } from "../../lib/api"
-import type { MyOpenPanelsTransport } from "../../types"
 import {
   ConfirmDialog,
   MarkdownDialog,
@@ -11,10 +9,10 @@ import type { ReturnTypeOfWikiPanelController } from "./useWikiPanelController"
 
 export function WikiDialogsLayer({
   controller,
-  transport,
+  mentionRawDocuments,
 }: {
   controller: ReturnTypeOfWikiPanelController
-  transport: MyOpenPanelsTransport
+  mentionRawDocuments: boolean
 }) {
   const { t } = useMyOpenPanelsI18n()
   const {
@@ -29,8 +27,8 @@ export function WikiDialogsLayer({
     setPageDialog,
     renameWikiPageFile,
     saveWikiPage,
-    originalPreviewDocument,
-    setOriginalPreviewDocument,
+    originalPreview,
+    setOriginalPreview,
     generatedDocumentDialog,
     setGeneratedDocumentDialog,
     renameGeneratedDocumentFile,
@@ -83,16 +81,13 @@ export function WikiDialogsLayer({
         />
       ) : null}
 
-      {originalPreviewDocument ? (
+      {originalPreview ? (
         <OriginalPreviewDialog
           closeLabel={t`Close`}
-          document={originalPreviewDocument}
-          key={originalPreviewDocument.id}
-          onClose={() => setOriginalPreviewDocument(null)}
-          previewUrl={wikiRawOriginalUrl(
-            transport.apiBase,
-            originalPreviewDocument
-          )}
+          document={originalPreview.document}
+          key={originalPreview.document.id}
+          onClose={() => setOriginalPreview(null)}
+          previewUrl={originalPreview.previewUrl}
           titleLabel={t`Original file`}
         />
       ) : null}
@@ -127,7 +122,7 @@ export function WikiDialogsLayer({
               console.error("Failed to rename generated document", error)
             })
           }
-          title={t`Rename generated document`}
+          title={t`Rename document`}
           value={pendingRenameGeneratedDocument.title}
         />
       ) : null}
@@ -155,7 +150,11 @@ export function WikiDialogsLayer({
           cancelLabel={t`Cancel`}
           confirmLabel={t`Delete`}
           isBusy={isBusy}
-          message={t`This generated document will be removed. Published raw documents will be kept.`}
+          message={
+            mentionRawDocuments
+              ? t`This document will be removed from My Documents. Published raw documents will be kept.`
+              : t`This document will be removed from My Documents.`
+          }
           onCancel={() => setPendingDeleteGeneratedDocument(null)}
           onConfirm={() =>
             deleteGeneratedDocument(pendingDeleteGeneratedDocument).catch(
@@ -164,7 +163,7 @@ export function WikiDialogsLayer({
               }
             )
           }
-          title={t`Delete generated document?`}
+          title={t`Delete document?`}
         />
       ) : null}
 
@@ -189,7 +188,11 @@ export function WikiDialogsLayer({
           cancelLabel={t`Cancel`}
           confirmLabel={t`Switch and rebuild`}
           isBusy={isBusy}
-          message={t`All generated Wiki pages in this project will be deleted and rebuilt with the selected Skill. Raw documents and generated documents will be kept.`}
+          message={
+            mentionRawDocuments
+              ? t`All generated Wiki pages in this project will be deleted and rebuilt with the selected Skill. Raw documents and My Documents will be kept.`
+              : t`All generated Wiki pages in this project will be deleted and rebuilt with the selected Skill. My Documents will be kept.`
+          }
           onCancel={() => setPendingWikiAgentSkillId(null)}
           onConfirm={() =>
             updateWikiAgentSkill(pendingWikiAgentSkillId, true).catch(

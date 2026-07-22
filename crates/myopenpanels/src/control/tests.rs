@@ -187,6 +187,26 @@ mod tests {
                 "projectId": "project:1"
             })
         );
+
+        let uploaded = resolve_typesetting_state(Some(json!({
+            "schemaVersion": 2,
+            "publications": [{
+                "id": "publication:upload",
+                "title": "Uploaded cover",
+                "covers": [{
+                    "assetRef": "projects/project:1/panels/panel:typesetting/assets/cover.png",
+                    "fileName": "cover.png",
+                    "mimeType": "image/png",
+                    "source": { "kind": "upload" },
+                    "src": "/api/assets/cover.png"
+                }],
+                "content": { "type": "doc", "content": [{ "type": "paragraph" }] },
+                "createdAt": "2026-07-22T00:00:00Z",
+                "updatedAt": "2026-07-22T00:00:00Z"
+            }]
+        })))
+        .expect("uploaded cover state");
+        assert!(!uploaded.changed);
     }
 
     #[test]
@@ -212,6 +232,10 @@ mod tests {
         assert_eq!(
             migrated.state["revisionDraft"],
             json!("Revise this paragraph")
+        );
+        assert_eq!(
+            migrated.state["selectedRefinementSkillId"],
+            json!(crate::writing::DEFAULT_WRITING_REFINEMENT_SKILL_ID)
         );
 
         let error = match resolve_writing_state(Some(json!({ "schemaVersion": 4 }))) {
@@ -245,6 +269,21 @@ mod tests {
                 .expect("current state");
         assert!(!accepted.changed);
         assert_eq!(accepted.state, current);
+
+        let mut removed_skill_state = current;
+        removed_skill_state["wikiAgentSkillId"] = json!("karpathy-llm-wiki");
+        let migrated = resolve_wiki_state(
+            &storage,
+            &bootstrap.project,
+            &panel,
+            Some(removed_skill_state),
+        )
+        .expect("removed Skill state");
+        assert!(migrated.changed);
+        assert_eq!(
+            migrated.state["wikiAgentSkillId"],
+            json!("wiki-default")
+        );
 
         let error = match resolve_wiki_state(
             &storage,

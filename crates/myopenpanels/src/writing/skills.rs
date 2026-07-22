@@ -20,28 +20,8 @@ fn normalize_skill_name(requested_name: &str) -> Result<String, CliError> {
 
 fn validate_refinement_sources(
     wiki: &ProjectPanelSnapshot,
-    raw_ids: &[Value],
     generated_ids: &[Value],
 ) -> Result<(), CliError> {
-    let raw_documents = wiki.state["rawDocuments"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    for id in raw_ids.iter().filter_map(Value::as_str) {
-        let ready = raw_documents.iter().any(|document| {
-            document.get("id").and_then(Value::as_str) == Some(id)
-                && document
-                    .get("markdownRef")
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.is_empty())
-        });
-        if !ready {
-            return Err(CliError::with_code(
-                "writing_refinement_source_not_ready",
-                format!("Raw document is not ready for refinement: {id}"),
-            ));
-        }
-    }
     let generated_documents = wiki.state["generatedDocuments"]
         .as_array()
         .cloned()
@@ -216,7 +196,7 @@ pub fn read_refinement(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value
     }
     let refiner_skill_id = payload["task"]["input"]["refinerSkillId"]
         .as_str()
-        .unwrap_or(WRITING_SKILL_REFINER_ID);
+        .unwrap_or(DEFAULT_WRITING_REFINEMENT_SKILL_ID);
     let skill_action = crate::cli::registry::command_action(
         crate::cli::registry::CommandId::registered("agent.skill.read"),
         vec![

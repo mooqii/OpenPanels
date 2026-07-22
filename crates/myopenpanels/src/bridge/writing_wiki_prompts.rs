@@ -65,15 +65,16 @@ fn writing_refinement_task_prompt(task: &Value, workspace: &Path) -> Result<Stri
             "content.md",
         ),
     ] {
-        let documents = context_snapshot
-            .get(collection)
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                CliError::with_code(
+        let documents = match context_snapshot.get(collection).and_then(Value::as_array) {
+            Some(documents) => documents.as_slice(),
+            None if collection == "rawDocuments" => &[],
+            None => {
+                return Err(CliError::with_code(
                     "invalid_task_input",
                     format!("Writing refinement captured {collection} are missing."),
-                )
-            })?;
+                ));
+            }
+        };
         for document in documents {
             let document_id = document
                 .get("id")
@@ -262,7 +263,9 @@ fn wiki_authoring_task_prompt(
                 .as_ref()
                 .map(|context| crate::wiki::selected_agent_skill_id(&context["state"]).to_owned())
         })
-        .unwrap_or_else(|| "karpathy-llm-wiki".to_owned());
+        .unwrap_or_else(|| crate::wiki::DEFAULT_WIKI_AGENT_SKILL_ID.to_owned());
+    let authoring_skill_id =
+        crate::agent::canonical_agent_skill_id(&authoring_skill_id).to_owned();
     let project_id = task
         .get("projectId")
         .and_then(Value::as_str)

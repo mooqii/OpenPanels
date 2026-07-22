@@ -1,5 +1,5 @@
 ---
-name: writing-skill-refiner
+name: writing-refinement-default
 description: 从一组文章中归纳可复用的写作风格、结构与表达技巧，并生成独立、可移植的 Writing Skill。
 ---
 

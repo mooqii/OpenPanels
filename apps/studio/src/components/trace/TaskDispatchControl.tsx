@@ -145,6 +145,7 @@ export function TaskDispatchControl({
               {executionSelection ? (
                 <ListBox.Item
                   id={executionSelection.id}
+                  key={executionSelection.id}
                   textValue={executionSelection.label}
                 >
                   {executionSelection.label}
@@ -152,18 +153,20 @@ export function TaskDispatchControl({
               ) : requiresManualInstruction ? (
                 <ListBox.Item
                   id="manual-unavailable"
+                  key="manual-unavailable"
                   textValue={t`Send instruction manually`}
                 >
                   {t`Send instruction manually`}
                 </ListBox.Item>
               ) : (
                 <>
-                  <ListBox.Item id="auto" textValue="Automatic">
+                  <ListBox.Item id="auto" key="auto" textValue="Automatic">
                     {t`Automatic`}
                   </ListBox.Item>
                   {assignedSelection && task.assignedTarget ? (
                     <ListBox.Item
                       id={assignedSelection}
+                      key={assignedSelection}
                       textValue={task.assignedTarget.name}
                     >
                       {task.assignedTarget.name}
@@ -172,6 +175,7 @@ export function TaskDispatchControl({
                   {selectedProviderIsMissing ? (
                     <ListBox.Item
                       id={currentTaskSelection}
+                      key={currentTaskSelection}
                       textValue={`${t`Prefer`} ${selectedProviderId}`}
                     >
                       {t`Prefer`} {selectedProviderId}

@@ -71,7 +71,8 @@ fn panel_contract_reference(panel_kind: PanelKind) -> Option<&'static str> {
         PanelKind::Canvas => Some("references/canvas-contract.md"),
         PanelKind::Wiki => Some("references/wiki-contract.md"),
         PanelKind::Writing => Some("references/writing-contract.md"),
-        _ => None,
+        PanelKind::Typesetting => Some("references/typesetting-contract.md"),
+        PanelKind::Publishing => Some("references/publishing-contract.md"),
     }
 }
 

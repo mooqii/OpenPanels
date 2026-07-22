@@ -71,13 +71,17 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     let revision_before = storage
         .read_panel_state_revision(&bootstrap.project.id, &wiki_panel.panel.id)
         .expect("panel revision");
-    wiki::write_agent_selection(
-        &paths,
-        true,
-        &[document["id"].as_str().unwrap().to_owned()],
-        &[],
-    )
-    .expect("selection");
+    storage
+        .write_panel_selection(
+            &bootstrap.project.id,
+            &wiki_panel.panel.id,
+            &json!({
+                "isWikiSelected": true,
+                "selectedRawDocumentIds": [document["id"]],
+                "selectedGeneratedDocumentIds": [],
+            }),
+        )
+        .expect("legacy selection");
     let revision_after = Storage::open(&paths)
         .expect("storage")
         .read_panel_state_revision(&bootstrap.project.id, &wiki_panel.panel.id)
@@ -99,55 +103,18 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     ]);
     assert_eq!(code, 0, "{stderr}");
     let selection = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(selection["value"]["selection"]["isWikiSelected"], true);
-    assert_eq!(
-        selection["value"]["selectedRawDocuments"][0]["id"],
-        document["id"]
-    );
-    assert!(
-        selection["value"]["selectedRawDocuments"][0]["originalFilePath"]
-            .as_str()
-            .is_some_and(|path| Path::new(path).is_file())
-    );
-    assert_eq!(
-        selection["value"]["selectedRawDocuments"][0]["markdownAccess"]["status"],
-        "ready"
-    );
-    assert!(selection["value"]["selectedRawDocuments"][0]["markdownFilePath"]
-        .as_str()
-        .is_some_and(|path| Path::new(path).is_file()));
+    assert!(document["id"].as_str().is_some());
+    assert!(selection["value"]["selection"]
+        .get("isWikiSelected")
+        .is_none());
+    assert!(selection["value"]["selection"]
+        .get("selectedRawDocumentIds")
+        .is_none());
+    assert!(selection["value"].get("selectedRawDocuments").is_none());
     assert_eq!(
         selection["value"]["wiki"]["localAccess"]["status"],
-        "ready"
+        "on_demand"
     );
-    let wiki_root = selection["value"]["wiki"]["localAccess"]["rootPath"]
-        .as_str()
-        .expect("wiki root");
-    assert!(Path::new(wiki_root)
-        .join("pages/concepts/myopenpanels.md")
-        .is_file());
-    assert!(selection["value"]["wiki"]["localAccess"]["manifestFilePath"]
-        .as_str()
-        .is_some_and(|path| Path::new(path).is_file()));
-    let stale_page = Path::new(wiki_root).join("pages/stale.md");
-    fs::write(&stale_page, "# Stale\n").expect("stale page");
-    let (code, stdout, stderr) = run(&[
-        "wiki",
-        "space",
-        "materialize",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--space-id",
-        "wiki:default",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stdout}\n{stderr}");
-    assert!(!stale_page.exists());
     assert!(selection["value"]["wiki"].get("loadAction").is_none());
     assert_action_parses(&selection["actions"]["suggested"][0]);
     assert!(selection["value"].get("actions").is_none());
@@ -166,11 +133,17 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     ]);
     assert_eq!(code, 0, "{stderr}");
     let context = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(context["panel"]["selection"]["isExplicit"], true);
+    assert_eq!(context["panel"]["selection"]["isExplicit"], false);
     assert_eq!(
-        context["panel"]["selection"]["summary"]["rawDocumentCount"],
-        1
+        context["panel"]["selection"]["summary"]["generatedDocumentCount"],
+        0
     );
+    assert!(context["panel"]["selection"]["summary"]
+        .get("rawDocumentCount")
+        .is_none());
+    assert!(context["panel"]["selection"]["summary"]
+        .get("wikiSelected")
+        .is_none());
     assert!(context.get("knowledgeContext").is_none());
     let loader = fs::read_to_string(
         context["skills"][0]["contextPath"]
@@ -178,8 +151,9 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
             .expect("Wiki loader path"),
     )
     .expect("Wiki loader");
-    assert!(loader.contains("selected raw document: Product brief"));
-    assert!(loader.contains("wiki local access: status=ready"));
+    assert!(!loader.contains("selected raw document"));
+    assert!(!loader.contains("wiki selected as context"));
+    assert!(loader.contains("wiki local access: status=on_demand"));
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -277,7 +251,7 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
         .read_panel_state_revision(&bootstrap.project.id, &wiki_panel.panel.id)
         .expect("revision");
     let selection =
-        wiki::write_agent_selection(&paths, false, &[], &[document_id.clone()]).expect("selection");
+        wiki::write_agent_selection(&paths, &[document_id.clone()]).expect("selection");
     assert_eq!(
         selection["selectedGeneratedDocuments"][0]["id"],
         document_id
@@ -373,6 +347,13 @@ fn wiki_document_file_names_can_be_renamed_without_changing_extensions() {
         .expect("raw original")
         .file_path
         .ends_with("final.md"));
+    let renamed_raw = wiki::rename_raw_document(&paths, raw_id, "Final 版本 (v2).md")
+        .expect("rename raw document with human-readable characters");
+    assert_eq!(
+        renamed_raw["document"]["originalFileName"],
+        "Final 版本 (v2).md"
+    );
+    assert_eq!(renamed_raw["document"]["title"], "Final 版本 (v2)");
 
     let generated = wiki::create_generated_document(
         &paths,
@@ -395,6 +376,17 @@ fn wiki_document_file_names_can_be_renamed_without_changing_extensions() {
     assert_eq!(
         wiki::read_generated_document(&paths, generated_id).expect("generated content")["content"],
         "# Generated"
+    );
+    let renamed_generated =
+        wiki::rename_generated_document_file(&paths, generated_id, "Article 测试 [v2].md")
+            .expect("rename generated document with human-readable characters");
+    assert_eq!(
+        renamed_generated["document"]["originalFileName"],
+        "Article 测试 [v2].md"
+    );
+    assert_eq!(
+        renamed_generated["document"]["title"],
+        "Article 测试 [v2]"
     );
 
     wiki::write_page(
@@ -562,7 +554,7 @@ fn wiki_mdx_upload_skips_conversion_and_queues_ingest() {
     assert_eq!(tasks["tasks"][0]["type"], "ingest_markdown_into_wiki");
     assert_eq!(
         tasks["tasks"][0]["source"]["agentSkillId"],
-        "karpathy-llm-wiki-zh"
+        "wiki-default"
     );
 }
 

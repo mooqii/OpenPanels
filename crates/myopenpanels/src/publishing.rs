@@ -149,6 +149,10 @@ fn validate_release(release: &Value) -> bool {
         && release
             .pointer("/snapshot/bodyText")
             .is_some_and(Value::is_string)
+        && release.pointer("/snapshot/tags").is_none_or(|tags| {
+            tags.as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string))
+        })
         && publishing_source_has_content(body_text, media.len())
         && media.iter().enumerate().all(|(index, item)| {
             item.get("assetRef").is_some_and(Value::is_string)
@@ -266,11 +270,13 @@ pub fn create_release(
                 format!("Typesetting publication not found: {publication_id}"),
             )
         })?;
-    let title = publication
-        .get("title")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let title = selected_publication_title(&publication);
     let body_text = typesetting_plain_text(publication.get("content").unwrap_or(&Value::Null));
+    let tags = publication
+        .get("tags")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let covers = publication
         .get("covers")
         .and_then(Value::as_array)
@@ -306,6 +312,7 @@ pub fn create_release(
             "snapshot": {
                 "title": title,
                 "bodyText": body_text,
+                "tags": tags,
                 "media": media,
             },
             "attempts": [],
@@ -514,8 +521,31 @@ fn build_attempt(
         max_attempts: 1,
         dispatch_mode: mode.to_owned(),
         idempotency_key: Some(request_id.to_owned()),
+        exclusive_non_terminal: false,
     };
     Ok((attempt, task))
+}
+
+fn selected_publication_title(publication: &Value) -> &str {
+    let fallback = publication
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let Some(titles) = publication.get("titles").and_then(Value::as_array) else {
+        return fallback;
+    };
+    let selected_id = publication.get("selectedTitleId").and_then(Value::as_str);
+    titles
+        .iter()
+        .find(|title| {
+            selected_id.is_some_and(|selected_id| {
+                title.get("id").and_then(Value::as_str) == Some(selected_id)
+            })
+        })
+        .or_else(|| titles.first())
+        .and_then(|title| title.get("value"))
+        .and_then(Value::as_str)
+        .unwrap_or(fallback)
 }
 
 fn snapshot_media(
@@ -985,6 +1015,19 @@ mod tests {
     }
 
     #[test]
+    fn publishing_uses_the_selected_title_alternative() {
+        let publication = json!({
+            "title": "Legacy title",
+            "selectedTitleId": "title:channel",
+            "titles": [
+                { "id": "title:primary", "value": "Primary title" },
+                { "id": "title:channel", "value": "Channel title" }
+            ]
+        });
+        assert_eq!(selected_publication_title(&publication), "Channel title");
+    }
+
+    #[test]
     fn release_validation_requires_the_first_media_item_to_be_primary() {
         let attempt = json!({
             "id": "attempt:1",
@@ -1047,5 +1090,26 @@ mod tests {
         assert!(validate_release(&release("Body", json!([]))));
         assert!(validate_release(&release("", image)));
         assert!(!validate_release(&release("", json!([]))));
+    }
+
+    #[test]
+    fn release_validation_accepts_optional_string_tags() {
+        let release = |tags: Value| {
+            json!({
+                "id": "release:1",
+                "platform": "xiaohongshu",
+                "sourcePublicationId": "publication:1",
+                "snapshot": {
+                    "title": "Title",
+                    "bodyText": "Body",
+                    "media": [],
+                    "tags": tags
+                },
+                "attempts": []
+            })
+        };
+
+        assert!(validate_release(&release(json!(["writing", "AI"]))));
+        assert!(!validate_release(&release(json!(["writing", 42]))));
     }
 }

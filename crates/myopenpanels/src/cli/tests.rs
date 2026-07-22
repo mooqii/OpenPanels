@@ -211,3 +211,4 @@ include!("tests/content_broker.rs");
 include!("tests/writing_and_wiki.rs");
 include!("tests/task_scopes.rs");
 include!("tests/task_publishing_lifecycle.rs");
+include!("tests/typesetting_titles.rs");

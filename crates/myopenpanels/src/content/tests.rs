@@ -415,7 +415,6 @@ mod tests {
         crate::writing::write_selection(
             &paths,
             false,
-            &[selected_id.to_owned()],
             &[selected_generated_id.to_owned()],
         )
         .expect("writing selection");
@@ -428,8 +427,6 @@ mod tests {
         )
         .expect("request");
         let task_id = created["tasks"][0]["id"].as_str().expect("task id");
-        crate::wiki::write_markdown(&paths, selected_id, "# Newer source\n", None)
-            .expect("update selected source");
         crate::wiki::write_generated_document(
             &paths,
             selected_generated_id,
@@ -460,7 +457,7 @@ mod tests {
         )
         .expect("claim");
         let execution_token = claim["executionToken"].as_str().expect("execution token");
-        let captured = read_file(
+        let denied_selected_raw = read_file(
             &paths,
             execution_token,
             &ReadFileRequest {
@@ -469,13 +466,8 @@ mod tests {
                 logical_path: "source.md".to_owned(),
             },
         )
-        .expect("read captured source");
-        assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(captured["contentBase64"].as_str().expect("content"))
-                .expect("base64"),
-            b"# Captured source\n"
-        );
+        .expect_err("raw source must not be captured");
+        assert_eq!(denied_selected_raw.code(), Some("execution_fenced"));
 
         let denied_read = read_file(
             &paths,

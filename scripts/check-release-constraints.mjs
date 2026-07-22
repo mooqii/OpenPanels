@@ -305,12 +305,12 @@ for (const [group, registrations] of [
   }
 }
 assert(
-  agentProcedureCount === 18,
-  `Expected 18 Agent Procedures; got ${agentProcedureCount}.`
+  agentProcedureCount === 19,
+  `Expected 19 Agent Procedures; got ${agentProcedureCount}.`
 )
 assert(
-  taskHandoffCount === 5,
-  `Expected 5 Task Handoffs; got ${taskHandoffCount}.`
+  taskHandoffCount === 9,
+  `Expected 9 Task Handoffs; got ${taskHandoffCount}.`
 )
 
 const manifest = {

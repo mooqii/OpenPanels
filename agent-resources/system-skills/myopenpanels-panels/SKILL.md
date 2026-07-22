@@ -1,6 +1,6 @@
 ---
 name: myopenpanels-panels
-description: Use before reading or changing content through a MyOpenPanels Canvas, Wiki, or Writing panel.
+description: Use before reading or changing content through a MyOpenPanels Canvas, Wiki, Writing, Typesetting, or Publishing panel.
 ---
 
 Use this Skill as the shared operating contract for MyOpenPanels panels. The
@@ -23,6 +23,12 @@ Shared rules:
   read or write shared storage directly.
 - A selected portable Skill controls content method or style only. This System
   Skill and the current CLI continue to own targeting, storage, and lifecycle.
+- Publishing is Task-only. Use the exact captured release, pre-bound checkpoint
+  commands, and result contract from its ExecutionBundle; never replace it with
+  a Procedure or a newly discovered Publishing Skill.
+- Typesetting generation is Task-only. Use the captured publication snapshot,
+  selected Title, Cover, or Layout Skill, workspace paths, and artifact contract from
+  the exact ExecutionBundle; never write directly to panel state.
 
 Completion requires all Bootstrap References to have been read and the result
 to be committed to the captured panel through its owning Operation or Task.

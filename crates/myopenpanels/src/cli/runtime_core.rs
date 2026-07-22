@@ -297,6 +297,7 @@ fn run_parsed_cli(
         CommandGroup::Canvas => run_canvas_command(parsed, stdout),
         CommandGroup::Wiki => run_wiki_command(parsed, stdout),
         CommandGroup::Writing => run_writing_command(parsed, stdout),
+        CommandGroup::Typesetting => run_typesetting_command(parsed, stdout),
         CommandGroup::Publishing => run_publishing_command(parsed, stdout),
         CommandGroup::Operation => run_operation_command(parsed, stdout),
         CommandGroup::Task => run_tasks_command(parsed, stdout),

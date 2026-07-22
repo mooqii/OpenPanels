@@ -1,4 +1,5 @@
-import { Chip } from "@heroui/react"
+import { Button, Chip, Tooltip } from "@heroui/react"
+import { Ban, CheckCircle2, CircleAlert, Clock3, RefreshCw } from "lucide-react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import type { WikiRawDocument } from "../../types"
 
@@ -8,38 +9,98 @@ export function conversionStatusTaskFilter(
   status: WikiRawDocument["conversion"]["status"]
 ): WikiTaskListFilter {
   if (status === "converting") return "active"
-  return status === "cancelled" ? "done" : "pending"
+  return status === "cancelled" || status === "ready" ? "done" : "pending"
 }
 
-export function indexStatusTaskFilter(
-  status: ReturnType<typeof documentIndexStatus>
-): WikiTaskListFilter {
+export function indexStatusTaskFilter(status: {
+  kind: ReturnType<typeof documentIndexStatus>["kind"]
+  label?: string
+  taskId?: string | null
+}): WikiTaskListFilter {
   if (status.kind === "running") return "active"
-  return status.kind === "cancelled" ? "done" : "pending"
+  return status.kind === "cancelled" || status.kind === "done"
+    ? "done"
+    : "pending"
 }
 
-function TaskStatusChip({
+export type WikiTaskStatusKind =
+  | "cancelled"
+  | "done"
+  | "failed"
+  | "pending"
+  | "running"
+
+export function WikiTaskStatusIcon({
+  kind,
+  filter,
+  label,
+  onOpenTasks,
+  taskId,
+}: {
+  kind: WikiTaskStatusKind
+  filter: WikiTaskListFilter
+  label: string
+  onOpenTasks: (filter: WikiTaskListFilter, taskIds?: string[]) => void
+  taskId: string | null | undefined
+}) {
+  const { t } = useMyOpenPanelsI18n()
+  if (!taskId) return null
+  const icon =
+    kind === "done" ? (
+      <CheckCircle2 size={12} />
+    ) : kind === "failed" ? (
+      <CircleAlert size={12} />
+    ) : kind === "cancelled" ? (
+      <Ban size={12} />
+    ) : kind === "running" ? (
+      <RefreshCw className="op-wiki-spin" size={12} />
+    ) : (
+      <Clock3 size={12} />
+    )
+  return (
+    <Tooltip closeDelay={0} delay={0}>
+      <Button
+        aria-label={`${label}. ${t`View related tasks`}`}
+        className="op-wiki-task-status"
+        data-status={kind}
+        isIconOnly
+        onPress={() => onOpenTasks(filter, [taskId])}
+        size="sm"
+        variant="ghost"
+      >
+        {icon}
+      </Button>
+      <Tooltip.Content placement="top" shouldFlip={false}>
+        {label}
+      </Tooltip.Content>
+    </Tooltip>
+  )
+}
+
+function WikiTaskStatusLabel({
   color,
   filter,
   label,
   onOpenTasks,
+  taskId,
 }: {
-  color: "accent" | "danger" | "warning"
+  color: "accent" | "danger" | "success" | "warning"
   filter: WikiTaskListFilter
   label: string
-  onOpenTasks: (filter: WikiTaskListFilter) => void
+  onOpenTasks: (filter: WikiTaskListFilter, taskIds?: string[]) => void
+  taskId: string | null | undefined
 }) {
   const { t } = useMyOpenPanelsI18n()
   return (
     <button
       aria-label={`${label}. ${t`View related tasks`}`}
-      className="op-wiki-task-status"
-      onClick={() => onOpenTasks(filter)}
+      className="op-wiki-task-status-label"
+      onClick={() => onOpenTasks(filter, taskId ? [taskId] : undefined)}
       title={t`View related tasks`}
       type="button"
     >
       <Chip
-        className="op-wiki-task-status__chip"
+        className="op-wiki-task-status-label__chip"
         color={color}
         size="sm"
         variant="soft"
@@ -55,26 +116,28 @@ export function WikiStatus({
   onOpenTasks,
 }: {
   document: WikiRawDocument
-  onOpenTasks: (filter: WikiTaskListFilter) => void
+  onOpenTasks: (filter: WikiTaskListFilter, taskIds?: string[]) => void
 }) {
   const { t } = useMyOpenPanelsI18n()
   if (document.conversion.status === "cancelled") {
     return (
-      <TaskStatusChip
-        color="warning"
+      <WikiTaskStatusIcon
         filter={conversionStatusTaskFilter(document.conversion.status)}
+        kind="cancelled"
         label={t`Conversion cancelled`}
         onOpenTasks={onOpenTasks}
+        taskId={document.conversion.taskId}
       />
     )
   }
   if (document.conversion.status === "failed") {
     return (
-      <TaskStatusChip
-        color="danger"
+      <WikiTaskStatusIcon
         filter={conversionStatusTaskFilter(document.conversion.status)}
+        kind="failed"
         label={t`Conversion failed`}
         onOpenTasks={onOpenTasks}
+        taskId={document.conversion.taskId}
       />
     )
   }
@@ -83,11 +146,18 @@ export function WikiStatus({
     document.conversion.status === "converting"
   ) {
     return (
-      <TaskStatusChip
-        color="warning"
+      <WikiTaskStatusIcon
         filter={conversionStatusTaskFilter(document.conversion.status)}
-        label={t`Converting`}
+        kind={
+          document.conversion.status === "converting" ? "running" : "pending"
+        }
+        label={
+          document.conversion.status === "queued"
+            ? t`Pending conversion`
+            : t`Converting`
+        }
         onOpenTasks={onOpenTasks}
+        taskId={document.conversion.taskId}
       />
     )
   }
@@ -98,22 +168,25 @@ export function WikiIndexStatus({
   onOpenTasks,
   status,
 }: {
-  onOpenTasks: (filter: WikiTaskListFilter) => void
+  onOpenTasks: (filter: WikiTaskListFilter, taskIds?: string[]) => void
   status: ReturnType<typeof documentIndexStatus>
 }) {
   const { t } = useMyOpenPanelsI18n()
   const color =
-    status.kind === "failed"
-      ? "danger"
-      : status.kind === "running"
-        ? "accent"
-        : "warning"
+    status.kind === "done"
+      ? "success"
+      : status.kind === "failed"
+        ? "danger"
+        : status.kind === "running"
+          ? "accent"
+          : "warning"
   return (
-    <TaskStatusChip
+    <WikiTaskStatusLabel
       color={color}
       filter={indexStatusTaskFilter(status)}
       label={t(status.label)}
       onOpenTasks={onOpenTasks}
+      taskId={status.taskId}
     />
   )
 }
@@ -186,21 +259,30 @@ export function documentIndexStatus(
 ): {
   kind: "cancelled" | "done" | "failed" | "pending" | "running"
   label: string
+  taskId: string | null
 } {
   const ingestion = wikiSpaceId
     ? document.ingestionByWikiSpace[wikiSpaceId]
     : undefined
   if (ingestion?.status === "ingested") {
-    return { kind: "done", label: "Indexed" }
+    return { kind: "done", label: "Indexed", taskId: ingestion.taskId }
   }
   if (ingestion?.status === "failed") {
-    return { kind: "failed", label: "Index failed" }
+    return { kind: "failed", label: "Index failed", taskId: ingestion.taskId }
   }
   if (ingestion?.status === "cancelled") {
-    return { kind: "cancelled", label: "Index cancelled" }
+    return {
+      kind: "cancelled",
+      label: "Index cancelled",
+      taskId: ingestion.taskId,
+    }
   }
   if (ingestion?.status === "ingesting") {
-    return { kind: "running", label: "Indexing" }
+    return { kind: "running", label: "Indexing", taskId: ingestion.taskId }
   }
-  return { kind: "pending", label: "Pending index" }
+  return {
+    kind: "pending",
+    label: "Pending index",
+    taskId: ingestion?.taskId ?? null,
+  }
 }

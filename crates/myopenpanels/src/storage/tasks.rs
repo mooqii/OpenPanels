@@ -29,6 +29,7 @@ impl Storage {
                 .unwrap_or("unknown");
             let input = json!({
                 "documentId": task.get("documentId"),
+                "documentKind": task.get("documentKind"),
                 "markdownVersion": task.get("markdownVersion"),
                 "changeEvents": task.get("changeEvents"),
             });
@@ -284,6 +285,21 @@ impl Storage {
             &now,
         )?;
         for (task, id) in tasks.iter().zip(&task_ids) {
+            if task.exclusive_non_terminal {
+                let busy = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id = ? AND panel_id = ? AND queue = ? AND type = ? AND target_ref = ? AND status NOT IN ('failed', 'succeeded', 'cancelled', 'stale', 'superseded'))",
+                        params![project_id, panel_id, &task.queue, &task.task_type, &task.target_ref],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(to_cli_error)?;
+                if busy {
+                    return Err(CliError::with_code(
+                        "task_target_busy",
+                        "The Task target already has active work.",
+                    ));
+                }
+            }
             tx.execute(
                 r#"
                 INSERT INTO tasks (

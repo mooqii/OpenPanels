@@ -281,6 +281,8 @@
 
 .op-agent-task-focus--single {
   justify-content: flex-start;
+  background: transparent;
+  border-bottom: 0;
 }
 
 .op-agent-task-focus button {

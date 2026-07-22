@@ -50,7 +50,7 @@ mod tests {
     fn recommended_domains_skip_panel_kinds_without_agent_commands() {
         assert_eq!(
             recommended_catalog_domains(PanelKind::Typesetting),
-            vec!["operation", "panel", "task"]
+            vec!["operation", "panel", "task", "typesetting"]
         );
         assert_eq!(
             recommended_catalog_domains(PanelKind::Wiki),
@@ -170,8 +170,8 @@ mod tests {
     fn registered_agent_procedures_and_task_handoffs_are_valid_and_indexed() {
         let catalog = load_agent_procedures().expect("Agent Procedure catalog");
         let entry_skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
-        assert_eq!(catalog.procedures.len(), 18);
-        assert_eq!(catalog.task_handoff_keys.len(), 5);
+        assert_eq!(catalog.procedures.len(), 19);
+        assert_eq!(catalog.task_handoff_keys.len(), 9);
         for procedure in catalog.procedures {
             assert!(
                 entry_skill.contains(&format!("`{}`", procedure.registration.key)),

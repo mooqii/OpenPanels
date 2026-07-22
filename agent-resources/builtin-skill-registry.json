@@ -6,11 +6,11 @@
       "id": "myopenpanels-panels",
       "name": "MyOpenPanels Panels",
       "source": "builtin",
-      "appliesTo": ["canvas", "wiki", "writing"],
+      "appliesTo": ["canvas", "wiki", "writing", "typesetting", "publishing"],
       "taskTypes": [],
       "requiresCommands": [],
       "loadWhen": [
-        "Before reading or changing content through a MyOpenPanels Canvas, Wiki, or Writing panel."
+        "Before reading or changing content through a MyOpenPanels Canvas, Wiki, Writing, Typesetting, or Publishing panel."
       ],
       "tokens": "short",
       "procedures": [
@@ -222,6 +222,20 @@
             "wiki.page.search",
             "wiki.page.read"
           ]
+        },
+        {
+          "key": "panel.typesetting.title.request",
+          "description": "Create a title generation Task for an explicitly identified Typesetting publication.",
+          "panelKind": "typesetting",
+          "references": [
+            "references/typesetting-contract.md",
+            "references/typesetting-title-request.md"
+          ],
+          "selectionPolicy": "none",
+          "commandIntents": [
+            "typesetting.title.skill.list",
+            "typesetting.title.generate"
+          ]
         }
       ],
       "taskHandoffs": [
@@ -281,6 +295,49 @@
             "writing.skill.install",
             "task.complete",
             "task.fail"
+          ]
+        },
+        {
+          "key": "panel.publishing.request.execute",
+          "description": "Execute a captured Publishing release inside its exact claimed Task.",
+          "panelKind": "publishing",
+          "reference": "references/publishing-execute-request.md",
+          "commandIntents": ["publishing.checkpoint"]
+        },
+        {
+          "key": "panel.typesetting.cover.generate",
+          "description": "Generate a cover for a captured Typesetting publication inside its exact claimed Task.",
+          "panelKind": "typesetting",
+          "reference": "references/typesetting-cover-generate.md",
+          "commandIntents": [
+            "task.handoff.heartbeat",
+            "task.handoff.complete",
+            "task.handoff.fail",
+            "task.handoff.stop"
+          ]
+        },
+        {
+          "key": "panel.typesetting.title.generate",
+          "description": "Generate title candidates for a captured Typesetting publication inside its exact claimed Task.",
+          "panelKind": "typesetting",
+          "reference": "references/typesetting-title-generate.md",
+          "commandIntents": [
+            "task.handoff.heartbeat",
+            "task.handoff.complete",
+            "task.handoff.fail",
+            "task.handoff.stop"
+          ]
+        },
+        {
+          "key": "panel.typesetting.content.format",
+          "description": "Automatically format captured Typesetting content inside its exact claimed Task.",
+          "panelKind": "typesetting",
+          "reference": "references/typesetting-content-format.md",
+          "commandIntents": [
+            "task.handoff.heartbeat",
+            "task.handoff.complete",
+            "task.handoff.fail",
+            "task.handoff.stop"
           ]
         }
       ]
@@ -376,33 +433,22 @@
   ],
   "presetSkills": [
     {
-      "packageDir": "karpathy-llm-wiki",
-      "id": "karpathy-llm-wiki",
-      "name": "Karpathy LLM Wiki",
+      "packageDir": "wiki-default",
+      "id": "wiki-default",
+      "name": "默认Wiki",
       "source": "builtin",
       "appliesTo": ["wiki"],
       "taskTypes": ["ingest_markdown_into_wiki", "maintain_wiki"],
       "requiresCommands": [],
       "loadWhen": [
-        "The current wiki work should maintain a Karpathy-style generated wiki."
+        "The current wiki work should maintain the default generated wiki."
       ],
       "tokens": "medium"
     },
     {
-      "packageDir": "karpathy-llm-wiki-zh",
-      "id": "karpathy-llm-wiki-zh",
-      "name": "Karpathy LLM Wiki 中文",
-      "source": "builtin",
-      "appliesTo": ["wiki"],
-      "taskTypes": ["ingest_markdown_into_wiki", "maintain_wiki"],
-      "requiresCommands": [],
-      "loadWhen": ["当前工作需要用中文维护 Karpathy 风格的生成式 Wiki。"],
-      "tokens": "medium"
-    },
-    {
-      "packageDir": "writing-skill-refiner",
-      "id": "writing-skill-refiner",
-      "name": "提炼写作",
+      "packageDir": "writing-refinement-default",
+      "id": "writing-refinement-default",
+      "name": "默认提炼",
       "source": "builtin",
       "appliesTo": ["writing"],
       "taskTypes": ["refine_writing_skill"],
@@ -424,28 +470,6 @@
       "tokens": "short"
     },
     {
-      "packageDir": "writing-long-article",
-      "id": "writing-long-article",
-      "name": "长文章",
-      "source": "builtin",
-      "appliesTo": ["writing"],
-      "taskTypes": ["generate_document"],
-      "requiresCommands": [],
-      "loadWhen": ["The writing request selected a long-form article."],
-      "tokens": "short"
-    },
-    {
-      "packageDir": "writing-xiaohongshu-note",
-      "id": "writing-xiaohongshu-note",
-      "name": "小红书笔记",
-      "source": "builtin",
-      "appliesTo": ["writing"],
-      "taskTypes": ["generate_document"],
-      "requiresCommands": [],
-      "loadWhen": ["The writing request selected a Xiaohongshu-style note."],
-      "tokens": "short"
-    },
-    {
       "packageDir": "typesetting-cover-default",
       "id": "typesetting-cover-default",
       "name": "默认封面",
@@ -454,6 +478,30 @@
       "taskTypes": ["generate_typesetting_cover"],
       "requiresCommands": [],
       "loadWhen": ["The Typesetting request creates an article cover."],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "typesetting-title-default",
+      "id": "typesetting-title-default",
+      "name": "默认标题生成",
+      "source": "builtin",
+      "appliesTo": ["typesetting"],
+      "taskTypes": ["generate_typesetting_titles"],
+      "requiresCommands": [],
+      "loadWhen": [
+        "The Typesetting request generates publication title candidates."
+      ],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "typesetting-layout-default",
+      "id": "typesetting-layout-default",
+      "name": "默认排版",
+      "source": "builtin",
+      "appliesTo": ["typesetting"],
+      "taskTypes": ["format_typesetting_content"],
+      "requiresCommands": [],
+      "loadWhen": ["The Typesetting request formats publication content."],
       "tokens": "short"
     },
     {

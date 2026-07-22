@@ -9,6 +9,8 @@ const RECOMMENDED_MODULE_ORDER = [
   "writing",
   "writing-refinement",
   "typesetting-cover",
+  "typesetting-title",
+  "typesetting-layout",
   "publishing",
 ]
 

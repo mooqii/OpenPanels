@@ -1,7 +1,6 @@
 import {
   Button,
   Checkbox,
-  Chip,
   Dropdown,
   Header,
   Label,
@@ -11,12 +10,9 @@ import {
 } from "@heroui/react"
 import {
   ChevronDown,
-  ExternalLink,
-  Eye,
   FileOutput,
   FilePlus2,
   FileUp,
-  FolderOpen,
   MoreHorizontal,
   PanelLeft,
   Pencil,
@@ -26,19 +22,19 @@ import {
   Trash2,
   X,
 } from "lucide-react"
-import { originalPreviewKind } from "../../lib/api"
 import {
   latestWritingTaskForDocument,
   writingDocumentStatus,
 } from "../../lib/writing"
-import {
-  GeneratedDocumentsEmpty,
-  RawDocumentsEmpty,
-  WikiPagesEmpty,
-} from "./DocumentModuleEmpty"
+import { GeneratedDocumentsEmpty, WikiPagesEmpty } from "./DocumentModuleEmpty"
 import { GeneratedDocumentMeta } from "./GeneratedDocumentMeta"
-import { documentIndexStatus, WikiIndexStatus, WikiStatus } from "./helpers"
-import { RawDocumentMeta } from "./RawDocumentMeta"
+import { generatedDocumentConversionDisplay } from "./generated-document-display"
+import {
+  conversionStatusTaskFilter,
+  WikiTaskStatusIcon,
+  type WikiTaskStatusKind,
+} from "./helpers"
+import { RawDocumentsModule } from "./RawDocumentsModule"
 import type {
   ReturnTypeOfWikiPanelController,
   WikiPanelProps,
@@ -65,40 +61,31 @@ export function WikiPanelView(
     wikiAgentSkillId,
     agentSkills,
     setPendingWikiAgentSkillId,
-    setPendingDeleteDocument,
     setPendingDeleteGeneratedDocument,
-    setPendingRenameRawDocument,
     setPendingRenameGeneratedDocument,
-    setOriginalPreviewDocument,
     isBusy,
     retryingGeneratedDocumentId,
     generatedDocumentRetryError,
     isSelectionBusy,
     agentSelection,
-    isRawDragActive,
+    isGeneratedDragActive,
     isDocumentLibraryOpen,
     setIsDocumentLibraryOpen,
     collapsedModules,
-    fileInputRef,
+    generatedFileInputRef,
     wikiPageTree,
     moduleHeaderToggle,
     moduleInfo,
     renderWikiPageNodes,
     updateAgentSelection,
-    openMarkdown,
-    extractMarkdown,
-    reindexDocument,
-    revealOriginal,
-    openOriginalInNewWindow,
-    openRawOriginal,
-    addFiles,
-    createRawMarkdownDocument,
-    handleRawDragEnter,
-    handleRawDragOver,
-    handleRawDragLeave,
-    handleRawDrop,
     openGeneratedDocument,
+    openGeneratedOriginal,
     createGeneratedMarkdownDocument,
+    addGeneratedFiles,
+    handleGeneratedDragEnter,
+    handleGeneratedDragOver,
+    handleGeneratedDragLeave,
+    handleGeneratedDrop,
     publishGeneratedDocument,
     retryGeneratedDocument,
     displayedGeneratedDocuments,
@@ -117,34 +104,44 @@ export function WikiPanelView(
           }
         >
           {(() => {
-            const rawDocumentsModule = (
-              <aside
+            const rawDocumentsModule = writing ? null : (
+              <RawDocumentsModule
+                controller={props.controller}
+                onOpenAgentTasks={onOpenAgentTasks}
+                state={state}
+              />
+            )
+            const generatedDocumentsModule = (
+              <section
                 className={
-                  collapsedModules.has("raw")
-                    ? "op-wiki-column op-wiki-column--raw op-wiki-column--collapsed"
-                    : isRawDragActive
-                      ? "op-wiki-column op-wiki-column--raw op-wiki-column--drop-active"
-                      : "op-wiki-column op-wiki-column--raw"
+                  writing && collapsedModules.has("generated")
+                    ? "op-wiki-column--collapsed op-wiki-column op-wiki-column--generated"
+                    : isGeneratedDragActive
+                      ? "op-wiki-column op-wiki-column--generated op-wiki-column--drop-active"
+                      : "op-wiki-column op-wiki-column--generated"
                 }
-                onDragEnter={handleRawDragEnter}
-                onDragLeave={handleRawDragLeave}
-                onDragOver={handleRawDragOver}
-                onDrop={handleRawDrop}
+                onDragEnter={handleGeneratedDragEnter}
+                onDragLeave={handleGeneratedDragLeave}
+                onDragOver={handleGeneratedDragOver}
+                onDrop={handleGeneratedDrop}
               >
                 <div className="op-wiki-drop-hint">{t`Drop files to upload`}</div>
                 <div className="op-wiki-column__header">
-                  {moduleHeaderToggle("raw", t`Raw Documents`)}
+                  {writing
+                    ? moduleHeaderToggle("generated", t`My Documents`)
+                    : null}
                   <div className="op-wiki-column__title">
-                    <h2>{t`Raw Documents`}</h2>
+                    <h2>{t`My Documents`}</h2>
                     {moduleInfo(
-                      t`Raw Documents`,
-                      t`Source files live here. Added content is converted to Markdown and indexed into the Wiki. Selecting a document lets the agent discover it and load its content when needed.`
+                      t`My Documents`,
+                      t`Documents you add or create with agents live here. Imported files are converted when needed without changing the Wiki. Selecting a document lets the agent discover it and load its latest content.`
                     )}
                   </div>
                   <div className="op-wiki-actions">
                     <Dropdown>
                       <Button
                         aria-label={t`Add document`}
+                        className="op-wiki-add-button"
                         isDisabled={isBusy}
                         isIconOnly
                         size="sm"
@@ -157,16 +154,18 @@ export function WikiPanelView(
                           aria-label={t`Add document`}
                           onAction={(key) => {
                             if (key === "add-file") {
-                              fileInputRef.current?.click()
+                              generatedFileInputRef.current?.click()
                               return
                             }
                             if (key === "new-document") {
-                              createRawMarkdownDocument().catch((error) => {
-                                console.error(
-                                  "Failed to create raw Markdown document",
-                                  error
-                                )
-                              })
+                              createGeneratedMarkdownDocument().catch(
+                                (error) => {
+                                  console.error(
+                                    "Failed to create generated Markdown document",
+                                    error
+                                  )
+                                }
+                              )
                             }
                           }}
                         >
@@ -189,274 +188,12 @@ export function WikiPanelView(
                     hidden
                     multiple
                     onChange={(event) => {
-                      addFiles(event.currentTarget.files)
+                      addGeneratedFiles(event.currentTarget.files)
                       event.currentTarget.value = ""
                     }}
-                    ref={fileInputRef}
+                    ref={generatedFileInputRef}
                     type="file"
                   />
-                </div>
-                <div
-                  className={
-                    state.rawDocuments.length === 0
-                      ? "op-wiki-column__content op-wiki-list op-wiki-list--empty"
-                      : "op-wiki-column__content op-wiki-list"
-                  }
-                >
-                  {state.rawDocuments.length ? (
-                    state.rawDocuments.map((document) => {
-                      const previewKind = originalPreviewKind(document)
-                      const hasMarkdown = Boolean(document.markdownRef)
-                      const indexStatus = documentIndexStatus(
-                        document,
-                        activeSpace?.id
-                      )
-                      return (
-                        <div
-                          className="op-wiki-list-item op-wiki-list-item--interactive"
-                          key={document.id}
-                        >
-                          <Checkbox
-                            aria-label={`${t`Select for agent context`}: ${document.title}`}
-                            className="op-wiki-selection-checkbox op-wiki-selection-checkbox--document"
-                            isDisabled={isSelectionBusy}
-                            isSelected={agentSelection.selectedRawDocumentIds.includes(
-                              document.id
-                            )}
-                            onChange={(isSelected) => {
-                              const selectedRawDocumentIds = isSelected
-                                ? [
-                                    ...agentSelection.selectedRawDocumentIds,
-                                    document.id,
-                                  ]
-                                : agentSelection.selectedRawDocumentIds.filter(
-                                    (documentId) => documentId !== document.id
-                                  )
-                              updateAgentSelection({
-                                ...agentSelection,
-                                selectedRawDocumentIds,
-                              }).catch((error) => {
-                                console.error(
-                                  "Failed to update raw document selection",
-                                  error
-                                )
-                              })
-                            }}
-                            variant="secondary"
-                          >
-                            <Checkbox.Content>
-                              <Checkbox.Control>
-                                <Checkbox.Indicator />
-                              </Checkbox.Control>
-                            </Checkbox.Content>
-                          </Checkbox>
-                          <div className="op-wiki-list-item__body">
-                            <button
-                              aria-label={document.title}
-                              className="op-raw-document-open"
-                              onClick={() => {
-                                if (hasMarkdown) {
-                                  openMarkdown(document).catch((error) => {
-                                    console.error(
-                                      "Failed to open wiki markdown",
-                                      error
-                                    )
-                                  })
-                                  return
-                                }
-                                openRawOriginal(document)
-                              }}
-                              type="button"
-                            />
-                            <div className="op-raw-document-copy">
-                              <strong className="op-wiki-list-item__title">
-                                {document.title}
-                              </strong>
-                              <div className="op-raw-document-subtitle">
-                                <RawDocumentMeta
-                                  document={document}
-                                  onOpenOriginal={() =>
-                                    openRawOriginal(document)
-                                  }
-                                />
-                                {hasMarkdown && indexStatus.kind !== "done" ? (
-                                  <WikiIndexStatus
-                                    onOpenTasks={onOpenAgentTasks}
-                                    status={indexStatus}
-                                  />
-                                ) : null}
-                                <WikiStatus
-                                  document={document}
-                                  onOpenTasks={onOpenAgentTasks}
-                                />
-                              </div>
-                            </div>
-                          </div>
-                          <div className="op-wiki-list-item__tools">
-                            <Dropdown>
-                              <Button
-                                aria-label={t`Document actions`}
-                                isIconOnly
-                                size="sm"
-                                variant="ghost"
-                              >
-                                <MoreHorizontal size={16} />
-                              </Button>
-                              <Dropdown.Popover>
-                                <Dropdown.Menu
-                                  disabledKeys={[
-                                    ...(isBusy
-                                      ? [
-                                          "preview",
-                                          "open",
-                                          "reveal",
-                                          "sync",
-                                          "rename",
-                                          "delete",
-                                        ]
-                                      : []),
-                                    ...(previewKind ? [] : ["preview"]),
-                                  ]}
-                                  onAction={(key) => {
-                                    switch (key) {
-                                      case "preview":
-                                        setOriginalPreviewDocument(document)
-                                        break
-                                      case "open":
-                                        openOriginalInNewWindow(document)
-                                        break
-                                      case "reveal":
-                                        revealOriginal(document).catch(
-                                          (error) => {
-                                            console.error(
-                                              "Failed to reveal wiki raw document",
-                                              error
-                                            )
-                                          }
-                                        )
-                                        break
-                                      case "sync":
-                                        ;(hasMarkdown
-                                          ? reindexDocument(document)
-                                          : extractMarkdown(document)
-                                        ).catch((error) => {
-                                          console.error(
-                                            hasMarkdown
-                                              ? "Failed to reindex wiki document"
-                                              : "Failed to extract wiki raw document",
-                                            error
-                                          )
-                                        })
-                                        break
-                                      case "rename":
-                                        setPendingRenameRawDocument(document)
-                                        break
-                                      case "delete":
-                                        setPendingDeleteDocument(document)
-                                        break
-                                      default:
-                                        break
-                                    }
-                                  }}
-                                >
-                                  <Dropdown.Item
-                                    id="preview"
-                                    textValue={t`Preview original file`}
-                                  >
-                                    <Eye size={14} />
-                                    <Label>{t`Preview original file`}</Label>
-                                  </Dropdown.Item>
-                                  <Dropdown.Item
-                                    id="open"
-                                    textValue={t`Open in new window`}
-                                  >
-                                    <ExternalLink size={14} />
-                                    <Label>{t`Open in new window`}</Label>
-                                  </Dropdown.Item>
-                                  <Dropdown.Item
-                                    id="reveal"
-                                    textValue={t`Show in folder`}
-                                  >
-                                    <FolderOpen size={14} />
-                                    <Label>{t`Show in folder`}</Label>
-                                  </Dropdown.Item>
-                                  <Dropdown.Item
-                                    id="sync"
-                                    textValue={
-                                      hasMarkdown ? t`Reindex` : t`Re-extract`
-                                    }
-                                  >
-                                    <RefreshCw size={14} />
-                                    <Label>
-                                      {hasMarkdown ? t`Reindex` : t`Re-extract`}
-                                    </Label>
-                                  </Dropdown.Item>
-                                  <Dropdown.Item
-                                    id="rename"
-                                    textValue={t`Rename`}
-                                  >
-                                    <Pencil size={14} />
-                                    <Label>{t`Rename`}</Label>
-                                  </Dropdown.Item>
-                                  <Separator />
-                                  <Dropdown.Item
-                                    id="delete"
-                                    textValue={t`Delete`}
-                                    variant="danger"
-                                  >
-                                    <Trash2 size={14} />
-                                    <Label>{t`Delete`}</Label>
-                                  </Dropdown.Item>
-                                </Dropdown.Menu>
-                              </Dropdown.Popover>
-                            </Dropdown>
-                          </div>
-                        </div>
-                      )
-                    })
-                  ) : (
-                    <RawDocumentsEmpty />
-                  )}
-                </div>
-              </aside>
-            )
-            const generatedDocumentsModule = (
-              <section
-                className={
-                  collapsedModules.has("generated")
-                    ? "op-wiki-column--collapsed op-wiki-column op-wiki-column--generated"
-                    : "op-wiki-column op-wiki-column--generated"
-                }
-              >
-                <div className="op-wiki-column__header">
-                  {moduleHeaderToggle("generated", t`Generated Documents`)}
-                  <div className="op-wiki-column__title">
-                    <h2>{t`Generated Documents`}</h2>
-                    {moduleInfo(
-                      t`Generated Documents`,
-                      t`Drafts created by agents live here before they become source material. Agents can create and edit these documents. Selecting a document lets the agent discover it and load its latest content when needed.`
-                    )}
-                  </div>
-                  <div className="op-wiki-actions">
-                    <Button
-                      aria-label={t`New document`}
-                      className="op-wiki-add-button"
-                      isDisabled={isBusy}
-                      isIconOnly
-                      onPress={() => {
-                        createGeneratedMarkdownDocument().catch((error) => {
-                          console.error(
-                            "Failed to create generated Markdown document",
-                            error
-                          )
-                        })
-                      }}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <FilePlus2 size={16} />
-                    </Button>
-                  </div>
                 </div>
                 <div
                   className={
@@ -475,11 +212,96 @@ export function WikiPanelView(
                         document.generation?.status === "generating"
                       const generationFailed =
                         document.generation?.status === "failed"
+                      const conversion =
+                        generatedDocumentConversionDisplay(document)
+                      const conversionFailed = conversion.isFailed
+                      const isContentLocked =
+                        isGenerating || conversion.isLocked
                       const isWritingLocked =
                         writingStatus === "pending_create" ||
                         writingStatus === "pending_revise" ||
                         writingStatus === "active"
                       const displayTitle = document.title.trim() || t`Untitled`
+                      const taskStatus: {
+                        filter: "active" | "done" | "pending"
+                        kind: WikiTaskStatusKind
+                        label: string
+                        taskId: string | null | undefined
+                      } | null = writingStatus
+                        ? {
+                            filter:
+                              writingStatus === "active" ? "active" : "pending",
+                            kind:
+                              writingStatus === "active"
+                                ? "running"
+                                : writingStatus === "failed"
+                                  ? "failed"
+                                  : "pending",
+                            label:
+                              writingStatus === "pending_create"
+                                ? t`Pending creation`
+                                : writingStatus === "pending_revise"
+                                  ? t`Pending revision`
+                                  : writingStatus === "active"
+                                    ? t`In progress`
+                                    : t`Failed`,
+                            taskId: writingTask?.id,
+                          }
+                        : document.generation
+                          ? {
+                              filter:
+                                document.generation.status === "generating"
+                                  ? "active"
+                                  : document.generation.status === "failed"
+                                    ? "pending"
+                                    : "done",
+                              kind:
+                                document.generation.status === "generating"
+                                  ? "running"
+                                  : document.generation.status === "failed"
+                                    ? "failed"
+                                    : "done",
+                              label:
+                                document.generation.status === "generating"
+                                  ? t`Generating`
+                                  : document.generation.status === "failed"
+                                    ? t`Failed`
+                                    : t`Succeeded`,
+                              taskId: document.taskId,
+                            }
+                          : document.conversion &&
+                              !["not_required", "ready"].includes(
+                                document.conversion.status
+                              )
+                            ? {
+                                filter: conversionStatusTaskFilter(
+                                  document.conversion.status
+                                ),
+                                kind:
+                                  document.conversion.status === "converting"
+                                    ? "running"
+                                    : document.conversion.status === "queued"
+                                      ? "pending"
+                                      : document.conversion.status === "failed"
+                                        ? "failed"
+                                        : document.conversion.status ===
+                                            "cancelled"
+                                          ? "cancelled"
+                                          : "done",
+                                label:
+                                  document.conversion.status === "converting"
+                                    ? t`Converting`
+                                    : document.conversion.status === "queued"
+                                      ? t`Pending conversion`
+                                      : document.conversion.status === "failed"
+                                        ? t`Conversion failed`
+                                        : document.conversion.status ===
+                                            "cancelled"
+                                          ? t`Conversion cancelled`
+                                          : t`Succeeded`,
+                                taskId: document.conversion.taskId,
+                              }
+                            : null
                       return (
                         <div
                           className="op-wiki-list-item op-wiki-list-item--interactive"
@@ -488,7 +310,12 @@ export function WikiPanelView(
                           <Checkbox
                             aria-label={`${t`Select for agent context`}: ${displayTitle}`}
                             className="op-wiki-selection-checkbox op-wiki-selection-checkbox--document"
-                            isDisabled={isSelectionBusy || isWritingLocked}
+                            isDisabled={
+                              isSelectionBusy ||
+                              isWritingLocked ||
+                              isContentLocked ||
+                              conversionFailed
+                            }
                             isSelected={agentSelection.selectedGeneratedDocumentIds.includes(
                               document.id
                             )}
@@ -519,61 +346,64 @@ export function WikiPanelView(
                               </Checkbox.Control>
                             </Checkbox.Content>
                           </Checkbox>
-                          <button
-                            className="op-wiki-list-item__body"
-                            disabled={isGenerating || isWritingLocked}
-                            onClick={() => {
-                              openGeneratedDocument(document).catch((error) => {
-                                console.error(
-                                  "Failed to open generated document",
-                                  error
+                          <div className="op-wiki-list-item__body">
+                            <button
+                              aria-label={displayTitle}
+                              className="op-generated-document-open"
+                              disabled={
+                                isContentLocked ||
+                                isWritingLocked ||
+                                conversionFailed
+                              }
+                              onClick={() => {
+                                openGeneratedDocument(document).catch(
+                                  (error) => {
+                                    console.error(
+                                      "Failed to open generated document",
+                                      error
+                                    )
+                                  }
                                 )
-                              })
-                            }}
-                            type="button"
-                          >
-                            <div>
+                              }}
+                              type="button"
+                            />
+                            <div className="op-generated-document-copy">
                               <strong className="op-wiki-list-item__title">
                                 {displayTitle}
                               </strong>
                               <GeneratedDocumentMeta
                                 apiBase={transport.apiBase}
                                 document={document}
+                                onOpenOriginal={
+                                  document.importSource
+                                    ? () => openGeneratedOriginal(document)
+                                    : undefined
+                                }
+                                status={
+                                  taskStatus ? (
+                                    <WikiTaskStatusIcon
+                                      filter={taskStatus.filter}
+                                      kind={taskStatus.kind}
+                                      label={taskStatus.label}
+                                      onOpenTasks={onOpenAgentTasks}
+                                      taskId={taskStatus.taskId}
+                                    />
+                                  ) : null
+                                }
                               />
                             </div>
-                          </button>
+                          </div>
                           <div className="op-wiki-list-item__tools">
-                            {writingStatus ? (
-                              <Chip
-                                className="op-generated-document-task-status"
-                                color={
-                                  writingStatus === "failed"
-                                    ? "danger"
-                                    : writingStatus === "active"
-                                      ? "accent"
-                                      : "warning"
-                                }
-                                size="sm"
-                                variant="soft"
-                              >
-                                {writingStatus === "pending_create"
-                                  ? t`Pending creation`
-                                  : writingStatus === "pending_revise"
-                                    ? t`Pending revision`
-                                    : writingStatus === "active"
-                                      ? t`In progress`
-                                      : t`Failed`}
-                              </Chip>
-                            ) : isGenerating ? (
-                              <span className="op-generated-document-status">
-                                <RefreshCw className="op-wiki-spin" size={14} />
-                                {t`Generating`}
-                              </span>
-                            ) : null}
-                            {writingStatus === "failed" || generationFailed ? (
+                            {writingStatus === "failed" ||
+                            generationFailed ||
+                            conversionFailed ? (
                               <Tooltip closeDelay={0} delay={0}>
                                 <Button
-                                  aria-label={t`Generation failed. Click to retry`}
+                                  aria-label={
+                                    conversionFailed
+                                      ? t`Conversion failed. Click to retry`
+                                      : t`Generation failed. Click to retry`
+                                  }
                                   className="op-generated-document-retry"
                                   isIconOnly
                                   onPress={() =>
@@ -600,8 +430,10 @@ export function WikiPanelView(
                                   shouldFlip={false}
                                 >
                                   {generatedDocumentRetryError === document.id
-                                    ? t`Retry failed. Ask the Agent to generate it again.`
-                                    : t`Generation failed. Click to retry`}
+                                    ? t`Retry failed. Ask the Agent to try again.`
+                                    : conversionFailed
+                                      ? t`Conversion failed. Click to retry`
+                                      : t`Generation failed. Click to retry`}
                                 </Tooltip.Content>
                               </Tooltip>
                             ) : null}
@@ -620,6 +452,9 @@ export function WikiPanelView(
                                   disabledKeys={[
                                     ...(isBusy || isWritingLocked
                                       ? ["publish", "rename", "delete"]
+                                      : []),
+                                    ...(isContentLocked || conversionFailed
+                                      ? ["publish", "rename"]
                                       : []),
                                   ]}
                                   onAction={(key) => {
@@ -643,21 +478,23 @@ export function WikiPanelView(
                                     }
                                   }}
                                 >
-                                  <Dropdown.Item
-                                    id="publish"
-                                    textValue={
-                                      document.publishHistory.length
-                                        ? t`Add latest version to raw documents`
-                                        : t`Add to raw documents`
-                                    }
-                                  >
-                                    <FileOutput size={14} />
-                                    <Label>
-                                      {document.publishHistory.length
-                                        ? t`Add latest version to raw documents`
-                                        : t`Add to raw documents`}
-                                    </Label>
-                                  </Dropdown.Item>
+                                  {writing ? null : (
+                                    <Dropdown.Item
+                                      id="publish"
+                                      textValue={
+                                        document.publishHistory.length
+                                          ? t`Add latest version to raw documents`
+                                          : t`Add to raw documents`
+                                      }
+                                    >
+                                      <FileOutput size={14} />
+                                      <Label>
+                                        {document.publishHistory.length
+                                          ? t`Add latest version to raw documents`
+                                          : t`Add to raw documents`}
+                                      </Label>
+                                    </Dropdown.Item>
+                                  )}
                                   <Dropdown.Item
                                     id="rename"
                                     textValue={t`Rename`}
@@ -690,16 +527,18 @@ export function WikiPanelView(
             const structuredWikiModule = (
               <section
                 className={
-                  collapsedModules.has("structured")
+                  writing && collapsedModules.has("structured")
                     ? "op-wiki-column--collapsed op-wiki-column op-wiki-column--structured"
                     : "op-wiki-column op-wiki-column--structured"
                 }
               >
                 <div className="op-wiki-column__header">
-                  {moduleHeaderToggle(
-                    "structured",
-                    activeSpace?.title || t`Wiki`
-                  )}
+                  {writing
+                    ? moduleHeaderToggle(
+                        "structured",
+                        activeSpace?.title || t`Wiki`
+                      )
+                    : null}
                   <div className="op-wiki-column__title">
                     {writing ? null : (
                       <Button
@@ -713,36 +552,89 @@ export function WikiPanelView(
                         <PanelLeft size={17} />
                       </Button>
                     )}
-                    <Checkbox
-                      aria-label={t`Select Wiki for agent context`}
-                      className="op-wiki-selection-checkbox"
-                      isDisabled={isSelectionBusy}
-                      isSelected={agentSelection.isWikiSelected}
-                      onChange={(isWikiSelected) => {
-                        updateAgentSelection({
-                          ...agentSelection,
-                          isWikiSelected,
-                        }).catch((error) => {
-                          console.error(
-                            "Failed to update Wiki selection",
-                            error
-                          )
-                        })
-                      }}
-                      variant="secondary"
-                    >
-                      <Checkbox.Content>
-                        <Checkbox.Control>
-                          <Checkbox.Indicator />
-                        </Checkbox.Control>
-                      </Checkbox.Content>
-                    </Checkbox>
+                    {writing ? (
+                      <Checkbox
+                        aria-label={t`Select Wiki for agent context`}
+                        className="op-wiki-selection-checkbox"
+                        isDisabled={isSelectionBusy}
+                        isSelected={agentSelection.isWikiSelected}
+                        onChange={(isWikiSelected) => {
+                          updateAgentSelection({
+                            ...agentSelection,
+                            isWikiSelected,
+                          }).catch((error) => {
+                            console.error(
+                              "Failed to update Wiki selection",
+                              error
+                            )
+                          })
+                        }}
+                        variant="secondary"
+                      >
+                        <Checkbox.Content>
+                          <Checkbox.Control>
+                            <Checkbox.Indicator />
+                          </Checkbox.Control>
+                        </Checkbox.Content>
+                      </Checkbox>
+                    ) : null}
                     <h2>
                       {activeSpace?.title ? t(activeSpace.title) : t`Wiki`}
                     </h2>
                     {moduleInfo(
                       activeSpace?.title || t`Wiki`,
-                      t`Structured knowledge pages generated from your sources live here. Agents can search and update this Wiki. Selecting it lets the agent discover the Wiki and load relevant pages when needed.`
+                      writing
+                        ? t`Structured knowledge pages generated from your sources live here. Agents can search and update this Wiki. Selecting it lets the agent discover the Wiki and load relevant pages when needed.`
+                        : t`Structured knowledge pages generated from your sources live here. Agents can search and update this Wiki.`
+                    )}
+                  </div>
+                  <div className="op-wiki-actions">
+                    {writing ? null : (
+                      <Dropdown>
+                        <Button
+                          className="op-wiki-agent-skill-trigger"
+                          isDisabled={isBusy || agentSkills.length === 0}
+                          size="sm"
+                          variant="ghost"
+                        >
+                          <span>
+                            {agentSkills.find(
+                              (item) => item.skill.id === wikiAgentSkillId
+                            )?.skill.name ?? wikiAgentSkillId}
+                          </span>
+                          <ChevronDown size={14} />
+                        </Button>
+                        <Dropdown.Popover
+                          className="op-wiki-agent-skill-popover"
+                          placement="bottom end"
+                        >
+                          <Dropdown.Menu
+                            aria-label={t`Wiki generation method`}
+                            onAction={(key) => {
+                              const nextSkillId = String(key)
+                              if (nextSkillId !== wikiAgentSkillId) {
+                                setPendingWikiAgentSkillId(nextSkillId)
+                              }
+                            }}
+                            selectedKeys={[wikiAgentSkillId]}
+                            selectionMode="single"
+                          >
+                            <Dropdown.Section>
+                              <Header>{t`Wiki generation method`}</Header>
+                              {agentSkills.map((item) => (
+                                <Dropdown.Item
+                                  id={item.skill.id}
+                                  key={item.skill.id}
+                                  textValue={item.skill.name}
+                                >
+                                  <Dropdown.ItemIndicator />
+                                  <Label>{item.skill.name}</Label>
+                                </Dropdown.Item>
+                              ))}
+                            </Dropdown.Section>
+                          </Dropdown.Menu>
+                        </Dropdown.Popover>
+                      </Dropdown>
                     )}
                   </div>
                 </div>
@@ -756,56 +648,8 @@ export function WikiPanelView(
                   {wikiPageTree.length ? (
                     renderWikiPageNodes(wikiPageTree)
                   ) : (
-                    <WikiPagesEmpty />
+                    <WikiPagesEmpty mentionRawDocuments={!writing} />
                   )}
-                </div>
-                <div className="op-wiki-agent-skill-footer">
-                  <Dropdown>
-                    <Button
-                      className="op-wiki-agent-skill-trigger"
-                      isDisabled={isBusy || agentSkills.length === 0}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <span>
-                        {agentSkills.find(
-                          (item) => item.skill.id === wikiAgentSkillId
-                        )?.skill.name ?? wikiAgentSkillId}
-                      </span>
-                      <ChevronDown size={14} />
-                    </Button>
-                    <Dropdown.Popover
-                      className="op-wiki-agent-skill-popover"
-                      placement="top start"
-                      shouldFlip={false}
-                    >
-                      <Dropdown.Menu
-                        aria-label={t`Wiki generation method`}
-                        onAction={(key) => {
-                          const nextSkillId = String(key)
-                          if (nextSkillId !== wikiAgentSkillId) {
-                            setPendingWikiAgentSkillId(nextSkillId)
-                          }
-                        }}
-                        selectedKeys={[wikiAgentSkillId]}
-                        selectionMode="single"
-                      >
-                        <Dropdown.Section>
-                          <Header>{t`Wiki generation method`}</Header>
-                          {agentSkills.map((item) => (
-                            <Dropdown.Item
-                              id={item.skill.id}
-                              key={item.skill.id}
-                              textValue={item.skill.name}
-                            >
-                              <Dropdown.ItemIndicator />
-                              <Label>{item.skill.name}</Label>
-                            </Dropdown.Item>
-                          ))}
-                        </Dropdown.Section>
-                      </Dropdown.Menu>
-                    </Dropdown.Popover>
-                  </Dropdown>
                 </div>
               </section>
             )
@@ -842,7 +686,6 @@ export function WikiPanelView(
                     </div>
                     {generatedDocumentsModule}
                     {structuredWikiModule}
-                    {rawDocumentsModule}
                   </div>
                 </>
               )
@@ -877,10 +720,12 @@ export function WikiPanelView(
                       <X size={17} />
                     </Button>
                   </div>
-                  {rawDocumentsModule}
                   {generatedDocumentsModule}
                 </div>
-                {structuredWikiModule}
+                <div className="op-wiki-knowledge-stack">
+                  {structuredWikiModule}
+                  {rawDocumentsModule}
+                </div>
               </>
             )
           })()}
@@ -893,7 +738,6 @@ export function WikiPanelView(
               onOpenAgentTasks={onOpenAgentTasks}
               onOpenLibrary={() => setIsDocumentLibraryOpen(true)}
               onReload={onReload}
-              rawDocuments={state.rawDocuments}
               selection={agentSelection}
               skillsRevision={skillsRevision}
               state={writing.state}
@@ -904,7 +748,10 @@ export function WikiPanelView(
         </div>
       </Surface>
 
-      <WikiDialogsLayer controller={props.controller} transport={transport} />
+      <WikiDialogsLayer
+        controller={props.controller}
+        mentionRawDocuments={!writing}
+      />
     </section>
   )
 }

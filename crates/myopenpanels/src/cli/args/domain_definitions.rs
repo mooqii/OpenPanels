@@ -64,6 +64,49 @@ enum WritingSkillCommand {
 }
 
 #[derive(Debug, Args)]
+struct TypesettingArgs {
+    #[command(subcommand)]
+    command: TypesettingCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum TypesettingCommand {
+    Title(TypesettingTitleArgs),
+}
+
+#[derive(Debug, Args)]
+struct TypesettingTitleArgs {
+    #[command(subcommand)]
+    command: TypesettingTitleCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum TypesettingTitleCommand {
+    Generate {
+        #[arg(long)]
+        publication_id: String,
+        #[arg(long, default_value = "typesetting-title-default")]
+        skill_id: String,
+        #[arg(long)]
+        instruction: Option<String>,
+        #[arg(long)]
+        request_id: Option<String>,
+    },
+    Skill(TypesettingTitleSkillArgs),
+}
+
+#[derive(Debug, Args)]
+struct TypesettingTitleSkillArgs {
+    #[command(subcommand)]
+    command: TypesettingTitleSkillCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum TypesettingTitleSkillCommand {
+    List,
+}
+
+#[derive(Debug, Args)]
 struct PublishingArgs {
     #[command(subcommand)]
     command: PublishingCommand,

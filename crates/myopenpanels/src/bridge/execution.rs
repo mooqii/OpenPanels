@@ -261,7 +261,21 @@ fn materialize_task_inputs(
             .and_then(Value::as_str)
             .or_else(|| task.get("documentId").and_then(Value::as_str));
         if let Some(document_id) = document_id {
-            let original = crate::wiki::raw_document_original(paths, document_id)?;
+            let original = if task
+                .pointer("/input/documentKind")
+                .or_else(|| task.get("documentKind"))
+                .and_then(Value::as_str)
+                == Some("generated")
+            {
+                crate::wiki::generated_import_original_for_target(
+                    paths,
+                    task.get("projectId").and_then(Value::as_str).unwrap_or_default(),
+                    task.get("panelId").and_then(Value::as_str).unwrap_or_default(),
+                    document_id,
+                )?
+            } else {
+                crate::wiki::raw_document_original(paths, document_id)?
+            };
             let inputs_dir = workspace.join("inputs").join("original");
             fs::create_dir_all(&inputs_dir).map_err(to_cli_error)?;
             let file_name = original
@@ -289,6 +303,12 @@ fn materialize_task_inputs(
     }
     if task.get("type").and_then(Value::as_str) == Some(crate::typesetting::COVER_TASK_TYPE) {
         materialize_typesetting_cover_inputs(paths, task, workspace, &mut materialized)?;
+    }
+    if task.get("type").and_then(Value::as_str) == Some(crate::typesetting::TITLE_TASK_TYPE) {
+        materialize_typesetting_title_inputs(paths, task, workspace, &mut materialized)?;
+    }
+    if task.get("type").and_then(Value::as_str) == Some(crate::typesetting::LAYOUT_TASK_TYPE) {
+        materialize_typesetting_layout_inputs(paths, task, workspace, &mut materialized)?;
     }
     Ok(materialized)
 }
@@ -322,36 +342,166 @@ fn materialize_typesetting_cover_inputs(
     )
     .map_err(to_cli_error)?;
 
+    let (skill_files, skill_file_path) = materialize_typesetting_skill(
+        &storage,
+        task,
+        "/input/coverSkillSnapshot",
+        "cover_skill_snapshot_corrupt",
+        "Cover",
+        &skill_dir,
+    )?;
+    materialized["executionInputs"]["typesettingCover"] = json!({
+        "titleFilePath": title_path,
+        "bodyFilePath": body_path,
+        "skillFilePath": skill_file_path,
+        "skillDirectory": skill_dir,
+        "skillFiles": skill_files,
+    });
+    Ok(())
+}
+
+fn materialize_typesetting_title_inputs(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    materialized: &mut Value,
+) -> Result<(), CliError> {
+    let storage = crate::storage::Storage::open(paths)?;
+    let inputs_dir = workspace.join("inputs");
+    let skill_dir = inputs_dir.join("skill");
+    fs::create_dir_all(&skill_dir).map_err(to_cli_error)?;
+    let title_path = inputs_dir.join("title.txt");
+    let body_path = inputs_dir.join("body.txt");
+    let existing_titles_path = inputs_dir.join("existing-titles.json");
+    fs::write(
+        &title_path,
+        task.pointer("/input/snapshot/title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .as_bytes(),
+    )
+    .map_err(to_cli_error)?;
+    fs::write(
+        &body_path,
+        task.pointer("/input/snapshot/bodyText")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .as_bytes(),
+    )
+    .map_err(to_cli_error)?;
+    let existing_titles = task
+        .pointer("/input/snapshot/existingTitles")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    fs::write(
+        &existing_titles_path,
+        serde_json::to_vec_pretty(&existing_titles).map_err(to_cli_error)?,
+    )
+    .map_err(to_cli_error)?;
+    let (skill_files, skill_file_path) = materialize_typesetting_skill(
+        &storage,
+        task,
+        "/input/titleSkillSnapshot",
+        "title_skill_snapshot_corrupt",
+        "Title",
+        &skill_dir,
+    )?;
+    materialized["executionInputs"]["typesettingTitle"] = json!({
+        "titleFilePath": title_path,
+        "bodyFilePath": body_path,
+        "existingTitlesFilePath": existing_titles_path,
+        "skillFilePath": skill_file_path,
+        "skillDirectory": skill_dir,
+        "skillFiles": skill_files,
+    });
+    Ok(())
+}
+
+fn materialize_typesetting_layout_inputs(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    materialized: &mut Value,
+) -> Result<(), CliError> {
+    let storage = crate::storage::Storage::open(paths)?;
+    let inputs_dir = workspace.join("inputs");
+    let skill_dir = inputs_dir.join("skill");
+    fs::create_dir_all(&skill_dir).map_err(to_cli_error)?;
+    let title_path = inputs_dir.join("title.txt");
+    let content_path = inputs_dir.join("content.json");
+    fs::write(
+        &title_path,
+        task.pointer("/input/snapshot/title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .as_bytes(),
+    )
+    .map_err(to_cli_error)?;
+    fs::write(
+        &content_path,
+        serde_json::to_vec_pretty(
+            task.pointer("/input/snapshot/content")
+                .unwrap_or(&Value::Null),
+        )
+        .map_err(to_cli_error)?,
+    )
+    .map_err(to_cli_error)?;
+    let (skill_files, skill_file_path) = materialize_typesetting_skill(
+        &storage,
+        task,
+        "/input/layoutSkillSnapshot",
+        "layout_skill_snapshot_corrupt",
+        "Layout",
+        &skill_dir,
+    )?;
+    materialized["executionInputs"]["typesettingLayout"] = json!({
+        "titleFilePath": title_path,
+        "contentFilePath": content_path,
+        "skillFilePath": skill_file_path,
+        "skillDirectory": skill_dir,
+        "skillFiles": skill_files,
+    });
+    Ok(())
+}
+
+fn materialize_typesetting_skill(
+    storage: &crate::storage::Storage,
+    task: &Value,
+    snapshot_pointer: &str,
+    error_code: &str,
+    label: &str,
+    skill_dir: &Path,
+) -> Result<(Vec<Value>, PathBuf), CliError> {
     let mut skill_files = Vec::new();
     for file in task
-        .pointer("/input/coverSkillSnapshot/files")
+        .pointer(&format!("{snapshot_pointer}/files"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
     {
         let relative = file.get("path").and_then(Value::as_str).ok_or_else(|| {
-            CliError::with_code("invalid_target", "Cover Skill file path is missing.")
+            CliError::with_code("invalid_target", format!("{label} Skill file path is missing."))
         })?;
-        let asset_ref = file
-            .get("assetRef")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                CliError::with_code("invalid_target", "Cover Skill asset reference is missing.")
-            })?;
+        let asset_ref = file.get("assetRef").and_then(Value::as_str).ok_or_else(|| {
+            CliError::with_code(
+                "invalid_target",
+                format!("{label} Skill asset reference is missing."),
+            )
+        })?;
         let bytes = storage.read_asset(asset_ref)?;
         let actual_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
         if file.get("contentHash").and_then(Value::as_str) != Some(actual_hash.as_str()) {
             return Err(CliError::with_code(
-                "cover_skill_snapshot_corrupt",
-                format!("Cover Skill snapshot failed integrity validation: {relative}"),
+                error_code,
+                format!("{label} Skill snapshot failed integrity validation: {relative}"),
             ));
         }
-        let mut destination = skill_dir.clone();
+        let mut destination = skill_dir.to_path_buf();
         for part in Path::new(relative).components() {
             let std::path::Component::Normal(part) = part else {
                 return Err(CliError::with_code(
                     "invalid_target",
-                    "Cover Skill path is unsafe.",
+                    format!("{label} Skill path is unsafe."),
                 ));
             };
             destination.push(sanitize_path_part(&part.to_string_lossy()));
@@ -378,30 +528,23 @@ fn materialize_typesetting_cover_inputs(
     }
     let actual_manifest_hash = format!("sha256:{:x}", manifest_hash.finalize());
     if task
-        .pointer("/input/coverSkillSnapshot/contentHash")
+        .pointer(&format!("{snapshot_pointer}/contentHash"))
         .and_then(Value::as_str)
         != Some(actual_manifest_hash.as_str())
     {
         return Err(CliError::with_code(
-            "cover_skill_snapshot_corrupt",
-            "Cover Skill snapshot manifest failed integrity validation.",
+            error_code,
+            format!("{label} Skill snapshot manifest failed integrity validation."),
         ));
     }
     let skill_file_path = skill_dir.join("SKILL.md");
     if !skill_file_path.is_file() {
         return Err(CliError::with_code(
-            "cover_skill_snapshot_corrupt",
-            "Cover Skill snapshot has no SKILL.md.",
+            error_code,
+            format!("{label} Skill snapshot has no SKILL.md."),
         ));
     }
-    materialized["executionInputs"]["typesettingCover"] = json!({
-        "titleFilePath": title_path,
-        "bodyFilePath": body_path,
-        "skillFilePath": skill_file_path,
-        "skillDirectory": skill_dir,
-        "skillFiles": skill_files,
-    });
-    Ok(())
+    Ok((skill_files, skill_file_path))
 }
 
 fn materialize_publishing_inputs(
@@ -427,8 +570,24 @@ fn materialize_publishing_inputs(
         .unwrap_or("");
     let title_path = inputs_dir.join("title.txt");
     let body_path = inputs_dir.join("body.txt");
+    let tags_path = inputs_dir.join("tags.json");
     fs::write(&title_path, title.as_bytes()).map_err(to_cli_error)?;
     fs::write(&body_path, body.as_bytes()).map_err(to_cli_error)?;
+    let tags = match task.pointer("/input/snapshot/tags") {
+        None => Vec::new(),
+        Some(Value::Array(tags)) if tags.iter().all(Value::is_string) => tags.clone(),
+        Some(_) => {
+            return Err(CliError::with_code(
+                "publishing_snapshot_corrupt",
+                "Publishing tags must be a list of strings.",
+            ));
+        }
+    };
+    fs::write(
+        &tags_path,
+        serde_json::to_vec_pretty(&tags).map_err(to_cli_error)?,
+    )
+    .map_err(to_cli_error)?;
 
     let mut media_files = Vec::new();
     for (index, media) in task
@@ -539,6 +698,7 @@ fn materialize_publishing_inputs(
     materialized["executionInputs"]["publishing"] = json!({
         "titleFilePath": title_path,
         "bodyFilePath": body_path,
+        "tagsFilePath": tags_path,
         "media": media_files,
         "skillDirectory": skill_dir,
         "skillFiles": skill_files,

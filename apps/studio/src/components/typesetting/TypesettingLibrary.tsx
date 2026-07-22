@@ -1,5 +1,6 @@
-import { Button, Tabs } from "@heroui/react"
+import { Button, Tabs, Tooltip } from "@heroui/react"
 import {
+  FileInput,
   FileText,
   Image as ImageIcon,
   LoaderCircle,
@@ -13,6 +14,7 @@ import { formatRelativeOrDate } from "../../lib/date-time"
 import {
   countTypesettingCharacters,
   groupTypesettingAssets,
+  isInsertableTypesettingDocument,
   TYPESETTING_ASSET_DRAG_TYPE,
 } from "../../lib/typesetting"
 import type {
@@ -20,15 +22,10 @@ import type {
   TypesettingCanvasAsset,
   TypesettingPublication,
   WikiGeneratedDocument,
-  WikiRawDocument,
   WikiState,
 } from "../../types"
-import {
-  GeneratedDocumentsEmpty,
-  RawDocumentsEmpty,
-} from "../wiki/DocumentModuleEmpty"
+import { GeneratedDocumentsEmpty } from "../wiki/DocumentModuleEmpty"
 import { GeneratedDocumentMeta } from "../wiki/GeneratedDocumentMeta"
-import { RawDocumentMeta } from "../wiki/RawDocumentMeta"
 import {
   nextCollapsedLibraryModules,
   type TypesettingLibraryModule,
@@ -41,11 +38,13 @@ export function TypesettingLibrary({
   onClose,
   onCreatePublication,
   onOpenGenerated,
+  onOpenGeneratedOriginal,
+  onInsertGenerated,
   onOpenPublication,
-  onOpenRaw,
-  onOpenRawOriginal,
   projectId,
   publications,
+  insertingDocumentId,
+  isInsertDisabled,
   transport,
   wiki,
 }: {
@@ -54,11 +53,13 @@ export function TypesettingLibrary({
   onClose: () => void
   onCreatePublication: () => void
   onOpenGenerated: (document: WikiGeneratedDocument) => void
+  onOpenGeneratedOriginal: (document: WikiGeneratedDocument) => void
+  onInsertGenerated: (document: WikiGeneratedDocument) => void
   onOpenPublication: (publication: TypesettingPublication) => void
-  onOpenRaw: (document: WikiRawDocument) => void
-  onOpenRawOriginal: (document: WikiRawDocument) => void
   projectId: string
   publications: TypesettingPublication[]
+  insertingDocumentId: string | null
+  isInsertDisabled: boolean
   transport: MyOpenPanelsTransport
   wiki: WikiState
 }) {
@@ -140,58 +141,60 @@ export function TypesettingLibrary({
         />
 
         <LibraryModule
-          isCollapsed={collapsedLibraryModules.has("raw")}
-          isEmpty={wiki.rawDocuments.length === 0}
-          onToggle={() => toggleLibraryModule("raw")}
-          title={t`Raw Documents`}
-        >
-          {wiki.rawDocuments.length ? (
-            wiki.rawDocuments.map((document) => (
-              <div className="op-typesetting-document" key={document.id}>
-                <button
-                  aria-label={document.title}
-                  className="op-raw-document-open"
-                  onClick={() => onOpenRaw(document)}
-                  type="button"
-                />
-                <FileText size={15} />
-                <span className="op-raw-document-copy">
-                  <strong>{document.title}</strong>
-                  <RawDocumentMeta
-                    document={document}
-                    onOpenOriginal={() => onOpenRawOriginal(document)}
-                  />
-                </span>
-              </div>
-            ))
-          ) : (
-            <RawDocumentsEmpty />
-          )}
-        </LibraryModule>
-
-        <LibraryModule
           isCollapsed={collapsedLibraryModules.has("generated")}
           isEmpty={wiki.generatedDocuments.length === 0}
           onToggle={() => toggleLibraryModule("generated")}
-          title={t`Generated Documents`}
+          title={t`My Documents`}
         >
           {wiki.generatedDocuments.length ? (
             wiki.generatedDocuments.map((document) => (
-              <button
-                className="op-typesetting-document"
-                key={document.id}
-                onClick={() => onOpenGenerated(document)}
-                type="button"
-              >
+              <div className="op-typesetting-document" key={document.id}>
+                <button
+                  aria-label={document.title}
+                  className="op-generated-document-open"
+                  onClick={() => onOpenGenerated(document)}
+                  type="button"
+                />
                 <FileText size={15} />
-                <span>
+                <span className="op-generated-document-copy">
                   <strong>{document.title}</strong>
                   <GeneratedDocumentMeta
                     apiBase={transport.apiBase}
                     document={document}
+                    onOpenOriginal={
+                      document.importSource
+                        ? () => onOpenGeneratedOriginal(document)
+                        : undefined
+                    }
                   />
                 </span>
-              </button>
+                {isInsertableTypesettingDocument(document) ? (
+                  <span className="op-typesetting-document__tools">
+                    <Tooltip closeDelay={0} delay={0}>
+                      <Button
+                        aria-label={t`Insert document content into content details`}
+                        isDisabled={
+                          isInsertDisabled ||
+                          insertingDocumentId === document.id
+                        }
+                        isIconOnly
+                        onPress={() => onInsertGenerated(document)}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        {insertingDocumentId === document.id ? (
+                          <LoaderCircle className="op-spin" size={15} />
+                        ) : (
+                          <FileInput size={15} />
+                        )}
+                      </Button>
+                      <Tooltip.Content placement="right">
+                        {t`Insert document content into content details`}
+                      </Tooltip.Content>
+                    </Tooltip>
+                  </span>
+                ) : null}
+              </div>
             ))
           ) : (
             <GeneratedDocumentsEmpty />

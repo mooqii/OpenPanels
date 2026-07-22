@@ -346,7 +346,7 @@ fn task_handoff_runtime_completes_every_compatible_wiki_batch_member() {
 #[test]
 fn task_handoff_runtime_creates_and_commits_the_writing_operation() {
     let (_temp, paths, _bootstrap) = scope_test_project();
-    crate::writing::write_selection(&paths, false, &[], &[]).expect("writing selection");
+    crate::writing::write_selection(&paths, false, &[]).expect("writing selection");
     let created = crate::writing::create_requests(
         &paths,
         "Write a short runtime finalization test.",
@@ -502,7 +502,7 @@ fn task_handoff_runtime_validates_and_installs_the_refined_writing_skill() {
     )
     .expect("generated source");
     let source_id = generated["document"]["id"].as_str().unwrap();
-    crate::writing::write_selection(&paths, false, &[], &[source_id.to_owned()])
+    crate::writing::write_selection(&paths, false, &[source_id.to_owned()])
         .expect("writing selection");
     let created = crate::writing::create_refinement_request(&paths, "Runtime House Style")
         .expect("refinement request");

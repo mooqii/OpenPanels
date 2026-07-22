@@ -455,6 +455,7 @@ fn help_prints_current_command_map() {
     assert!(stdout.contains("Usage: myopenpanels"));
     assert!(stdout.contains("studio"));
     assert!(stdout.contains("canvas"));
+    assert!(stdout.contains("typesetting"));
     assert!(stdout.contains("agent"));
     assert!(stdout.contains("update"));
     assert!(!stdout.contains("agent-context"));

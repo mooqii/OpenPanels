@@ -111,12 +111,15 @@ limit.
 A Task Handoff is the Message-channel runtime over one Scope. `task handoff
 start` registers and claims just in time, then returns ExecutionBundle v2 with
 the selected Task Handler's objective, captured inputs and Skills, workspace
-files, Agent command allowlist, and artifact output contract. `complete` and `fail` advance the
-same Scope and return the next Bundle. One-shot targets bind the explicit Project
-so a copied handoff never follows later Studio focus changes.
+files, inlined System References, fully bound work-command parameters, Agent
+command allowlist, and artifact output contract. Its Delivery Contract also
+renders the exact heartbeat, completion, failure, and stop commands. `complete`
+and `fail` advance the same Scope and return the next Bundle. One-shot targets
+bind the explicit Project so a copied handoff never follows later Studio focus
+changes.
 
 The static Task Handler Registry owns document conversion, document generation,
-Writing Skill refinement, Wiki authoring, and Xiaohongshu publishing. The
+Writing Skill refinement, Wiki authoring, Typesetting, and Publishing. The
 automatic Agent CLI and Agent Message delivery adapters use the same Bundle
 builder and Runtime Finalizer. The Agent writes ExecutionResult v2 workspace
 artifacts; the Handler builds TaskOutputPlan v1, and the Finalizer creates or

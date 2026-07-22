@@ -1,5 +1,21 @@
 import { describe, expect, it, vi } from "vitest"
-import { originalPreviewKind, tryOpenBrowserWindow } from "./api"
+import {
+  originalPreviewKind,
+  tryOpenBrowserWindow,
+  wikiGeneratedOriginalUrl,
+} from "./api"
+
+describe("wikiGeneratedOriginalUrl", () => {
+  it("targets the immutable imported source", () => {
+    expect(
+      wikiGeneratedOriginalUrl("http://localhost:43217", {
+        id: "generated:document/1",
+      })
+    ).toBe(
+      "http://localhost:43217/api/wiki/generated-documents/generated%3Adocument%2F1/original"
+    )
+  })
+})
 
 describe("originalPreviewKind", () => {
   it("previews plain-text documents in the current window", () => {

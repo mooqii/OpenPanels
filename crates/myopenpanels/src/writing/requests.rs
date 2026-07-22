@@ -12,7 +12,8 @@ use std::path::{Component, Path, PathBuf};
 
 pub const WRITING_CAPABILITY: &str = "writing.generateDocument";
 pub const WRITING_REFINEMENT_CAPABILITY: &str = "writing.refineSkill";
-pub const WRITING_SKILL_REFINER_ID: &str = "writing-skill-refiner";
+pub const DEFAULT_WRITING_REFINEMENT_SKILL_ID: &str = "writing-refinement-default";
+pub(crate) const LEGACY_WRITING_SKILL_REFINER_ID: &str = "writing-skill-refiner";
 
 fn active_writing_selection(paths: &MyOpenPanelsPaths) -> Result<ProjectBootstrap, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
@@ -52,12 +53,6 @@ fn writing_selection_value(
         .read_panel_selection(&bootstrap.project.id, &bootstrap.panel.id)?
         .unwrap_or_else(|| json!({}));
     let wiki = wiki_snapshot(bootstrap)?;
-    let raw_ids = known_selected_ids(
-        &stored,
-        "selectedRawDocumentIds",
-        &wiki.state,
-        "rawDocuments",
-    );
     let generated_ids = known_selected_ids(
         &stored,
         "selectedGeneratedDocumentIds",
@@ -72,7 +67,6 @@ fn writing_selection_value(
         paths,
         &bootstrap.project.id,
         &wiki.panel.id,
-        &raw_ids,
         &generated_ids,
         is_wiki_selected,
     )?;
@@ -81,9 +75,7 @@ fn writing_selection_value(
         "projectId": bootstrap.project.id,
         "panelId": bootstrap.panel.id,
         "isWikiSelected": is_wiki_selected,
-        "selectedRawDocumentIds": raw_ids,
         "selectedGeneratedDocumentIds": generated_ids,
-        "selectedRawDocuments": agent_context["selectedRawDocuments"],
         "selectedGeneratedDocuments": agent_context["selectedGeneratedDocuments"],
         "wiki": agent_context["wiki"],
         "updatedAt": stored.get("updatedAt").cloned().unwrap_or(Value::Null),
@@ -123,13 +115,11 @@ pub fn read_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
 pub fn write_selection(
     paths: &MyOpenPanelsPaths,
     is_wiki_selected: bool,
-    selected_raw_document_ids: &[String],
     selected_generated_document_ids: &[String],
 ) -> Result<Value, CliError> {
     let bootstrap = writing_panel(paths)?;
     let requested = json!({
         "isWikiSelected": is_wiki_selected,
-        "selectedRawDocumentIds": selected_raw_document_ids,
         "selectedGeneratedDocumentIds": selected_generated_document_ids,
     });
     let wiki = wiki_snapshot(&bootstrap)?;
@@ -138,7 +128,6 @@ pub fn write_selection(
         "projectId": bootstrap.project.id,
         "panelId": bootstrap.panel.id,
         "isWikiSelected": is_wiki_selected,
-        "selectedRawDocumentIds": known_selected_ids(&requested, "selectedRawDocumentIds", &wiki.state, "rawDocuments"),
         "selectedGeneratedDocumentIds": known_selected_ids(&requested, "selectedGeneratedDocumentIds", &wiki.state, "generatedDocuments"),
         "updatedAt": now_iso(),
     });
@@ -199,7 +188,7 @@ pub fn save_draft_with_refinement_skill(
     validate_writing_skills(paths, &revision_skill_ids, false, "revise")?;
     let refinement_skill_id = selected_refinement_skill_id
         .or_else(|| bootstrap.state["selectedRefinementSkillId"].as_str())
-        .unwrap_or(WRITING_SKILL_REFINER_ID);
+        .unwrap_or(DEFAULT_WRITING_REFINEMENT_SKILL_ID);
     crate::agent::writing_refinement_agent_skill(paths, refinement_skill_id)?;
     let create_draft = create_draft
         .map(str::to_owned)
@@ -440,7 +429,6 @@ pub fn create_requests(
                     "contextSnapshot": context_snapshot,
                     "context": {
                         "isWikiSelected": selection["isWikiSelected"],
-                        "selectedRawDocumentIds": selection["selectedRawDocumentIds"],
                         "selectedGeneratedDocumentIds": selection["selectedGeneratedDocumentIds"],
                     },
                 }),
@@ -455,6 +443,7 @@ pub fn create_requests(
                 max_attempts: 8,
                 dispatch_mode: "auto".to_owned(),
                 idempotency_key: None,
+                exclusive_non_terminal: false,
             }
         })
         .collect::<Vec<_>>();
@@ -494,7 +483,7 @@ pub fn create_requests(
         "targetGeneratedDocumentId": null,
         "selectedCreateWritingSkillIds": selected_create_writing_skill_ids,
         "selectedRevisionWritingSkillId": selected_revision_writing_skill_id,
-        "selectedRefinementSkillId": bootstrap.state.get("selectedRefinementSkillId").cloned().unwrap_or_else(|| json!(WRITING_SKILL_REFINER_ID)),
+        "selectedRefinementSkillId": bootstrap.state.get("selectedRefinementSkillId").cloned().unwrap_or_else(|| json!(DEFAULT_WRITING_REFINEMENT_SKILL_ID)),
     });
     let mut panel_states = vec![(bootstrap.panel.id.as_str(), &state)];
     if mode == "create" {
@@ -538,28 +527,27 @@ fn capture_writing_context_snapshot(
 ) -> Result<Value, CliError> {
     let storage = Storage::open(paths)?;
     let panel_dir = storage.panel_dir(&wiki.panel.project_id, &wiki.panel.id);
-    let capture = |collection: &str, selected_key: &str, reference_key: &str| {
-        let selected = selection
-            .get(selected_key)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect::<BTreeSet<_>>();
-        wiki.state
-            .get(collection)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|document| {
-                document
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| selected.contains(id))
-            })
-            .map(|document| snapshot_writing_document(&panel_dir, document, reference_key))
-            .collect::<Vec<_>>()
-    };
+    let selected = selection
+        .get("selectedGeneratedDocumentIds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    let generated_documents = wiki
+        .state
+        .get("generatedDocuments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|document| {
+            document
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| selected.contains(id))
+        })
+        .map(|document| snapshot_writing_document(&panel_dir, document, "contentRef"))
+        .collect::<Vec<_>>();
     let wiki_space_id = wiki
         .state
         .get("activeWikiSpaceId")
@@ -591,8 +579,7 @@ fn capture_writing_context_snapshot(
             "wikiSpaceId": wiki_space_id,
             "contentRevisionId": wiki_content_revision_id,
         },
-        "rawDocuments": capture("rawDocuments", "selectedRawDocumentIds", "markdownRef"),
-        "generatedDocuments": capture("generatedDocuments", "selectedGeneratedDocumentIds", "contentRef"),
+        "generatedDocuments": generated_documents,
     }))
 }
 
@@ -624,32 +611,27 @@ pub fn create_refinement_request_with_skill(
     let bootstrap = writing_panel(paths)?;
     let wiki = wiki_snapshot(&bootstrap)?;
     let selection = writing_selection_value(paths, &bootstrap)?;
-    let raw_ids = selection["selectedRawDocumentIds"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
     let generated_ids = selection["selectedGeneratedDocumentIds"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    if raw_ids.is_empty() && generated_ids.is_empty() {
+    if generated_ids.is_empty() {
         return Err(CliError::with_code(
             "writing_refinement_source_required",
-            "Select at least one raw or generated document to refine.",
+            "Select at least one generated document to refine.",
         ));
     }
-    validate_refinement_sources(wiki, &raw_ids, &generated_ids)?;
+    validate_refinement_sources(wiki, &generated_ids)?;
     validate_available_skill_name(paths, &bootstrap.project.id, &name, None)?;
 
     let captured = capture_writing_context_snapshot(paths, wiki, &selection)?;
     let context_snapshot = json!({
-        "rawDocuments": captured["rawDocuments"],
         "generatedDocuments": captured["generatedDocuments"],
     });
     crate::agent::sync_builtin_agent_skills(paths)?;
     let refiner_skill_id = requested_refiner_skill_id
         .or_else(|| bootstrap.state["selectedRefinementSkillId"].as_str())
-        .unwrap_or(WRITING_SKILL_REFINER_ID);
+        .unwrap_or(DEFAULT_WRITING_REFINEMENT_SKILL_ID);
     let refiner = crate::agent::writing_refinement_agent_skill(paths, refiner_skill_id)?;
     let refiner_markdown = fs::read_to_string(PathBuf::from(&refiner.local_dir).join("SKILL.md"))
     .map_err(|error| {
@@ -676,7 +658,6 @@ pub fn create_refinement_request_with_skill(
             "contentHash": refiner_content_hash,
         },
         "context": {
-            "selectedRawDocumentIds": raw_ids,
             "selectedGeneratedDocumentIds": generated_ids,
         },
         "contextSnapshot": context_snapshot,

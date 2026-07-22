@@ -1,4 +1,4 @@
-# Maintain Karpathy LLM Wiki
+# Maintain The Default Wiki
 
 Use this reference when wiki navigation, summaries, indexes, or related pages
 need maintenance.
