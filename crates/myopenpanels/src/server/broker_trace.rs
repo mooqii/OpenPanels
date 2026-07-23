@@ -174,7 +174,7 @@ async fn api_broker_publishing_checkpoint(
     if let Err(error) = content::authorize_agent_broker_capability(
         &state.paths,
         token,
-        "publishing.checkpoint",
+        "release.checkpoint",
     ) {
         return broker_error(error);
     }

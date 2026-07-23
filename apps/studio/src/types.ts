@@ -199,9 +199,18 @@ export interface TraceSnapshotResponse {
 
 export interface ProjectTask {
   archivedAt?: string | null
-  assignedTarget?: AgentTarget | null
-  assignedTargetId?: string | null
   attempt?: number
+  attemptLimit?: number
+  attempts?: Array<{
+    attempt: number
+    error?: unknown
+    failureClass?: string | null
+    finishedAt?: string
+    generation?: number
+    result?: unknown
+    runnerKey?: string | null
+    status: string
+  }>
   availableAt?: string | null
   blockedReason?: "attemptsExceeded" | "leased" | "retryLater" | string | null
   capability?: string
@@ -214,7 +223,6 @@ export interface ProjectTask {
     status: string
     successCondition: string
   }>
-  dispatchMode?: "auto" | "prefer" | "manual"
   dispatchState?: "eligible" | "noTarget" | "running" | "done" | string
   error?: unknown
   executionGeneration?: number
@@ -232,8 +240,6 @@ export interface ProjectTask {
     owner?: string | null
   }
   lifecycleState?: string
-  matchedTargetCount?: number
-  maxAttempts?: number
   mutationBlocked?: boolean
   mutationKey?: string | null
   mutationSequence?: number | null
@@ -243,8 +249,6 @@ export interface ProjectTask {
   projectId: string
   queue: string
   ready?: boolean
-  requestedGatewayConnectionId?: string | null
-  requiredProtocolVersion?: number
   result?: unknown
   retryAfter?: string | null
   source?: unknown
@@ -253,12 +257,6 @@ export interface ProjectTask {
   terminalReason?: unknown
   type: string
   updatedAt: string
-  wikiUpdateGroup?: {
-    mutationKey: string
-    taskIds: string[]
-    tasks: ProjectTask[]
-  }
-  workflowRunId?: string
 }
 
 export type TaskExecutionScope =
@@ -286,10 +284,9 @@ export interface WikiState {
   activeRawDocumentId: string | null
   activeWikiPagePath: string | null
   activeWikiSpaceId: string | null
-  generatedDocuments: WikiGeneratedDocument[]
+  myDocuments: MyDocument[]
   rawDocuments: WikiRawDocument[]
   ruleSets: unknown[]
-  schemaVersion: 4
   wikiAgentSkillConfigured?: boolean
   wikiAgentSkillId?: string | null
   wikiSpaces: WikiSpace[]
@@ -297,25 +294,22 @@ export interface WikiState {
 
 export interface WritingState {
   createDraft: string
+  distillationName: string
   draft: string
-  mode: "create" | "revise" | "refine"
-  refinementName: string
+  mode: "create" | "revise" | "distill"
   revisionDraft: string
-  schemaVersion: 5
   selectedCreateWritingSkillIds: string[]
-  selectedRefinementSkillId: string
+  selectedDistillationSkillId: string
   selectedRevisionWritingSkillId: string | null
-  targetGeneratedDocumentId: string | null
+  targetMyDocumentId: string | null
 }
 
 export interface TypesettingState {
   publications: TypesettingPublication[]
-  schemaVersion: 2
 }
 
 export interface PublishingState {
   releases: PublishingRelease[]
-  schemaVersion: 1
   selectedPublicationId: string | null
   selectedSkillIds: {
     xiaohongshu: string
@@ -434,7 +428,7 @@ export interface TypesettingCanvasAsset {
   width?: number
 }
 
-export interface WikiGeneratedDocument {
+export interface MyDocument {
   contentRef: string
   contentVersion: number
   conversion?: {
@@ -451,11 +445,6 @@ export interface WikiGeneratedDocument {
   }
   createdAt: string
   format: "markdown" | "text"
-  generation?: {
-    error: string | null
-    operationId?: string
-    status: "generating" | "completed" | "failed"
-  }
   id: string
   importSource?: {
     fileName: string
@@ -467,7 +456,7 @@ export interface WikiGeneratedDocument {
   mimeType: "text/markdown" | "text/plain"
   originalFileName: string
   publishHistory: Array<{
-    generatedVersion: number
+    documentVersion: number
     publishedAt: string
     rawDocumentId: string
   }>
@@ -476,6 +465,11 @@ export interface WikiGeneratedDocument {
   title: string
   updatedAt: string
   wordCount?: number | null
+  writeOperation?: {
+    error: string | null
+    operationId?: string
+    status: "writing" | "completed" | "failed"
+  }
 }
 
 export interface AgentSkillListing {
@@ -550,7 +544,6 @@ export interface RecommendedSkill {
 }
 
 export interface RecommendedSkillsResponse {
-  schemaVersion: number
   skills: RecommendedSkill[]
 }
 
@@ -602,8 +595,11 @@ export interface WikiRawDocument {
     string,
     {
       error: string | null
+      disposition?: "already_covered" | "excluded" | "included" | null
       markdownVersion?: number
+      reasonCode?: string | null
       status: string
+      summary?: string | null
       taskId: string | null
       updatedAt?: string
     }

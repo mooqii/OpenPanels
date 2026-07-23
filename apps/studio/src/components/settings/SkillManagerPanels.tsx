@@ -33,10 +33,10 @@ import type {
 const ASSOCIATION_MODULES = [
   "wiki-update",
   "writing",
-  "writing-refinement",
-  "typesetting-cover",
-  "typesetting-title",
-  "typesetting-layout",
+  "writing-distillation",
+  "publication-cover",
+  "publication-title",
+  "publication-layout",
   "publishing",
 ] as const
 
@@ -461,12 +461,11 @@ export function moduleLabel(
 ) {
   if (kind === "wiki-update") return t`Wiki updates`
   if (kind === "writing") return t`Writing`
-  if (kind === "writing-refinement") return t`Writing refinement`
-  if (kind === "typesetting-cover") return t`Cover creation`
-  if (kind === "typesetting-title") return t`Title generation`
-  if (kind === "typesetting-layout") return t`Automatic layout`
-  if (kind === "publishing" || kind === "publishing-xiaohongshu")
-    return t`Content publishing`
+  if (kind === "writing-distillation") return t`Writing distillation`
+  if (kind === "publication-cover") return t`Cover creation`
+  if (kind === "publication-title") return t`Title generation`
+  if (kind === "publication-layout") return t`Automatic layout`
+  if (kind === "release") return t`Content publishing`
   if (kind === "wiki") return t`Wiki`
   if (kind === "canvas") return t`Canvas`
   if (kind === "typesetting") return t`Typesetting`

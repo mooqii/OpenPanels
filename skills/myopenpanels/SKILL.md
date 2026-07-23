@@ -1,15 +1,16 @@
 ---
 name: myopenpanels
-description: "Use MyOpenPanels for persistent visual, knowledge, or writing work in its Canvas, Wiki, or Writing panel, including drawing, image work, diagrams, moodboards, brainstorming, organizing, research, drafting, and writing. Also use when the user asks to open or launch MyOpenPanels (including 打开面板) or refers to its current panel, selection, or content. After Studio is open, use the matching Agent Procedure Bootstrap when intent is clear and generic Agent Bootstrap only as fallback. Skip Bootstrap only for an open-only request or work clearly unrelated to MyOpenPanels."
+description: "Use MyOpenPanels for persistent visual, knowledge, writing, typesetting, or publishing work in its Canvas, Wiki, Writing, Typesetting, or Publishing panel, including drawing, image work, diagrams, moodboards, brainstorming, organizing, research, drafting, writing, layout, and release tasks. Also use when the user asks to open or launch MyOpenPanels (including 打开面板) or refers to its current panel, selection, or content. After Studio is open, use the matching Agent Procedure Bootstrap when intent is clear and generic Agent Bootstrap only as fallback. Skip Bootstrap only for an open-only request or work clearly unrelated to MyOpenPanels."
 metadata:
-  version: "5.6"
+  version: "5.7"
   source: "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels"
 ---
 
 # MyOpenPanels
 
-The installed CLI is the sole authority for current panels, command catalogs,
-Skills, commands, Procedures, Task Handoffs, and Workflow Runs.
+The installed CLI is the sole authority for current panels, commands,
+Procedures, Task Handoffs, System Skills, and built-in Skills. Independently
+installed portable Skills are optional content, not CLI core functionality.
 
 ## Resolve The CLI
 
@@ -72,40 +73,52 @@ Bootstrap directly:
 myopenpanels agent bootstrap --procedure <procedure-key> --format json
 ```
 
+<!-- BEGIN GENERATED CAPABILITY INDEX -->
 Canvas:
 
-- `panel.canvas.selection.read`: read the current Canvas selection.
-- `panel.canvas.selection.export`: export an explicit selection to a requested path.
-- `panel.canvas.image.insert`: insert an existing bitmap.
-- `panel.canvas.image.generate`: generate a new bitmap without requiring selection.
-- `panel.canvas.image.edit`: edit or restyle an explicit selected image.
+- `panel.canvas.selection.read`: Read the current explicit Canvas selection or its empty state.
+- `panel.canvas.selection.export`: Export the explicit Canvas selection to a user-requested file.
+- `canvas.image.insert`: Insert an existing bitmap file into the Project Canvas.
+- `canvas.image.generate`: Generate a new bitmap and place it into the Project Canvas.
+- `canvas.image.edit`: Edit, restyle, or redraw an explicitly selected Canvas image.
 
 Wiki:
 
-- `panel.wiki.knowledge.query`: answer from Wiki or selected document knowledge.
-- `panel.wiki.raw.import`: import a source into raw documents.
-- `panel.wiki.document.read`: read a standalone generated document.
-- `panel.wiki.document.generate`: generate a new standalone document.
-- `panel.wiki.document.revise`: revise an existing standalone document.
-- `panel.wiki.document.publish`: publish a generated document into raw sources.
-- `panel.wiki.document.delete`: delete a generated document.
-- `panel.wiki.space.manage`: list, activate, or materialize Wiki spaces.
+- `wiki-space.query`: Answer from selected Wiki knowledge or selected Wiki documents.
+- `wiki-source.import`: Import a source file or Markdown text as a Wiki Raw Document.
+- `wiki-space.manage`: List, activate, or materialize a Wiki space.
 
-Writing and Task queue:
+Writing:
 
-- `panel.writing.context.read`: inspect selected Writing source context.
-- `panel.typesetting.title.request`: create a title-generation Task for an explicitly identified Typesetting publication.
-- `task.queue.inspect`: inspect Tasks, attempts, events, or persisted Workflow Runs.
-- `task.queue.retry`: retry an explicitly identified failed Task.
-- `task.queue.cancel`: cancel an explicitly identified Task.
-- `task.queue.archive`: archive an explicitly identified terminal Task.
+- `writing.context.read`: Read the Writing panel's selected source and Wiki context.
+
+Task queue:
+
+- `my-document.read`: Read a My Document selected or named by the user.
+- `my-document.create`: Create a new My Document through a target-bound Operation.
+- `my-document.revise`: Revise an existing My Document through a target-bound Operation.
+- `wiki-source.create-from-my-document`: Create a Wiki Source from an explicitly identified My Document.
+- `my-document.delete`: Delete an explicitly identified My Document.
+- `publication.title.request`: Create a title generation Task for an explicitly identified Typesetting publication.
+- `task.queue.inspect`: Inspect queued work, Task state, and its recent execution summaries.
+- `task.queue.retry`: Retry an explicitly identified failed Task.
+- `task.queue.cancel`: Cancel an explicitly identified Task.
+- `task.queue.archive`: Archive an explicitly identified terminal Task.
 
 Task Handoffs must never be passed to Procedure Bootstrap:
-`task.scope.execute`, `panel.wiki.raw.convert`, `panel.wiki.pages.maintain`,
-`panel.writing.request.execute`, `panel.writing.skill.refine`,
-`panel.publishing.request.execute`, `panel.typesetting.cover.generate`,
-`panel.typesetting.title.generate`, and `panel.typesetting.content.format`.
+
+- `wiki-source.convert`: Convert an immutable raw source into faithful Markdown inside a claimed Task.
+- `wiki-space.maintain`: Maintain generated Wiki pages inside an exact claimed Task.
+- `writing.execute`: Execute a submitted Writing request inside its claimed Task.
+- `skill.writing.distill`: Distill selected examples into a reusable Writing Skill inside its claimed Task.
+- `release.execute`: Execute a captured Publishing release inside its exact claimed Task.
+- `publication.cover.generate`: Generate a cover for a captured Typesetting publication inside its exact claimed Task.
+- `publication.title.generate`: Generate title candidates for a captured Typesetting publication inside its exact claimed Task.
+- `publication.content.format`: Automatically format captured Typesetting content inside its exact claimed Task.
+- `task.scope.execute`: Execute the exact Task scope supplied by a Studio handoff.
+
 Execute their exact Studio or claimed Task handoff instead.
+<!-- END GENERATED CAPABILITY INDEX -->
 
 When intent is ambiguous, no Procedure matches, or the CLI reports
 `agent_procedure_not_found`, run the generic fallback:

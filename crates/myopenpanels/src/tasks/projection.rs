@@ -79,10 +79,7 @@ pub fn blocked_task_count(tasks: &[Value]) -> usize {
 }
 
 pub fn is_pending_task(task: &Value) -> bool {
-    matches!(
-        task.get("status").and_then(Value::as_str),
-        Some("waiting" | "queued" | "failed")
-    )
+    task.get("status").and_then(Value::as_str) == Some("queued")
 }
 
 fn filter_tasks(tasks: Vec<Value>, filter: &TaskListFilter<'_>) -> Vec<Value> {
@@ -114,16 +111,9 @@ pub fn annotate_tasks(tasks: Vec<Value>) -> Vec<Value> {
 pub fn annotate_task(mut task: Value) -> Value {
     let (ready, blocked_reason, next_run_at) = task_execution_state(&task);
     let lifecycle_state = match task.get("status").and_then(Value::as_str).unwrap_or("") {
-        "waiting" => "waiting",
         "queued" => "ready",
-        "reserved" | "running" | "claimed" | "converting" | "indexing" => "leased",
-        "failed"
-            if task.get("attempt").and_then(Value::as_i64).unwrap_or(0)
-                >= task.get("maxAttempts").and_then(Value::as_i64).unwrap_or(8) =>
-        {
-            "failed_terminal"
-        }
-        "failed" => "failed_retryable",
+        "running" => "leased",
+        "failed" => "failed_terminal",
         "succeeded" => "succeeded",
         "cancelled" => "cancelled",
         "stale" | "superseded" => "superseded",
@@ -150,13 +140,8 @@ fn task_execution_state(task: &Value) -> (bool, Option<&'static str>, Option<Str
         return (false, None, None);
     }
 
-    if task.get("status").and_then(Value::as_str) == Some("waiting") {
-        return (false, Some("prerequisite"), None);
-    }
-
-    if task.get("status").and_then(Value::as_str) == Some("failed")
-        && task.get("attempt").and_then(Value::as_i64).unwrap_or(0)
-            >= task.get("maxAttempts").and_then(Value::as_i64).unwrap_or(8)
+    if task.get("attempt").and_then(Value::as_i64).unwrap_or(0)
+        >= TASK_EXECUTION_LIMIT
     {
         return (false, Some(BLOCKED_REASON_ATTEMPTS_EXCEEDED), None);
     }
@@ -213,10 +198,8 @@ fn task_display_rank(task: &Value) -> u8 {
     let status = task.get("status").and_then(Value::as_str).unwrap_or("");
     let ready = task.get("ready").and_then(Value::as_bool).unwrap_or(false);
     match (ready, status) {
-        (true, "failed") => 0,
-        (true, "queued") => 1,
-        (false, "failed") => 2,
-        (false, "queued") => 3,
+        (true, "queued") => 0,
+        (false, "queued") => 1,
         _ => 4,
     }
 }

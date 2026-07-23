@@ -1,18 +1,10 @@
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum WikiBatchPolicy {
-    CompatibleWindow,
-    Exact,
-}
-
 pub(crate) fn claim_for_worker(
     paths: &MyOpenPanelsPaths,
     target_id: &str,
     capability: Option<&str>,
     queue: Option<&str>,
 ) -> Result<Value, CliError> {
-    let project_id = read_project_bootstrap(paths, BootstrapRequest::new())?
-        .project
-        .id;
+    let project_id = read_project_bootstrap(paths, BootstrapRequest::new())?.project.id;
     for attempt in 0..3 {
         match claim_once(
             paths,
@@ -21,12 +13,12 @@ pub(crate) fn claim_for_worker(
             None,
             capability,
             queue,
-            WikiBatchPolicy::CompatibleWindow,
             None,
         ) {
             Ok(payload) => {
-                return Ok(payload
-                    .unwrap_or_else(|| json!({ "task": Value::Null, "leaseToken": Value::Null })))
+                return Ok(payload.unwrap_or_else(|| {
+                    json!({ "task": Value::Null, "leaseToken": Value::Null })
+                }))
             }
             Err(error) if attempt < 2 && task_database_locked(&error) => {
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -34,17 +26,15 @@ pub(crate) fn claim_for_worker(
             Err(error) => return Err(error),
         }
     }
-    unreachable!("worker claim retry loop always returns")
+    unreachable!("claim retry loop always returns")
 }
 
 fn task_database_locked(error: &CliError) -> bool {
-    error
-        .message()
-        .to_ascii_lowercase()
-        .contains("database is locked")
+    error.message().to_ascii_lowercase().contains("database is locked")
 }
 
-pub fn claim_task(
+#[cfg(test)]
+pub(crate) fn claim_task(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
     target_id: &str,
@@ -57,7 +47,6 @@ pub fn claim_task(
         Some(task_id),
         None,
         None,
-        WikiBatchPolicy::CompatibleWindow,
         None,
     )?
     .ok_or_else(|| {
@@ -72,180 +61,182 @@ fn claim_once(
     paths: &MyOpenPanelsPaths,
     project_id: &str,
     target_id: &str,
-    task_id: Option<&str>,
+    requested_task_id: Option<&str>,
     requested_capability: Option<&str>,
     requested_queue: Option<&str>,
-    wiki_batch_policy: WikiBatchPolicy,
     explicit_broker_url: Option<&str>,
 ) -> Result<Option<Value>, CliError> {
     recover_expired_tasks_in_session(paths, project_id)?;
-    heartbeat_target_in_session(paths, project_id, target_id)?;
-    let mut storage = Storage::open(paths)?;
-    let target =
-        read_target_value(storage.connection(), project_id, target_id)?.ok_or_else(|| {
-            CliError::with_code(
-                "target_not_found",
-                format!("Agent target not found: {target_id}"),
-            )
-        })?;
-    let reserved = reserve_task(
-        &mut storage,
-        project_id,
-        &target,
-        task_id,
-        requested_capability,
-        requested_queue,
-    )?;
-    let Some(reserved) = reserved else {
+    let runner_key = target_id
+        .strip_prefix("agent-cli:")
+        .or_else(|| target_id.strip_prefix("agent-target:"))
+        .unwrap_or(target_id);
+    let settings = crate::model_gateway::read_settings(paths)?;
+    let storage = Storage::open(paths)?;
+    let running = storage
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'running'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(to_cli_error)?;
+    if running >= settings.max_concurrency {
+        return Ok(None);
+    }
+    let now = crate::control::now_iso();
+    let mut candidates = storage.list_tasks(project_id)?;
+    candidates.sort_by(|left, right| {
+        left.get("createdAt")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(right.get("createdAt").and_then(Value::as_str).unwrap_or(""))
+    });
+    let candidate = candidates.into_iter().find(|task| {
+        if requested_task_id.is_some_and(|id| task.get("id").and_then(Value::as_str) != Some(id)) {
+            return false;
+        }
+        if requested_capability.is_some_and(|capability| {
+            task.get("capability").and_then(Value::as_str) != Some(capability)
+        }) {
+            return false;
+        }
+        if requested_queue.is_some_and(|queue| task.get("queue").and_then(Value::as_str) != Some(queue)) {
+            return false;
+        }
+        if task.get("status").and_then(Value::as_str) != Some("queued")
+            || task.get("attempt").and_then(Value::as_i64).unwrap_or(0)
+                >= TASK_EXECUTION_LIMIT
+            || future_time(task.get("availableAt").and_then(Value::as_str)).is_some()
+        {
+            return false;
+        }
+        if !task_dependency_ready(storage.connection(), task) {
+            return false;
+        }
+        if mutation_task_blocked(
+            storage.connection(),
+            task.get("id").and_then(Value::as_str).unwrap_or(""),
+        )
+        .unwrap_or(true)
+        {
+            return false;
+        }
+        requested_task_id.is_some() || runner_matches_task(&settings, task, runner_key)
+    });
+    let Some(task) = candidate else {
         return Ok(None);
     };
-
-    let claim_result = match task_queue_adapter(&reserved.queue)? {
-        TaskQueueAdapter::Wiki => crate::wiki::claim_task(paths, &reserved.id),
-        TaskQueueAdapter::Writing => crate::writing::claim_task(paths, &reserved.id),
-        TaskQueueAdapter::Typesetting => crate::typesetting::claim_task(paths, &reserved.id),
-        TaskQueueAdapter::Publishing => crate::publishing::claim_task(paths, &reserved.id),
+    let task_id = task.get("id").and_then(Value::as_str).unwrap_or_default();
+    let queue = task.get("queue").and_then(Value::as_str).unwrap_or_default();
+    let claim_projection = match task_queue_adapter(queue)? {
+        TaskQueueAdapter::Wiki => crate::wiki::claim_task(paths, task_id),
+        TaskQueueAdapter::Writing => crate::writing::claim_task(paths, task_id),
+        TaskQueueAdapter::Publication => crate::publication::claim_task(paths, task_id),
+        TaskQueueAdapter::Release => crate::release::claim_task(paths, task_id),
     };
-    let claimed = match claim_result {
-        Ok(claimed) => claimed,
-        Err(error) => {
-            release_reservation(paths, project_id, &reserved)?;
-            return Err(error);
-        }
-    };
-    let claimed_status = claimed["task"]["status"].as_str().unwrap_or("running");
-    let claimed_attempt = claimed["task"]["attempt"].as_i64().unwrap_or(1);
+    if let Err(error) = claim_projection {
+        return Err(error);
+    }
 
     let lease_token = random_secret("lease");
     let lease_expires_at = lease_expires_at();
-    let attempt_id = random_id("task-attempt");
+    let attempt_id = random_id("attempt");
     let broker_url = explicit_broker_url
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
         .or_else(crate::content::task_broker_url_for_claim);
     if broker_url.as_deref().is_none_or(str::is_empty) && !cfg!(test) {
-        release_reservation(paths, project_id, &reserved)?;
+        release_queue_projection(paths, queue, task_id)?;
         return Err(CliError::with_code(
             "broker_unavailable",
-            "Execution protocol v3 requires a running Studio Task Broker.",
+            "Task execution requires a running Studio Task Broker.",
         ));
     }
-    let storage = Storage::open(paths)?;
+    let mut storage = Storage::open(paths)?;
     let tx = storage
-        .connection()
-        .unchecked_transaction()
+        .connection_mut()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(to_cli_error)?;
-    let now = crate::control::now_iso();
-    let execution_generation = tx.query_row(
+    let generation = tx
+        .query_row(
             r#"
-            UPDATE tasks
-            SET status = ?, attempts = ?, assigned_agent_id = ?, lease_owner = ?, lease_token_hash = ?,
-                lease_expires_at = ?, last_heartbeat_at = ?, retry_after = NULL,
-                error_json = NULL, updated_at = ?, execution_generation = execution_generation + 1
-            WHERE id = ? AND project_id = ?
+            UPDATE tasks SET status = 'running', attempt_count = attempt_count + 1,
+              current_runner_key = ?, lease_owner = ?, execution_token_hash = NULL,
+              lease_expires_at = ?, heartbeat_at = ?, error_json = NULL,
+              execution_generation = execution_generation + 1, updated_at = ?
+            WHERE id = ? AND project_id = ? AND status = 'queued'
+              AND attempt_count < ? AND available_at <= ?
+              AND (SELECT COUNT(*) FROM tasks AS running WHERE running.status = 'running') < ?
+              AND (
+                depends_on_task_id IS NULL OR EXISTS (
+                  SELECT 1 FROM tasks AS dependency
+                  WHERE dependency.id = tasks.depends_on_task_id
+                    AND dependency.status = 'succeeded'
+                )
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM tasks AS predecessor
+                WHERE tasks.mutation_key IS NOT NULL
+                  AND predecessor.project_id = tasks.project_id
+                  AND predecessor.mutation_key = tasks.mutation_key
+                  AND predecessor.id <> tasks.id
+                  AND predecessor.status IN ('queued', 'running')
+                  AND (
+                    predecessor.status = 'running'
+                    OR predecessor.created_at < tasks.created_at
+                    OR (
+                      predecessor.created_at = tasks.created_at
+                      AND predecessor.id < tasks.id
+                    )
+                  )
+              )
             RETURNING execution_generation
             "#,
             params![
-                claimed_status,
-                claimed_attempt,
-                target_id,
-                target_id,
+                runner_key,
                 hash_secret(&lease_token),
                 lease_expires_at,
                 now,
                 now,
-                reserved.id,
+                task_id,
                 project_id,
+                TASK_EXECUTION_LIMIT,
+                now,
+                settings.max_concurrency,
             ],
             |row| row.get::<_, i64>(0),
         )
+        .optional()
         .map_err(to_cli_error)?;
-    let model_gateway_connection_id = target
-        .get("modelGatewayConnectionId")
-        .and_then(Value::as_str);
-    let executor_snapshot = json!({
-        "targetId": target_id,
-        "targetName": target.get("name"),
-        "host": target.get("host"),
-        "modelGatewayConnectionId": model_gateway_connection_id,
-    });
-    let workflow_run_id = tx
-        .query_row(
-            "SELECT workflow_run_id FROM tasks WHERE id = ?",
-            [&reserved.id],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(to_cli_error)?;
-    tx.execute(
-        r#"
-        INSERT INTO task_attempts (
-          id, task_id, attempt_number, execution_generation, agent_target_id,
-          status, started_at, heartbeat_at, model_gateway_connection_id,
-          executor_snapshot_json
-        ) VALUES (?, ?, ?, ?, ?, 'leased', ?, ?, ?, ?)
-        "#,
-        params![
-            attempt_id,
-            reserved.id,
-            claimed_attempt,
-            execution_generation,
-            target_id,
-            now,
-            now,
-            model_gateway_connection_id,
-            executor_snapshot.to_string(),
-        ],
-    )
-    .map_err(to_cli_error)?;
+    let Some(generation) = generation else {
+        drop(tx);
+        release_queue_projection(paths, queue, task_id)?;
+        return Ok(None);
+    };
     let execution = if broker_url.as_deref().is_some_and(|value| !value.is_empty()) {
         Some(crate::content::create_execution_context_in_transaction(
             &tx,
-            &reserved.id,
+            task_id,
             &attempt_id,
-            execution_generation,
+            generation,
             &lease_expires_at,
         )?)
     } else {
         None
     };
-    tx.execute(
-        "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, attempt_id, agent_target_id, created_at) VALUES (?, ?, 'claimed', ?, ?, ?, ?, ?)",
-        params![reserved.id, workflow_run_id, reserved.previous_status, claimed_status, attempt_id, target_id, now],
-    )
-    .map_err(to_cli_error)?;
     crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
     tx.commit().map_err(to_cli_error)?;
-    let execution_batch = if reserved.queue == "wiki"
-        && wiki_batch_policy == WikiBatchPolicy::CompatibleWindow
-    {
-        create_wiki_update_execution_batch(
-            paths,
-            project_id,
-            &reserved.id,
-            target_id,
-            execution_generation,
-        )?
-    } else {
-        None
-    };
-    if reserved.queue == "wiki" && execution_batch.is_none() {
-        clear_wiki_update_execution_batch(
-            paths,
-            project_id,
-            &reserved.id,
-            execution_generation,
-        )?;
-    }
-    let mut payload = inspect_task(paths, &reserved.id)?;
-    if let Some(batch) = execution_batch {
-        payload["batch"] = batch.clone();
-        payload["task"]["batch"] = batch;
-    }
+
+    let mut payload = inspect_task(paths, task_id)?;
     payload["leaseToken"] = json!(lease_token);
-    payload["target"] = target;
+    payload["target"] = json!({
+        "id": target_id,
+        "providerId": runner_key,
+        "status": "online",
+    });
     payload["attemptId"] = json!(attempt_id);
-    payload["executionGeneration"] = json!(execution_generation);
-    payload["executionProtocolVersion"] = json!(reserved.required_protocol_version);
+    payload["executionGeneration"] = json!(generation);
     payload["taskBrokerUrl"] = broker_url.map(Value::from).unwrap_or(Value::Null);
     payload["executionToken"] = execution
         .as_ref()
@@ -255,213 +246,57 @@ fn claim_once(
         .as_ref()
         .map(|_| Value::from(lease_expires_at))
         .unwrap_or(Value::Null);
-    payload["inputManifest"] = json!(read_task_inputs(paths, &reserved.id)?);
+    payload["inputManifest"] = json!(read_task_inputs(paths, task_id)?);
     Ok(Some(payload))
 }
 
-const MAX_WIKI_UPDATE_WINDOW_BYTES: usize = 256 * 1024;
-
-fn clear_wiki_update_execution_batch(
-    paths: &MyOpenPanelsPaths,
-    project_id: &str,
-    task_id: &str,
-    execution_generation: i64,
-) -> Result<(), CliError> {
-    Storage::open(paths)?
-        .connection()
-        .execute(
-            "UPDATE tasks SET source_json = json_remove(source_json, '$.executionBatch') WHERE id = ? AND project_id = ? AND execution_generation = ?",
-            params![task_id, project_id, execution_generation],
-        )
-        .map_err(to_cli_error)?;
-    Ok(())
-}
-
-fn create_wiki_update_execution_batch(
-    paths: &MyOpenPanelsPaths,
-    project_id: &str,
-    leader_task_id: &str,
-    target_id: &str,
-    execution_generation: i64,
-) -> Result<Option<Value>, CliError> {
-    let storage = Storage::open(paths)?;
-    let mut tasks = storage.list_tasks(project_id)?;
-    let Some(leader) = tasks
+fn runner_matches_task(
+    settings: &crate::model_gateway::ModelGatewaySettings,
+    task: &Value,
+    runner_key: &str,
+) -> bool {
+    if !settings
+        .local_cli
+        .provider_order
         .iter()
-        .find(|task| task.get("id").and_then(Value::as_str) == Some(leader_task_id))
-        .cloned()
-    else {
-        return Ok(None);
-    };
-    if !is_wiki_update_task(&leader) {
-        return Ok(None);
+        .any(|provider| provider == runner_key)
+    {
+        return true;
     }
-    let Some(mutation_key) = leader.get("mutationKey").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    let leader_sequence = leader
-        .get("mutationSequence")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let leader_skill = leader.pointer("/source/agentSkillId").and_then(Value::as_str);
-    let leader_dispatch = leader.get("dispatchMode").and_then(Value::as_str);
-    let leader_connection = leader
-        .get("requestedGatewayConnectionId")
-        .and_then(Value::as_str);
-    let leader_protocol = leader
-        .get("requiredProtocolVersion")
-        .and_then(Value::as_i64);
-
-    tasks.sort_by_key(|task| {
-        task.get("mutationSequence")
-            .and_then(Value::as_i64)
-            .unwrap_or(i64::MAX)
-    });
-    let now = chrono::Utc::now();
-    let mut window_bytes = wiki_update_window_bytes(paths, &leader);
-    let mut members = vec![leader.clone()];
-    for task in tasks {
-        let sequence = task
-            .get("mutationSequence")
-            .and_then(Value::as_i64)
-            .unwrap_or(i64::MAX);
-        if sequence <= leader_sequence
-            || task.get("mutationKey").and_then(Value::as_str) != Some(mutation_key)
-        {
-            continue;
-        }
-        let status = task.get("status").and_then(Value::as_str).unwrap_or("");
-        if matches!(status, "succeeded" | "cancelled" | "stale" | "superseded") {
-            continue;
-        }
-        let ready = matches!(status, "queued" | "failed")
-            && task.get("attempt").and_then(Value::as_i64).unwrap_or(0)
-                < task.get("maxAttempts").and_then(Value::as_i64).unwrap_or(8)
-            && task
-                .get("retryAfter")
-                .and_then(Value::as_str)
-                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-                .is_none_or(|value| value.with_timezone(&chrono::Utc) <= now);
-        let compatible = is_wiki_update_task(&task)
-            && task.pointer("/source/agentSkillId").and_then(Value::as_str) == leader_skill
-            && task.get("dispatchMode").and_then(Value::as_str) == leader_dispatch
-            && task
-                .get("requestedGatewayConnectionId")
-                .and_then(Value::as_str)
-                == leader_connection
-            && task
-                .get("requiredProtocolVersion")
-                .and_then(Value::as_i64)
-                == leader_protocol;
-        if !ready || !compatible {
-            break;
-        }
-        let task_bytes = wiki_update_window_bytes(paths, &task);
-        if window_bytes.saturating_add(task_bytes) > MAX_WIKI_UPDATE_WINDOW_BYTES {
-            break;
-        }
-        window_bytes = window_bytes.saturating_add(task_bytes);
-        members.push(task);
+    if task
+        .pointer("/input/executionMode")
+        .and_then(Value::as_str)
+        == Some("manual")
+    {
+        return false;
     }
-    if members.len() < 2 {
-        return Ok(None);
+    let order = settings.local_cli.provider_order.clone();
+    if order.is_empty() {
+        return true;
     }
-
-    let batch_id = format!("wiki-update-batch:{leader_task_id}:{execution_generation}");
-    let member_task_ids = members
-        .iter()
-        .filter_map(|task| task.get("id").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let batch = json!({
-        "id": batch_id,
-        "kind": "wiki_update",
-        "leaderTaskId": leader_task_id,
-        "memberTaskIds": member_task_ids,
-        "mutationKey": mutation_key,
-        "wikiSpaceId": leader.pointer("/source/wikiSpaceId"),
-        "targetId": target_id,
-        "executionGeneration": execution_generation,
-        "taskCount": members.len(),
-        "tasks": members,
-    });
-    let mut source = leader.get("source").cloned().unwrap_or_else(|| json!({}));
-    source["executionBatch"] = batch.clone();
-    let tx = storage
-        .connection()
-        .unchecked_transaction()
-        .map_err(to_cli_error)?;
-    let now = crate::control::now_iso();
-    for member_task_id in batch["memberTaskIds"]
-        .as_array()
+    let history = task.get("attempts").and_then(Value::as_array);
+    let used = history
         .into_iter()
         .flatten()
-        .filter_map(Value::as_str)
-    {
-        crate::content::pin_task_inputs_in_transaction(&tx, member_task_id, &now)?;
-    }
-    tx.execute(
-            "UPDATE tasks SET source_json = ?, updated_at = ? WHERE id = ? AND project_id = ? AND execution_generation = ?",
-            params![
-                source.to_string(),
-                now,
-                leader_task_id,
-                project_id,
-                execution_generation,
-            ],
-        )
-        .map_err(to_cli_error)?;
-    tx.commit().map_err(to_cli_error)?;
-    Ok(Some(batch))
+        .filter_map(|attempt| attempt.get("runnerKey").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    let expected = order
+        .iter()
+        .find(|candidate| !used.iter().any(|used| *used == candidate.as_str()))
+        .or_else(|| order.first());
+    expected.is_some_and(|expected| expected == runner_key)
 }
 
-fn wiki_update_window_bytes(paths: &MyOpenPanelsPaths, task: &Value) -> usize {
-    let metadata_bytes = serde_json::to_vec(task).map_or(0, |bytes| bytes.len());
-    let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
-    let source_bytes = match task.get("type").and_then(Value::as_str) {
-        Some("ingest_markdown_into_wiki") => task
-            .pointer("/input/documentId")
-            .and_then(Value::as_str)
-            .and_then(|document_id| {
-                crate::content::pinned_task_input_text(
-                    paths,
-                    task_id,
-                    crate::content::ResourceKind::WikiMarkdown,
-                    document_id,
-                    "source.md",
-                )
-                .ok()
-                .flatten()
-                .or_else(|| {
-                    crate::wiki::read_markdown(paths, document_id)
-                        .ok()
-                        .and_then(|payload| {
-                            payload
-                                .get("markdown")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                        })
-                })
-            })
-            .map_or(0, |source| source.len()),
-        Some("maintain_wiki") => task
-            .pointer("/input/changeEvents")
-            .and_then(|events| serde_json::to_vec(events).ok())
-            .map_or(0, |bytes| bytes.len()),
-        _ => 0,
+fn task_dependency_ready(connection: &rusqlite::Connection, task: &Value) -> bool {
+    let Some(dependency) = task.get("dependsOnTaskId").and_then(Value::as_str) else {
+        return true;
     };
-    metadata_bytes.saturating_add(source_bytes)
+    connection
+        .query_row("SELECT status = 'succeeded' FROM tasks WHERE id = ?", [dependency], |row| row.get::<_, bool>(0))
+        .unwrap_or(false)
 }
 
-fn is_wiki_update_task(task: &Value) -> bool {
-    task.get("queue").and_then(Value::as_str) == Some("wiki")
-        && matches!(
-            task.get("type").and_then(Value::as_str),
-            Some("ingest_markdown_into_wiki" | "maintain_wiki")
-        )
-}
-
-pub fn heartbeat_task(
+pub(crate) fn heartbeat_task(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
     lease_token: &str,
@@ -471,210 +306,58 @@ pub fn heartbeat_task(
     match task_queue_adapter(lease["queue"].as_str().unwrap_or(""))? {
         TaskQueueAdapter::Wiki => crate::wiki::heartbeat_task(paths, task_id, &expires_at)?,
         TaskQueueAdapter::Writing => crate::writing::heartbeat_task(paths, task_id)?,
-        TaskQueueAdapter::Typesetting => crate::typesetting::heartbeat_task(paths, task_id)?,
-        TaskQueueAdapter::Publishing => crate::publishing::heartbeat_task(paths, task_id)?,
+        TaskQueueAdapter::Publication => crate::publication::heartbeat_task(paths, task_id)?,
+        TaskQueueAdapter::Release => crate::release::heartbeat_task(paths, task_id)?,
     };
     let storage = Storage::open(paths)?;
-    let tx = storage
-        .connection()
-        .unchecked_transaction()
-        .map_err(to_cli_error)?;
+    let tx = storage.connection().unchecked_transaction().map_err(to_cli_error)?;
     let now = crate::control::now_iso();
-    tx.execute(
-            "UPDATE tasks SET lease_expires_at = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ? AND lease_token_hash = ?",
-            params![expires_at, now, now, task_id, hash_secret(lease_token)],
-        )
-        .map_err(to_cli_error)?;
-    tx.execute(
-        "UPDATE task_attempts SET heartbeat_at = ? WHERE task_id = ? AND status = 'leased'",
-        params![now, task_id],
-    )
-    .map_err(to_cli_error)?;
-    tx.execute(
-        "UPDATE task_attempts SET execution_token_expires_at = ? WHERE task_id = ? AND status = 'leased' AND execution_token_hash IS NOT NULL",
-        params![expires_at, task_id],
-    )
-    .map_err(to_cli_error)?;
-    tx.execute(
-        "UPDATE task_staging_sessions SET expires_at = ?, updated_at = ? WHERE task_id = ? AND status IN ('open', 'prepared')",
-        params![expires_at, now, task_id],
-    )
-    .map_err(to_cli_error)?;
-    let project_id = lease["projectId"].as_str().unwrap_or_default();
-    crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
+    let changed = tx.execute(
+        "UPDATE tasks SET lease_expires_at = ?, heartbeat_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND lease_owner = ?",
+        params![expires_at, now, now, task_id, hash_secret(lease_token)],
+    ).map_err(to_cli_error)?;
+    if changed != 1 {
+        return Err(CliError::with_code("execution_fenced", "Task lease is no longer active."));
+    }
+    crate::storage::record_scope(&tx, "tasks", lease["projectId"].as_str(), None)?;
     tx.commit().map_err(to_cli_error)?;
-    inspect_task_in_session(paths, project_id, task_id)
+    inspect_task_in_session(paths, lease["projectId"].as_str().unwrap_or_default(), task_id)
 }
 
-pub fn complete_task(
+pub(crate) fn complete_task(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
     lease_token: &str,
     result: Option<Value>,
 ) -> Result<Value, CliError> {
     let lease = verify_lease(paths, task_id, lease_token)?;
-    let task_before_completion = inspect_task_in_session(
-        paths,
-        lease["projectId"].as_str().unwrap_or_default(),
-        task_id,
-    )?["task"]
-        .clone();
-    let execution_batch = task_before_completion
-        .pointer("/source/executionBatch")
-        .cloned();
-    let result = execution_batch
-        .as_ref()
-        .map(|batch| enrich_wiki_batch_result(result.clone(), batch))
-        .unwrap_or(result);
     let prepared_panel_state: Option<(String, Value)> =
         match task_queue_adapter(lease["queue"].as_str().unwrap_or(""))? {
-        TaskQueueAdapter::Wiki => Some((
-            lease["panelId"].as_str().unwrap_or_default().to_owned(),
-            crate::wiki::prepare_task_completion(paths, task_id, result.clone())?["state"].clone(),
-        )),
-        TaskQueueAdapter::Writing => crate::writing::prepare_task_completion(paths, task_id)?,
-        TaskQueueAdapter::Typesetting => {
-            crate::typesetting::prepare_task_completion(paths, task_id, result.clone())?
-        }
-        TaskQueueAdapter::Publishing => {
-            crate::publishing::prepare_task_completion(paths, task_id, result.clone())?
-        }
-    };
+            TaskQueueAdapter::Wiki => Some((
+                lease["panelId"].as_str().unwrap_or_default().to_owned(),
+                crate::wiki::prepare_task_completion(paths, task_id, result.clone())?["state"].clone(),
+            )),
+            TaskQueueAdapter::Writing => crate::writing::prepare_task_completion(paths, task_id)?,
+            TaskQueueAdapter::Publication => crate::publication::prepare_task_completion(paths, task_id, result.clone())?,
+            TaskQueueAdapter::Release => crate::release::prepare_task_completion(paths, task_id, result.clone())?,
+        };
     let project_id = lease["projectId"].as_str().unwrap_or_default();
-    if let Err(error) = finalize_task_runtime(
+    finalize_task_runtime(
         paths,
         project_id,
         task_id,
         "succeeded",
-        result.clone(),
+        result,
         None,
         None,
         None,
-        prepared_panel_state
-            .as_ref()
-            .map(|(panel_id, state)| (panel_id.as_str(), state)),
+        prepared_panel_state.as_ref().map(|(panel_id, state)| (panel_id.as_str(), state)),
         lease["executionGeneration"].as_i64(),
-    ) {
-        if error.code() == Some("content_conflict") {
-            let _ = supersede_task_for_content_conflict(paths, task_id, "content-resource");
-        }
-        return Err(error);
-    }
-    if let Some(batch) = execution_batch.as_ref() {
-        absorb_wiki_update_batch_members(paths, project_id, task_id, batch, result.as_ref())?;
-    }
+    )?;
     inspect_task_in_session(paths, project_id, task_id)
 }
 
-fn enrich_wiki_batch_result(result: Option<Value>, batch: &Value) -> Option<Value> {
-    let mut result = result.unwrap_or_else(|| json!({}));
-    if !result.is_object() {
-        result = json!({ "agentResult": result });
-    }
-    result["batch"] = json!({
-        "id": batch.get("id"),
-        "kind": batch.get("kind"),
-        "leaderTaskId": batch.get("leaderTaskId"),
-        "memberTaskIds": batch.get("memberTaskIds"),
-        "mutationKey": batch.get("mutationKey"),
-        "taskCount": batch.get("taskCount"),
-    });
-    Some(result)
-}
-
-fn absorb_wiki_update_batch_members(
-    paths: &MyOpenPanelsPaths,
-    project_id: &str,
-    leader_task_id: &str,
-    batch: &Value,
-    leader_result: Option<&Value>,
-) -> Result<(), CliError> {
-    let batch_id = batch.get("id").and_then(Value::as_str).unwrap_or("");
-    let target_id = batch.get("targetId").and_then(Value::as_str).unwrap_or("");
-    let changed_paths = leader_result
-        .and_then(|result| result.get("changedPaths"))
-        .cloned()
-        .unwrap_or_else(|| json!([]));
-    for member_task_id in batch
-        .get("memberTaskIds")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .filter(|member_task_id| *member_task_id != leader_task_id)
-    {
-        let task = inspect_task_in_session(paths, project_id, member_task_id)?;
-        if !matches!(
-            task["task"]["status"].as_str(),
-            Some("queued" | "failed")
-        ) {
-            continue;
-        }
-        claim_absorbed_wiki_batch_member(paths, project_id, member_task_id, target_id)?;
-        let result = json!({
-            "outcome": "batched",
-            "summary": "Applied as part of a consolidated Wiki update batch.",
-            "changedPaths": changed_paths,
-            "batchId": batch_id,
-            "leaderTaskId": leader_task_id,
-        });
-        let prepared = crate::wiki::prepare_task_completion(
-            paths,
-            member_task_id,
-            Some(result.clone()),
-        )?;
-        let panel_id = task["task"]["panelId"].as_str().unwrap_or_default();
-        finalize_task_runtime(
-            paths,
-            project_id,
-            member_task_id,
-            "succeeded",
-            Some(result),
-            None,
-            None,
-            None,
-            Some((panel_id, &prepared["state"])),
-            None,
-        )?;
-    }
-    Ok(())
-}
-
-fn claim_absorbed_wiki_batch_member(
-    paths: &MyOpenPanelsPaths,
-    project_id: &str,
-    task_id: &str,
-    target_id: &str,
-) -> Result<(), CliError> {
-    crate::wiki::claim_task(paths, task_id)?;
-    let storage = Storage::open(paths)?;
-    let tx = storage
-        .connection()
-        .unchecked_transaction()
-        .map_err(to_cli_error)?;
-    let now = crate::control::now_iso();
-    let changed = tx
-        .execute(
-            "UPDATE tasks SET status = 'reserved', assigned_agent_id = ?, updated_at = ? WHERE id = ? AND project_id = ? AND status IN ('queued', 'failed')",
-            params![target_id, now, task_id, project_id],
-        )
-        .map_err(to_cli_error)?;
-    if changed != 1 {
-        return Err(CliError::with_code(
-            "task_not_claimable",
-            format!("Wiki batch member is no longer claimable: {task_id}"),
-        ));
-    }
-    tx.execute(
-        "UPDATE tasks SET status = 'claimed', attempts = attempts + 1, updated_at = ? WHERE id = ? AND project_id = ? AND status = 'reserved'",
-        params![now, task_id, project_id],
-    )
-    .map_err(to_cli_error)?;
-    crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
-    tx.commit().map_err(to_cli_error)
-}
-
-pub fn fail_task(
+pub(crate) fn fail_task(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
     lease_token: &str,
@@ -691,7 +374,7 @@ pub fn fail_task(
     )
 }
 
-pub fn fail_task_with_class(
+pub(crate) fn fail_task_with_class(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
     lease_token: &str,
@@ -701,32 +384,14 @@ pub fn fail_task_with_class(
 ) -> Result<Value, CliError> {
     let lease = verify_lease(paths, task_id, lease_token)?;
     if retry_after.is_some_and(|value| chrono::DateTime::parse_from_rfc3339(value).is_err()) {
-        return Err(CliError::with_code(
-            "invalid_retry_after",
-            "Expected --retry-after to be an RFC 3339 timestamp.",
-        ));
+        return Err(CliError::with_code("invalid_retry_after", "Expected an RFC 3339 timestamp."));
     }
-    let has_fallback = !matches!(
-        failure_class,
-        TaskFailureClass::TerminalTask | TaskFailureClass::RetryableInterruption
-    ) && has_untried_eligible_target(
-        paths,
-        lease["projectId"].as_str().unwrap_or_default(),
-        task_id,
-        lease["targetId"].as_str().unwrap_or_default(),
-    )?;
     let retry_after = if failure_class == TaskFailureClass::TerminalTask {
         None
-    } else if failure_class == TaskFailureClass::RetryableInterruption {
-        Some(crate::control::now_iso())
-    } else if has_fallback {
-        Some(crate::control::now_iso())
-    } else if let Some(retry_after) = retry_after {
-        Some(retry_after.to_owned())
     } else {
-        Some(execution_retry_after(
-            lease["attempt"].as_i64().unwrap_or(1),
-        ))
+        retry_after.map(str::to_owned).or_else(|| {
+            Some(execution_retry_after(lease["attempt"].as_i64().unwrap_or(1)))
+        })
     };
     fail_queue_projection(
         paths,
@@ -735,29 +400,20 @@ pub fn fail_task_with_class(
         message,
         retry_after.as_deref(),
     )?;
+    let project_id = lease["projectId"].as_str().unwrap_or_default();
     finalize_task_runtime(
         paths,
-        lease["projectId"].as_str().unwrap_or_default(),
+        project_id,
         task_id,
         "failed",
         None,
-        Some(
-            if failure_class == TaskFailureClass::RetryableInterruption {
-                json!({ "code": "studio_restart", "message": message })
-            } else {
-                json!(message)
-            },
-        ),
+        Some(json!({ "message": message })),
         retry_after.as_deref(),
         Some(failure_class),
         None,
         lease["executionGeneration"].as_i64(),
     )?;
-    inspect_task_in_session(
-        paths,
-        lease["projectId"].as_str().unwrap_or_default(),
-        task_id,
-    )
+    inspect_task_in_session(paths, project_id, task_id)
 }
 
 pub(crate) fn interrupt_task_for_studio_restart(
@@ -765,32 +421,13 @@ pub(crate) fn interrupt_task_for_studio_restart(
     task_id: &str,
     lease_token: &str,
 ) -> Result<Value, CliError> {
-    let lease = verify_lease(paths, task_id, lease_token)?;
-    let message = "Studio restarted while the local executor was running.";
-    let retry_after = crate::control::now_iso();
-    let _ = fail_queue_projection(
+    fail_task_with_class(
         paths,
-        lease["queue"].as_str().unwrap_or(""),
         task_id,
-        message,
-        Some(&retry_after),
-    );
-    finalize_task_runtime(
-        paths,
-        lease["projectId"].as_str().unwrap_or_default(),
-        task_id,
-        "failed",
-        None,
-        Some(json!({ "code": "studio_restart", "message": message })),
-        Some(&retry_after),
-        Some(TaskFailureClass::RetryableInterruption),
-        None,
-        lease["executionGeneration"].as_i64(),
-    )?;
-    inspect_task_in_session(
-        paths,
-        lease["projectId"].as_str().unwrap_or_default(),
-        task_id,
+        lease_token,
+        "Studio restarted while the local executor was running.",
+        Some(&crate::control::now_iso()),
+        TaskFailureClass::RetryableInterruption,
     )
 }
 
@@ -802,19 +439,21 @@ fn fail_queue_projection(
     retry_after: Option<&str>,
 ) -> Result<(), CliError> {
     match task_queue_adapter(queue)? {
-        TaskQueueAdapter::Wiki => {
-            crate::wiki::fail_task_with_retry(paths, task_id, message, retry_after)?;
-        }
-        TaskQueueAdapter::Writing => {
-            crate::writing::fail_task(paths, task_id, message)?;
-        }
-        TaskQueueAdapter::Typesetting => {
-            crate::typesetting::fail_task(paths, task_id, message)?;
-        }
-        TaskQueueAdapter::Publishing => {
-            crate::publishing::fail_task(paths, task_id, message)?;
-        }
-    }
+        TaskQueueAdapter::Wiki => crate::wiki::fail_task_with_retry(paths, task_id, message, retry_after)?,
+        TaskQueueAdapter::Writing => crate::writing::fail_task(paths, task_id, message)?,
+        TaskQueueAdapter::Publication => crate::publication::fail_task(paths, task_id, message)?,
+        TaskQueueAdapter::Release => crate::release::fail_task(paths, task_id, message)?,
+    };
+    Ok(())
+}
+
+fn release_queue_projection(paths: &MyOpenPanelsPaths, queue: &str, task_id: &str) -> Result<(), CliError> {
+    match task_queue_adapter(queue)? {
+        TaskQueueAdapter::Wiki => crate::wiki::release_task(paths, task_id)?,
+        TaskQueueAdapter::Writing => crate::writing::release_task(paths, task_id)?,
+        TaskQueueAdapter::Publication => crate::publication::release_task(paths, task_id)?,
+        TaskQueueAdapter::Release => crate::release::release_task(paths, task_id)?,
+    };
     Ok(())
 }
 
@@ -825,116 +464,107 @@ pub(crate) fn mark_latest_attempt_invalid_output(
 ) -> Result<(), CliError> {
     let project_id = task_project_id(paths, task_id)?;
     let storage = Storage::open(paths)?;
-    let tx = storage
-        .connection()
-        .unchecked_transaction()
-        .map_err(to_cli_error)?;
-    let now = crate::control::now_iso();
-    let reason = json!({ "code": "invalid_output", "message": message });
-    tx.execute(
-        "UPDATE task_attempts SET status = 'invalid_output', error_json = ?, failure_class = 'retryable_output' WHERE id = (SELECT id FROM task_attempts WHERE task_id = ? ORDER BY execution_generation DESC LIMIT 1) AND status IN ('failed_retryable', 'failed_terminal')",
-        params![reason.to_string(), task_id],
+    let tx = storage.connection().unchecked_transaction().map_err(to_cli_error)?;
+    let history_json = tx.query_row(
+        "SELECT attempt_history_json FROM tasks WHERE id = ?",
+        [task_id],
+        |row| row.get::<_, String>(0),
     ).map_err(to_cli_error)?;
-    let workflow_run_id = tx
-        .query_row(
-            "SELECT workflow_run_id FROM tasks WHERE id = ?",
-            [task_id],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(to_cli_error)?;
+    let mut history = serde_json::from_str::<Vec<Value>>(&history_json).unwrap_or_default();
+    if let Some(last) = history.last_mut() {
+        last["status"] = json!("invalid_output");
+        last["error"] = json!({ "code": "invalid_output", "message": message });
+    }
     tx.execute(
-        "INSERT INTO task_events (task_id, workflow_run_id, event_type, from_status, to_status, reason_json, created_at) VALUES (?, ?, 'invalid_output', 'leased', 'failed', ?, ?)",
-        params![task_id, workflow_run_id, reason.to_string(), now],
+        "UPDATE tasks SET attempt_history_json = ?, updated_at = ? WHERE id = ?",
+        params![serde_json::to_string(&history).map_err(to_cli_error)?, crate::control::now_iso(), task_id],
     ).map_err(to_cli_error)?;
     crate::storage::record_scope(&tx, "tasks", Some(&project_id), None)?;
     tx.commit().map_err(to_cli_error)
 }
 
-pub fn release_task(
+pub(crate) fn release_task(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
     lease_token: &str,
 ) -> Result<Value, CliError> {
     let lease = verify_lease(paths, task_id, lease_token)?;
-    let release_status = match task_queue_adapter(lease["queue"].as_str().unwrap_or(""))? {
-        TaskQueueAdapter::Wiki => {
-            crate::wiki::release_task(paths, task_id)?;
-            "queued"
-        }
-        TaskQueueAdapter::Writing => {
-            crate::writing::release_task(paths, task_id)?;
-            "queued"
-        }
-        TaskQueueAdapter::Typesetting => {
-            crate::typesetting::release_task(paths, task_id)?;
-            "queued"
-        }
-        TaskQueueAdapter::Publishing => {
-            crate::publishing::release_task(paths, task_id)?;
-            "cancelled"
-        }
-    };
+    let queue = lease["queue"].as_str().unwrap_or("");
+    release_queue_projection(paths, queue, task_id)?;
     finalize_task_runtime(
         paths,
         lease["projectId"].as_str().unwrap_or_default(),
         task_id,
-        release_status,
+        "failed",
         None,
-        (release_status == "cancelled").then(|| json!({ "code": "execution_stopped" })),
-        None,
-        None,
+        Some(json!({ "code": "execution_released" })),
+        Some(&crate::control::now_iso()),
+        Some(TaskFailureClass::RetryableInterruption),
         None,
         lease["executionGeneration"].as_i64(),
     )?;
-    inspect_task_in_session(
-        paths,
-        lease["projectId"].as_str().unwrap_or_default(),
-        task_id,
-    )
+    inspect_task(paths, task_id)
 }
 
 pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let task = inspect_task(paths, task_id)?;
-    if !matches!(task["task"]["status"].as_str(), Some("failed" | "queued")) {
+    let task = inspect_task(paths, task_id)?["task"].clone();
+    if !matches!(task.get("status").and_then(Value::as_str), Some("failed" | "cancelled" | "superseded")) {
         return Err(CliError::with_code(
             "invalid_task_transition",
-            "Only queued or failed tasks can be retried. Succeeded and cancelled tasks require a new Workflow Run.",
+            "Only terminal unsuccessful Tasks can be retried.",
         ));
     }
-    if task["task"]["attempt"].as_i64().unwrap_or(0)
-        >= task["task"]["maxAttempts"].as_i64().unwrap_or(8)
-    {
-        return Err(CliError::with_code(
-            "invalid_task_transition",
-            "The Task exhausted its Attempts. Start a new Workflow Run instead of retrying it in place.",
-        ));
+    let project_id = task.get("projectId").and_then(Value::as_str).unwrap_or_default();
+    let panel_id = task.get("panelId").and_then(Value::as_str).unwrap_or_default();
+    let new_id = crate::ids::random_id("task");
+    let now = crate::control::now_iso();
+    let storage = Storage::open(paths)?;
+    let tx = storage.connection().unchecked_transaction().map_err(to_cli_error)?;
+    tx.execute(
+        r#"
+        INSERT INTO tasks (
+          id, project_id, origin_panel_id, handler_key, status, target_ref, input_json, source_json,
+          retry_of_task_id, mutation_key, available_at, idempotency_key, created_at, updated_at
+        ) SELECT ?, project_id, origin_panel_id, handler_key, 'queued', target_ref, input_json, source_json,
+          id, mutation_key, ?, NULL, ?, ?
+        FROM tasks WHERE id = ?
+        "#,
+        params![new_id, now, now, now, task_id],
+    ).map_err(to_cli_error)?;
+    tx.execute(
+        r#"
+        INSERT INTO task_resources (task_id, resource_id, role, captured_version, created_at)
+        SELECT ?, resource_id, role, captured_version, ? FROM task_resources WHERE task_id = ?
+        "#,
+        params![new_id, now, task_id],
+    )
+    .map_err(to_cli_error)?;
+    if let Some(mut state) = storage.read_panel_state(project_id, panel_id)? {
+        clone_task_projection(&mut state, task_id, &new_id, &now);
+        Storage::write_panel_state_in_transaction(&tx, project_id, panel_id, &state)?;
     }
-    let project_id = task["task"]["projectId"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
-    match task_queue_adapter(task["task"]["queue"].as_str().unwrap_or(""))? {
-        TaskQueueAdapter::Wiki => crate::wiki::retry_task(paths, task_id)?,
-        TaskQueueAdapter::Writing => crate::writing::retry_task(paths, task_id)?,
-        TaskQueueAdapter::Typesetting => crate::typesetting::retry_task(paths, task_id)?,
-        TaskQueueAdapter::Publishing => {
-            return Err(CliError::with_code(
-                "invalid_task_transition",
-                "Publishing Tasks cannot be retried in place. Start a new publishing attempt.",
-            ));
+    crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
+    tx.commit().map_err(to_cli_error)?;
+    inspect_task(paths, &new_id)
+}
+
+fn clone_task_projection(value: &mut Value, task_id: &str, new_id: &str, now: &str) -> bool {
+    match value {
+        Value::Array(items) => {
+            if let Some(position) = items.iter().position(|item| item.get("id").and_then(Value::as_str) == Some(task_id)) {
+                let mut clone = items[position].clone();
+                clone["id"] = json!(new_id);
+                clone["status"] = json!("queued");
+                clone["attempt"] = json!(0);
+                clone["createdAt"] = json!(now);
+                clone["updatedAt"] = json!(now);
+                items.push(clone);
+                true
+            } else {
+                items.iter_mut().any(|item| clone_task_projection(item, task_id, new_id, now))
+            }
         }
-    };
-    finalize_task_runtime(
-        paths,
-        &project_id,
-        task_id,
-        "queued",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )?;
-    inspect_task_in_session(paths, &project_id, task_id)
+        Value::Object(object) => object.values_mut().any(|item| clone_task_projection(item, task_id, new_id, now)),
+        _ => false,
+    }
 }

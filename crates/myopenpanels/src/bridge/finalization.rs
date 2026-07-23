@@ -115,7 +115,7 @@ pub(crate) fn finalize_execution_unit(
         );
         return Err(CliError::with_code(
             "execution_fenced",
-            "The Task Output Plan belongs to an older Task Attempt.",
+            "The Task Output Plan belongs to an older Task execution.",
         ));
     }
 
@@ -143,7 +143,6 @@ pub(crate) fn finalize_execution_unit(
         }
     };
     let runtime_finalization = json!({
-        "schemaVersion": TASK_OUTPUT_PLAN_SCHEMA_VERSION,
         "phase": RuntimeFinalizationPhase::Completed.as_str(),
         "handlerKey": request.handler_key,
         "outputPlanHash": prepared.plan.content_hash,
@@ -230,7 +229,7 @@ fn apply_task_output_plan(
                         mime_type: mime_type.clone(),
                         metadata,
                     };
-                if resource_kind == crate::content::ResourceKind::GeneratedDocument.as_str() {
+                if resource_kind == crate::content::ResourceKind::MyDocument.as_str() {
                     crate::content::stage_runtime_validated_file(
                         paths,
                         execution_token,
@@ -257,7 +256,7 @@ fn apply_task_output_plan(
                 )?;
                 artifacts.push(finalized_artifact(artifact, Some("SKILL.md")));
             }
-            TaskOutputAction::PrepareGeneratedDocument {
+            TaskOutputAction::PrepareMyDocument {
                 document_id,
                 title,
                 document_format,
@@ -349,29 +348,22 @@ fn apply_task_output_plan(
                     "contentHash": artifact.content_hash,
                     "sizeBytes": artifact.size_bytes,
                     "assetRef": written.asset_ref,
+                    "resourceId": written.resource_id,
                     "fileName": written.file_name,
                     "mimeType": "image/png",
                     "width": width,
                     "height": height,
                 }));
             }
-            TaskOutputAction::PrepareTypesettingTitles {
+            TaskOutputAction::PreparePublicationTitles {
+                project_id,
+                panel_id,
                 task_id,
                 artifact,
                 titles,
             } => {
                 let bytes = read_planned_artifact(artifact)?;
                 let storage = crate::storage::Storage::open(paths)?;
-                let project_id = plan
-                    .execution_unit
-                    .get("projectId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let panel_id = plan
-                    .execution_unit
-                    .get("panelId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
                 let requested = format!("title-tasks/{task_id}/titles.json");
                 let written = storage.write_asset_from_buffer(
                     project_id,
@@ -386,28 +378,21 @@ fn apply_task_output_plan(
                     "contentHash": artifact.content_hash,
                     "sizeBytes": artifact.size_bytes,
                     "assetRef": written.asset_ref,
+                    "resourceId": written.resource_id,
                     "fileName": written.file_name,
                     "mimeType": "application/json",
                     "titles": titles,
                 }));
             }
             TaskOutputAction::PrepareTypesettingLayout {
+                project_id,
+                panel_id,
                 task_id,
                 artifact,
                 content,
             } => {
                 let bytes = read_planned_artifact(artifact)?;
                 let storage = crate::storage::Storage::open(paths)?;
-                let project_id = plan
-                    .execution_unit
-                    .get("projectId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let panel_id = plan
-                    .execution_unit
-                    .get("panelId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
                 let requested = format!("layout-tasks/{task_id}/content.json");
                 let written = storage.write_asset_from_buffer(
                     project_id,
@@ -422,6 +407,7 @@ fn apply_task_output_plan(
                     "contentHash": artifact.content_hash,
                     "sizeBytes": artifact.size_bytes,
                     "assetRef": written.asset_ref,
+                    "resourceId": written.resource_id,
                     "fileName": written.file_name,
                     "mimeType": "application/json",
                     "content": content,
@@ -475,7 +461,7 @@ fn validate_prepared_writing_output(
     let staged = crate::content::staged_files_for_task(
         paths,
         task_id,
-        crate::content::ResourceKind::GeneratedDocument,
+        crate::content::ResourceKind::MyDocument,
     )?;
     let [(staged_document_id, _, bytes, metadata)] = staged.as_slice() else {
         return Err(CliError::with_code(

@@ -1,7 +1,6 @@
 import {
   Button,
   Chip,
-  Input,
   InputGroup,
   type Key,
   Label,
@@ -42,7 +41,7 @@ import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiUrl } from "../../lib/api"
 import { randomId } from "../../lib/id"
 import {
-  addTypesettingTitle,
+  addPublicationTitle,
   appendTypesettingTags,
   isSupportedTypesettingCoverImage,
   isTypesettingDocumentEmpty,
@@ -51,20 +50,20 @@ import {
   moveTypesettingCover,
   parseTypesettingAssetDrag,
   plainTextToTypesettingContent,
-  removeTypesettingTitle,
-  selectedTypesettingTitleId,
-  selectTypesettingTitle,
+  publicationCoverTaskStatus,
+  publicationLayoutTaskStatus,
+  publicationTitleAfterDocumentInsert,
+  publicationTitleTaskStatus,
+  removePublicationTitle,
+  selectedPublicationTitleId,
+  selectPublicationTitle,
   TYPESETTING_ASSET_DRAG_TYPE,
   type TypesettingCoverTaskDisplayStatus,
-  typesettingCoverTaskStatus,
   typesettingImageClickSide,
   typesettingImagesToContent,
   typesettingInsertPosition,
-  typesettingLayoutTaskStatus,
   typesettingPublicationTitles,
-  typesettingTitleAfterDocumentInsert,
-  typesettingTitleTaskStatus,
-  updateTypesettingTitle,
+  updatePublicationTitle,
 } from "../../lib/typesetting"
 import type {
   MyOpenPanelsTransport,
@@ -76,7 +75,7 @@ import type {
 import { TypesettingAddCoverDialog } from "./TypesettingAddCoverDialog"
 import { TypesettingCoverTaskDialog } from "./TypesettingCoverTaskDialog"
 import { TypesettingLayoutDialog } from "./TypesettingLayoutDialog"
-import { TypesettingTitleTaskDialog } from "./TypesettingTitleTaskDialog"
+import { PublicationTitleTaskDialog } from "./TypesettingTitleTaskDialog"
 import {
   createTypesettingImageExtension,
   formatPublicationTime,
@@ -86,7 +85,6 @@ import {
 type SaveStatus = "saved" | "saving" | "failed"
 export type PublicationView = "edit" | "preview"
 const TYPESETTING_COVER_DRAG_TYPE = "application/x-myopenpanels-cover-index"
-
 export function PublicationModeHeader({
   onDelete,
   onOpenLibrary,
@@ -107,7 +105,6 @@ export function PublicationModeHeader({
   view: PublicationView
 }) {
   const { locale, t } = useMyOpenPanelsI18n()
-
   return (
     <div className="op-typesetting-view-header op-typesetting-detail-header op-typesetting-mode-header">
       <div className="op-typesetting-detail-header__save-meta">
@@ -184,7 +181,6 @@ export function PublicationModeHeader({
     </div>
   )
 }
-
 export function PublicationDetail({
   importAsset,
   onDelete,
@@ -258,17 +254,14 @@ export function PublicationDetail({
   const tagDraftPublicationIdRef = useRef(publication.id)
   const publicationRef = useRef(publication)
   publicationRef.current = publication
-
   useEffect(() => {
     if (saveStatus === "saved") setLastSavedAt(publication.updatedAt)
   }, [publication.updatedAt, saveStatus])
-
   useEffect(() => {
     if (titleListPublicationIdRef.current === publication.id) return
     titleListPublicationIdRef.current = publication.id
     setIsTitleListExpanded(false)
   }, [publication.id])
-
   useEffect(() => {
     if (!isTitleListExpanded) return
     const collapseTitleList = (event: PointerEvent) => {
@@ -282,7 +275,6 @@ export function PublicationDetail({
     document.addEventListener("pointerdown", collapseTitleList)
     return () => document.removeEventListener("pointerdown", collapseTitleList)
   }, [isTitleListExpanded])
-
   useEffect(() => {
     if (tagDraftPublicationIdRef.current === publication.id) return
     tagDraftPublicationIdRef.current = publication.id
@@ -299,7 +291,6 @@ export function PublicationDetail({
       updatedAt: new Date().toISOString(),
     }))
   }, [onUpdate, publication.tags, tagDraft])
-
   const removeTags = useCallback(
     (keys: Set<Key>) => {
       onUpdate((current) => ({
@@ -319,8 +310,8 @@ export function PublicationDetail({
     return [...byId.values()]
       .filter(
         (task) =>
-          task.queue === "typesetting" &&
-          task.type === "generate_typesetting_cover" &&
+          task.queue === "publication" &&
+          task.type === "generate_publication_cover" &&
           task.targetId === publication.id
       )
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
@@ -350,11 +341,21 @@ export function PublicationDetail({
     }
     return [...byId.values()].filter(
       (task) =>
-        task.queue === "typesetting" &&
-        task.type === "format_typesetting_content" &&
+        task.queue === "publication" &&
+        task.type === "format_publication_content" &&
         task.targetId === publication.id
     )
   }, [createdLayoutTasks, publication.id, tasks])
+
+  useEffect(() => {
+    if (createdLayoutTasks.length === 0) return
+    const taskIds = new Set(tasks.map((task) => task.id))
+    if (!createdLayoutTasks.some((task) => taskIds.has(task.id))) return
+    setCreatedLayoutTasks((current) =>
+      current.filter((task) => !taskIds.has(task.id))
+    )
+  }, [createdLayoutTasks, tasks])
+
   const latestLayoutTask = latestTypesettingLayoutTask(
     layoutTasks,
     publication.id
@@ -362,7 +363,7 @@ export function PublicationDetail({
   const activeLayoutTask =
     layoutTasks.find(isTypesettingLayoutTaskActive) ?? null
   const titleOptions = typesettingPublicationTitles(publication)
-  const activeTitleId = selectedTypesettingTitleId(publication)
+  const activeTitleId = selectedPublicationTitleId(publication)
   const activeTitle =
     titleOptions.find(({ id }) => id === activeTitleId) ?? titleOptions[0]
   const titleTasks = useMemo(() => {
@@ -373,8 +374,8 @@ export function PublicationDetail({
     return [...byId.values()]
       .filter(
         (task) =>
-          task.queue === "typesetting" &&
-          task.type === "generate_typesetting_titles" &&
+          task.queue === "publication" &&
+          task.type === "generate_publication_titles" &&
           task.targetId === publication.id
       )
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
@@ -523,10 +524,10 @@ export function PublicationDetail({
       )
       if (!publicationRef.current.title.trim()) {
         onUpdate((current) => ({
-          ...updateTypesettingTitle(
+          ...updatePublicationTitle(
             current,
-            selectedTypesettingTitleId(current),
-            typesettingTitleAfterDocumentInsert(current.title, title)
+            selectedPublicationTitleId(current),
+            publicationTitleAfterDocumentInsert(current.title, title)
           ),
           updatedAt: new Date().toISOString(),
         }))
@@ -682,84 +683,100 @@ export function PublicationDetail({
 
       <div className="op-typesetting-detail-scroll">
         <div
-          className="op-typesetting-field op-typesetting-title-field"
+          className="op-typesetting-field op-publication-title-field"
           ref={titleFieldRef}
         >
-          <div className="op-typesetting-title-field__heading">
+          <div className="op-publication-title-field__heading">
             <Label htmlFor={`publication-title-${publication.id}`}>
               {t`Title`}
             </Label>
-            <Button
-              onPress={() => setIsTitleDialogOpen(true)}
-              size="sm"
-              variant="secondary"
-            >
-              <Sparkles size={14} />
-              {t`Generate titles`}
-            </Button>
+            <div className="op-publication-title-field__actions">
+              {visibleTitleTask ? (
+                <TitleTaskStatus
+                  onOpen={() => onOpenAgentTasks([visibleTitleTask.id])}
+                  t={t}
+                  task={visibleTitleTask}
+                />
+              ) : null}
+              <Button
+                onPress={() => setIsTitleDialogOpen(true)}
+                size="sm"
+                variant="secondary"
+              >
+                <Sparkles size={14} />
+                {t`Generate titles`}
+              </Button>
+            </div>
           </div>
-          <div className="op-typesetting-title-field__control">
-            <Input
+          <InputGroup
+            aria-label={t`Title`}
+            className="op-publication-title-field__control"
+            fullWidth
+            variant="secondary"
+          >
+            <InputGroup.Input
               aria-label={t`Title`}
-              fullWidth
               id={`publication-title-${publication.id}`}
               onChange={(event) => {
                 const value = event.currentTarget.value
                 onUpdate((current) => ({
-                  ...updateTypesettingTitle(current, activeTitleId, value),
+                  ...updatePublicationTitle(current, activeTitleId, value),
                   updatedAt: new Date().toISOString(),
                 }))
               }}
               placeholder={t`Untitled publication`}
               ref={titleInputRef}
               value={activeTitle.value}
-              variant="secondary"
             />
-            <Tooltip closeDelay={0} delay={300}>
-              <Button
-                aria-controls={`publication-title-options-${publication.id}`}
-                aria-expanded={isTitleListExpanded}
-                aria-label={
-                  isTitleListExpanded ? t`Collapse titles` : t`Expand titles`
-                }
-                className="op-typesetting-title-field__expand-button"
-                isIconOnly
-                onPress={() => setIsTitleListExpanded((expanded) => !expanded)}
-                size="sm"
-                variant="ghost"
-              >
-                <ChevronDown
-                  className="op-typesetting-title-field__chevron"
-                  data-expanded={isTitleListExpanded}
-                  size={16}
-                />
-              </Button>
-              <Tooltip.Content placement="top">
-                {isTitleListExpanded ? t`Collapse titles` : t`Expand titles`}
-              </Tooltip.Content>
-            </Tooltip>
-          </div>
+            <InputGroup.Suffix className="op-publication-title-field__suffix">
+              <Tooltip closeDelay={0} delay={300}>
+                <Button
+                  aria-controls={`publication-title-options-${publication.id}`}
+                  aria-expanded={isTitleListExpanded}
+                  aria-label={
+                    isTitleListExpanded ? t`Collapse titles` : t`Expand titles`
+                  }
+                  className="op-publication-title-field__expand-button"
+                  isIconOnly
+                  onPress={() =>
+                    setIsTitleListExpanded((expanded) => !expanded)
+                  }
+                  size="sm"
+                  variant="ghost"
+                >
+                  <ChevronDown
+                    className="op-publication-title-field__chevron"
+                    data-expanded={isTitleListExpanded}
+                    size={16}
+                  />
+                </Button>
+                <Tooltip.Content placement="top">
+                  {isTitleListExpanded ? t`Collapse titles` : t`Expand titles`}
+                </Tooltip.Content>
+              </Tooltip>
+            </InputGroup.Suffix>
+          </InputGroup>
 
           {isTitleListExpanded ? (
             <div
               aria-label={t`Titles`}
-              className="op-typesetting-title-field__list"
+              className="op-publication-title-field__list"
               id={`publication-title-options-${publication.id}`}
               role="list"
             >
               {titleOptions.map((title) => (
                 <div
-                  className="op-typesetting-title-field__row"
+                  className="op-publication-title-field__row"
                   data-selected={title.id === activeTitleId}
                   key={title.id}
                   role="listitem"
                 >
                   <Button
                     aria-pressed={title.id === activeTitleId}
-                    className="op-typesetting-title-field__option"
+                    className="op-publication-title-field__option"
                     onPress={() => {
                       onUpdate((current) => ({
-                        ...selectTypesettingTitle(current, title.id),
+                        ...selectPublicationTitle(current, title.id),
                         updatedAt: new Date().toISOString(),
                       }))
                       setIsTitleListExpanded(false)
@@ -767,7 +784,7 @@ export function PublicationDetail({
                     }}
                     variant="ghost"
                   >
-                    <span className="op-typesetting-title-field__option-label">
+                    <span className="op-publication-title-field__option-label">
                       {title.value.trim() || t`Untitled publication`}
                     </span>
                   </Button>
@@ -778,7 +795,7 @@ export function PublicationDetail({
                       onPress={() => {
                         const replacementTitleId = randomId("publication-title")
                         onUpdate((current) => ({
-                          ...removeTypesettingTitle(
+                          ...removePublicationTitle(
                             current,
                             title.id,
                             replacementTitleId
@@ -798,10 +815,10 @@ export function PublicationDetail({
                 </div>
               ))}
               <Button
-                className="op-typesetting-title-field__add-option"
+                className="op-publication-title-field__add-option"
                 onPress={() => {
                   onUpdate((current) => ({
-                    ...addTypesettingTitle(current, {
+                    ...addPublicationTitle(current, {
                       id: randomId("publication-title"),
                       value: "",
                     }),
@@ -816,13 +833,6 @@ export function PublicationDetail({
                 {t`New title`}
               </Button>
             </div>
-          ) : null}
-          {visibleTitleTask ? (
-            <TitleTaskStatus
-              onOpen={() => onOpenAgentTasks([visibleTitleTask.id])}
-              t={t}
-              task={visibleTitleTask}
-            />
           ) : null}
         </div>
 
@@ -901,8 +911,8 @@ export function PublicationDetail({
           <div
             className={
               coverDropActive
-                ? "is-active op-typesetting-cover-zone"
-                : "op-typesetting-cover-zone"
+                ? "is-active op-publication-cover-zone"
+                : "op-publication-cover-zone"
             }
             onDragLeave={() => setCoverDropActive(false)}
             onDragOver={(event) => {
@@ -924,10 +934,10 @@ export function PublicationDetail({
             {publication.covers.length ||
             visibleCoverTasks.length ||
             isCoverUploading ? (
-              <div className="op-typesetting-covers">
+              <div className="op-publication-covers">
                 {publication.covers.map((cover, index) => (
                   <div
-                    className="op-typesetting-cover"
+                    className="op-publication-cover"
                     draggable
                     key={cover.assetRef}
                     onDragEnd={() => setDraggedCoverIndex(null)}
@@ -977,10 +987,10 @@ export function PublicationDetail({
                       draggable={false}
                       src={apiUrl(transport.apiBase, cover.src).toString()}
                     />
-                    <span className="op-typesetting-cover__grip">
+                    <span className="op-publication-cover__grip">
                       <GripVertical size={14} />
                     </span>
-                    <div className="op-typesetting-cover__actions">
+                    <div className="op-publication-cover__actions">
                       <Button
                         aria-label={t`Move cover left`}
                         isDisabled={index === 0}
@@ -1046,13 +1056,13 @@ export function PublicationDetail({
                   <CoverTaskPlaceholder
                     key={task.id}
                     onOpen={() => onOpenAgentTasks([task.id])}
-                    status={typesettingCoverTaskStatus(task)}
+                    status={publicationCoverTaskStatus(task)}
                     t={t}
                   />
                 ))}
                 {isCoverUploading ? (
-                  <div className="op-typesetting-cover-task">
-                    <span className="op-typesetting-cover-task__icon">
+                  <div className="op-publication-cover-task">
+                    <span className="op-publication-cover-task__icon">
                       <Spinner size="sm" />
                     </span>
                     <strong>{t`Uploading images`}</strong>
@@ -1067,7 +1077,7 @@ export function PublicationDetail({
           </div>
         </section>
 
-        <section className="op-typesetting-section op-typesetting-content-section">
+        <section className="op-typesetting-section op-publication-content-section">
           <div className="op-typesetting-section__heading">
             <div>
               <span>{t`Content details`}</span>
@@ -1187,7 +1197,7 @@ export function PublicationDetail({
         transport={transport}
       />
 
-      <TypesettingTitleTaskDialog
+      <PublicationTitleTaskDialog
         isOpen={isTitleDialogOpen}
         onFlushSave={onFlushSave}
         onOpenChange={setIsTitleDialogOpen}
@@ -1227,7 +1237,7 @@ function TitleTaskStatus({
   task: ProjectTask
   t: (value: TemplateStringsArray) => string
 }) {
-  const status = typesettingTitleTaskStatus(task)
+  const status = publicationTitleTaskStatus(task)
   const label =
     status === "waiting"
       ? t`Waiting for titles`
@@ -1240,7 +1250,7 @@ function TitleTaskStatus({
             : t`Title generation cancelled`
   return (
     <button
-      className={`is-${status} op-typesetting-title-status`}
+      className={`is-${status} op-publication-title-status`}
       onClick={onOpen}
       type="button"
     >
@@ -1263,7 +1273,7 @@ function LayoutTaskStatus({
   task: ProjectTask
   t: (value: TemplateStringsArray) => string
 }) {
-  const status = typesettingLayoutTaskStatus(task)
+  const status = publicationLayoutTaskStatus(task)
   const label =
     status === "waiting"
       ? t`Waiting for layout`
@@ -1276,7 +1286,7 @@ function LayoutTaskStatus({
             : t`Layout cancelled`
   return (
     <button
-      className={`is-${status} op-typesetting-layout-status`}
+      className={`is-${status} op-publication-layout-status`}
       onClick={onOpen}
       type="button"
     >
@@ -1313,11 +1323,11 @@ function CoverTaskPlaceholder({
             : t`Cover creation cancelled`
   return (
     <button
-      className={`is-${status} op-typesetting-cover-task`}
+      className={`is-${status} op-publication-cover-task`}
       onClick={onOpen}
       type="button"
     >
-      <span className="op-typesetting-cover-task__icon">
+      <span className="op-publication-cover-task__icon">
         {active ? (
           <LoaderCircle className="op-spin" size={18} />
         ) : (

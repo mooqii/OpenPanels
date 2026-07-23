@@ -10,7 +10,7 @@ export function RawDocumentsEmpty() {
   )
 }
 
-export function GeneratedDocumentsEmpty() {
+export function MyDocumentsEmpty() {
   const { t } = useMyOpenPanelsI18n()
   return (
     <div className="op-wiki-module-empty">

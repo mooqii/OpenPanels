@@ -7,10 +7,10 @@ import { moduleLabel } from "./SkillManagerPanels"
 const RECOMMENDED_MODULE_ORDER = [
   "wiki-update",
   "writing",
-  "writing-refinement",
-  "typesetting-cover",
-  "typesetting-title",
-  "typesetting-layout",
+  "writing-distillation",
+  "publication-cover",
+  "publication-title",
+  "publication-layout",
   "publishing",
 ]
 

@@ -2,23 +2,6 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
     let subcommand = parsed.positionals.get(1).map(String::as_str);
     let action = parsed.positionals.get(2).map(String::as_str);
     match (subcommand, action) {
-        (Some("document"), Some("generate")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = operations::begin_wiki(
-                &paths,
-                required_flag(parsed, "title")?,
-                string_flag(parsed, "document-format").unwrap_or("markdown"),
-                string_flag(parsed, "document-id"),
-            )?;
-            write_result(
-                parsed,
-                stdout,
-                &result,
-                result["operation"]["id"]
-                    .as_str()
-                    .unwrap_or("Started wiki generation"),
-            )
-        }
         (Some("raw"), Some("create")) => {
             let paths = parsed_current_paths(parsed)?;
             let source_file = string_flag(parsed, "source-file");
@@ -58,104 +41,6 @@ fn run_wiki_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(), 
             let payload = wiki::list_raw_documents(&paths)?;
             let count = payload["documents"].as_array().map(Vec::len).unwrap_or(0);
             write_result(parsed, stdout, &payload, &format!("{count} document(s)"))
-        }
-        (Some("document"), Some("list")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let result = wiki::list_generated_documents(&paths)?;
-            let count = result["documents"].as_array().map(Vec::len).unwrap_or(0);
-            write_result(
-                parsed,
-                stdout,
-                &result,
-                &format!("{count} generated document(s)"),
-            )
-        }
-        (Some("document"), Some("create")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let file = required_flag(parsed, "content-file")?;
-            let content = fs::read(file).map_err(|error| CliError::new(error.to_string()))?;
-            let file_name = std::path::Path::new(file)
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("document.md");
-            let result = wiki::create_generated_document(
-                &paths,
-                file_name,
-                string_flag(parsed, "title"),
-                string_flag(parsed, "mime-type"),
-                string_flag(parsed, "task-id"),
-                string_flag(parsed, "thread-id"),
-                &content,
-            )?;
-            let id = result["document"]["id"].as_str().unwrap_or_default();
-            write_result(
-                parsed,
-                stdout,
-                &result,
-                &format!("Created generated document {id}"),
-            )
-        }
-        (Some("document"), Some("read")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let document_id = required_flag(parsed, "document-id")?;
-            let result = wiki::read_generated_document(&paths, document_id)?;
-            let text = result["content"].as_str().unwrap_or("");
-            write_result(parsed, stdout, &result, text)
-        }
-        (Some("document"), Some("update")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let document_id = required_flag(parsed, "document-id")?;
-            let mut result = if let Some(file) = string_flag(parsed, "content-file") {
-                let content = fs::read(file).map_err(|error| CliError::new(error.to_string()))?;
-                let file_name = std::path::Path::new(file)
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("document.md");
-                wiki::write_generated_document_for_agent(
-                    &paths,
-                    document_id,
-                    file_name,
-                    string_flag(parsed, "mime-type"),
-                    &content,
-                )?
-            } else {
-                wiki::read_generated_document(&paths, document_id)?
-            };
-            if let Some(title) = string_flag(parsed, "title") {
-                result = wiki::rename_generated_document(&paths, document_id, title)?;
-            }
-            write_result(
-                parsed,
-                stdout,
-                &result,
-                &format!("Updated generated document {document_id}"),
-            )
-        }
-        (Some("document"), Some("delete")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let document_id = required_flag(parsed, "document-id")?;
-            let result = wiki::delete_generated_document(&paths, document_id)?;
-            write_result(
-                parsed,
-                stdout,
-                &result,
-                &format!("Deleted generated document {document_id}"),
-            )
-        }
-        (Some("document"), Some("publish")) => {
-            let paths = parsed_current_paths(parsed)?;
-            let document_id = required_flag(parsed, "document-id")?;
-            let result = wiki::publish_generated_document(
-                &paths,
-                document_id,
-                string_flag(parsed, "space-id"),
-            )?;
-            write_result(
-                parsed,
-                stdout,
-                &result,
-                &format!("Published generated document {document_id}"),
-            )
         }
         (Some("raw"), Some("read")) => {
             let paths = parsed_current_paths(parsed)?;

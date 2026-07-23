@@ -11,9 +11,17 @@ include!("bridge/status_process.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn active_wiki_space_id(paths: &crate::paths::MyOpenPanelsPaths) -> String {
+        crate::wiki::wiki_context(paths).expect("wiki context")["state"]["activeWikiSpaceId"]
+            .as_str()
+            .expect("active Wiki Space")
+            .to_owned()
+    }
+
     include!("bridge/tests/writing.rs");
     include!("bridge/tests/conversion_generation.rs");
-    include!("bridge/tests/refinement.rs");
+    include!("bridge/tests/distillation.rs");
     include!("bridge/tests/wiki.rs");
     include!("bridge/tests/skills_process.rs");
 }

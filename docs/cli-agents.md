@@ -28,7 +28,7 @@ does not require a subsequent Catalog call: instantiate only its returned
 memory.
 
 Claimed Task Broker execution and Studio-generated `task handoff start` Task
-Handoffs do not run Bootstrap. A Handoff returns ExecutionBundle v2 and a
+Handoffs do not run Bootstrap. A Handoff returns an ExecutionBundle and a
 Delivery Contract with bound `exec`, heartbeat, completion, failure, and stop
 actions. The Bundle inlines its required System References, captured Skill,
 workspace paths, identifiers, and work-command parameters so both Agent Message
@@ -39,17 +39,17 @@ the Runtime creates Operations, stages content, and completes the Task. The
 automatic Agent CLI uses the same Bundle, TaskOutputPlan, and Finalizer; only
 its Bridge-managed Delivery Contract differs.
 
-Automatic Agent targets advertise only capabilities owned by the static Task
+Automatic Agent CLI workers advertise only capabilities owned by the static Task
 Handler Registry. Unregistered queue/type/capability tuples are not routed and
 cannot fall back to generic Catalog-driven execution. Runtime Finalization moves
 through `validating`, `applying`, `committing`, and `completed`; failures expose
 the failed phase through the shared Finalizer result.
 
-Workflow Runs are durable Task DAG executions, not Procedure routes. Inspect
-them with `workflow run list` and `workflow run read`; their public identity is
-`workflowRunId`, and `definitionKey` identifies the kind of process being run.
+Tasks are the only durable execution entity. A Task exposes its dependency,
+lease, fencing generation, result, error, and at most three embedded execution
+summaries through `task read`; there is no Workflow Run, Event, or Attempt API.
 
-All JSON responses use Envelope v3 with `ok`, `schemaVersion`, `intent`, either
+All JSON responses use one CLI-owned envelope with `ok`, `intent`, either
 `data` or `error`, `actions`, and `meta`. Error recovery is represented by the
 same top-level action arrays. `actions.required` is ordered; suggested actions
 are optional and conditional.

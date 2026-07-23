@@ -5,8 +5,8 @@ const collapsed = (...modules: WikiModule[]) => new Set(modules)
 
 describe("nextCollapsedModules", () => {
   it("collapses either Writing library module when both are open", () => {
-    expect([...nextCollapsedModules(collapsed(), "generated")]).toEqual([
-      "generated",
+    expect([...nextCollapsedModules(collapsed(), "myDocuments")]).toEqual([
+      "myDocuments",
     ])
     expect([...nextCollapsedModules(collapsed(), "structured")]).toEqual([
       "structured",
@@ -15,15 +15,15 @@ describe("nextCollapsedModules", () => {
 
   it("reopens a collapsed module", () => {
     expect([
-      ...nextCollapsedModules(collapsed("generated"), "generated"),
+      ...nextCollapsedModules(collapsed("myDocuments"), "myDocuments"),
     ]).toEqual([])
   })
 
   it("swaps modules instead of leaving both collapsed", () => {
     expect([
       ...nextCollapsedModules(
-        collapsed("generated", "structured"),
-        "generated"
+        collapsed("myDocuments", "structured"),
+        "myDocuments"
       ),
     ]).toEqual(["structured"])
   })

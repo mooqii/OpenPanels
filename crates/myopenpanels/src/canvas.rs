@@ -251,14 +251,12 @@ pub fn insert_image_for_target(
         .to_owned();
     let asset_id = create_id("asset");
     let shape_id = create_id("shape");
-    let asset_url = format!(
-        "/api/projects/{}/panels/{}/assets/{}",
-        bootstrap.project.id, bootstrap.panel.id, written.file_name
-    );
+    let asset_url = format!("/api/assets/{}/content", written.resource_id);
     let mime_type = mime_guess::from_path(&written.file_name)
         .first_raw()
         .unwrap_or("application/octet-stream");
     asset_meta.insert("assetRef".to_owned(), json!(written.asset_ref));
+    asset_meta.insert("resourceId".to_owned(), json!(written.resource_id));
     store.insert(
         asset_id.clone(),
         json!({

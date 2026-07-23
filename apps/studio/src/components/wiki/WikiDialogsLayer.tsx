@@ -29,17 +29,17 @@ export function WikiDialogsLayer({
     saveWikiPage,
     originalPreview,
     setOriginalPreview,
-    generatedDocumentDialog,
-    setGeneratedDocumentDialog,
-    renameGeneratedDocumentFile,
-    saveGeneratedMarkdown,
-    pendingRenameGeneratedDocument,
-    setPendingRenameGeneratedDocument,
+    myDocumentDialog,
+    setMyDocumentDialog,
+    renameMyDocumentFile,
+    saveMyDocumentMarkdown,
+    pendingRenameMyDocument,
+    setPendingRenameMyDocument,
     isBusy,
-    renameGeneratedDocument,
-    pendingDeleteGeneratedDocument,
-    setPendingDeleteGeneratedDocument,
-    deleteGeneratedDocument,
+    renameMyDocument,
+    pendingDeleteMyDocument,
+    setPendingDeleteMyDocument,
+    deleteMyDocument,
     pendingDeleteDocument,
     setPendingDeleteDocument,
     deleteRawDocument,
@@ -92,38 +92,35 @@ export function WikiDialogsLayer({
         />
       ) : null}
 
-      {generatedDocumentDialog ? (
+      {myDocumentDialog ? (
         <MarkdownDialog
           closeLabel={t`Close`}
-          content={generatedDocumentDialog.content}
-          fileName={generatedDocumentDialog.document.originalFileName}
+          content={myDocumentDialog.content}
+          fileName={myDocumentDialog.document.originalFileName}
           onChange={(content) =>
-            setGeneratedDocumentDialog((current) =>
+            setMyDocumentDialog((current) =>
               current ? { ...current, content } : current
             )
           }
-          onClose={() => setGeneratedDocumentDialog(null)}
-          onRenameFileName={renameGeneratedDocumentFile}
-          onSave={saveGeneratedMarkdown}
+          onClose={() => setMyDocumentDialog(null)}
+          onRenameFileName={renameMyDocumentFile}
+          onSave={saveMyDocumentMarkdown}
         />
       ) : null}
 
-      {pendingRenameGeneratedDocument ? (
+      {pendingRenameMyDocument ? (
         <RenameDocumentDialog
           cancelLabel={t`Cancel`}
           confirmLabel={t`Rename`}
           isBusy={isBusy}
-          onCancel={() => setPendingRenameGeneratedDocument(null)}
+          onCancel={() => setPendingRenameMyDocument(null)}
           onConfirm={(title) =>
-            renameGeneratedDocument(
-              pendingRenameGeneratedDocument,
-              title
-            ).catch((error) => {
-              console.error("Failed to rename generated document", error)
+            renameMyDocument(pendingRenameMyDocument, title).catch((error) => {
+              console.error("Failed to rename My Document", error)
             })
           }
           title={t`Rename document`}
-          value={pendingRenameGeneratedDocument.title}
+          value={pendingRenameMyDocument.title}
         />
       ) : null}
 
@@ -145,7 +142,7 @@ export function WikiDialogsLayer({
         />
       ) : null}
 
-      {pendingDeleteGeneratedDocument ? (
+      {pendingDeleteMyDocument ? (
         <ConfirmDialog
           cancelLabel={t`Cancel`}
           confirmLabel={t`Delete`}
@@ -155,13 +152,11 @@ export function WikiDialogsLayer({
               ? t`This document will be removed from My Documents. Published raw documents will be kept.`
               : t`This document will be removed from My Documents.`
           }
-          onCancel={() => setPendingDeleteGeneratedDocument(null)}
+          onCancel={() => setPendingDeleteMyDocument(null)}
           onConfirm={() =>
-            deleteGeneratedDocument(pendingDeleteGeneratedDocument).catch(
-              (error) => {
-                console.error("Failed to delete generated document", error)
-              }
-            )
+            deleteMyDocument(pendingDeleteMyDocument).catch((error) => {
+              console.error("Failed to delete My Document", error)
+            })
           }
           title={t`Delete document?`}
         />

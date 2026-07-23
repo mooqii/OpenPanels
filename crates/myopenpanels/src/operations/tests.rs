@@ -31,7 +31,6 @@ mod tests {
             "panelId": "panel:test",
             "panelKind": "canvas",
             "guideId": null,
-            "protocolVersion": OPERATION_PROTOCOL_VERSION,
             "target": {},
             "input": {},
             "result": null,
@@ -129,7 +128,7 @@ mod tests {
             .as_str()
             .unwrap()
             .ends_with("references/canvas-contract.md"));
-        assert_eq!(started["operation"]["protocolVersion"], 2);
+        assert!(started["operation"].get("protocolVersion").is_none());
         assert!(started["operation"]["guideId"].is_null());
         let operation_id = started["operation"]["id"].as_str().unwrap();
         let next_project = create_project(&paths, Some("Another")).expect("new project");
@@ -169,11 +168,11 @@ mod tests {
     }
 
     #[test]
-    fn wiki_generation_completes_against_original_project_after_restart_or_switch() {
+    fn my_document_write_completes_against_original_project_after_restart_or_switch() {
         let (_temp, paths) = test_paths();
         let wiki_bootstrap =
             ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let started = begin_wiki(&paths, "Report", "markdown", None).expect("begin");
+        let started = begin_my_document(&paths, "Report", "markdown", None).expect("begin");
         assert_eq!(
             started["panelSkill"]["skill"]["id"],
             PANELS_SKILL_ID
@@ -183,20 +182,20 @@ mod tests {
             .as_str()
             .unwrap()
             .ends_with("references/wiki-contract.md"));
-        assert_eq!(started["operation"]["protocolVersion"], 2);
+        assert!(started["operation"].get("protocolVersion").is_none());
         assert!(started["operation"]["guideId"].is_null());
         let operation_id = started["operation"]["id"].as_str().unwrap().to_owned();
         create_project(&paths, Some("Another")).expect("switch project");
         let file = paths.storage_dir.join("report.md");
         fs::write(&file, "# Report\n\nDone.\n").expect("file");
         let completed =
-            complete_wiki(&paths, &operation_id, file.to_str().unwrap()).expect("complete");
+            complete_my_document(&paths, &operation_id, file.to_str().unwrap()).expect("complete");
         assert_eq!(
             completed["operation"]["projectId"],
             wiki_bootstrap.project.id
         );
         assert_eq!(completed["document"]["contentVersion"], 1);
-        assert_eq!(completed["document"]["generation"]["status"], "completed");
+        assert_eq!(completed["document"]["writeOperation"]["status"], "completed");
         assert_eq!(
             inspect(&paths, &operation_id).unwrap()["status"],
             "completed"
@@ -204,10 +203,10 @@ mod tests {
     }
 
     #[test]
-    fn wiki_generation_detects_concurrent_document_updates() {
+    fn my_document_write_detects_concurrent_document_updates() {
         let (_temp, paths) = test_paths();
         ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let created = wiki::create_generated_document(
+        let created = wiki::create_my_document(
             &paths,
             "report.md",
             Some("Report"),
@@ -218,26 +217,26 @@ mod tests {
         )
         .expect("document");
         let document_id = created["document"]["id"].as_str().unwrap();
-        let started = begin_wiki(&paths, "Report", "markdown", Some(document_id)).expect("begin");
+        let started = begin_my_document(&paths, "Report", "markdown", Some(document_id)).expect("begin");
         let operation_id = started["operation"]["id"].as_str().unwrap();
-        wiki::write_generated_document(&paths, document_id, "report.md", None, b"# User edit")
+        wiki::write_my_document(&paths, document_id, "report.md", None, b"# User edit")
             .expect("concurrent update");
         let file = paths.storage_dir.join("agent-report.md");
         fs::write(&file, "# Agent edit").expect("file");
-        let error = complete_wiki(&paths, operation_id, file.to_str().unwrap())
+        let error = complete_my_document(&paths, operation_id, file.to_str().unwrap())
             .expect_err("content conflict");
         assert_eq!(error.code(), Some("content_conflict"));
         assert_eq!(inspect(&paths, operation_id).unwrap()["status"], "active");
     }
 
     #[test]
-    fn generated_document_write_rejects_an_active_generation_target() {
+    fn my_document_write_rejects_an_active_write_target() {
         let (_temp, paths) = test_paths();
         ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let started = begin_wiki(&paths, "Report", "markdown", None).expect("begin");
+        let started = begin_my_document(&paths, "Report", "markdown", None).expect("begin");
         let document_id = started["document"]["id"].as_str().unwrap();
 
-        let error = wiki::write_generated_document_for_agent(
+        let error = wiki::write_my_document_for_agent(
             &paths,
             document_id,
             "report.md",
@@ -246,25 +245,25 @@ mod tests {
         )
         .expect_err("active generation should reject a direct write");
 
-        assert_eq!(error.code(), Some("generation_in_progress"));
+        assert_eq!(error.code(), Some("my_document_write_in_progress"));
         assert_eq!(
-            wiki::read_generated_document(&paths, document_id).unwrap()["document"]
+            wiki::read_my_document(&paths, document_id).unwrap()["document"]
                 ["contentVersion"],
             0
         );
     }
 
     #[test]
-    fn retry_recovers_a_failed_generation_whose_content_was_already_written() {
+    fn retry_recovers_a_failed_write_whose_content_was_already_written() {
         let (_temp, paths) = test_paths();
         let bootstrap =
             ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let started = begin_wiki(&paths, "Report", "markdown", None).expect("begin");
+        let started = begin_my_document(&paths, "Report", "markdown", None).expect("begin");
         let operation_id = started["operation"]["id"].as_str().unwrap().to_owned();
         let document_id = started["document"]["id"].as_str().unwrap().to_owned();
-        let generated = wiki::read_generated_document(&paths, &document_id).expect("document");
+        let my_document = wiki::read_my_document(&paths, &document_id).expect("document");
         fs::write(
-            generated["contentFilePath"].as_str().unwrap(),
+            my_document["contentFilePath"].as_str().unwrap(),
             "# Already written\n",
         )
         .expect("content");
@@ -274,7 +273,7 @@ mod tests {
             .read_panel_state(&bootstrap.project.id, &bootstrap.panel.id)
             .expect("read state")
             .expect("wiki state");
-        let document = state["generatedDocuments"]
+        let document = state["myDocuments"]
             .as_array_mut()
             .unwrap()
             .iter_mut()
@@ -285,7 +284,7 @@ mod tests {
         storage
             .write_panel_state(&bootstrap.project.id, &bootstrap.panel.id, &state)
             .expect("write state");
-        finish_wiki(
+        finish_my_document(
             &paths,
             &operation_id,
             "failed",
@@ -293,10 +292,10 @@ mod tests {
         )
         .expect("fail operation");
 
-        let retried = retry_wiki_document(&paths, &document_id).expect("retry");
+        let retried = retry_my_document(&paths, &document_id).expect("retry");
 
         assert_eq!(retried["retryMode"], "recovered");
-        assert_eq!(retried["document"]["generation"]["status"], "completed");
+        assert_eq!(retried["document"]["writeOperation"]["status"], "completed");
         assert_eq!(retried["document"]["contentVersion"], 1);
         assert_eq!(
             inspect(&paths, &operation_id).unwrap()["status"],

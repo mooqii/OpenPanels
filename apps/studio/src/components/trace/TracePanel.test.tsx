@@ -210,20 +210,21 @@ describe("AgentPanel release UI", () => {
     expect(markup).toContain(">queued<")
     expect(markup).toContain(">prerequisite<")
     expect(markup).toContain("Generate Writing Document")
-    expect(markup).toContain('aria-label="Task channel"')
-    expect(markup).toContain('aria-label="Delete task"')
+    expect(markup).not.toContain('aria-label="Task channel"')
+    expect(markup).not.toContain('aria-label="Archive task"')
     expect(markup).not.toContain("op-agent-task--warning")
     expect(markup).not.toContain(">Channel<")
     expect(markup).not.toContain("task:manual")
   })
 
-  it("keeps aggregate deletion on expanded Wiki members only", () => {
+  it("offers archive for one terminal focused Wiki task", () => {
     const wikiTask = projectTask({
       id: "task:wiki",
       mutationKey: "wiki:mutation",
       panelId: "panel:wiki",
       panelKind: "wiki",
       queue: "wiki",
+      status: "succeeded",
       targetId: "wiki:default",
       type: "maintain_wiki",
     })
@@ -240,27 +241,66 @@ describe("AgentPanel release UI", () => {
         onOpenModelSettings={() => undefined}
         onTabChange={() => undefined}
         onTaskFilterChange={() => undefined}
-        taskFilter="pending"
+        taskFilter="done"
         tasks={[wikiTask]}
         transport={{ apiBase: "http://127.0.0.1:43217", kind: "http" }}
       />
     )
 
-    expect(markup).toContain("0/1 complete")
+    expect(markup).not.toContain("0/1 complete")
     expect(markup).toContain("op-agent-task-focus--single")
     expect(markup).toContain('aria-label="Back to all tasks"')
-    expect(markup).not.toContain("Refinement tasks")
-    expect(markup.match(/aria-label="Delete task"/g)).toHaveLength(1)
+    expect(markup).not.toContain("Distillation tasks")
+    expect(markup.match(/aria-label="Archive task"/g)).toHaveLength(1)
     expect(markup).not.toContain("Cancel task")
-    expect(markup).not.toContain("Archive task")
   })
 
-  it("does not offer deletion or manual instructions for active tasks", () => {
+  it("offers direct retry and an Agent message for an expanded failed task", () => {
+    const failedTask = projectTask({
+      error: { message: "failed" },
+      status: "failed",
+    })
+    const markup = renderToStaticMarkup(
+      <AgentPanel
+        activeTab="tasks"
+        buildInfo={{
+          agentCli: "scripts/myopenpanels-dev",
+          channel: "development",
+          label: "dev",
+          version: "0.4.16",
+        }}
+        focusedTaskIds={[failedTask.id]}
+        hasUsableAgentCli
+        isOpen
+        onClearFocusedTasks={() => undefined}
+        onClose={() => undefined}
+        onOpenManualTask={() => undefined}
+        onOpenModelSettings={() => undefined}
+        onTabChange={() => undefined}
+        onTaskFilterChange={() => undefined}
+        taskFilter="done"
+        tasks={[failedTask]}
+        transport={{ apiBase: "http://127.0.0.1:43217", kind: "http" }}
+      />
+    )
+
+    expect(markup).toContain('aria-label="Retry task"')
+    expect(markup).toContain('aria-label="Copy Agent message"')
+    expect(markup).toContain(">Retry task<")
+    expect(markup).toContain(">Copy Agent message<")
+  })
+
+  it("does not offer archive or manual instructions for active tasks", () => {
+    const runningTask = projectTask({
+      dispatchState: "running",
+      ready: false,
+      status: "running",
+    })
     const markup = renderToStaticMarkup(
       <AgentPanel
         activeTab="tasks"
         buildInfo={{ channel: "release", label: "v0.4.15", version: "0.4.15" }}
-        focusedTaskIds={null}
+        focusedTaskIds={[runningTask.id]}
         hasUsableAgentCli
         isOpen
         onClearFocusedTasks={() => undefined}
@@ -270,17 +310,43 @@ describe("AgentPanel release UI", () => {
         onTabChange={() => undefined}
         onTaskFilterChange={() => undefined}
         taskFilter="active"
-        tasks={[projectTask({ status: "running" })]}
+        tasks={[runningTask]}
         transport={{ apiBase: "http://127.0.0.1:43217", kind: "http" }}
       />
     )
 
-    expect(markup).toContain('aria-label="Task channel"')
-    expect(markup).not.toContain('aria-label="Delete task"')
+    expect(markup).not.toContain('aria-label="Task channel"')
+    expect(markup).not.toContain('aria-label="Archive task"')
     expect(markup).not.toContain("Copy task instruction")
+    expect(markup).not.toContain(">not ready<")
   })
 
-  it("shows the recorded executor instead of automatic selection after dispatch", () => {
+  it("does not expose internal claim readiness as task metadata", () => {
+    const readyTask = projectTask()
+    const markup = renderToStaticMarkup(
+      <AgentPanel
+        activeTab="tasks"
+        buildInfo={{ channel: "release", label: "v0.4.15", version: "0.4.15" }}
+        focusedTaskIds={[readyTask.id]}
+        hasUsableAgentCli
+        isOpen
+        onClearFocusedTasks={() => undefined}
+        onClose={() => undefined}
+        onOpenManualTask={() => undefined}
+        onOpenModelSettings={() => undefined}
+        onTabChange={() => undefined}
+        onTaskFilterChange={() => undefined}
+        taskFilter="pending"
+        tasks={[readyTask]}
+        transport={{ apiBase: "http://127.0.0.1:43217", kind: "http" }}
+      />
+    )
+
+    expect(markup).not.toContain(">ready<")
+    expect(markup).not.toContain(">not ready<")
+  })
+
+  it("offers exact Task Handoff without per-task runner routing", () => {
     const markup = renderToStaticMarkup(
       <AgentPanel
         activeTab="tasks"
@@ -295,30 +361,14 @@ describe("AgentPanel release UI", () => {
         onTabChange={() => undefined}
         onTaskFilterChange={() => undefined}
         taskFilter="all"
-        tasks={[
-          projectTask({
-            executionMethod: { kind: "localCli", providerId: "codex" },
-            id: "task:codex",
-            status: "running",
-          }),
-          projectTask({
-            executionMethod: { kind: "localCli", providerId: "hermes" },
-            id: "task:hermes",
-            status: "succeeded",
-          }),
-          projectTask({
-            executionMethod: { kind: "manualInstruction" },
-            id: "task:manual-finished",
-            status: "succeeded",
-          }),
-        ]}
+        tasks={[projectTask({ id: "task:queued", status: "queued" })]}
         transport={{ apiBase: "http://127.0.0.1:43217", kind: "http" }}
       />
     )
 
-    expect(markup).toContain("Codex CLI")
-    expect(markup).toContain("Hermes")
-    expect(markup).toContain("Manual instruction")
+    expect(markup).toContain("Copy task instruction")
+    expect(markup).not.toContain('aria-label="Task channel"')
+    expect(markup).not.toContain(">Prefer<")
     expect(markup).not.toContain(">Automatic<")
   })
 })

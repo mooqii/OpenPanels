@@ -12,22 +12,22 @@ describe("nextCollapsedLibraryModules", () => {
       ...nextCollapsedLibraryModules(collapsed(), "publications"),
     ]).toEqual(["publications"])
     expect([
-      ...nextCollapsedLibraryModules(collapsed("publications"), "generated"),
-    ]).toEqual(["publications", "generated"])
+      ...nextCollapsedLibraryModules(collapsed("publications"), "myDocuments"),
+    ]).toEqual(["publications", "myDocuments"])
   })
 
   it("reopens a collapsed module", () => {
     expect([
-      ...nextCollapsedLibraryModules(collapsed("generated"), "generated"),
+      ...nextCollapsedLibraryModules(collapsed("myDocuments"), "myDocuments"),
     ]).toEqual([])
   })
 
   it("does not collapse the only expanded module", () => {
     expect([
       ...nextCollapsedLibraryModules(
-        collapsed("publications", "generated"),
+        collapsed("publications", "myDocuments"),
         "assets"
       ),
-    ]).toEqual(["publications", "generated"])
+    ]).toEqual(["publications", "myDocuments"])
   })
 })

@@ -183,13 +183,36 @@
   border-top: 1px solid var(--op-divider);
 }
 
-.op-publishing-note-preview h1 {
+.op-publishing-note-preview__title-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
   margin: 0 0 16px;
+}
+
+.op-publishing-note-preview h1 {
+  min-width: 0;
+  margin: 0;
   font-size: 22px;
   font-weight: 720;
   line-height: 1.35;
   letter-spacing: 0;
   overflow-wrap: anywhere;
+}
+
+.op-publishing-note-preview__title-button {
+  flex: 0 0 auto;
+}
+
+.op-publishing-note-preview__title-popover {
+  min-width: min(320px, calc(100vw - 32px));
+  max-width: min(420px, calc(100vw - 32px));
+}
+
+.op-publishing-note-preview__title-popover .menu-item label {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .op-publishing-note-preview__tags {

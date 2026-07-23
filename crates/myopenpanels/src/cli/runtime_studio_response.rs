@@ -147,7 +147,6 @@ fn write_result(
             let actions = take_response_actions(&mut data)?;
             let envelope = SuccessPayload {
                 ok: true,
-                schema_version: CLI_ENVELOPE_SCHEMA_VERSION,
                 intent: parsed.intent(),
                 data: &data,
                 actions: &actions,
@@ -187,7 +186,6 @@ fn write_error(
         OutputFormat::Json => {
             let payload = ErrorPayload {
                 ok: false,
-                schema_version: CLI_ENVELOPE_SCHEMA_VERSION,
                 intent: parsed.intent(),
                 error: ErrorDetail {
                     category: error.category(),

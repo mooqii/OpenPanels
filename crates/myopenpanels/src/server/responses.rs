@@ -123,18 +123,17 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "panel_not_found"
             | "project_not_found"
             | "task_not_found"
-            | "workflow_run_not_found"
             | "target_not_found"
             | "model_gateway_connection_not_found"
             | "writing_skill_not_found"
-            | "writing_refinement_skill_not_found"
+            | "writing_distillation_skill_not_found"
             | "publishing_skill_not_found"
             | "publishing_release_not_found"
             | "publishing_attempt_not_found"
             | "publishing_source_not_found"
-            | "typesetting_publication_not_found"
-            | "typesetting_cover_skill_not_found"
-            | "typesetting_layout_skill_not_found"
+            | "publication_not_found"
+            | "publication_cover_skill_not_found"
+            | "publication_layout_skill_not_found"
             | "writing_skill_file_not_found"
             | "skill_not_found"
             | "recommended_skill_not_found"
@@ -156,8 +155,8 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "skill_local_modifications"
             | "recommended_skill_conflict"
             | "content_conflict"
-            | "typesetting_layout_in_progress"
-            | "typesetting_content_locked",
+            | "publication_layout_in_progress"
+            | "publication_content_locked",
         ) => StatusCode::CONFLICT,
         Some("content_not_found") => StatusCode::NOT_FOUND,
         Some("content_too_large" | "skill_package_too_large") => StatusCode::PAYLOAD_TOO_LARGE,
@@ -177,13 +176,12 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
         ) => StatusCode::FORBIDDEN,
         Some(
             "invalid_target"
-            | "invalid_dispatch_mode"
             | "invalid_model_gateway_settings"
             | "unsupported_model_provider"
             | "byok_not_available"
             | "invalid_retry_after"
-            | "writing_refinement_source_required"
-            | "writing_refinement_source_not_ready"
+            | "writing_distillation_source_required"
+            | "writing_distillation_source_not_ready"
             | "writing_skill_name_required"
             | "writing_skill_name_too_long"
             | "invalid_skill_module"

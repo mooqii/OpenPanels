@@ -3,12 +3,11 @@ import { subscribeWithSelector } from "zustand/middleware"
 import { createStore } from "zustand/vanilla"
 import { persistCanvasTool } from "./tool-persistence"
 import type { PageId, ShapeId } from "./types/ids"
-import {
-  type CanvasCameraState,
-  type CanvasRecord,
-  DEFAULT_SCHEMA,
-  type RecordsDiff,
-  type StoreSnapshot,
+import type {
+  CanvasCameraState,
+  CanvasRecord,
+  RecordsDiff,
+  StoreSnapshot,
 } from "./types/records"
 import { objectMapEntries } from "./utils/object"
 
@@ -226,7 +225,6 @@ export const createCanvasStore = () =>
           } = get()
 
           return {
-            schema: DEFAULT_SCHEMA, // Schema is not needed for our use case
             store,
             camera,
             selectedShapeIds,

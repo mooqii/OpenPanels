@@ -78,51 +78,8 @@ pub fn resolve_studio_service_paths(
     )
 }
 
-pub fn is_deprecated_default_storage_dir(path: &Path) -> Result<bool, CliError> {
-    let path = absolutize(path)?;
-    let home = home_dir()?;
-    let deprecated = if cfg!(target_os = "macos") {
-        home.join("Library")
-            .join("Application Support")
-            .join("MyOpenPanels")
-            .join(".myopenpanels")
-    } else if cfg!(target_os = "windows") {
-        env::var("APPDATA")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join("AppData").join("Roaming"))
-            .join("MyOpenPanels")
-            .join(".myopenpanels")
-    } else {
-        env::var("XDG_DATA_HOME")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".local").join("share"))
-            .join("myopenpanels")
-            .join(".myopenpanels")
-    };
-    Ok(path == deprecated)
-}
-
 pub fn release_default_storage_dir() -> Result<PathBuf, CliError> {
     Ok(home_dir()?.join(".myopenpanels"))
-}
-
-pub fn redirect_deprecated_default_storage_dir(
-    storage_dir: Option<&str>,
-) -> Result<Option<PathBuf>, CliError> {
-    storage_dir
-        .map(Path::new)
-        .map(|path| {
-            if is_deprecated_default_storage_dir(path)? {
-                release_default_storage_dir()
-            } else {
-                Ok(path.to_path_buf())
-            }
-        })
-        .transpose()
 }
 
 pub fn sanitize_path_part(value: &str) -> String {
@@ -278,39 +235,5 @@ mod tests {
         assert_eq!(a.focus_dir, b.focus_dir);
         assert_ne!(a.context_id, b.context_id);
         assert_ne!(a.context_dir, b.context_dir);
-    }
-
-    #[test]
-    fn release_default_is_distinct_from_the_deprecated_platform_default() {
-        let home = home_dir().expect("home");
-        let deprecated = if cfg!(target_os = "macos") {
-            home.join("Library/Application Support/MyOpenPanels/.myopenpanels")
-        } else if cfg!(target_os = "windows") {
-            env::var("APPDATA")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join("AppData/Roaming"))
-                .join("MyOpenPanels/.myopenpanels")
-        } else {
-            env::var("XDG_DATA_HOME")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".local/share"))
-                .join("myopenpanels/.myopenpanels")
-        };
-
-        assert!(is_deprecated_default_storage_dir(&deprecated).expect("deprecated path"));
-        assert_eq!(
-            release_default_storage_dir().expect("release default"),
-            home.join(".myopenpanels")
-        );
-        assert_eq!(
-            redirect_deprecated_default_storage_dir(Some(deprecated.to_str().unwrap()))
-                .expect("redirect"),
-            Some(home.join(".myopenpanels"))
-        );
-        assert_ne!(release_default_storage_dir().unwrap(), deprecated);
     }
 }

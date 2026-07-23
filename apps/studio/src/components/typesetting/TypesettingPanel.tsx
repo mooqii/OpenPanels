@@ -1,14 +1,14 @@
 import { Button } from "@heroui/react"
 import { FileInput, FileText, PanelLeft } from "lucide-react"
-import { type ReactNode, useCallback, useRef, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { useTypesettingStateEditor } from "../../hooks/use-typesetting-state-editor"
 import {
   apiFetch,
   apiJson,
+  myDocumentOriginalUrl,
   originalPreviewKind,
   tryOpenBrowserWindow,
-  wikiGeneratedOriginalUrl,
 } from "../../lib/api"
 import { randomId } from "../../lib/id"
 import {
@@ -17,13 +17,12 @@ import {
   isTypesettingLayoutTaskActive,
 } from "../../lib/typesetting"
 import type {
+  MyDocument,
   MyOpenPanelsTransport,
   ProjectTask,
   TypesettingPublication,
   TypesettingState,
-  WikiGeneratedDocument,
   WikiOriginalPreviewDocument,
-  WikiState,
 } from "../../types"
 import { PublicationPreview } from "../publishing/PublicationPreview"
 import {
@@ -31,6 +30,7 @@ import {
   MarkdownDialog,
   OriginalPreviewDialog,
 } from "../wiki/Dialogs"
+import { useMyDocumentDrop } from "../wiki/useMyDocumentDrop"
 
 import { TypesettingLibrary } from "./TypesettingLibrary"
 import {
@@ -39,9 +39,9 @@ import {
   type PublicationView,
 } from "./TypesettingPublication"
 
-type GeneratedDocumentDialog = {
+type MyDocumentDialog = {
   content: string
-  document: WikiGeneratedDocument
+  document: MyDocument
 }
 
 type InsertDocumentHandler = (
@@ -60,7 +60,6 @@ export function TypesettingPanel({
   state: initialState,
   tasks,
   transport,
-  wiki,
 }: {
   chromeContent: ReactNode
   onStateSaved: (state: TypesettingState, revision: number) => void
@@ -71,7 +70,6 @@ export function TypesettingPanel({
   state: TypesettingState
   tasks: ProjectTask[]
   transport: MyOpenPanelsTransport
-  wiki: WikiState
 }) {
   const { t } = useMyOpenPanelsI18n()
   const [view, setView] = useState<PublicationView>("edit")
@@ -80,8 +78,9 @@ export function TypesettingPanel({
   )
   const [pendingDelete, setPendingDelete] =
     useState<TypesettingPublication | null>(null)
-  const [documentDialog, setDocumentDialog] =
-    useState<GeneratedDocumentDialog | null>(null)
+  const [documentDialog, setDocumentDialog] = useState<MyDocumentDialog | null>(
+    null
+  )
   const [originalPreview, setOriginalPreview] = useState<{
     document: WikiOriginalPreviewDocument
     previewUrl: string
@@ -90,13 +89,47 @@ export function TypesettingPanel({
   const [insertingDocumentId, setInsertingDocumentId] = useState<string | null>(
     null
   )
+  const [isMyDocumentBusy, setIsMyDocumentBusy] = useState(false)
+  const [myDocuments, setMyDocuments] = useState<MyDocument[]>([])
   const insertDocumentRef = useRef<InsertDocumentHandler | null>(null)
   const pendingInsertionRef = useRef<{
     content: string
-    document: WikiGeneratedDocument
+    document: MyDocument
     publicationId: string
   } | null>(null)
   const activePublicationIdRef = useRef(activePublicationId)
+
+  const reloadMyDocuments = useCallback(async () => {
+    const response = await apiJson<{ documents: MyDocument[] }>(
+      transport.apiBase,
+      "/api/my-documents"
+    )
+    setMyDocuments(response.documents)
+  }, [transport.apiBase])
+
+  useEffect(() => {
+    if (!projectId) return
+    let cancelled = false
+    reloadMyDocuments().catch(() => {
+      if (!cancelled) setMyDocuments([])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, reloadMyDocuments])
+  const {
+    addMyDocumentFiles,
+    myDocumentFileInputRef,
+    handleMyDocumentDragEnter,
+    handleMyDocumentDragLeave,
+    handleMyDocumentDragOver,
+    handleMyDocumentDrop,
+    isMyDocumentDragActive,
+  } = useMyDocumentDrop({
+    apiBase: transport.apiBase,
+    onReload: reloadMyDocuments,
+    setIsBusy: setIsMyDocumentBusy,
+  })
   activePublicationIdRef.current = activePublicationId
   const {
     flushSave,
@@ -111,7 +144,6 @@ export function TypesettingPanel({
     initialState,
     onStateSaved,
     panelId,
-    projectId,
     revision,
     transport,
   })
@@ -156,27 +188,27 @@ export function TypesettingPanel({
     [activePublicationId, replaceState, state]
   )
 
-  const openGeneratedDocument = useCallback(
-    async (document: WikiGeneratedDocument) => {
+  const openMyDocument = useCallback(
+    async (document: MyDocument) => {
       try {
         const data = await apiJson<{ content?: string }>(
           transport.apiBase,
-          `/api/wiki/generated-documents/${encodeURIComponent(document.id)}`
+          `/api/my-documents/${encodeURIComponent(document.id)}`
         )
         setDocumentDialog({ content: data.content ?? "", document })
       } catch (error) {
-        console.error("Failed to open generated document", error)
+        console.error("Failed to open My Document", error)
       }
     },
     [transport.apiBase]
   )
 
-  const saveGeneratedDocument = useCallback(
+  const saveMyDocument = useCallback(
     async (content: string) => {
       if (!(dialogDocumentId && dialogFileName && dialogMimeType)) return
-      const data = await apiJson<{ document: WikiGeneratedDocument }>(
+      const data = await apiJson<{ document: MyDocument }>(
         transport.apiBase,
-        `/api/wiki/generated-documents/${encodeURIComponent(dialogDocumentId)}`,
+        `/api/my-documents/${encodeURIComponent(dialogDocumentId)}`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
@@ -190,16 +222,21 @@ export function TypesettingPanel({
       setDocumentDialog((current) =>
         current ? { ...current, content, document: data.document } : current
       )
+      setMyDocuments((current) =>
+        current.map((document) =>
+          document.id === data.document.id ? data.document : document
+        )
+      )
     },
     [dialogDocumentId, dialogFileName, dialogMimeType, transport.apiBase]
   )
 
-  const renameGeneratedDocumentFile = useCallback(
+  const renameMyDocumentFile = useCallback(
     async (fileName: string) => {
       if (!dialogDocumentId) return
-      const data = await apiJson<{ document: WikiGeneratedDocument }>(
+      const data = await apiJson<{ document: MyDocument }>(
         transport.apiBase,
-        `/api/wiki/generated-documents/${encodeURIComponent(dialogDocumentId)}`,
+        `/api/my-documents/${encodeURIComponent(dialogDocumentId)}`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
@@ -209,23 +246,52 @@ export function TypesettingPanel({
       setDocumentDialog((current) =>
         current ? { ...current, document: data.document } : current
       )
+      setMyDocuments((current) =>
+        current.map((document) =>
+          document.id === data.document.id ? data.document : document
+        )
+      )
     },
     [dialogDocumentId, transport.apiBase]
   )
 
-  const revealGeneratedOriginal = useCallback(
-    async (document: WikiGeneratedDocument) => {
+  const createMyDocument = useCallback(async () => {
+    setIsMyDocumentBusy(true)
+    try {
+      const data = await apiJson<{ document: MyDocument }>(
+        transport.apiBase,
+        "/api/my-documents",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            content: "",
+            fileName: "untitled.md",
+            mimeType: "text/markdown",
+            title: t`Untitled`,
+          }),
+        }
+      )
+      await reloadMyDocuments()
+      setDocumentDialog({ content: "", document: data.document })
+    } finally {
+      setIsMyDocumentBusy(false)
+    }
+  }, [reloadMyDocuments, t, transport.apiBase])
+
+  const revealMyDocumentOriginal = useCallback(
+    async (document: MyDocument) => {
       await apiFetch(
         transport.apiBase,
-        `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/reveal`,
+        `/api/my-documents/${encodeURIComponent(document.id)}/reveal`,
         { method: "POST" }
       )
     },
     [transport.apiBase]
   )
 
-  const openGeneratedOriginal = useCallback(
-    (document: WikiGeneratedDocument) => {
+  const openMyDocumentOriginal = useCallback(
+    (document: MyDocument) => {
       if (!document.importSource) return
       const previewDocument: WikiOriginalPreviewDocument = {
         id: document.id,
@@ -234,17 +300,17 @@ export function TypesettingPanel({
         sizeBytes: document.importSource.sizeBytes,
         title: document.title,
       }
-      const previewUrl = wikiGeneratedOriginalUrl(transport.apiBase, document)
+      const previewUrl = myDocumentOriginalUrl(transport.apiBase, document)
       if (originalPreviewKind(previewDocument)) {
         setOriginalPreview({ document: previewDocument, previewUrl })
         return
       }
       if (tryOpenBrowserWindow(previewUrl)) return
-      revealGeneratedOriginal(document).catch((error) => {
-        console.error("Failed to reveal imported generated document", error)
+      revealMyDocumentOriginal(document).catch((error) => {
+        console.error("Failed to reveal imported My Document", error)
       })
     },
-    [revealGeneratedOriginal, transport.apiBase]
+    [revealMyDocumentOriginal, transport.apiBase]
   )
 
   const activePublication = state.publications.find(
@@ -254,14 +320,14 @@ export function TypesettingPanel({
     activePublication &&
       tasks.some(
         (task) =>
-          task.type === "format_typesetting_content" &&
+          task.type === "format_publication_content" &&
           task.targetId === activePublication.id &&
           isTypesettingLayoutTaskActive(task)
       )
   )
 
   const queueDocumentInsertion = useCallback(
-    (document: WikiGeneratedDocument, content: string) => {
+    (document: MyDocument, content: string) => {
       if (!(activePublication && !isContentLocked)) return
       if (activePublicationIdRef.current !== activePublication.id) return
       if (view === "edit" && insertDocumentRef.current) {
@@ -278,8 +344,8 @@ export function TypesettingPanel({
     [activePublication, isContentLocked, view]
   )
 
-  const insertGeneratedDocument = useCallback(
-    async (document: WikiGeneratedDocument) => {
+  const insertMyDocument = useCallback(
+    async (document: MyDocument) => {
       if (
         !activePublication ||
         isContentLocked ||
@@ -291,11 +357,11 @@ export function TypesettingPanel({
       try {
         const data = await apiJson<{ content?: string }>(
           transport.apiBase,
-          `/api/wiki/generated-documents/${encodeURIComponent(document.id)}`
+          `/api/my-documents/${encodeURIComponent(document.id)}`
         )
         queueDocumentInsertion(document, data.content ?? "")
       } catch (error) {
-        console.error("Failed to insert generated document", error)
+        console.error("Failed to insert My Document", error)
       } finally {
         setInsertingDocumentId(null)
       }
@@ -338,14 +404,24 @@ export function TypesettingPanel({
         ) : null}
         <TypesettingLibrary
           activePublicationId={activePublicationId}
+          addMyDocumentFiles={addMyDocumentFiles}
           className={isLibraryOpen ? "is-open" : ""}
+          createMyDocument={createMyDocument}
+          handleMyDocumentDragEnter={handleMyDocumentDragEnter}
+          handleMyDocumentDragLeave={handleMyDocumentDragLeave}
+          handleMyDocumentDragOver={handleMyDocumentDragOver}
+          handleMyDocumentDrop={handleMyDocumentDrop}
           insertingDocumentId={insertingDocumentId}
           isInsertDisabled={!activePublication || isContentLocked}
+          isMyDocumentBusy={isMyDocumentBusy}
+          isMyDocumentDragActive={isMyDocumentDragActive}
+          myDocumentFileInputRef={myDocumentFileInputRef}
+          myDocuments={myDocuments}
           onClose={() => setIsLibraryOpen(false)}
           onCreatePublication={createPublication}
-          onInsertGenerated={insertGeneratedDocument}
-          onOpenGenerated={openGeneratedDocument}
-          onOpenGeneratedOriginal={openGeneratedOriginal}
+          onInsertMyDocument={insertMyDocument}
+          onOpenMyDocument={openMyDocument}
+          onOpenMyDocumentOriginal={openMyDocumentOriginal}
           onOpenPublication={(publication) => {
             insertDocumentRef.current = null
             pendingInsertionRef.current = null
@@ -356,7 +432,6 @@ export function TypesettingPanel({
           projectId={projectId}
           publications={state.publications}
           transport={transport}
-          wiki={wiki}
         />
         <div className="op-typesetting-main">
           {activePublication ? (
@@ -439,8 +514,8 @@ export function TypesettingPanel({
             )
           }
           onClose={() => setDocumentDialog(null)}
-          onRenameFileName={renameGeneratedDocumentFile}
-          onSave={saveGeneratedDocument}
+          onRenameFileName={renameMyDocumentFile}
+          onSave={saveMyDocument}
           primaryAction={
             isInsertableTypesettingDocument(documentDialog.document)
               ? {

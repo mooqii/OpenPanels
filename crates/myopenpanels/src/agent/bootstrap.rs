@@ -1,4 +1,7 @@
 use crate::control::{read_project_bootstrap, BootstrapRequest};
+use crate::capabilities::{
+    capability_catalog, CapabilityDefinition, CapabilityInvocation, LocalSkillPolicy,
+};
 use crate::error::CliError;
 use crate::paths::MyOpenPanelsPaths;
 use crate::selection::read_selection;
@@ -21,30 +24,25 @@ static BUILTIN_SKILL_REGISTRY: &str = include_str!(concat!(
 ));
 pub const PANELS_SKILL_ID: &str = "myopenpanels-panels";
 pub const TASK_QUEUE_SKILL_ID: &str = "myopenpanels-task-queue";
-pub const AGENT_GUIDANCE_PROTOCOL_VERSION: u32 = 13;
-pub const AGENT_PROCEDURE_CATALOG_VERSION: u32 = 3;
 pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
 
-pub(crate) fn canonical_agent_skill_id(skill_id: &str) -> &str {
-    match skill_id {
-        "myopenpanels-canvas-panel"
-        | "myopenpanels-wiki-panel"
-        | "myopenpanels-writing-panel" => PANELS_SKILL_ID,
-        crate::wiki::LEGACY_WIKI_AGENT_SKILL_ID
-        | crate::wiki::LEGACY_ZH_WIKI_AGENT_SKILL_ID => {
-            crate::wiki::DEFAULT_WIKI_AGENT_SKILL_ID
-        }
-        _ => skill_id,
-    }
-}
-
-fn legacy_panel_skill_kind(skill_id: &str) -> Option<PanelKind> {
-    match skill_id {
-        "myopenpanels-canvas-panel" => Some(PanelKind::Canvas),
-        "myopenpanels-wiki-panel" => Some(PanelKind::Wiki),
-        "myopenpanels-writing-panel" => Some(PanelKind::Writing),
-        _ => None,
-    }
+pub(crate) fn embedded_system_skill_text(
+    system_skill_id: &str,
+    relative_path: &str,
+) -> Result<&'static str, CliError> {
+    let path = Path::new(system_skill_id).join(relative_path);
+    let file = SYSTEM_SKILLS.get_file(&path).ok_or_else(|| {
+        CliError::with_code(
+            "capability_reference_not_found",
+            format!("System Skill reference is not embedded: {}", path.display()),
+        )
+    })?;
+    std::str::from_utf8(file.contents()).map_err(|error| {
+        CliError::with_code(
+            "capability_reference_invalid",
+            format!("System Skill reference is not UTF-8: {error}"),
+        )
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -89,15 +87,14 @@ pub struct AgentSkillReadPayload {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BuiltinSkillRegistry {
-    schema_version: u32,
     system_skills: Vec<BuiltinSkillRegistration>,
     preset_skills: Vec<BuiltinSkillRegistration>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BuiltinSkillRegistration {
     applies_to: Vec<String>,
     id: String,
@@ -108,36 +105,10 @@ struct BuiltinSkillRegistration {
     source: String,
     task_types: Vec<String>,
     tokens: String,
-    #[serde(default)]
-    procedures: Vec<AgentProcedureRegistration>,
-    #[serde(default)]
-    task_handoffs: Vec<TaskHandoffRegistration>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentProcedureRegistration {
-    command_intents: Vec<String>,
-    description: String,
-    key: String,
-    panel_kind: Option<String>,
-    references: Vec<String>,
-    selection_policy: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TaskHandoffRegistration {
-    command_intents: Vec<String>,
-    description: String,
-    key: String,
-    panel_kind: Option<String>,
-    reference: String,
 }
 
 pub fn agent_bootstrap(
     paths: &MyOpenPanelsPaths,
-    cli_version: &str,
     procedure: Option<&str>,
 ) -> Result<Value, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
@@ -145,15 +116,10 @@ pub fn agent_bootstrap(
     if let Some(update) =
         crate::agent_control::pending_entry_skill_update_with_storage(paths, &storage)?
     {
-        return Ok(entry_skill_update_bootstrap(
-            paths,
-            &bootstrap,
-            cli_version,
-            &update,
-        ));
+        return Ok(entry_skill_update_bootstrap(paths, &bootstrap, &update));
     }
     if let Some(procedure) = procedure {
-        return agent_procedure_bootstrap(paths, cli_version, &bootstrap, procedure);
+        return agent_procedure_bootstrap(paths, &bootstrap, procedure);
     }
     sync_builtin_agent_skills(paths)?;
     let skills = load_agent_skills(paths, &bootstrap.project.id)?;
@@ -274,7 +240,7 @@ pub fn agent_bootstrap(
                     "agent.catalog",
                     vec![
                         "--domain".to_owned(),
-                        (*scope).to_owned(),
+                        scope.to_owned(),
                         "--format".to_owned(),
                         "json".to_owned(),
                     ],
@@ -374,9 +340,6 @@ pub fn agent_bootstrap(
         })
         .collect::<Vec<_>>();
     Ok(json!({
-        "protocolVersion": AGENT_GUIDANCE_PROTOCOL_VERSION,
-        "commandCatalogVersion": crate::cli::registry::COMMAND_CATALOG_VERSION,
-        "cliVersion": cli_version,
         "bootstrapBudget": {
             "maxBytes": MAX_BOOTSTRAP_ENVELOPE_BYTES,
             "unit": "utf8",
@@ -395,6 +358,7 @@ pub fn agent_bootstrap(
         },
         "tasks": compact_task_summary(&bootstrap),
         "operations": compact_operation_summary(&operations),
+        "modules": crate::capabilities::module_catalog()?,
         "discovery": {
             "recommendedDomains": recommended_domains,
         },
@@ -406,7 +370,6 @@ pub fn agent_bootstrap(
 fn entry_skill_update_bootstrap(
     paths: &MyOpenPanelsPaths,
     bootstrap: &ProjectBootstrap,
-    cli_version: &str,
     update: &crate::agent_control::EntrySkillUpdate,
 ) -> Value {
     let host_action = json!({
@@ -443,9 +406,6 @@ fn entry_skill_update_bootstrap(
     );
     rerun_action["id"] = json!("agent.bootstrap.refresh");
     json!({
-        "protocolVersion": AGENT_GUIDANCE_PROTOCOL_VERSION,
-        "commandCatalogVersion": crate::cli::registry::COMMAND_CATALOG_VERSION,
-        "cliVersion": cli_version,
         "bootstrapBudget": {
             "maxBytes": MAX_BOOTSTRAP_ENVELOPE_BYTES,
             "unit": "utf8",
@@ -517,7 +477,7 @@ fn next_writing_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&s
     }
     let task = next_project_task_for_queue(bootstrap, "writing")?;
     let skill_id = match task.get("type").and_then(Value::as_str) {
-        Some("refine_writing_skill") => task.pointer("/input/refinerSkillId"),
+        Some("distill_writing_skill") => task.pointer("/input/distillerSkillId"),
         _ => task.pointer("/input/writingSkillId"),
     }
     .and_then(Value::as_str)?;
@@ -528,7 +488,6 @@ fn required_agent_skill<'a>(
     skills: &'a [AgentSkill],
     skill_id: &str,
 ) -> Result<&'a AgentSkill, CliError> {
-    let skill_id = canonical_agent_skill_id(skill_id);
     skills
         .iter()
         .find(|skill| skill.metadata.id == skill_id)
@@ -636,14 +595,14 @@ fn catalog_action(domain: &str) -> Value {
     action
 }
 
-fn recommended_catalog_domains(active_panel_kind: PanelKind) -> Vec<&'static str> {
+fn recommended_catalog_domains(active_panel_kind: PanelKind) -> Vec<String> {
     let mut scopes = ["panel", "task", "operation"]
         .into_iter()
+        .map(str::to_owned)
         .collect::<BTreeSet<_>>();
-    let panel_scope = active_panel_kind.as_str();
-    if crate::cli::registry::catalog(Some(panel_scope)).is_some() {
-        scopes.insert(panel_scope);
-    }
+    scopes.extend(
+        crate::capabilities::command_domains_for_panel(active_panel_kind).unwrap_or_default(),
+    );
     scopes.into_iter().collect()
 }
 

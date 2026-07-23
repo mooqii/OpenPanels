@@ -3,6 +3,7 @@ import type { MyOpenPanelsPanelKind, MyOpenPanelsProject } from "../protocol"
 import type {
   AppState,
   BootstrapResponse,
+  MyDocument,
   MyOpenPanelsHealth,
   MyOpenPanelsTransport,
   MyOpenPanelsUpdateInstallRestartResponse,
@@ -12,7 +13,6 @@ import type {
   TraceEvent,
   TraceSnapshotResponse,
   TypesettingState,
-  WikiGeneratedDocument,
   WikiRawDocument,
   WikiState,
 } from "../types"
@@ -76,7 +76,7 @@ export function normalizePanelState(
     return isWikiState(state) ? state : emptyWikiState()
   }
   if (kind === "writing") {
-    return isWritingState(state) ? state : emptyWritingState()
+    return normalizeWritingState(state)
   }
   if (kind === "typesetting") {
     return isTypesettingState(state) ? state : emptyTypesettingState()
@@ -117,7 +117,7 @@ export function writingStateFromAppState(
   const state = appState.panels.find(
     ({ panel }) => panel.kind === "writing"
   )?.state
-  return isWritingState(state) ? state : emptyWritingState()
+  return normalizeWritingState(state)
 }
 
 export function typesettingStateFromAppState(
@@ -154,7 +154,6 @@ export function publishingRevisionFromAppState(appState: AppState): number {
 
 export function emptyTypesettingState(): TypesettingState {
   return {
-    schemaVersion: 2,
     publications: [],
   }
 }
@@ -162,9 +161,8 @@ export function emptyTypesettingState(): TypesettingState {
 export function emptyPublishingState(): PublishingState {
   return {
     releases: [],
-    schemaVersion: 1,
     selectedPublicationId: null,
-    selectedSkillIds: { xiaohongshu: "publishing-xiaohongshu" },
+    selectedSkillIds: { xiaohongshu: "release-xiaohongshu" },
   }
 }
 
@@ -172,7 +170,6 @@ export function isPublishingState(state: unknown): state is PublishingState {
   return (
     typeof state === "object" &&
     state !== null &&
-    (state as { schemaVersion?: unknown }).schemaVersion === 1 &&
     Array.isArray((state as { releases?: unknown }).releases) &&
     typeof (state as PublishingState).selectedSkillIds?.xiaohongshu === "string"
   )
@@ -180,13 +177,6 @@ export function isPublishingState(state: unknown): state is PublishingState {
 
 function normalizePublishingState(state: unknown): PublishingState {
   if (isPublishingState(state)) return state
-  if (
-    typeof state === "object" &&
-    state !== null &&
-    (state as { schemaVersion?: unknown }).schemaVersion === 1
-  ) {
-    return emptyPublishingState()
-  }
   return emptyPublishingState()
 }
 
@@ -194,7 +184,6 @@ export function isTypesettingState(state: unknown): state is TypesettingState {
   return (
     typeof state === "object" &&
     state !== null &&
-    (state as { schemaVersion?: unknown }).schemaVersion === 2 &&
     Array.isArray((state as { publications?: unknown }).publications) &&
     (state as { publications: unknown[] }).publications.every(
       isTypesettingPublication
@@ -312,17 +301,37 @@ function isTypesettingPublicationImage(value: unknown): boolean {
 
 export function emptyWritingState(): import("../types").WritingState {
   return {
-    schemaVersion: 5,
     createDraft: "",
     draft: "",
     mode: "create",
-    refinementName: "",
+    distillationName: "",
     revisionDraft: "",
     selectedCreateWritingSkillIds: ["writing-default"],
-    selectedRefinementSkillId: "writing-refinement-default",
+    selectedDistillationSkillId: "writing-distillation-default",
     selectedRevisionWritingSkillId: "writing-default",
-    targetGeneratedDocumentId: null,
+    targetMyDocumentId: null,
   }
+}
+
+export function normalizeWritingState(
+  state: unknown
+): import("../types").WritingState {
+  if (typeof state !== "object" || state === null) {
+    return emptyWritingState()
+  }
+  const legacy = state as Record<string, unknown>
+  const selectedDistillationSkillId =
+    legacy.selectedDistillationSkillId ?? legacy.selectedRefinementSkillId
+  const normalized = {
+    ...legacy,
+    distillationName: legacy.distillationName ?? legacy.refinementName,
+    mode: legacy.mode === "refine" ? "distill" : legacy.mode,
+    selectedDistillationSkillId:
+      selectedDistillationSkillId === "writing-refinement-default"
+        ? "writing-distillation-default"
+        : selectedDistillationSkillId,
+  }
+  return isWritingState(normalized) ? normalized : emptyWritingState()
 }
 
 export function isWritingState(
@@ -331,10 +340,9 @@ export function isWritingState(
   return (
     typeof state === "object" &&
     state !== null &&
-    (state as { schemaVersion?: unknown }).schemaVersion === 5 &&
     typeof (state as { createDraft?: unknown }).createDraft === "string" &&
     typeof (state as { draft?: unknown }).draft === "string" &&
-    typeof (state as { refinementName?: unknown }).refinementName ===
+    typeof (state as { distillationName?: unknown }).distillationName ===
       "string" &&
     typeof (state as { revisionDraft?: unknown }).revisionDraft === "string" &&
     Array.isArray(
@@ -344,23 +352,22 @@ export function isWritingState(
     (
       state as { selectedCreateWritingSkillIds: unknown[] }
     ).selectedCreateWritingSkillIds.every((id) => typeof id === "string") &&
-    typeof (state as { selectedRefinementSkillId?: unknown })
-      .selectedRefinementSkillId === "string" &&
+    typeof (state as { selectedDistillationSkillId?: unknown })
+      .selectedDistillationSkillId === "string" &&
     ((state as { selectedRevisionWritingSkillId?: unknown })
       .selectedRevisionWritingSkillId === null ||
       typeof (state as { selectedRevisionWritingSkillId?: unknown })
         .selectedRevisionWritingSkillId === "string") &&
     ((state as { mode?: unknown }).mode === "create" ||
       (state as { mode?: unknown }).mode === "revise" ||
-      (state as { mode?: unknown }).mode === "refine")
+      (state as { mode?: unknown }).mode === "distill")
   )
 }
 
 export function emptyWikiState(): WikiState {
   return {
-    schemaVersion: 4,
     rawDocuments: [],
-    generatedDocuments: [],
+    myDocuments: [],
     ruleSets: [],
     wikiSpaces: [],
     activeRawDocumentId: null,
@@ -373,11 +380,8 @@ export function isWikiState(state: unknown): state is WikiState {
   return (
     typeof state === "object" &&
     state !== null &&
-    (state as { schemaVersion?: unknown }).schemaVersion === 4 &&
     Array.isArray((state as { rawDocuments?: unknown }).rawDocuments) &&
-    Array.isArray(
-      (state as { generatedDocuments?: unknown }).generatedDocuments
-    ) &&
+    Array.isArray((state as { myDocuments?: unknown }).myDocuments) &&
     Array.isArray((state as { wikiSpaces?: unknown }).wikiSpaces)
   )
 }
@@ -408,7 +412,6 @@ export function serializeBootstrapForCompare(appState: AppState): string {
 export function normalizeSnapshot(snapshot: StoreSnapshot): StoreSnapshot {
   if (!snapshot || typeof snapshot !== "object") {
     return {
-      schema: { schemaVersion: 1, recordVersions: {} },
       store: {},
       selectedShapeIds: new Set(),
       currentPageId: null,
@@ -469,13 +472,13 @@ export function wikiRawOriginalUrl(
   ).toString()
 }
 
-export function wikiGeneratedOriginalUrl(
+export function myDocumentOriginalUrl(
   apiBase: string,
-  document: Pick<WikiGeneratedDocument, "id">
+  document: Pick<MyDocument, "id">
 ): string {
   return apiUrl(
     apiBase,
-    `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/original`
+    `/api/my-documents/${encodeURIComponent(document.id)}/original`
   ).toString()
 }
 

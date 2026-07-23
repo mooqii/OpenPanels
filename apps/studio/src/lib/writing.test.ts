@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest"
-import type { ProjectTask, WikiGeneratedDocument } from "../types"
-import { emptyWritingState } from "./api"
+import type { MyDocument, ProjectTask } from "../types"
+import { emptyWritingState, normalizeWritingState } from "./api"
 import {
   activeWritingSkillIds,
+  distillationTaskGroups,
   latestWritingTaskForDocument,
-  refinementTaskGroups,
   selectSingleSkill,
-  sortGeneratedDocumentsByActivity,
+  sortMyDocumentsByActivity,
   toggleWritingSkillSelection,
   writingDocumentStatus,
   writingReferenceSelectionError,
@@ -25,15 +25,35 @@ describe("Writing Skill selection", () => {
     expect(emptyWritingState().revisionDraft).toBe("")
   })
 
+  it("normalizes legacy refinement state into distillation state", () => {
+    expect(
+      normalizeWritingState({
+        createDraft: "Create this",
+        draft: "",
+        mode: "refine",
+        refinementName: "House style",
+        revisionDraft: "Revise this",
+        selectedCreateWritingSkillIds: ["writing-default"],
+        selectedRefinementSkillId: "writing-refinement-default",
+        selectedRevisionWritingSkillId: "writing-default",
+        targetMyDocumentId: null,
+      })
+    ).toMatchObject({
+      distillationName: "House style",
+      mode: "distill",
+      selectedDistillationSkillId: "writing-distillation-default",
+    })
+  })
+
   it("rejects an explicitly empty selection", () => {
     expect(writingSkillSelectionError("create", [])).toBe("required")
   })
 
-  it("does not require an authoring Skill in refinement mode", () => {
-    expect(activeWritingSkillIds("refine", ["writing-a"], "writing-b")).toEqual(
-      []
-    )
-    expect(writingSkillSelectionError("refine", [])).toBeNull()
+  it("does not require an authoring Skill in distillation mode", () => {
+    expect(
+      activeWritingSkillIds("distill", ["writing-a"], "writing-b")
+    ).toEqual([])
+    expect(writingSkillSelectionError("distill", [])).toBeNull()
   })
 
   it("allows multiple Skills when creating a document", () => {
@@ -103,7 +123,7 @@ function task(
     id,
     input: {
       mode: options.mode ?? "create",
-      targetGeneratedDocumentId: options.targetId ?? null,
+      targetMyDocumentId: options.targetId ?? null,
     },
     panelId: "panel-writing",
     panelKind: "writing",
@@ -111,14 +131,14 @@ function task(
     queue: "writing",
     status,
     targetId: options.targetId ?? id,
-    type: options.type ?? "generate_document",
+    type: options.type ?? "write_my_document",
     updatedAt,
   }
 }
 
-function document(id: string, updatedAt: string): WikiGeneratedDocument {
+function document(id: string, updatedAt: string): MyDocument {
   return {
-    contentRef: `generated/${id}/content.md`,
+    contentRef: `my-documents/${id}/content.md`,
     contentVersion: 0,
     createdAt: updatedAt,
     format: "markdown",
@@ -134,19 +154,19 @@ function document(id: string, updatedAt: string): WikiGeneratedDocument {
 }
 
 describe("Writing task presentation", () => {
-  it("groups only actionable refinement tasks", () => {
-    const groups = refinementTaskGroups([
+  it("groups only actionable distillation tasks", () => {
+    const groups = distillationTaskGroups([
       task("waiting", "queued", "2026-01-01T00:00:00Z", {
-        type: "refine_writing_skill",
+        type: "distill_writing_skill",
       }),
       task("active", "running", "2026-01-02T00:00:00Z", {
-        type: "refine_writing_skill",
+        type: "distill_writing_skill",
       }),
       task("error", "failed", "2026-01-03T00:00:00Z", {
-        type: "refine_writing_skill",
+        type: "distill_writing_skill",
       }),
       task("done", "succeeded", "2026-01-04T00:00:00Z", {
-        type: "refine_writing_skill",
+        type: "distill_writing_skill",
       }),
     ])
     expect(groups.waiting.map(({ id }) => id)).toEqual(["waiting"])
@@ -201,7 +221,7 @@ describe("Writing task presentation", () => {
       )?.id
     ).toBe("placeholder-task")
     expect(
-      sortGeneratedDocumentsByActivity(documents, tasks).map(({ id }) => id)
+      sortMyDocumentsByActivity(documents, tasks).map(({ id }) => id)
     ).toEqual(["old", "new"])
   })
 })

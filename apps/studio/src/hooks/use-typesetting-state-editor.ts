@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import {
-  apiJson,
-  fileToDataUrl,
-  isTypesettingState,
-  savePanelState,
-} from "../lib/api"
+import { apiJson, fileToDataUrl, isTypesettingState } from "../lib/api"
 import {
   mergeTypesettingConflict,
   TYPESETTING_AUTOSAVE_DELAY_MS,
@@ -40,14 +35,12 @@ export function useTypesettingStateEditor({
   initialState,
   onStateSaved,
   panelId,
-  projectId,
   revision,
   transport,
 }: {
   initialState: TypesettingState
   onStateSaved: (state: TypesettingState, revision: number) => void
   panelId: string
-  projectId: string
   revision: number
   transport: MyOpenPanelsTransport
 }) {
@@ -159,10 +152,8 @@ export function useTypesettingStateEditor({
       try {
         let saved: { revision: number }
         try {
-          saved = await savePanelState(
+          saved = await savePublications(
             transport,
-            projectId,
-            panelId,
             payloadState,
             revisionRef.current
           )
@@ -171,13 +162,11 @@ export function useTypesettingStateEditor({
             throw error
           }
           const remote = await apiJson<{
+            publications: TypesettingPublication[]
             revision: number
-            state: unknown
-          }>(
-            transport.apiBase,
-            `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/state`
-          )
-          if (!isTypesettingState(remote.state)) {
+          }>(transport.apiBase, "/api/publications")
+          const remoteState = { publications: remote.publications }
+          if (!isTypesettingState(remoteState)) {
             throw new Error("Invalid remote Typesetting state")
           }
           payloadState = mergeTypesettingConflict({
@@ -186,15 +175,13 @@ export function useTypesettingStateEditor({
             deletedIds: deletedIdsRef.current,
             dirtyIds: dirtyIdsRef.current,
             local: stateRef.current,
-            remote: remote.state,
+            remote: remoteState,
           })
           generation = changeGenerationRef.current
           stateRef.current = payloadState
           setState(payloadState)
-          saved = await savePanelState(
+          saved = await savePublications(
             transport,
-            projectId,
-            panelId,
             payloadState,
             remote.revision
           )
@@ -219,7 +206,7 @@ export function useTypesettingStateEditor({
     })()
     saveInFlightRef.current = save
     await save
-  }, [onStateSaved, panelId, projectId, transport])
+  }, [onStateSaved, transport])
 
   useEffect(() => {
     flushRef.current = flushSave
@@ -247,11 +234,14 @@ export function useTypesettingStateEditor({
     ): Promise<TypesettingPublicationImage> => {
       const imported = await apiJson<ImportedTypesettingAsset>(
         transport.apiBase,
-        `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/assets/import`,
+        "/api/assets/import",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ sourceAssetRef: asset.assetRef }),
+          body: JSON.stringify({
+            sourceAssetRef: asset.assetRef,
+            originPanelId: panelId,
+          }),
         }
       )
       return {
@@ -269,14 +259,14 @@ export function useTypesettingStateEditor({
         width: asset.width,
       }
     },
-    [panelId, projectId, transport.apiBase]
+    [panelId, transport.apiBase]
   )
 
   const uploadAsset = useCallback(
     async (file: File): Promise<TypesettingPublicationImage> => {
       const uploaded = await apiJson<UploadedTypesettingAsset>(
         transport.apiBase,
-        `/api/projects/${encodeURIComponent(projectId)}/panels/${encodeURIComponent(panelId)}/assets`,
+        "/api/assets",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -284,6 +274,7 @@ export function useTypesettingStateEditor({
             dataUrl: await fileToDataUrl(file),
             fileName: file.name || "image.png",
             mimeType: file.type || "image/png",
+            originPanelId: panelId,
           }),
         }
       )
@@ -295,7 +286,7 @@ export function useTypesettingStateEditor({
         src: uploaded.src,
       }
     },
-    [panelId, projectId, transport.apiBase]
+    [panelId, transport.apiBase]
   )
 
   return {
@@ -308,4 +299,19 @@ export function useTypesettingStateEditor({
     updatePublication,
     uploadAsset,
   }
+}
+
+async function savePublications(
+  transport: MyOpenPanelsTransport,
+  state: TypesettingState,
+  baseRevision: number
+): Promise<{ revision: number }> {
+  return apiJson(transport.apiBase, "/api/publications", {
+    body: JSON.stringify({
+      baseRevision,
+      publications: state.publications,
+    }),
+    headers: { "content-type": "application/json" },
+    method: "PUT",
+  })
 }

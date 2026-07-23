@@ -1,25 +1,6 @@
 pub fn sync_builtin_agent_skills(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
     let skills_dir = paths.storage_dir.join("skills");
     fs::create_dir_all(&skills_dir).map_err(to_cli_error)?;
-    for legacy_id in [
-        "canvas-panel",
-        "task-queue",
-        "wiki-panel",
-        "writing-panel",
-        "myopenpanels-canvas-panel",
-        "myopenpanels-wiki-panel",
-        "myopenpanels-writing-panel",
-        crate::wiki::LEGACY_WIKI_AGENT_SKILL_ID,
-        crate::wiki::LEGACY_ZH_WIKI_AGENT_SKILL_ID,
-        crate::writing::LEGACY_WRITING_SKILL_REFINER_ID,
-        "writing-long-article",
-        "writing-xiaohongshu-note",
-    ] {
-        let legacy_dir = skills_dir.join(legacy_id);
-        if legacy_dir.exists() {
-            fs::remove_dir_all(legacy_dir).map_err(to_cli_error)?;
-        }
-    }
     for (skill, skill_dir) in load_agent_skill_dirs()? {
         let local_dir = skills_dir.join(&skill.metadata.id);
         if local_dir.exists() {
@@ -58,7 +39,7 @@ pub fn list_writing_agent_skills(
                 &item.skill.applies_to,
                 &item.skill.task_types,
                 Some("writing"),
-                Some("generate_document"),
+                Some("write_my_document"),
             )
         })
         .collect())
@@ -69,7 +50,6 @@ pub(crate) fn wiki_agent_skill_for_project(
     project_id: &str,
     skill_id: &str,
 ) -> Result<AgentSkillListing, CliError> {
-    let skill_id = canonical_agent_skill_id(skill_id);
     load_agent_skills(paths, project_id)?
         .into_iter()
         .filter(|item| {
@@ -114,7 +94,7 @@ pub(crate) fn writing_agent_skill_for_project(
                 &item.metadata.applies_to,
                 &item.metadata.task_types,
                 Some("writing"),
-                Some("generate_document"),
+                Some("write_my_document"),
             )
         })
         .map(|skill| agent_skill_listing(paths, project_id, skill.metadata))
@@ -184,8 +164,6 @@ pub(crate) fn read_agent_skill_for_panel(
     task_id: Option<&str>,
     target_panel_kind: Option<PanelKind>,
 ) -> Result<AgentSkillReadPayload, CliError> {
-    let legacy_panel_kind = legacy_panel_skill_kind(skill_id);
-    let skill_id = canonical_agent_skill_id(skill_id);
     if let Some(task_id) = task_id.filter(|_| crate::content::broker_execution_available()) {
         let payload = crate::content::broker_read_skill(&crate::content::SkillReadRequest {
             task_id: task_id.to_owned(),
@@ -203,7 +181,7 @@ pub(crate) fn read_agent_skill_for_panel(
         .as_ref()
         .and_then(|task| {
             task.get("writingSkillSnapshot")
-                .or_else(|| task.get("refinerSkillSnapshot"))
+                .or_else(|| task.get("distillerSkillSnapshot"))
         })
         .filter(|snapshot| snapshot.get("id").and_then(Value::as_str) == Some(skill_id));
     let captured_skill = captured_snapshot
@@ -221,7 +199,7 @@ pub(crate) fn read_agent_skill_for_panel(
                 .and_then(Value::as_str)
                 .unwrap_or("custom")
                 .to_owned();
-            skill.metadata.task_types = vec!["generate_document".to_owned()];
+            skill.metadata.task_types = vec!["write_my_document".to_owned()];
             skill.metadata.name = task
                 .as_ref()
                 .and_then(|value| {
@@ -236,12 +214,12 @@ pub(crate) fn read_agent_skill_for_panel(
         }
         if task
             .as_ref()
-            .and_then(|value| value.get("refinerSkillSnapshot"))
+            .and_then(|value| value.get("distillerSkillSnapshot"))
             .is_some()
         {
             skill.metadata.id = skill_id.to_owned();
             skill.metadata.applies_to = vec!["writing".to_owned()];
-            skill.metadata.task_types = vec!["refine_writing_skill".to_owned()];
+            skill.metadata.task_types = vec!["distill_writing_skill".to_owned()];
             skill.metadata.name = captured_snapshot
                 .and_then(|value| value.get("name"))
                 .and_then(Value::as_str)
@@ -289,9 +267,7 @@ pub(crate) fn read_agent_skill_for_panel(
     } else {
         agent_skill_local_paths(paths, &bootstrap.project.id, &skill.metadata)
     };
-    let effective_panel_kind = target_panel_kind
-        .or(legacy_panel_kind)
-        .unwrap_or(bootstrap.active_panel_kind);
+    let effective_panel_kind = target_panel_kind.unwrap_or(bootstrap.active_panel_kind);
     let reference_paths = panel_contract_reference_paths(
         paths,
         &bootstrap.project.id,
@@ -415,7 +391,7 @@ fn merge_agent_skill_providers(
 }
 
 fn load_custom_agent_skills(paths: &MyOpenPanelsPaths) -> Result<Vec<AgentSkill>, CliError> {
-    migrate_legacy_custom_agent_skills(paths)?;
+    sync_task_created_agent_skills(paths)?;
     let skills_dir = paths.storage_dir.join("skills");
     let mut skills = Vec::new();
     if skills_dir.exists() {
@@ -436,7 +412,7 @@ fn load_custom_agent_skills(paths: &MyOpenPanelsPaths) -> Result<Vec<AgentSkill>
                 serde_json::from_slice(&fs::read(&manifest_path).map_err(to_cli_error)?)
                     .map_err(to_cli_error)?;
             let source = fs::read_to_string(&skill_path).map_err(to_cli_error)?;
-            let skill = custom_writing_skill_from_source(
+            let skill = custom_agent_skill_from_source(
                 &source,
                 &skill_path.display().to_string(),
                 &manifest,
@@ -474,11 +450,7 @@ fn extract_embedded_dir_contents(
 }
 
 pub(crate) fn parse_skill(source: &str, file_name: &str) -> Result<AgentSkill, CliError> {
-    let (frontmatter, body) = split_skill(source, file_name)?;
-    if frontmatter.contains_key("name") {
-        return portable_skill_from_parts(frontmatter, body, file_name);
-    }
-    legacy_skill_from_parts(frontmatter, body, file_name)
+    parse_portable_skill(source, file_name)
 }
 
 pub(crate) fn parse_portable_skill(
@@ -559,31 +531,6 @@ fn portable_skill_from_parts(
     })
 }
 
-fn legacy_skill_from_parts(
-    frontmatter: BTreeMap<String, Vec<String>>,
-    body: String,
-    file_name: &str,
-) -> Result<AgentSkill, CliError> {
-    let id = scalar(&frontmatter, "id")
-        .ok_or_else(|| CliError::new(format!("Legacy Agent Skill requires id and title: {file_name}")))?;
-    let title = scalar(&frontmatter, "title")
-        .ok_or_else(|| CliError::new(format!("Legacy Agent Skill requires id and title: {file_name}")))?;
-    Ok(AgentSkill {
-        metadata: AgentSkillMetadata {
-            applies_to: list(&frontmatter, "appliesTo"),
-            description: scalar(&frontmatter, "description").unwrap_or_default(),
-            id,
-            load_when: list(&frontmatter, "loadWhen"),
-            requires_commands: list(&frontmatter, "requiresCommands"),
-            source: scalar(&frontmatter, "source").unwrap_or_else(|| "builtin".to_owned()),
-            task_types: list(&frontmatter, "taskTypes"),
-            name: title,
-            tokens: scalar(&frontmatter, "tokens").unwrap_or_else(|| "medium".to_owned()),
-        },
-        body,
-    })
-}
-
 fn registered_builtin_skill(
     mut skill: AgentSkill,
     registration: &BuiltinSkillRegistration,
@@ -640,10 +587,6 @@ fn scalar(frontmatter: &BTreeMap<String, Vec<String>>, key: &str) -> Option<Stri
         .cloned()
 }
 
-fn list(frontmatter: &BTreeMap<String, Vec<String>>, key: &str) -> Vec<String> {
-    frontmatter.get(key).cloned().unwrap_or_default()
-}
-
 fn render_skill_table(skills: &[AgentSkillListing]) -> String {
     if skills.is_empty() {
         return "- none".to_owned();
@@ -697,7 +640,7 @@ fn agent_skill_local_paths(
     (local_dir, local_path)
 }
 
-pub(crate) fn custom_writing_skills_dir(paths: &MyOpenPanelsPaths) -> PathBuf {
+pub(crate) fn custom_agent_skills_dir(paths: &MyOpenPanelsPaths) -> PathBuf {
     paths.storage_dir.join("skills")
 }
 
@@ -733,7 +676,7 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
     let active_space_id = state
         .get("activeWikiSpaceId")
         .and_then(Value::as_str)
-        .unwrap_or("wiki:default");
+        .unwrap_or("");
     let active_space = state
         .get("wikiSpaces")
         .and_then(Value::as_array)
@@ -743,8 +686,8 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
                 .find(|space| space.get("id").and_then(Value::as_str) == Some(active_space_id))
                 .or_else(|| spaces.first())
         });
-    let selected_generated_documents = selection
-        .and_then(|value| value.get("selectedGeneratedDocuments"))
+    let selected_my_documents = selection
+        .and_then(|value| value.get("selectedMyDocuments"))
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
@@ -770,8 +713,8 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
         "pageCount": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("pageCount")).cloned().unwrap_or_else(|| json!(active_space.and_then(|space| space.get("pageIndex")).and_then(Value::as_array).map(Vec::len).unwrap_or(0))),
         "querySkillId": PANELS_SKILL_ID,
         "localAccess": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("localAccess")).cloned().unwrap_or(Value::Null),
-        "selectedGeneratedDocumentCount": selected_generated_documents.len(),
-        "selectedGeneratedDocuments": selected_generated_documents,
+        "selectedMyDocumentCount": selected_my_documents.len(),
+        "selectedMyDocuments": selected_my_documents,
         "nextTask": next_task,
         "pendingTaskCount": tasks.len(),
     })
@@ -896,13 +839,13 @@ fn render_current_context(
             lines.push(format!("- wiki materialize command: `{command}`"));
         }
     }
-    for document in wiki["selectedGeneratedDocuments"]
+    for document in wiki["selectedMyDocuments"]
         .as_array()
         .into_iter()
         .flatten()
     {
         lines.push(format!(
-            "- selected generated document: {} ({}); content status={}; content path={}",
+            "- selected My Document: {} ({}); content status={}; content path={}",
             document.get("title").and_then(Value::as_str).unwrap_or("untitled"),
             document.get("documentId").and_then(Value::as_str).unwrap_or("unknown"),
             document.pointer("/contentAccess/status").and_then(Value::as_str).unwrap_or("unavailable"),

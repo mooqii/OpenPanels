@@ -344,21 +344,6 @@ export abstract class TransformerFoundation extends Group {
   // Node management
   // ==========================================================================
 
-  /**
-   * alias to `tr.nodes([shape])`/ This method is deprecated and will be removed soon.
-   */
-  attachTo(node: Node): TransformerFoundation {
-    this.setNode(node)
-    return this
-  }
-
-  setNode(node: Node) {
-    Util.warn(
-      "tr.setNode(shape), tr.node(shape) and tr.attachTo(shape) methods are deprecated. Please use tr.nodes(nodesArray) instead."
-    )
-    return this.setNodes([node])
-  }
-
   getNode() {
     return this._nodes?.[0]
   }

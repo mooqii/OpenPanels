@@ -23,6 +23,10 @@ import {
   publishingSourceHasContent,
   typesettingContentToPlainText,
 } from "../../lib/publishing"
+import {
+  createTypesettingPublication,
+  selectPublicationTitle,
+} from "../../lib/typesetting"
 import type {
   ManagedProjectSkill,
   ManagedSkillModule,
@@ -69,15 +73,12 @@ export function PublishingPanel({
   onOpenAgentTasks,
   onOpenManualTask,
   onStateSaved,
-  onTypesettingStateSaved,
+  panelId,
   projectId,
   state: initialState,
   skillsRevision,
   tasks,
   transport,
-  typesetting,
-  typesettingPanelId,
-  typesettingRevision,
 }: {
   chromeContent: ReactNode
   onAddSkill: () => void
@@ -88,15 +89,12 @@ export function PublishingPanel({
     revision: number,
     task?: ProjectTask
   ) => void
-  onTypesettingStateSaved: (state: TypesettingState, revision: number) => void
+  panelId: string
   projectId: string
   state: PublishingState
   skillsRevision: number
   tasks: ProjectTask[]
   transport: MyOpenPanelsTransport
-  typesetting: TypesettingState
-  typesettingPanelId: string
-  typesettingRevision: number
 }) {
   const { locale, t } = useMyOpenPanelsI18n()
   const [state, setState] = useState(initialState)
@@ -108,12 +106,14 @@ export function PublishingPanel({
     null
   )
   const [view, setView] = useState<PublicationView>("preview")
-  const [isPublicationModuleCollapsed, setIsPublicationModuleCollapsed] =
-    useState(false)
   const [isSourceListOpen, setIsSourceListOpen] = useState(false)
   const [pendingDelete, setPendingDelete] =
     useState<TypesettingPublication | null>(null)
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
+  const [publicationState, setPublicationState] = useState<TypesettingState>({
+    publications: [],
+  })
+  const [publicationRevision, setPublicationRevision] = useState(0)
 
   const {
     flushSave: flushTypesettingSave,
@@ -125,15 +125,57 @@ export function PublishingPanel({
     updatePublication,
     uploadAsset,
   } = useTypesettingStateEditor({
-    initialState: typesetting,
-    onStateSaved: onTypesettingStateSaved,
-    panelId: typesettingPanelId,
-    projectId,
-    revision: typesettingRevision,
+    initialState: publicationState,
+    onStateSaved: (next, revision) => {
+      setPublicationState(next)
+      setPublicationRevision(revision)
+    },
+    panelId,
+    revision: publicationRevision,
     transport,
   })
 
   useEffect(() => setState(initialState), [initialState])
+
+  useEffect(() => {
+    if (!projectId) return
+    let cancelled = false
+    apiJson<{ releases: PublishingRelease[] }>(
+      transport.apiBase,
+      "/api/releases"
+    )
+      .then((response) => {
+        if (!cancelled) {
+          setState((current) => ({ ...current, releases: response.releases }))
+        }
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(String((cause as Error)?.message || cause))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, transport.apiBase])
+
+  useEffect(() => {
+    if (!projectId) return
+    let cancelled = false
+    apiJson<{
+      publications: TypesettingPublication[]
+      revision: number
+    }>(transport.apiBase, "/api/publications")
+      .then((response) => {
+        if (cancelled) return
+        setPublicationState({ publications: response.publications })
+        setPublicationRevision(response.revision)
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(String((cause as Error)?.message || cause))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, transport.apiBase])
 
   useEffect(() => {
     let cancelled = false
@@ -145,7 +187,7 @@ export function PublishingPanel({
       .then((response) => {
         if (cancelled) return
         setSkills(
-          response.modules.find((module) => module.kind === "publishing")
+          response.modules.find((module) => module.kind === "release")
             ?.skills ?? []
         )
       })
@@ -170,7 +212,7 @@ export function PublishingPanel({
     (skill) => skill.id === state.selectedSkillIds.xiaohongshu
   )
     ? state.selectedSkillIds.xiaohongshu
-    : (skills[0]?.id ?? "publishing-xiaohongshu")
+    : (skills[0]?.id ?? "release-xiaohongshu")
   const bodyText = selectedPublication
     ? typesettingContentToPlainText(selectedPublication.content)
     : ""
@@ -267,13 +309,13 @@ export function PublishingPanel({
                           !sourceComplete || hasActiveAttempt || isSubmitting
                         }
                         isPending={submittingSkillId === skill.id}
-                        onPress={() => {
-                          void executeAction({
+                        onPress={() =>
+                          executeAction({
                             kind: "release",
                             skillId: skill.id,
                             skillName: skill.name,
                           })
-                        }}
+                        }
                         size="sm"
                         variant="secondary"
                       >
@@ -318,6 +360,24 @@ export function PublishingPanel({
     </div>
   )
 
+  function createPublication() {
+    const timestamp = new Date().toISOString()
+    const publication = createTypesettingPublication(
+      randomId("publication"),
+      timestamp
+    )
+    replaceTypesettingState(
+      {
+        ...editableTypesetting,
+        publications: [publication, ...editableTypesetting.publications],
+      },
+      publication.id
+    )
+    setView("edit")
+    setIsSourceListOpen(false)
+    savePreference(publication.id).catch(() => undefined)
+  }
+
   async function savePreference(
     publicationId: string | null,
     skillId = fallbackSkillId
@@ -326,7 +386,7 @@ export function PublishingPanel({
     try {
       const response = await apiJson<PublishingResponse>(
         transport.apiBase,
-        "/api/publishing/preferences",
+        "/api/panels/publishing/preferences",
         {
           body: JSON.stringify({
             selectedPublicationId: publicationId,
@@ -354,7 +414,7 @@ export function PublishingPanel({
         action.kind === "release"
           ? await apiJson<PublishingResponse>(
               transport.apiBase,
-              "/api/publishing/releases",
+              "/api/releases",
               {
                 body: JSON.stringify({
                   publicationId: selectedPublication.id,
@@ -367,7 +427,7 @@ export function PublishingPanel({
             )
           : await apiJson<PublishingResponse>(
               transport.apiBase,
-              `/api/publishing/releases/${encodeURIComponent(action.release.id)}/attempts`,
+              `/api/releases/${encodeURIComponent(action.release.id)}/attempts`,
               {
                 body: JSON.stringify({
                   acknowledgedUnknown: action.acknowledgedUnknown,
@@ -425,14 +485,12 @@ export function PublishingPanel({
           <PublicationContentModule
             activePublicationId={selectedPublication?.id ?? null}
             className="op-publishing-publications-module"
-            isCollapsed={isPublicationModuleCollapsed}
+            createButtonIconOnly
+            onCreatePublication={createPublication}
             onOpenPublication={(publication) => {
               savePreference(publication.id)
               setIsSourceListOpen(false)
             }}
-            onToggle={() =>
-              setIsPublicationModuleCollapsed((current) => !current)
-            }
             publications={editableTypesetting.publications}
             renderPublicationMeta={(publication) => {
               const publishedCount =
@@ -527,6 +585,12 @@ export function PublishingPanel({
                   }
                   onEdit={() => setView("edit")}
                   onOpenSources={() => setIsSourceListOpen(true)}
+                  onSelectTitle={(titleId) =>
+                    updatePublication(selectedPublication.id, (current) => ({
+                      ...selectPublicationTitle(current, titleId),
+                      updatedAt: new Date().toISOString(),
+                    }))
+                  }
                   publication={selectedPublication}
                   showHeader={false}
                   transport={transport}

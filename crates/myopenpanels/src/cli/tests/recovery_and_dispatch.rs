@@ -6,6 +6,7 @@ fn command_bridge_rejects_completion_without_staged_content() {
     let storage_dir = temp.path().join(".myopenpanels");
     fs::create_dir_all(&project_dir).expect("project dir");
     create_cli_project(&project_dir, &storage_dir);
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
     let (code, _, stderr) = run(&[
         "wiki",
         "raw",
@@ -21,7 +22,7 @@ fn command_bridge_rejects_completion_without_staged_content() {
         "--content",
         "# Bridge Lifecycle",
         "--space-id",
-        "wiki:default",
+        wiki_space_id.as_str(),
         "--format",
         "json",
     ]);
@@ -54,7 +55,7 @@ fn command_bridge_rejects_completion_without_staged_content() {
 }
 
 #[test]
-fn target_registration_rejects_transport_flag_and_old_protocols() {
+fn target_registration_rejects_transport_flag() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -81,29 +82,6 @@ fn target_registration_rejects_transport_flag_and_old_protocols() {
     ]);
     assert_ne!(code, 0);
 
-    let paths = resolve_myopenpanels_paths(
-        Some(project_dir.to_str().unwrap()),
-        Some(storage_dir.to_str().unwrap()),
-        Some("ctx"),
-    )
-    .expect("paths");
-    for protocol_version in [1, 2] {
-        let error = crate::tasks::register_target(
-            &paths,
-            crate::tasks::TargetRegistration {
-                name: "old-protocol",
-                host: None,
-                project_id: None,
-                capabilities: vec!["*".to_owned()],
-                priority: 0,
-                protocol_version,
-                max_concurrency: 1,
-                model_gateway_connection_id: None,
-            },
-        )
-        .expect_err("old protocol must be rejected");
-        assert_eq!(error.code(), Some("invalid_target"));
-    }
 }
 
 #[test]
@@ -113,6 +91,7 @@ fn concurrent_worker_claim_assigns_a_task_once() {
     let storage_dir = temp.path().join(".myopenpanels");
     fs::create_dir_all(&project_dir).expect("project dir");
     create_cli_project(&project_dir, &storage_dir);
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
     let (code, _, stderr) = run(&[
         "wiki",
         "raw",
@@ -128,7 +107,7 @@ fn concurrent_worker_claim_assigns_a_task_once() {
         "--content",
         "# Concurrent Claim",
         "--space-id",
-        "wiki:default",
+        wiki_space_id.as_str(),
         "--format",
         "json",
     ]);
@@ -147,7 +126,6 @@ fn concurrent_worker_claim_assigns_a_task_once() {
             project_id: None,
             capabilities: vec!["wiki.ingestMarkdown".to_owned()],
             priority: 0,
-            protocol_version: 3,
             max_concurrency: 1,
             model_gateway_connection_id: None,
         },
@@ -295,8 +273,7 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
             "updatedAt": "2026-07-08T00:00:00.000Z"
         }),
         Some(serde_json::json!({
-            "schema": { "schemaVersion": 1, "recordVersions": {} },
-            "currentPageId": "page:main",
+                        "currentPageId": "page:main",
             "selectedShapeIds": [],
             "store": {
                 "page:main": { "id": "page:main", "typeName": "page", "name": "Page 1", "index": 1 },
@@ -422,7 +399,7 @@ fn version_prints_json() {
     assert_eq!(
         stdout,
         format!(
-            "{{\"ok\":true,\"schemaVersion\":3,\"intent\":\"cli.version.read\",\"data\":{{\"version\":\"{VERSION}\"}},\"actions\":{{\"required\":[],\"suggested\":[]}},\"meta\":{{\"cliVersion\":\"{VERSION}\"}}}}\n"
+            "{{\"ok\":true,\"intent\":\"cli.version.read\",\"data\":{{\"version\":\"{VERSION}\"}},\"actions\":{{\"required\":[],\"suggested\":[]}},\"meta\":{{\"cliVersion\":\"{VERSION}\"}}}}\n"
         )
     );
     assert_eq!(stderr, "");
@@ -455,7 +432,12 @@ fn help_prints_current_command_map() {
     assert!(stdout.contains("Usage: myopenpanels"));
     assert!(stdout.contains("studio"));
     assert!(stdout.contains("canvas"));
-    assert!(stdout.contains("typesetting"));
+    assert!(stdout.contains("publication"));
+    assert!(stdout.contains("release"));
+    assert!(stdout.contains("asset"));
+    assert!(stdout.contains("wiki-source"));
+    assert!(!stdout.contains("typesetting"));
+    assert!(!stdout.contains("publishing"));
     assert!(stdout.contains("agent"));
     assert!(stdout.contains("update"));
     assert!(!stdout.contains("agent-context"));
@@ -498,7 +480,12 @@ fn legacy_and_implicit_aliases_are_rejected() {
         &["canvas", "generation", "begin"],
         &["canvas", "image", "insert"],
         &["wiki", "raw-document", "list"],
+        &["wiki", "document", "list"],
         &["wiki", "generated-document", "list"],
+        &["wiki", "my-document", "list"],
+        &["my-document", "publish"],
+        &["typesetting"],
+        &["publishing"],
         &["wiki", "generation", "begin"],
         &["wiki", "page", "write"],
         &["writing", "generation", "begin"],
@@ -564,7 +551,7 @@ fn unknown_command_prints_json_error() {
     assert_eq!(stdout, "");
     let payload = serde_json::from_str::<Value>(&stderr).expect("json error");
     assert_eq!(payload["ok"], false);
-    assert_eq!(payload["schemaVersion"], 3);
+    assert!(payload.get("schemaVersion").is_none());
     assert_eq!(payload["intent"], "cli.parse");
     assert_eq!(payload["error"]["type"], "validation");
     assert_eq!(payload["error"]["subtype"], "invalid_argument");

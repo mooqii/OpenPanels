@@ -43,27 +43,25 @@ mod recommended_skills_tests {
     fn recommended_catalog_validates_and_normalizes_entries() {
         let catalog = load_recommended_skill_catalog(
             r#"{
-                "schemaVersion": 1,
                 "skills": [{
                     "id": "editorial-style",
                     "name": "Editorial Style",
                     "description": "Keep prose direct.",
                     "sourceUrl": "https://github.com/example/skills/tree/main/editorial",
-                    "moduleKinds": ["writing", "publishing-xiaohongshu", "publishing"]
+                    "moduleKinds": ["writing", "release"]
                 }]
             }"#,
         )
         .expect("catalog");
-        assert_eq!(catalog.skills[0].module_kinds, ["writing", "publishing"]);
+        assert_eq!(catalog.skills[0].module_kinds, ["writing", "release"]);
 
         for invalid in [
-            r#"{"schemaVersion":2,"skills":[]}"#,
-            r#"{"schemaVersion":1,"skills":[{"id":"Bad Id","name":"A","description":"A","sourceUrl":"https://github.com/example/a","moduleKinds":["writing"]}]}"#,
-            r#"{"schemaVersion":1,"skills":[{"id":"a","name":"A","description":"A","sourceUrl":"https://github.com/example/a","moduleKinds":["writing"]},{"id":"a","name":"B","description":"B","sourceUrl":"https://github.com/example/b","moduleKinds":["writing"]}]}"#,
-            r#"{"schemaVersion":1,"skills":[{"id":"a","name":"Same Name","description":"A","sourceUrl":"https://github.com/example/a","moduleKinds":["writing"]},{"id":"b","name":"same name","description":"B","sourceUrl":"https://github.com/example/b","moduleKinds":["writing"]}]}"#,
-            r#"{"schemaVersion":1,"skills":[{"id":"a","name":"A","description":"A","sourceUrl":"https://example.com/a","moduleKinds":["writing"]}]}"#,
-            r#"{"schemaVersion":1,"skills":[{"id":"a","name":"A","description":"A","sourceUrl":"https://github.com/example/a","moduleKinds":[]}]}"#,
-            r#"{"schemaVersion":1,"skills":[{"id":"a","name":"A","description":"A","sourceUrl":"https://github.com/example/a","moduleKinds":["unknown"]}]}"#,
+            r#"{"skills":[{"id":"Bad Id","name":"A","description":"A","sourceUrl":"https://github.com/example/a","moduleKinds":["writing"]}]}"#,
+            r#"{"skills":[{"id":"a","name":"A","description":"A","sourceUrl":"https://github.com/example/a","moduleKinds":["writing"]},{"id":"a","name":"B","description":"B","sourceUrl":"https://github.com/example/b","moduleKinds":["writing"]}]}"#,
+            r#"{"skills":[{"id":"a","name":"Same Name","description":"A","sourceUrl":"https://github.com/example/a","moduleKinds":["writing"]},{"id":"b","name":"same name","description":"B","sourceUrl":"https://github.com/example/b","moduleKinds":["writing"]}]}"#,
+            r#"{"skills":[{"id":"a","name":"A","description":"A","sourceUrl":"https://example.com/a","moduleKinds":["writing"]}]}"#,
+            r#"{"skills":[{"id":"a","name":"A","description":"A","sourceUrl":"https://github.com/example/a","moduleKinds":[]}]}"#,
+            r#"{"skills":[{"id":"a","name":"A","description":"A","sourceUrl":"https://github.com/example/a","moduleKinds":["unknown"]}]}"#,
         ] {
             assert_eq!(
                 load_recommended_skill_catalog(invalid)
@@ -78,7 +76,7 @@ mod recommended_skills_tests {
     fn empty_embedded_recommended_catalog_lists_without_network_access() {
         let (_temporary, paths) = test_paths();
         let payload = recommended_skills(&paths).expect("recommended skills");
-        assert_eq!(payload["schemaVersion"], 1);
+        assert!(payload.get("schemaVersion").is_none());
         assert_eq!(payload["skills"], json!([]));
     }
 
@@ -96,7 +94,7 @@ mod recommended_skills_tests {
             &package_root,
             "editorial-style".to_owned(),
             "Keep prose direct.".to_owned(),
-            &["writing".to_owned(), "publishing".to_owned()],
+            &["writing".to_owned(), "release".to_owned()],
             false,
             &source_locator,
             Some(source),
@@ -105,11 +103,11 @@ mod recommended_skills_tests {
         let skill_id = installed["skill"]["id"].as_str().expect("skill id");
         assert_eq!(
             installed["skill"]["moduleKinds"],
-            json!(["writing", "publishing"])
+            json!(["writing", "release"])
         );
         let listing = managed_skill_listing(&paths, skill_id).expect("listing");
         let manifest = read_skill_manifest(&listing).expect("manifest");
-        assert_eq!(manifest["schemaVersion"], MANAGED_SKILL_SCHEMA_VERSION);
+        assert!(manifest.get("schemaVersion").is_none());
         assert_eq!(manifest["provenance"]["sourceType"], "github");
         assert!(manifest["provenance"]["installedContentHash"]
             .as_str()
@@ -126,7 +124,7 @@ mod recommended_skills_tests {
         ensure_project_bootstrap(&other_paths, BootstrapRequest::new()).expect("other bootstrap");
         let shared = managed_skill_listing(&other_paths, skill_id).expect("shared listing");
         assert_eq!(shared.skill.id, skill_id);
-        assert_eq!(managed_skill_module_kinds(&shared), ["writing", "publishing"]);
+        assert_eq!(managed_skill_module_kinds(&shared), ["writing", "release"]);
     }
 
     #[test]
@@ -154,7 +152,7 @@ mod recommended_skills_tests {
         let before = fs::read_to_string(PathBuf::from(&listing.local_dir).join("SKILL.md"))
             .expect("before");
         let state = recommended_skill_listing(
-            registration(&["writing", "publishing"]),
+            registration(&["writing", "release"]),
             Some(&listing),
         )
         .expect("state");
@@ -162,18 +160,18 @@ mod recommended_skills_tests {
             state.install_status,
             RecommendedSkillInstallStatus::BindingsMissing
         ));
-        assert_eq!(state.missing_module_kinds, ["publishing"]);
+        assert_eq!(state.missing_module_kinds, ["release"]);
 
         let associated = install_recommended_skill_registration(
             &paths,
-            registration(&["writing", "publishing"]),
+            registration(&["writing", "release"]),
         )
         .expect("associated");
         assert_eq!(associated["operation"], "associated");
         assert_eq!(associated["skill"]["id"], skill_id);
         assert_eq!(
             associated["skill"]["moduleKinds"],
-            json!(["writing", "publishing"])
+            json!(["writing", "release"])
         );
         assert_eq!(
             fs::read_to_string(PathBuf::from(&listing.local_dir).join("SKILL.md"))
@@ -183,7 +181,7 @@ mod recommended_skills_tests {
 
         let unchanged = install_recommended_skill_registration(
             &paths,
-            registration(&["writing", "publishing"]),
+            registration(&["writing", "release"]),
         )
         .expect("unchanged");
         assert_eq!(unchanged["operation"], "unchanged");

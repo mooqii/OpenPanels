@@ -6,10 +6,10 @@ fn build_conversion_output_plan(
     _execution_generation: i64,
     _execution_unit: &Value,
 ) -> Result<TaskOutputPlanDraft, CliError> {
-    let result = read_execution_result_v2(workspace, "Document conversion")?;
+    let result = read_execution_result(workspace, "Document conversion")?;
     validate_result_keys(
         &result,
-        &["schemaVersion", "outcome", "summary", "artifacts"],
+        &["outcome", "summary", "artifacts"],
         "Document conversion",
     )?;
     require_outcome(&result, "converted", "Document conversion")?;
@@ -39,7 +39,7 @@ fn build_conversion_output_plan(
     })
 }
 
-fn build_generation_output_plan(
+fn build_my_document_write_output_plan(
     _paths: &MyOpenPanelsPaths,
     task: &Value,
     workspace: &Path,
@@ -47,13 +47,13 @@ fn build_generation_output_plan(
     _execution_generation: i64,
     _execution_unit: &Value,
 ) -> Result<TaskOutputPlanDraft, CliError> {
-    let result = read_execution_result_v2(workspace, "Document generation")?;
+    let result = read_execution_result(workspace, "My Document write")?;
     validate_result_keys(
         &result,
-        &["schemaVersion", "outcome", "summary", "title", "artifacts"],
-        "Document generation",
+        &["outcome", "summary", "title", "artifacts"],
+        "My Document write",
     )?;
-    require_outcome(&result, "generated", "Document generation")?;
+    require_outcome(&result, "written", "My Document write")?;
     let title = result
         .get("title")
         .and_then(Value::as_str)
@@ -62,12 +62,12 @@ fn build_generation_output_plan(
         .ok_or_else(|| {
             CliError::with_code(
                 "invalid_output",
-                "Document generation result title cannot be empty.",
+                "My Document result title cannot be empty.",
             )
         })?
         .to_owned();
-    let artifact = exactly_one_artifact(workspace, &result, "Document generation")?;
-    if artifact.role != "generated-document"
+    let artifact = exactly_one_artifact(workspace, &result, "My Document write")?;
+    if artifact.role != "my-document"
         || !matches!(
             artifact.relative_path.as_str(),
             "outputs/document.md" | "outputs/document.txt"
@@ -76,15 +76,15 @@ fn build_generation_output_plan(
     {
         return Err(CliError::with_code(
             "invalid_output",
-            "Document generation must declare exactly outputs/document.md or outputs/document.txt.",
+            "My Document write must declare exactly outputs/document.md or outputs/document.txt.",
         ));
     }
     let document_id = task
-        .pointer("/input/targetGeneratedDocumentId")
+        .pointer("/input/targetMyDocumentId")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            CliError::with_code("invalid_output", "Document generation target is missing.")
+            CliError::with_code("invalid_output", "My Document target is missing.")
         })?;
     let document_format = if artifact.relative_path.ends_with(".txt") {
         "text"
@@ -93,7 +93,7 @@ fn build_generation_output_plan(
     };
     Ok(TaskOutputPlanDraft {
         result,
-        actions: vec![TaskOutputAction::PrepareGeneratedDocument {
+        actions: vec![TaskOutputAction::PrepareMyDocument {
             document_id: document_id.to_owned(),
             title,
             document_format: document_format.to_owned(),
@@ -102,7 +102,7 @@ fn build_generation_output_plan(
     })
 }
 
-fn build_refinement_output_plan(
+fn build_distillation_output_plan(
     _paths: &MyOpenPanelsPaths,
     task: &Value,
     workspace: &Path,
@@ -110,19 +110,19 @@ fn build_refinement_output_plan(
     _execution_generation: i64,
     _execution_unit: &Value,
 ) -> Result<TaskOutputPlanDraft, CliError> {
-    let result = read_execution_result_v2(workspace, "Writing refinement")?;
+    let result = read_execution_result(workspace, "Writing distillation")?;
     validate_result_keys(
         &result,
-        &["schemaVersion", "outcome", "summary", "artifacts"],
-        "Writing refinement",
+        &["outcome", "summary", "artifacts"],
+        "Writing distillation",
     )?;
-    require_outcome(&result, "refined", "Writing refinement")?;
-    let artifact = exactly_one_artifact(workspace, &result, "Writing refinement")?;
+    require_outcome(&result, "distilled", "Writing distillation")?;
+    let artifact = exactly_one_artifact(workspace, &result, "Writing distillation")?;
     validate_fixed_artifact(
         &artifact,
         "writing-skill",
         "outputs/SKILL.md",
-        "Writing refinement",
+        "Writing distillation",
     )?;
     let skill_id = task
         .pointer("/input/skillId")
@@ -141,7 +141,7 @@ fn build_refinement_output_plan(
     })
 }
 
-fn build_typesetting_cover_output_plan(
+fn build_publication_cover_output_plan(
     _paths: &MyOpenPanelsPaths,
     task: &Value,
     workspace: &Path,
@@ -149,25 +149,25 @@ fn build_typesetting_cover_output_plan(
     _execution_generation: i64,
     _execution_unit: &Value,
 ) -> Result<TaskOutputPlanDraft, CliError> {
-    let result = read_execution_result_v2(workspace, "Typesetting Cover")?;
+    let result = read_execution_result(workspace, "Publication Cover")?;
     validate_result_keys(
         &result,
-        &["schemaVersion", "outcome", "summary", "artifacts"],
-        "Typesetting Cover",
+        &["outcome", "summary", "artifacts"],
+        "Publication Cover",
     )?;
-    require_outcome(&result, "generated", "Typesetting Cover")?;
-    let artifact = exactly_one_binary_artifact(workspace, &result, "Typesetting Cover")?;
+    require_outcome(&result, "generated", "Publication Cover")?;
+    let artifact = exactly_one_binary_artifact(workspace, &result, "Publication Cover")?;
     validate_fixed_artifact(
         &artifact,
-        "typesetting-cover",
+        "publication-cover",
         "outputs/cover.png",
-        "Typesetting Cover",
+        "Publication Cover",
     )?;
     let bytes = fs::read(&artifact.absolute_path).map_err(to_cli_error)?;
     let (width, height) = png_dimensions(&bytes).ok_or_else(|| {
         CliError::with_code(
             "invalid_output",
-            "Typesetting Cover output must be a valid non-empty PNG bitmap.",
+            "Publication Cover output must be a valid non-empty PNG bitmap.",
         )
     })?;
     let project_id = task
@@ -198,7 +198,7 @@ fn build_typesetting_cover_output_plan(
     })
 }
 
-fn build_typesetting_title_output_plan(
+fn build_publication_title_output_plan(
     _paths: &MyOpenPanelsPaths,
     task: &Value,
     workspace: &Path,
@@ -206,19 +206,19 @@ fn build_typesetting_title_output_plan(
     _execution_generation: i64,
     _execution_unit: &Value,
 ) -> Result<TaskOutputPlanDraft, CliError> {
-    let result = read_execution_result_v2(workspace, "Typesetting Title")?;
+    let result = read_execution_result(workspace, "Publication Title")?;
     validate_result_keys(
         &result,
-        &["schemaVersion", "outcome", "summary", "artifacts"],
-        "Typesetting Title",
+        &["outcome", "summary", "artifacts"],
+        "Publication Title",
     )?;
-    require_outcome(&result, "generated", "Typesetting Title")?;
-    let artifact = exactly_one_artifact(workspace, &result, "Typesetting Title")?;
+    require_outcome(&result, "generated", "Publication Title")?;
+    let artifact = exactly_one_artifact(workspace, &result, "Publication Title")?;
     validate_fixed_artifact(
         &artifact,
-        "typesetting-titles",
+        "publication-titles",
         "outputs/titles.json",
-        "Typesetting Title",
+        "Publication Title",
     )?;
     let payload: Value = serde_json::from_slice(
         &fs::read(&artifact.absolute_path).map_err(to_cli_error)?,
@@ -226,18 +226,18 @@ fn build_typesetting_title_output_plan(
     .map_err(|_| {
         CliError::with_code(
             "invalid_output",
-            "Typesetting Title output must be valid JSON.",
+            "Publication Title output must be valid JSON.",
         )
     })?;
-    validate_result_keys(&payload, &["titles"], "Typesetting Title artifact")?;
+    validate_result_keys(&payload, &["titles"], "Publication Title artifact")?;
     let values = payload
         .get("titles")
         .and_then(Value::as_array)
-        .filter(|titles| titles.len() == 10)
+        .filter(|titles| !titles.is_empty())
         .ok_or_else(|| {
             CliError::with_code(
                 "invalid_output",
-                "Typesetting Title output must contain exactly 10 titles.",
+                "Publication Title output must contain one or more titles.",
             )
         })?;
     let existing = task
@@ -249,7 +249,7 @@ fn build_typesetting_title_output_plan(
         .map(|title| title.trim().to_lowercase())
         .collect::<HashSet<_>>();
     let mut seen = HashSet::new();
-    let mut titles = Vec::with_capacity(10);
+    let mut titles = Vec::with_capacity(values.len());
     for value in values {
         let title = value.as_str().map(str::trim).filter(|title| {
             !title.is_empty()
@@ -276,9 +276,21 @@ fn build_typesetting_title_output_plan(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| CliError::with_code("invalid_output", "Title Task id is missing."))?;
+    let project_id = task
+        .get("projectId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::with_code("invalid_target", "Title Project id is missing."))?;
+    let panel_id = task
+        .get("panelId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::with_code("invalid_target", "Title panel id is missing."))?;
     Ok(TaskOutputPlanDraft {
         result,
-        actions: vec![TaskOutputAction::PrepareTypesettingTitles {
+        actions: vec![TaskOutputAction::PreparePublicationTitles {
+            project_id: project_id.to_owned(),
+            panel_id: panel_id.to_owned(),
             task_id: task_id.to_owned(),
             artifact,
             titles,
@@ -286,7 +298,7 @@ fn build_typesetting_title_output_plan(
     })
 }
 
-include!("typesetting_layout_output.rs");
+include!("publication_layout_output.rs");
 fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() < 8 || bytes[..8] != [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a] {
         return None;
@@ -378,16 +390,23 @@ fn build_wiki_output_plan(
     _execution_generation: i64,
     _execution_unit: &Value,
 ) -> Result<TaskOutputPlanDraft, CliError> {
-    let result = read_execution_result_v2(workspace, "Wiki")?;
+    let result = read_execution_result(workspace, "Wiki")?;
+    let is_ingestion = task.get("type").and_then(Value::as_str)
+        == Some("ingest_markdown_into_wiki");
     validate_result_keys(
         &result,
-        &[
-            "schemaVersion",
-            "outcome",
-            "summary",
-            "changedPaths",
-            "artifacts",
-        ],
+        if is_ingestion {
+            &[
+                "outcome",
+                "disposition",
+                "reasonCode",
+                "summary",
+                "changedPaths",
+                "artifacts",
+            ]
+        } else {
+            &["outcome", "summary", "changedPaths", "artifacts"]
+        },
         "Wiki",
     )?;
     let outcome = result.get("outcome").and_then(Value::as_str).unwrap_or("");
@@ -464,12 +483,58 @@ fn build_wiki_output_plan(
             "Wiki changedPaths must exactly match the declared Wiki page artifacts.",
         ));
     }
+    if is_ingestion {
+        let disposition = result
+            .get("disposition")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let valid_disposition = match outcome {
+            "changed" => disposition == "included",
+            "no_change" => matches!(disposition, "already_covered" | "excluded"),
+            _ => false,
+        };
+        if !valid_disposition {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "Wiki ingestion disposition does not match its outcome.",
+            ));
+        }
+        let reason_code = result.get("reasonCode");
+        if disposition == "excluded" {
+            let valid_reason = matches!(
+                reason_code.and_then(Value::as_str),
+                Some(
+                    "not_relevant"
+                        | "insufficient_content"
+                        | "unsupported_by_wiki_skill"
+                        | "policy_excluded"
+                )
+            );
+            if !valid_reason {
+                return Err(CliError::with_code(
+                    "invalid_output",
+                    "Filtered Wiki ingestion requires a supported reasonCode.",
+                ));
+            }
+        } else if !reason_code.is_some_and(Value::is_null) {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "Only filtered Wiki ingestion may include a reasonCode.",
+            ));
+        }
+    }
     let wiki_space_id = task
         .get("wikiSpaceId")
         .and_then(Value::as_str)
         .or_else(|| task.pointer("/input/wikiSpaceId").and_then(Value::as_str))
         .or_else(|| task.pointer("/source/wikiSpaceId").and_then(Value::as_str))
-        .unwrap_or("wiki:default")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            CliError::with_code(
+                "invalid_task_input",
+                "Wiki Task has no target Wiki Space.",
+            )
+        })?
         .to_owned();
     let actions = artifacts_by_path
         .into_iter()
@@ -522,11 +587,10 @@ fn build_publishing_output_plan(
     label: &str,
     platform: &str,
 ) -> Result<TaskOutputPlanDraft, CliError> {
-    let result = read_execution_result_v2(workspace, label)?;
+    let result = read_execution_result(workspace, label)?;
     validate_result_keys(
         &result,
         &[
-            "schemaVersion",
             "outcome",
             "summary",
             "artifacts",
@@ -623,10 +687,10 @@ fn build_publishing_output_plan(
             .pointer("/input/attemptId")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let state = crate::publishing::normalize_state(
+        let state = crate::release::normalize_state(
             crate::storage::Storage::open(paths)?
                 .read_panel_state(project_id, panel_id)?
-                .unwrap_or_else(crate::publishing::empty_state),
+                .unwrap_or_else(crate::release::empty_state),
         );
         let committing = state
             .get("releases")
@@ -657,7 +721,7 @@ fn build_publishing_output_plan(
     })
 }
 
-fn read_execution_result_v2(workspace: &Path, label: &str) -> Result<Value, CliError> {
+fn read_execution_result(workspace: &Path, label: &str) -> Result<Value, CliError> {
     let result_path = workspace.join(EXECUTION_RESULT_FILE);
     let raw = fs::read_to_string(&result_path).map_err(|_| {
         CliError::with_code(
@@ -671,16 +735,6 @@ fn read_execution_result_v2(workspace: &Path, label: &str) -> Result<Value, CliE
             format!("{label} execution-result.json is not valid JSON."),
         )
     })?;
-    if result.get("schemaVersion").and_then(Value::as_u64)
-        != Some(EXECUTION_RESULT_SCHEMA_VERSION as u64)
-    {
-        return Err(CliError::with_code(
-            "invalid_output",
-            format!(
-                "{label} execution result schemaVersion must be {EXECUTION_RESULT_SCHEMA_VERSION}."
-            ),
-        ));
-    }
     if result
         .get("summary")
         .and_then(Value::as_str)
@@ -996,7 +1050,6 @@ fn validate_conversion_execution_result(
     }
     write_test_artifact(workspace, "outputs/source.md", bytes)?;
     let result = json!({
-        "schemaVersion": 2,
         "outcome": "converted",
         "summary": legacy.get("summary"),
         "artifacts": [{ "role": "source-markdown", "relativePath": "outputs/source.md" }],
@@ -1006,15 +1059,15 @@ fn validate_conversion_execution_result(
 }
 
 #[cfg(test)]
-fn validate_generation_execution_result(
+fn validate_my_document_write_execution_result(
     paths: &MyOpenPanelsPaths,
     task: &Value,
     workspace: &Path,
 ) -> Result<Value, CliError> {
-    let legacy = read_legacy_result(workspace, "Document generation")?;
+    let legacy = read_legacy_result(workspace, "My Document write")?;
     let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
     let document_id = task
-        .pointer("/input/targetGeneratedDocumentId")
+        .pointer("/input/targetMyDocumentId")
         .and_then(Value::as_str)
         .unwrap_or("");
     let operation_id = legacy
@@ -1024,12 +1077,12 @@ fn validate_generation_execution_result(
     let staged = crate::content::staged_files_for_task(
         paths,
         task_id,
-        crate::content::ResourceKind::GeneratedDocument,
+        crate::content::ResourceKind::MyDocument,
     )?;
     let [(staged_id, logical_path, bytes, metadata)] = staged.as_slice() else {
         return Err(CliError::with_code(
             "invalid_output",
-            "Legacy generation result requires one staged document.",
+            "Legacy My Document write result requires one staged document.",
         ));
     };
     if staged_id != document_id
@@ -1037,7 +1090,7 @@ fn validate_generation_execution_result(
     {
         return Err(CliError::with_code(
             "invalid_output",
-            "Legacy generation result does not match its Operation.",
+            "Legacy My Document write result does not match its Operation.",
         ));
     }
     let relative = if logical_path == "content.txt" {
@@ -1047,23 +1100,22 @@ fn validate_generation_execution_result(
     };
     write_test_artifact(workspace, relative, bytes)?;
     let result = json!({
-        "schemaVersion": 2,
-        "outcome": "generated",
+        "outcome": "written",
         "summary": legacy.get("summary"),
-        "title": "Generated document",
-        "artifacts": [{ "role": "generated-document", "relativePath": relative }],
+        "title": "My Document",
+        "artifacts": [{ "role": "my-document", "relativePath": relative }],
     });
     write_test_result(workspace, &result)?;
-    Ok(build_generation_output_plan(paths, task, workspace, "test", 0, &json!({}))?.result)
+    Ok(build_my_document_write_output_plan(paths, task, workspace, "test", 0, &json!({}))?.result)
 }
 
 #[cfg(test)]
-fn validate_refinement_execution_result(
+fn validate_distillation_execution_result(
     paths: &MyOpenPanelsPaths,
     task: &Value,
     workspace: &Path,
 ) -> Result<Value, CliError> {
-    let legacy = read_legacy_result(workspace, "Writing refinement")?;
+    let legacy = read_legacy_result(workspace, "Writing distillation")?;
     let skill_id = task
         .pointer("/input/skillId")
         .and_then(Value::as_str)
@@ -1071,7 +1123,7 @@ fn validate_refinement_execution_result(
     if legacy.pointer("/output/skillId").and_then(Value::as_str) != Some(skill_id) {
         return Err(CliError::with_code(
             "invalid_output",
-            "Legacy refinement result does not match its Skill.",
+            "Legacy distillation result does not match its Skill.",
         ));
     }
     let staged = crate::content::staged_files_for_task(
@@ -1084,17 +1136,16 @@ fn validate_refinement_execution_result(
         .find(|(id, path, _, _)| id == skill_id && path == "SKILL.md")
         .map(|(_, _, bytes, _)| bytes)
         .ok_or_else(|| {
-            CliError::with_code("invalid_output", "Legacy refinement did not stage SKILL.md.")
+            CliError::with_code("invalid_output", "Legacy distillation did not stage SKILL.md.")
         })?;
     write_test_artifact(workspace, "outputs/SKILL.md", bytes)?;
     let result = json!({
-        "schemaVersion": 2,
-        "outcome": "refined",
+        "outcome": "distilled",
         "summary": legacy.get("summary"),
         "artifacts": [{ "role": "writing-skill", "relativePath": "outputs/SKILL.md" }],
     });
     write_test_result(workspace, &result)?;
-    Ok(build_refinement_output_plan(paths, task, workspace, "test", 0, &json!({}))?.result)
+    Ok(build_distillation_output_plan(paths, task, workspace, "test", 0, &json!({}))?.result)
 }
 
 #[cfg(test)]
@@ -1123,13 +1174,16 @@ fn validate_wiki_execution_result(
             "logicalPath": logical_path,
         }));
     }
-    let result = json!({
-        "schemaVersion": 2,
+    let mut result = json!({
         "outcome": legacy.get("outcome"),
         "summary": legacy.get("summary"),
         "changedPaths": changed_paths,
         "artifacts": artifacts,
     });
+    if task.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki") {
+        result["disposition"] = legacy.get("disposition").cloned().unwrap_or(Value::Null);
+        result["reasonCode"] = legacy.get("reasonCode").cloned().unwrap_or(Value::Null);
+    }
     write_test_result(workspace, &result)?;
     Ok(build_wiki_output_plan(paths, task, workspace, "test", 0, &json!({}))?.result)
 }
@@ -1161,253 +1215,6 @@ fn write_test_result(workspace: &Path, result: &Value) -> Result<(), CliError> {
     .map_err(to_cli_error)
 }
 
-#[cfg(test)]
-mod typesetting_cover_png_tests {
-    use super::*;
-
-    fn append_chunk(png: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
-        png.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        png.extend_from_slice(chunk_type);
-        png.extend_from_slice(data);
-        let start = png.len() - data.len() - chunk_type.len();
-        let crc = png_crc32(&png[start..]);
-        png.extend_from_slice(&crc.to_be_bytes());
-    }
-
-    fn structurally_valid_png() -> Vec<u8> {
-        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-        append_chunk(
-            &mut png,
-            b"IHDR",
-            &[0, 0, 0, 4, 0, 0, 0, 3, 8, 6, 0, 0, 0],
-        );
-        append_chunk(&mut png, b"IDAT", &[0x78, 0x9c, 0x03, 0x00]);
-        append_chunk(&mut png, b"IEND", &[]);
-        png
-    }
-
-    #[test]
-    fn png_validation_requires_complete_crc_checked_structure() {
-        let png = structurally_valid_png();
-        assert_eq!(png_dimensions(&png), Some((4, 3)));
-        assert_eq!(png_dimensions(&png[..24]), None);
-
-        let mut forged = png;
-        forged[20] ^= 1;
-        assert_eq!(png_dimensions(&forged), None);
-    }
-
-    #[test]
-    fn cover_output_plan_accepts_one_png_and_rejects_unsafe_or_invalid_outputs() {
-        let temp = tempfile::tempdir().expect("temp");
-        let project = temp.path().join("project");
-        let storage = temp.path().join("storage");
-        let workspace = temp.path().join("workspace");
-        fs::create_dir_all(workspace.join("outputs")).expect("workspace");
-        fs::create_dir_all(&project).expect("project");
-        let paths = crate::paths::resolve_myopenpanels_paths(
-            Some(project.to_str().unwrap()),
-            Some(storage.to_str().unwrap()),
-            Some("cover-output-test"),
-        )
-        .expect("paths");
-        let task = json!({
-            "id": "task:cover",
-            "projectId": "project:cover",
-            "panelId": "panel:typesetting"
-        });
-        let write_result = |relative_path: &str| {
-            write_test_result(
-                &workspace,
-                &json!({
-                    "schemaVersion": 2,
-                    "outcome": "generated",
-                    "summary": "cover",
-                    "artifacts": [{
-                        "role": "typesetting-cover",
-                        "relativePath": relative_path
-                    }]
-                }),
-            )
-            .expect("execution result");
-        };
-
-        fs::write(workspace.join("outputs/cover.png"), structurally_valid_png())
-            .expect("valid png");
-        write_result("outputs/cover.png");
-        let plan = build_typesetting_cover_output_plan(
-            &paths,
-            &task,
-            &workspace,
-            "attempt:1",
-            1,
-            &json!({}),
-        )
-        .expect("valid output");
-        assert_eq!(plan.actions.len(), 1);
-
-        write_result("../cover.png");
-        assert!(build_typesetting_cover_output_plan(
-            &paths,
-            &task,
-            &workspace,
-            "attempt:1",
-            1,
-            &json!({}),
-        )
-        .is_err());
-
-        write_result("outputs/cover.png");
-        fs::write(workspace.join("outputs/cover.png"), []).expect("empty png");
-        assert!(build_typesetting_cover_output_plan(
-            &paths,
-            &task,
-            &workspace,
-            "attempt:1",
-            1,
-            &json!({}),
-        )
-        .is_err());
-        fs::write(
-            workspace.join("outputs/cover.png"),
-            [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
-        )
-        .expect("forged png");
-        assert!(build_typesetting_cover_output_plan(
-            &paths,
-            &task,
-            &workspace,
-            "attempt:1",
-            1,
-            &json!({}),
-        )
-        .is_err());
-
-        let oversized = fs::File::create(workspace.join("outputs/cover.png"))
-            .expect("oversized output");
-        oversized
-            .set_len(crate::content::MAX_TEXT_FILE_BYTES as u64 + 1)
-            .expect("sparse file");
-        let error = build_typesetting_cover_output_plan(
-            &paths,
-            &task,
-            &workspace,
-            "attempt:1",
-            1,
-            &json!({}),
-        )
-        .expect_err("oversized output must fail");
-        assert_eq!(error.code(), Some("content_too_large"));
-    }
-}
 
 #[cfg(test)]
-mod typesetting_title_output_tests {
-    use super::*;
-
-    #[test]
-    fn title_output_requires_ten_new_distinct_strings() {
-        let temp = tempfile::tempdir().expect("temp");
-        let project = temp.path().join("project");
-        let storage = temp.path().join("storage");
-        let workspace = temp.path().join("workspace");
-        fs::create_dir_all(workspace.join("outputs")).expect("workspace");
-        fs::create_dir_all(&project).expect("project");
-        let paths = crate::paths::resolve_myopenpanels_paths(
-            Some(project.to_str().unwrap()),
-            Some(storage.to_str().unwrap()),
-            Some("title-output-test"),
-        )
-        .expect("paths");
-        let task = json!({
-            "id": "task:title",
-            "input": {
-                "snapshot": { "existingTitles": ["Existing title"] }
-            }
-        });
-        write_test_result(
-            &workspace,
-            &json!({
-                "schemaVersion": 2,
-                "outcome": "generated",
-                "summary": "titles",
-                "artifacts": [{
-                    "role": "typesetting-titles",
-                    "relativePath": "outputs/titles.json"
-                }]
-            }),
-        )
-        .expect("execution result");
-        let write_titles = |titles: Vec<Value>| {
-            fs::write(
-                workspace.join("outputs/titles.json"),
-                serde_json::to_vec(&json!({ "titles": titles })).expect("serialize titles"),
-            )
-            .expect("title artifact");
-        };
-
-        write_titles(
-            (1..=10)
-                .map(|index| json!(format!("Candidate {index}")))
-                .collect(),
-        );
-        let plan = build_typesetting_title_output_plan(
-            &paths,
-            &task,
-            &workspace,
-            "attempt:1",
-            1,
-            &json!({}),
-        )
-        .expect("valid titles");
-        assert!(matches!(
-            &plan.actions[0],
-            TaskOutputAction::PrepareTypesettingTitles { titles, .. } if titles.len() == 10
-        ));
-
-        write_titles(
-            (1..=9)
-                .map(|index| json!(format!("Candidate {index}")))
-                .collect(),
-        );
-        assert!(build_typesetting_title_output_plan(
-            &paths,
-            &task,
-            &workspace,
-            "attempt:1",
-            1,
-            &json!({}),
-        )
-        .is_err());
-
-        let mut duplicates = (1..=10)
-            .map(|index| json!(format!("Candidate {index}")))
-            .collect::<Vec<_>>();
-        duplicates[9] = json!("candidate 1");
-        write_titles(duplicates);
-        assert!(build_typesetting_title_output_plan(
-            &paths,
-            &task,
-            &workspace,
-            "attempt:1",
-            1,
-            &json!({}),
-        )
-        .is_err());
-
-        let mut existing = (1..=10)
-            .map(|index| json!(format!("Candidate {index}")))
-            .collect::<Vec<_>>();
-        existing[0] = json!(" existing TITLE ");
-        write_titles(existing);
-        assert!(build_typesetting_title_output_plan(
-            &paths,
-            &task,
-            &workspace,
-            "attempt:1",
-            1,
-            &json!({}),
-        )
-        .is_err());
-    }
-}
+include!("result_validation_tests.rs");

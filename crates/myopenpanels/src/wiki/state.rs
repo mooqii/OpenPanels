@@ -33,12 +33,13 @@ pub(super) fn get_wiki_bootstrap(
         &bootstrap.project.id,
         &bootstrap.panel.id,
     )?;
-    Ok(WikiBootstrapValue {
+    let wiki = WikiBootstrapValue {
         project: bootstrap.project,
         panel: bootstrap.panel,
         state,
         tasks,
-    })
+    };
+    Ok(wiki)
 }
 
 pub(super) fn get_wiki_target(
@@ -75,12 +76,13 @@ pub(super) fn get_wiki_target(
         })?;
     let tasks = read_tasks(&storage, project_id, panel_id)?;
     ensure_default_wiki_files(paths, project_id, panel_id, &state)?;
-    Ok(WikiBootstrapValue {
+    let wiki = WikiBootstrapValue {
         project,
         panel,
         state,
         tasks,
-    })
+    };
+    Ok(wiki)
 }
 
 pub(super) fn get_wiki_task_target(
@@ -103,8 +105,7 @@ pub(super) fn save_wiki_state(
 ) -> Result<(), CliError> {
     let storage = Storage::open(paths)?;
     storage.upsert_tasks(&wiki.project.id, &wiki.panel.id, "wiki", &wiki.tasks)?;
-    let mut persisted_state = wiki.state.clone();
-    persisted_state["schemaVersion"] = json!(4);
+    let persisted_state = wiki.state.clone();
     storage.write_panel_state(&wiki.project.id, &wiki.panel.id, &persisted_state)?;
     Ok(())
 }
@@ -210,16 +211,16 @@ mod tests {
             b"# Raw content",
         )
         .expect("raw document");
-        let generated = crate::wiki::create_generated_document(
+        let my_document = crate::wiki::create_my_document(
             &paths,
-            "generated.md",
-            Some("Generated"),
+            "my-document.md",
+            Some("My Document"),
             Some("text/markdown"),
             None,
             None,
-            b"# Generated content",
+            b"# My Document content",
         )
-        .expect("generated document");
+        .expect("My Document");
         ensure_project_bootstrap(
             &paths,
             BootstrapRequest {
@@ -231,15 +232,17 @@ mod tests {
         .expect("typesetting focus");
 
         let raw_id = raw["document"]["id"].as_str().expect("raw id");
-        let generated_id = generated["document"]["id"].as_str().expect("generated id");
+        let my_document_id = my_document["document"]["id"]
+            .as_str()
+            .expect("My Document id");
         assert_eq!(
             crate::wiki::read_markdown(&paths, raw_id).expect("read raw")["markdown"],
             "# Raw content"
         );
         assert_eq!(
-            crate::wiki::read_generated_document(&paths, generated_id).expect("read generated")
-                ["content"],
-            "# Generated content"
+            crate::wiki::read_my_document(&paths, my_document_id)
+                .expect("read My Document")["content"],
+            "# My Document content"
         );
         assert_eq!(
             read_project_bootstrap(&paths, BootstrapRequest::new())
@@ -309,7 +312,7 @@ pub(super) fn create_wiki_task(
         "mutationKey": mutation_key,
         "mutationSequence": mutation_sequence,
         "attempt": 0,
-        "maxAttempts": 8,
+        "attemptLimit": crate::tasks::TASK_EXECUTION_LIMIT,
         "leaseOwner": null,
         "leaseExpiresAt": null,
         "lastHeartbeatAt": null,
@@ -439,12 +442,12 @@ pub(super) fn find_document_mut<'a>(
         .ok_or_else(|| CliError::new(format!("Wiki raw document not found: {document_id}")))
 }
 
-pub(super) fn find_generated_document<'a>(
+pub(super) fn find_my_document<'a>(
     state: &'a Value,
     document_id: &str,
 ) -> Result<&'a Value, CliError> {
     state
-        .get("generatedDocuments")
+        .get("myDocuments")
         .and_then(Value::as_array)
         .and_then(|documents| {
             documents
@@ -454,22 +457,22 @@ pub(super) fn find_generated_document<'a>(
         .ok_or_else(|| {
             CliError::with_code(
                 "not_found",
-                format!("Wiki generated document not found: {document_id}"),
+                format!("Wiki My Document not found: {document_id}"),
             )
         })
 }
 
-pub(super) fn find_generated_document_mut<'a>(
+pub(super) fn find_my_document_mut<'a>(
     state: &'a mut Value,
     document_id: &str,
 ) -> Result<&'a mut Value, CliError> {
-    state_array_mut(state, "generatedDocuments")?
+    state_array_mut(state, "myDocuments")?
         .iter_mut()
         .find(|document| document.get("id").and_then(Value::as_str) == Some(document_id))
         .ok_or_else(|| {
             CliError::with_code(
                 "not_found",
-                format!("Wiki generated document not found: {document_id}"),
+                format!("Wiki My Document not found: {document_id}"),
             )
         })
 }
@@ -478,21 +481,28 @@ pub(super) fn resolve_wiki_space(
     state: &Value,
     wiki_space_id: Option<&str>,
 ) -> Result<WikiSpaceValue, CliError> {
-    let requested =
-        wiki_space_id.or_else(|| state.get("activeWikiSpaceId").and_then(Value::as_str));
     let spaces = state
         .get("wikiSpaces")
         .and_then(Value::as_array)
         .ok_or_else(|| CliError::new("Wiki space not found"))?;
-    let value = requested
-        .and_then(|id| {
-            spaces
-                .iter()
-                .find(|space| space.get("id").and_then(Value::as_str) == Some(id))
-        })
-        .or_else(|| spaces.first())
-        .ok_or_else(|| CliError::new("Wiki space not found"))?
-        .clone();
+    let value = if let Some(requested) = wiki_space_id {
+        spaces
+            .iter()
+            .find(|space| space.get("id").and_then(Value::as_str) == Some(requested))
+            .ok_or_else(|| CliError::new(format!("Wiki space not found: {requested}")))?
+    } else {
+        state
+            .get("activeWikiSpaceId")
+            .and_then(Value::as_str)
+            .and_then(|id| {
+                spaces
+                    .iter()
+                    .find(|space| space.get("id").and_then(Value::as_str) == Some(id))
+            })
+            .or_else(|| spaces.first())
+            .ok_or_else(|| CliError::new("Wiki space not found"))?
+    }
+    .clone();
     let id = value
         .get("id")
         .and_then(Value::as_str)

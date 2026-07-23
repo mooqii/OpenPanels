@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  myDocumentOriginalUrl,
   originalPreviewKind,
   tryOpenBrowserWindow,
-  wikiGeneratedOriginalUrl,
 } from "./api"
 
-describe("wikiGeneratedOriginalUrl", () => {
+describe("myDocumentOriginalUrl", () => {
   it("targets the immutable imported source", () => {
     expect(
-      wikiGeneratedOriginalUrl("http://localhost:43217", {
-        id: "generated:document/1",
+      myDocumentOriginalUrl("http://localhost:43217", {
+        id: "my-document:document/1",
       })
     ).toBe(
-      "http://localhost:43217/api/wiki/generated-documents/generated%3Adocument%2F1/original"
+      "http://localhost:43217/api/my-documents/my-document%3Adocument%2F1/original"
     )
   })
 })

@@ -838,9 +838,6 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       projects={projects}
     />
   )
-  const typesettingPanelSnapshot = appState.panels.find(
-    ({ panel }) => panel.kind === "typesetting"
-  )
 
   return (
     <main
@@ -877,7 +874,6 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             state={typesettingStateFromAppState(appState)}
             tasks={appState.tasks ?? []}
             transport={transport}
-            wiki={wikiStateFromAppState(appState)}
           />
         ) : appState.activePanelKind === "publishing" ? (
           <PublishingPanel
@@ -887,15 +883,12 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             onOpenAgentTasks={(taskIds) => openAgentTaskList("all", taskIds)}
             onOpenManualTask={manualTaskInstructions.open}
             onStateSaved={handlePublishingStateSaved}
-            onTypesettingStateSaved={handleTypesettingStateSaved}
+            panelId={appState.panel.id}
             projectId={appState.project.id}
             skillsRevision={skillManager.skillsRevision}
             state={publishingStateFromAppState(appState)}
             tasks={appState.tasks ?? []}
             transport={transport}
-            typesetting={typesettingStateFromAppState(appState)}
-            typesettingPanelId={typesettingPanelSnapshot?.panel.id ?? ""}
-            typesettingRevision={typesettingRevisionFromAppState(appState)}
           />
         ) : (
           <WikiPanel

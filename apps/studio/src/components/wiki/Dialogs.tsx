@@ -293,7 +293,7 @@ function buildSkillFileTree(files: SkillTextFile[]): SkillFileTreeNode[] {
   return root
 }
 
-export function GeneratedDocumentDialog({
+export function MyDocumentDialog({
   closeLabel,
   content,
   onClose,

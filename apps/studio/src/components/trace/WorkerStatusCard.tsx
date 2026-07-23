@@ -216,7 +216,7 @@ export function WorkerStatusCard({
                     {t`Send instruction manually`}
                   </ListBox.Item>
                 ) : (
-                  [1, 2, 3, 4, 5].map((count) => (
+                  [1, 2, 3, 4].map((count) => (
                     <ListBox.Item
                       id={String(count)}
                       key={count}

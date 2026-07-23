@@ -17,6 +17,7 @@
       "**/vite.config.ts",
       "**/scripts/**/*",
       "!**/.myopenpanels/**/*",
+      "!**/.myopenpanels.pre-v1-*/**/*",
       "!**/dist/**/*"
     ]
   },

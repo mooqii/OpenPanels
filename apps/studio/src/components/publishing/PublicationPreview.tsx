@@ -1,5 +1,5 @@
-import { Button, Tag, TagGroup } from "@heroui/react"
-import { AlertTriangle, PanelLeft, Pencil } from "lucide-react"
+import { Button, Dropdown, Label, Tag, TagGroup } from "@heroui/react"
+import { AlertTriangle, ChevronDown, PanelLeft, Pencil } from "lucide-react"
 import type { ReactNode } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiUrl } from "../../lib/api"
@@ -7,12 +7,17 @@ import {
   publishingSourceHasContent,
   typesettingContentToPlainText,
 } from "../../lib/publishing"
+import {
+  selectedPublicationTitleId,
+  typesettingPublicationTitles,
+} from "../../lib/typesetting"
 import type { MyOpenPanelsTransport, TypesettingPublication } from "../../types"
 
 export function PublicationPreview({
   className = "",
   onEdit,
   onOpenSources,
+  onSelectTitle,
   publication,
   modeHeader,
   showHeader = true,
@@ -21,6 +26,7 @@ export function PublicationPreview({
   className?: string
   onEdit: () => void
   onOpenSources: () => void
+  onSelectTitle?: (titleId: string) => void
   publication: TypesettingPublication
   modeHeader?: ReactNode
   showHeader?: boolean
@@ -32,6 +38,8 @@ export function PublicationPreview({
     bodyText,
     publication.covers.length
   )
+  const titleOptions = typesettingPublicationTitles(publication)
+  const selectedTitleId = selectedPublicationTitleId(publication)
 
   return (
     <main
@@ -73,7 +81,47 @@ export function PublicationPreview({
         ))}
       </div>
       <article className="op-publishing-note-preview">
-        <h1>{publication.title || t`Untitled`}</h1>
+        <div className="op-publishing-note-preview__title-row">
+          <h1>{publication.title || t`Untitled`}</h1>
+          {onSelectTitle && titleOptions.length > 1 ? (
+            <Dropdown>
+              <Button
+                aria-label={t`Expand titles`}
+                className="op-publishing-note-preview__title-button"
+                size="sm"
+                variant="tertiary"
+              >
+                {titleOptions.length}
+                <ChevronDown size={14} />
+              </Button>
+              <Dropdown.Popover
+                className="op-publishing-note-preview__title-popover"
+                placement="bottom end"
+              >
+                <Dropdown.Menu
+                  aria-label={t`Titles`}
+                  onAction={(key) => onSelectTitle(String(key))}
+                  selectedKeys={[selectedTitleId]}
+                  selectionMode="single"
+                >
+                  {titleOptions.map((title) => {
+                    const label = title.value.trim() || t`Untitled publication`
+                    return (
+                      <Dropdown.Item
+                        id={title.id}
+                        key={title.id}
+                        textValue={label}
+                      >
+                        <Dropdown.ItemIndicator />
+                        <Label>{label}</Label>
+                      </Dropdown.Item>
+                    )
+                  })}
+                </Dropdown.Menu>
+              </Dropdown.Popover>
+            </Dropdown>
+          ) : null}
+        </div>
         {(publication.tags ?? []).length > 0 ? (
           <TagGroup
             aria-label={t`Tags`}

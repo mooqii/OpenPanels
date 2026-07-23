@@ -1,10 +1,6 @@
-const TASK_HANDOFF_VERSION: u32 = 1;
-const TASK_HANDOFF_CONTROL_SCHEMA_VERSION: u32 = 2;
-
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TaskHandoffControl {
-    schema_version: u32,
     handoff_id: String,
     target_id: String,
     project_id: String,
@@ -54,7 +50,6 @@ pub fn start_task_handoff(
             project_id: Some(&project_id),
             capabilities,
             priority: 0,
-            protocol_version: crate::content::EXECUTION_PROTOCOL_VERSION,
             max_concurrency: 1,
             model_gateway_connection_id: None,
         },
@@ -88,7 +83,6 @@ pub fn heartbeat_task_handoff(
     let task = heartbeat_task(paths, &control.task_id, &control.lease_token)?;
     heartbeat_target(paths, &control.target_id)?;
     Ok(json!({
-        "taskHandoffVersion": TASK_HANDOFF_VERSION,
         "handoffId": handoff_id,
         "task": task.get("task"),
     }))
@@ -174,7 +168,6 @@ pub fn stop_task_handoff(
         }
     }
     Ok(json!({
-        "taskHandoffVersion": TASK_HANDOFF_VERSION,
         "handoffId": handoff_id,
         "scope": control.scope,
         "scopeState": "stopped",
@@ -279,7 +272,6 @@ pub fn execute_task_handoff_command(
     }
     let result = serde_json::from_str::<Value>(&stdout).unwrap_or_else(|_| json!(stdout));
     Ok(json!({
-        "taskHandoffVersion": TASK_HANDOFF_VERSION,
         "handoffId": handoff_id,
         "commandIntent": intent,
         "result": result,
@@ -327,7 +319,6 @@ fn advance_task_handoff(
             .ok_or_else(|| CliError::new("Claimed Task scope Project is missing."))?
             .to_owned();
         let control = TaskHandoffControl {
-            schema_version: TASK_HANDOFF_CONTROL_SCHEMA_VERSION,
             handoff_id: handoff_id.to_owned(),
             target_id: target_id.to_owned(),
             project_id,
@@ -356,7 +347,6 @@ fn advance_task_handoff(
         let prompt =
             crate::bridge::render_task_handoff_prompt(&prepared.bundle, handoff_id, scope_kind);
         let mut payload = scope_summary(&claimed);
-        payload["taskHandoffVersion"] = json!(TASK_HANDOFF_VERSION);
         payload["handoff"] = json!({
             "id": handoff_id,
             "targetId": target_id,
@@ -401,7 +391,6 @@ fn task_handoff_broker_url(paths: &MyOpenPanelsPaths) -> Result<String, CliError
 
 fn terminal_handoff_payload(scope: &Value, handoff_id: Option<&str>) -> Value {
     let mut payload = scope_summary(scope);
-    payload["taskHandoffVersion"] = json!(TASK_HANDOFF_VERSION);
     payload["handoff"] = handoff_id.map_or(Value::Null, |id| {
         json!({ "id": id, "state": payload.get("scopeState") })
     });
@@ -458,9 +447,9 @@ fn handoff_command_intent(command: &[String]) -> Option<&'static str> {
         [domain, resource, action, ..] if domain == "wiki" && resource == "page" && action == "read" => Some("wiki.page.read"),
         [domain, resource, action, ..] if domain == "wiki" && resource == "page" && action == "create" => Some("wiki.page.create"),
         [domain, resource, action, ..] if domain == "wiki" && resource == "page" && action == "update" => Some("wiki.page.update"),
-        [domain, action, ..] if domain == "writing" && action == "generate" => Some("writing.generate"),
+        [domain, action, ..] if domain == "writing" && action == "write" => Some("writing.write"),
         [domain, resource, action, ..] if domain == "writing" && resource == "skill" && action == "install" => Some("writing.skill.install"),
-        [domain, action, ..] if domain == "publishing" && action == "checkpoint" => Some("publishing.checkpoint"),
+        [domain, action, ..] if domain == "release" && action == "checkpoint" => Some("release.checkpoint"),
         [domain, action, ..] if domain == "operation" && action == "complete" => Some("operation.complete"),
         _ => None,
     }
@@ -634,9 +623,7 @@ fn read_handoff_control(
         }
     })?;
     let control: TaskHandoffControl = serde_json::from_str(&raw).map_err(to_cli_error)?;
-    if control.schema_version != TASK_HANDOFF_CONTROL_SCHEMA_VERSION
-        || control.handoff_id != handoff_id
-    {
+    if control.handoff_id != handoff_id {
         return Err(CliError::with_code(
             "task_handoff_invalid",
             "Task Handoff control is invalid or unsupported.",

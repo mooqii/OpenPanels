@@ -57,7 +57,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
     let Ok(envelope) = serde_json::from_str::<Value>(envelope_source) else {
         return (code, stdout, stderr);
     };
-    if envelope.get("schemaVersion").is_none() {
+    if envelope.get("ok").is_none() {
         return (code, stdout, stderr);
     }
     if envelope["ok"].as_bool() == Some(true) {
@@ -101,17 +101,21 @@ fn update_task_in_panel_state(storage_dir: &Path, task_id: &str, fields: &[(&str
         let column = match *key {
             "leaseOwner" => "lease_owner",
             "leaseExpiresAt" => "lease_expires_at",
-            "retryAfter" => "retry_after",
+            "retryAfter" => "available_at",
             "status" => "status",
-            "attempt" => "attempts",
-            "maxAttempts" => "max_attempts",
+            "attempt" => "attempt_count",
+            "attemptLimit" => continue,
             _ => panic!("unsupported task field: {key}"),
         };
         let sql = format!("UPDATE tasks SET {column} = ? WHERE id = ?");
-        if matches!(*key, "attempt" | "maxAttempts") {
+        if *key == "attempt" {
             connection
                 .execute(&sql, params![value.as_i64(), task_id])
                 .expect("update numeric task field");
+        } else if *key == "retryAfter" && value.is_null() {
+            connection
+                .execute(&sql, params![crate::control::now_iso(), task_id])
+                .expect("make task immediately available");
         } else {
             connection
                 .execute(&sql, params![value.as_str(), task_id])
@@ -124,7 +128,7 @@ fn update_wiki_state_field(storage_dir: &Path, key: &str, value: Value) {
     let connection = Connection::open(storage_dir.join("main.sqlite3")).expect("db");
     let raw: String = connection
         .query_row(
-            "SELECT state_json FROM panel_states WHERE state_json LIKE '%\"wikiSpaces\"%' LIMIT 1",
+            "SELECT ui_state_json FROM panels WHERE kind = 'wiki' LIMIT 1",
             [],
             |row| row.get(0),
         )
@@ -136,7 +140,7 @@ fn update_wiki_state_field(storage_dir: &Path, key: &str, value: Value) {
         .insert(key.to_owned(), value);
     connection
         .execute(
-            "UPDATE panel_states SET state_json = ? WHERE state_json LIKE '%\"wikiSpaces\"%'",
+            "UPDATE panels SET ui_state_json = ? WHERE kind = 'wiki'",
             [serde_json::to_string(&state).expect("state string")],
         )
         .expect("update wiki panel state");
@@ -199,16 +203,78 @@ fn create_cli_project_unacknowledged(project_dir: &Path, storage_dir: &Path) {
     assert_eq!(code, 0, "{stderr}{stdout}");
 }
 
+fn active_wiki_space_id(project_dir: &Path, storage_dir: &Path) -> String {
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    crate::wiki::wiki_context(&paths)
+        .expect("wiki context")["state"]["activeWikiSpaceId"]
+        .as_str()
+        .expect("active Wiki Space")
+        .to_owned()
+}
+
+fn seed_selection_database(
+    storage_dir: &Path,
+    project_id: &str,
+    panel_id: &str,
+    selection: Value,
+    state: Option<Value>,
+) {
+    fs::create_dir_all(storage_dir).expect("storage dir");
+    let project_dir = storage_dir.join("project");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let storage = Storage::open(&paths).expect("storage");
+    storage
+        .write_project(&crate::types::Project {
+            id: project_id.to_owned(),
+            title: "Project 1".to_owned(),
+            created_at: "2026-07-08T00:00:00.000Z".to_owned(),
+            updated_at: "2026-07-08T00:00:00.000Z".to_owned(),
+            panel_ids: vec![panel_id.to_owned()],
+        })
+        .expect("project");
+    storage
+        .write_panel(&crate::types::Panel {
+            id: panel_id.to_owned(),
+            project_id: project_id.to_owned(),
+            kind: crate::types::PanelKind::Canvas,
+            title: "Design canvas".to_owned(),
+            created_at: "2026-07-08T00:00:00.000Z".to_owned(),
+            updated_at: "2026-07-08T00:00:00.000Z".to_owned(),
+            state_ref: None,
+        })
+        .expect("panel");
+    if let Some(state) = state {
+        storage
+            .write_panel_state(project_id, panel_id, &state)
+            .expect("state");
+    }
+    storage
+        .write_panel_selection(project_id, panel_id, &selection)
+        .expect("selection");
+}
+
+fn tiny_png() -> Vec<u8> {
+    base64::engine::general_purpose::STANDARD
+        .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+        .expect("tiny png")
+}
+
 include!("tests/bootstrap_and_parsing.rs");
 include!("tests/bootstrap_procedure_blockers.rs");
-include!("tests/skill_aliases.rs");
-include!("tests/workflow_runs.rs");
 include!("tests/task_routing.rs");
 include!("tests/wiki_generation.rs");
 include!("tests/project_and_selection.rs");
 include!("tests/recovery_and_dispatch.rs");
-include!("tests/content_broker.rs");
-include!("tests/writing_and_wiki.rs");
-include!("tests/task_scopes.rs");
-include!("tests/task_publishing_lifecycle.rs");
-include!("tests/typesetting_titles.rs");
+include!("tests/database_refactor.rs");
+include!("tests/publication_titles.rs");

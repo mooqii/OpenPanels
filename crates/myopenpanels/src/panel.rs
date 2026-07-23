@@ -220,8 +220,8 @@ fn wiki_selection(
         .get("isExplicitSelection")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let generated_count = value
-        .get("selectedGeneratedDocuments")
+    let my_document_count = value
+        .get("selectedMyDocuments")
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
@@ -232,7 +232,7 @@ fn wiki_selection(
         is_explicit,
         updated_at: selection.get("updatedAt").cloned(),
         summary: json!({
-            "generatedDocumentCount": generated_count,
+            "myDocumentCount": my_document_count,
         }),
         value,
         actions: json!({ "required": [], "suggested": suggested_actions }),
@@ -245,8 +245,8 @@ fn writing_selection(
     focus: Value,
 ) -> Result<PanelSelectionEnvelope, CliError> {
     let value = crate::writing::panel_selection(paths, bootstrap)?;
-    let generated_count = value
-        .get("selectedGeneratedDocumentIds")
+    let my_document_count = value
+        .get("selectedMyDocumentIds")
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
@@ -258,10 +258,10 @@ fn writing_selection(
         focus,
         supported: true,
         selection_kind: Some("writing.context".to_owned()),
-        is_explicit: wiki_selected || generated_count > 0,
+        is_explicit: wiki_selected || my_document_count > 0,
         updated_at: value.get("updatedAt").cloned(),
         summary: json!({
-            "generatedDocumentCount": generated_count,
+            "myDocumentCount": my_document_count,
             "wikiSelected": wiki_selected,
         }),
         value,
@@ -269,7 +269,7 @@ fn writing_selection(
             "required": [],
             "suggested": panel_skill_actions(
                 crate::agent::PANELS_SKILL_ID,
-                "The user request targets Writing context or document generation.",
+                "The user request targets Writing context or My Document writing.",
             ),
         }),
     })
@@ -377,7 +377,7 @@ fn wiki_context(bootstrap: &ProjectBootstrap) -> Value {
         "revision": bootstrap.revision,
         "activeWikiSpaceId": active_space_id,
         "rawDocumentCount": array_len(&bootstrap.state, "rawDocuments"),
-        "generatedDocumentCount": array_len(&bootstrap.state, "generatedDocuments"),
+        "myDocumentCount": array_len(&bootstrap.state, "myDocuments"),
         "taskCount": array_len(&bootstrap.state, "tasks"),
         "pageCount": page_count,
     })

@@ -15,7 +15,6 @@ const DEFAULT_PANEL_KINDS: &[PanelKind] = &[
     PanelKind::Publishing,
 ];
 const DEFAULT_ACTIVE_PANEL_KIND: PanelKind = PanelKind::Wiki;
-const DEFAULT_WIKI_SPACE_ID: &str = "wiki:default";
 const DEFAULT_WRITING_SKILL_ID: &str = "writing-default";
 
 pub struct BootstrapRequest {
@@ -307,7 +306,6 @@ pub fn open_runtime_panel(
     paths: &MyOpenPanelsPaths,
     project_id: &str,
     kind: PanelKind,
-    title: Option<&str>,
     initial_state: Option<Value>,
 ) -> Result<Panel, CliError> {
     let storage = Storage::open(paths)?;
@@ -321,10 +319,7 @@ pub fn open_runtime_panel(
         id: create_myopenpanels_id("panel"),
         project_id: project.id.clone(),
         kind,
-        title: title
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| value.trim().to_owned())
-            .unwrap_or_else(|| initial_panel_title(kind).to_owned()),
+        title: kind.default_title().to_owned(),
         created_at: timestamp.clone(),
         updated_at: timestamp.clone(),
         state_ref: None,
@@ -485,7 +480,7 @@ fn ensure_panel_for_project(
         id: create_myopenpanels_id("panel"),
         project_id: project.id.clone(),
         kind,
-        title: initial_panel_title(kind).to_owned(),
+        title: kind.default_title().to_owned(),
         created_at: timestamp.clone(),
         updated_at: timestamp.clone(),
         state_ref: None,
@@ -557,25 +552,17 @@ fn resolve_publishing_state(state: Option<Value>) -> Result<PanelStateResolution
             changed: true,
         });
     };
-    match state.get("schemaVersion").and_then(Value::as_i64) {
-        Some(1) if state.as_object().is_some() => {
-            let normalized = crate::publishing::normalize_state(state.clone());
-            if !crate::publishing::validate_state(&normalized) {
-                return Err(CliError::new("Malformed publishing panel state."));
-            }
-            Ok(PanelStateResolution {
-                changed: normalized != state,
-                state: normalized,
-            })
-        }
-        Some(1) => Err(CliError::new("Malformed publishing panel state.")),
-        Some(version) => Err(CliError::new(format!(
-            "Unsupported future publishing panel state schemaVersion: {version}"
-        ))),
-        None => Err(CliError::new(
-            "Malformed publishing panel state: missing schemaVersion.",
-        )),
+    if !state.is_object() {
+        return Err(CliError::new("Malformed publishing panel state."));
     }
+    let normalized = crate::release::normalize_state(state.clone());
+    if !crate::release::validate_state(&normalized) {
+        return Err(CliError::new("Malformed publishing panel state."));
+    }
+    Ok(PanelStateResolution {
+        changed: normalized != state,
+        state: normalized,
+    })
 }
 
 fn resolve_typesetting_state(state: Option<Value>) -> Result<PanelStateResolution, CliError> {
@@ -585,56 +572,21 @@ fn resolve_typesetting_state(state: Option<Value>) -> Result<PanelStateResolutio
             changed: true,
         });
     };
-    match state.get("schemaVersion").and_then(Value::as_i64) {
-        Some(1) if is_typesetting_state_v1(&state) => Ok(PanelStateResolution {
-            state: migrate_typesetting_state_v1(state),
-            changed: true,
-        }),
-        Some(1) => Err(CliError::new("Malformed typesetting panel state.")),
-        Some(2) if is_typesetting_state_v2(&state) => Ok(PanelStateResolution {
+    if is_typesetting_state(&state) {
+        Ok(PanelStateResolution {
             state,
             changed: false,
-        }),
-        Some(2) => Err(CliError::new("Malformed typesetting panel state.")),
-        Some(version) => Err(CliError::new(format!(
-            "Unsupported future typesetting panel state schemaVersion: {version}"
-        ))),
-        None => Err(CliError::new(
-            "Malformed typesetting panel state: missing schemaVersion.",
-        )),
+        })
+    } else {
+        Err(CliError::new("Malformed typesetting panel state."))
     }
 }
 
-fn migrate_typesetting_state_v1(mut state: Value) -> Value {
-    state["schemaVersion"] = json!(2);
-    for cover in state
-        .get_mut("publications")
-        .and_then(Value::as_array_mut)
-        .into_iter()
-        .flatten()
-        .filter_map(|publication| publication.get_mut("covers").and_then(Value::as_array_mut))
-        .flatten()
-    {
-        cover["source"] = json!({
-            "kind": "canvas",
-            "assetRef": cover.get("sourceAssetRef").cloned().unwrap_or(Value::Null),
-            "projectId": cover.get("sourceProjectId").cloned().unwrap_or(Value::Null),
-            "panelId": cover.get("sourceCanvasPanelId").cloned().unwrap_or(Value::Null),
-        });
-        if let Some(object) = cover.as_object_mut() {
-            object.remove("sourceAssetRef");
-            object.remove("sourceProjectId");
-            object.remove("sourceCanvasPanelId");
-        }
-    }
-    state
-}
-
-fn is_typesetting_state_v2(state: &Value) -> bool {
+fn is_typesetting_state(state: &Value) -> bool {
     state
         .get("publications")
         .and_then(Value::as_array)
-        .is_some_and(|publications| publications.iter().all(is_typesetting_publication_v2))
+        .is_some_and(|publications| publications.iter().all(is_typesetting_publication))
 }
 
 pub(crate) fn validate_typesetting_state(state: &Value) -> Result<(), CliError> {
@@ -643,14 +595,7 @@ pub(crate) fn validate_typesetting_state(state: &Value) -> Result<(), CliError> 
         .map_err(|error| CliError::with_code("invalid_target", error.message()))
 }
 
-fn is_typesetting_state_v1(state: &Value) -> bool {
-    state
-        .get("publications")
-        .and_then(Value::as_array)
-        .is_some_and(|publications| publications.iter().all(is_typesetting_publication_v1))
-}
-
-fn is_typesetting_publication_v1(publication: &Value) -> bool {
+fn is_typesetting_publication(publication: &Value) -> bool {
     publication.get("id").is_some_and(Value::is_string)
         && publication.get("title").is_some_and(Value::is_string)
         && publication_titles_are_valid(publication)
@@ -659,27 +604,11 @@ fn is_typesetting_publication_v1(publication: &Value) -> bool {
         && publication.get("updatedAt").is_some_and(Value::is_string)
         && publication
             .get("content")
-            .is_some_and(is_typesetting_document_v1)
+            .is_some_and(is_typesetting_document)
         && publication
             .get("covers")
             .and_then(Value::as_array)
-            .is_some_and(|covers| covers.iter().all(is_typesetting_image_v1))
-}
-
-fn is_typesetting_publication_v2(publication: &Value) -> bool {
-    publication.get("id").is_some_and(Value::is_string)
-        && publication.get("title").is_some_and(Value::is_string)
-        && publication_titles_are_valid(publication)
-        && publication_tags_are_valid(publication)
-        && publication.get("createdAt").is_some_and(Value::is_string)
-        && publication.get("updatedAt").is_some_and(Value::is_string)
-        && publication
-            .get("content")
-            .is_some_and(is_typesetting_document_v1)
-        && publication
-            .get("covers")
-            .and_then(Value::as_array)
-            .is_some_and(|covers| covers.iter().all(is_typesetting_image_v2))
+            .is_some_and(|covers| covers.iter().all(is_typesetting_image))
 }
 
 fn publication_titles_are_valid(publication: &Value) -> bool {
@@ -711,12 +640,12 @@ fn publication_tags_are_valid(publication: &Value) -> bool {
     })
 }
 
-fn is_typesetting_document_v1(content: &Value) -> bool {
+fn is_typesetting_document(content: &Value) -> bool {
     content.get("type").and_then(Value::as_str) == Some("doc")
-        && is_typesetting_document_node_v1(content)
+        && is_typesetting_document_node(content)
 }
 
-fn is_typesetting_document_node_v1(node: &Value) -> bool {
+fn is_typesetting_document_node(node: &Value) -> bool {
     node.as_object().is_some()
         && node.get("type").is_some_and(Value::is_string)
         && node.get("text").map_or(true, Value::is_string)
@@ -724,7 +653,7 @@ fn is_typesetting_document_node_v1(node: &Value) -> bool {
         && node.get("content").map_or(true, |content| {
             content
                 .as_array()
-                .is_some_and(|children| children.iter().all(is_typesetting_document_node_v1))
+                .is_some_and(|children| children.iter().all(is_typesetting_document_node))
         })
         && node.get("marks").map_or(true, |marks| {
             marks.as_array().is_some_and(|marks| {
@@ -737,30 +666,7 @@ fn is_typesetting_document_node_v1(node: &Value) -> bool {
         })
 }
 
-fn is_typesetting_image_v1(image: &Value) -> bool {
-    [
-        "assetRef",
-        "src",
-        "fileName",
-        "mimeType",
-        "sourceAssetRef",
-        "sourceProjectId",
-        "sourceCanvasPanelId",
-    ]
-    .iter()
-    .all(|key| image.get(key).is_some_and(Value::is_string))
-        && image
-            .get("src")
-            .and_then(Value::as_str)
-            .is_some_and(|src| src.starts_with('/'))
-        && ["width", "height"].iter().all(|key| {
-            image
-                .get(key)
-                .map_or(true, |value| value.as_f64().is_some())
-        })
-}
-
-fn is_typesetting_image_v2(image: &Value) -> bool {
+fn is_typesetting_image(image: &Value) -> bool {
     let base_valid = ["assetRef", "src", "fileName", "mimeType"]
         .iter()
         .all(|key| image.get(key).is_some_and(Value::is_string))
@@ -798,12 +704,41 @@ fn resolve_writing_state(state: Option<Value>) -> Result<PanelStateResolution, C
             changed: true,
         });
     };
-    let valid = state.get("schemaVersion").and_then(Value::as_i64) == Some(5)
-        && state.get("draft").is_some_and(Value::is_string)
-        && state.get("refinementName").is_some_and(Value::is_string)
+    let mut changed = false;
+    if state.get("mode").and_then(Value::as_str) == Some("refine") {
+        state["mode"] = json!("distill");
+        changed = true;
+    }
+    if state.get("distillationName").is_none() {
+        if let Some(value) = state.get("refinementName").cloned() {
+            state["distillationName"] = value;
+            changed = true;
+        }
+    }
+    if state.get("selectedDistillationSkillId").is_none() {
+        if let Some(value) = state.get("selectedRefinementSkillId").cloned() {
+            state["selectedDistillationSkillId"] = value;
+            changed = true;
+        }
+    }
+    if state
+        .get("selectedDistillationSkillId")
+        .and_then(Value::as_str)
+        == Some("writing-refinement-default")
+    {
+        state["selectedDistillationSkillId"] =
+            json!(crate::writing::DEFAULT_WRITING_DISTILLATION_SKILL_ID);
+        changed = true;
+    }
+    if let Some(object) = state.as_object_mut() {
+        changed |= object.remove("refinementName").is_some();
+        changed |= object.remove("selectedRefinementSkillId").is_some();
+    }
+    let valid = state.get("draft").is_some_and(Value::is_string)
+        && state.get("distillationName").is_some_and(Value::is_string)
         && matches!(
             state.get("mode").and_then(Value::as_str),
-            Some("create" | "revise" | "refine")
+            Some("create" | "revise" | "distill")
         )
         && state
             .get("selectedCreateWritingSkillIds")
@@ -811,60 +746,17 @@ fn resolve_writing_state(state: Option<Value>) -> Result<PanelStateResolution, C
             .is_some_and(|ids| ids.iter().all(Value::is_string))
         && state
             .get("selectedRevisionWritingSkillId")
-            .is_some_and(|id| id.is_null() || id.is_string());
+            .is_some_and(|id| id.is_null() || id.is_string())
+        && state.get("selectedDistillationSkillId").is_some_and(Value::is_string)
+        && state.get("createDraft").is_some_and(Value::is_string)
+        && state.get("revisionDraft").is_some_and(Value::is_string);
     if valid {
-        let mut changed = false;
-        if !state
-            .get("selectedRefinementSkillId")
-            .is_some_and(Value::is_string)
-        {
-            state["selectedRefinementSkillId"] =
-                json!(crate::writing::DEFAULT_WRITING_REFINEMENT_SKILL_ID);
-            changed = true;
-        }
-        if state
-            .get("selectedRefinementSkillId")
-            .and_then(Value::as_str)
-            == Some(crate::writing::LEGACY_WRITING_SKILL_REFINER_ID)
-        {
-            state["selectedRefinementSkillId"] =
-                json!(crate::writing::DEFAULT_WRITING_REFINEMENT_SKILL_ID);
-            changed = true;
-        }
-        let mode = state
-            .get("mode")
-            .and_then(Value::as_str)
-            .unwrap_or("create")
-            .to_owned();
-        let legacy_draft = state
-            .get("draft")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        if !state.get("createDraft").is_some_and(Value::is_string) {
-            state["createDraft"] = if mode == "revise" {
-                json!("")
-            } else {
-                json!(legacy_draft)
-            };
-            changed = true;
-        }
-        if !state.get("revisionDraft").is_some_and(Value::is_string) {
-            state["revisionDraft"] = if mode == "revise" {
-                json!(legacy_draft)
-            } else {
-                json!("")
-            };
-            changed = true;
-        }
         Ok(PanelStateResolution {
             state,
             changed,
         })
     } else {
-        Err(CliError::new(
-            "Malformed writing panel state: expected schemaVersion 5.",
-        ))
+        Err(CliError::new("Malformed writing panel state."))
     }
 }
 
@@ -875,21 +767,13 @@ fn resolve_canvas_state(state: Option<Value>) -> Result<PanelStateResolution, Cl
             changed: true,
         });
     };
-    match state
-        .get("schema")
-        .and_then(|schema| schema.get("schemaVersion"))
-        .and_then(Value::as_i64)
-    {
-        Some(1) => Ok(PanelStateResolution {
+    if state.get("store").is_some_and(Value::is_object) {
+        Ok(PanelStateResolution {
             state,
             changed: false,
-        }),
-        Some(version) => Err(CliError::new(format!(
-            "Unsupported future canvas panel state schemaVersion: {version}"
-        ))),
-        None => Err(CliError::new(
-            "Malformed canvas panel state: missing schema.schemaVersion.",
-        )),
+        })
+    } else {
+        Err(CliError::new("Malformed canvas panel state."))
     }
 }
 
@@ -899,40 +783,24 @@ fn resolve_wiki_state(
     _panel: &Panel,
     state: Option<Value>,
 ) -> Result<PanelStateResolution, CliError> {
-    let Some(mut state) = state else {
+    let Some(state) = state else {
         return Ok(PanelStateResolution {
             state: empty_wiki_state(),
             changed: true,
         });
     };
-    let valid = state.get("schemaVersion").and_then(Value::as_i64) == Some(4)
-        && state.get("rawDocuments").is_some_and(Value::is_array)
+    let valid = state.get("rawDocuments").is_some_and(Value::is_array)
         && state.get("ruleSets").is_some_and(Value::is_array)
         && state.get("wikiSpaces").is_some_and(Value::is_array)
-        && state.get("generatedDocuments").is_some_and(Value::is_array)
+        && state.get("myDocuments").is_some_and(Value::is_array)
         && state.get("tasks").is_none();
     if valid {
-        let configured_skill_id = state
-            .get("wikiAgentSkillId")
-            .and_then(Value::as_str);
-        let changed = matches!(
-            configured_skill_id,
-            Some(
-                crate::wiki::LEGACY_WIKI_AGENT_SKILL_ID
-                    | crate::wiki::LEGACY_ZH_WIKI_AGENT_SKILL_ID
-            )
-        );
-        if changed {
-            state["wikiAgentSkillId"] = json!(crate::wiki::DEFAULT_WIKI_AGENT_SKILL_ID);
-        }
         Ok(PanelStateResolution {
             state,
-            changed,
+            changed: false,
         })
     } else {
-        Err(CliError::new(
-            "Malformed wiki panel state: expected schemaVersion 4.",
-        ))
+        Err(CliError::new("Malformed wiki panel state."))
     }
 }
 
@@ -947,37 +815,31 @@ fn initial_panel_state(kind: PanelKind) -> Value {
 }
 
 fn empty_publishing_state() -> Value {
-    crate::publishing::empty_state()
+    crate::release::empty_state()
 }
 
 fn empty_typesetting_state() -> Value {
     json!({
-        "schemaVersion": 2,
         "publications": [],
     })
 }
 
 fn empty_writing_state() -> Value {
     json!({
-        "schemaVersion": 5,
         "createDraft": "",
         "draft": "",
         "mode": "create",
-        "refinementName": "",
+        "distillationName": "",
         "revisionDraft": "",
-        "targetGeneratedDocumentId": null,
+        "targetMyDocumentId": null,
         "selectedCreateWritingSkillIds": [DEFAULT_WRITING_SKILL_ID],
         "selectedRevisionWritingSkillId": DEFAULT_WRITING_SKILL_ID,
-        "selectedRefinementSkillId": crate::writing::DEFAULT_WRITING_REFINEMENT_SKILL_ID,
+        "selectedDistillationSkillId": crate::writing::DEFAULT_WRITING_DISTILLATION_SKILL_ID,
     })
 }
 
 fn empty_canvas_snapshot() -> Value {
     json!({
-        "schema": {
-            "schemaVersion": 1,
-            "recordVersions": { "page": 1, "shape": 1, "asset": 1 },
-        },
         "camera": { "x": 0, "y": 0, "zoom": 1 },
         "currentPageId": "page:main",
         "openedGroupId": null,
@@ -995,37 +857,28 @@ fn empty_canvas_snapshot() -> Value {
 
 fn empty_wiki_state() -> Value {
     let now = now_iso();
+    let wiki_space_id = create_myopenpanels_id("wiki");
+    let root_ref = format!("wikis/{wiki_space_id}");
     json!({
-        "schemaVersion": 4,
         "rawDocuments": [],
-        "generatedDocuments": [],
+        "myDocuments": [],
         "ruleSets": [],
         "wikiSpaces": [{
-            "id": DEFAULT_WIKI_SPACE_ID,
+            "id": wiki_space_id,
             "title": "Wiki",
             "ruleSetId": null,
             "ruleSetVersion": null,
-            "rootRef": "wikis/wiki:default",
+            "rootRef": root_ref,
             "pageIndex": [],
             "createdAt": now,
             "updatedAt": now,
         }],
         "activeRawDocumentId": null,
-        "activeWikiSpaceId": DEFAULT_WIKI_SPACE_ID,
+        "activeWikiSpaceId": wiki_space_id,
         "activeWikiPagePath": null,
         "wikiAgentSkillConfigured": false,
         "wikiAgentSkillId": crate::wiki::DEFAULT_WIKI_AGENT_SKILL_ID,
     })
-}
-
-fn initial_panel_title(kind: PanelKind) -> &'static str {
-    match kind {
-        PanelKind::Wiki => "文档库",
-        PanelKind::Writing => "写作",
-        PanelKind::Canvas => "Design canvas",
-        PanelKind::Typesetting => "排版",
-        PanelKind::Publishing => "发布",
-    }
 }
 
 fn next_project_title(projects: &[Project]) -> String {

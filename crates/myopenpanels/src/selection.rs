@@ -651,17 +651,7 @@ fn read_panel_state(
     project_id: &str,
     panel_id: &str,
 ) -> Result<Option<Value>, CliError> {
-    let state_json = connection
-        .query_row(
-            "SELECT state_json FROM panel_states WHERE project_id = ? AND panel_id = ?",
-            params![project_id, panel_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(to_cli_error)?;
-    state_json
-        .map(|raw| serde_json::from_str::<Value>(&raw).map_err(to_cli_error))
-        .transpose()
+    crate::storage::read_composed_panel_state(connection, project_id, panel_id)
 }
 
 fn read_panel_selection(

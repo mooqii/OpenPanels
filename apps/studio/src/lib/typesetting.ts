@@ -1,12 +1,12 @@
 import type { JSONContent } from "@tiptap/core"
 import type {
+  MyDocument,
   ProjectTask,
   TypesettingCanvasAsset,
   TypesettingPublication,
   TypesettingPublicationImage,
   TypesettingPublicationTitle,
   TypesettingState,
-  WikiGeneratedDocument,
 } from "../types"
 
 export const TYPESETTING_ASSET_DRAG_TYPE =
@@ -30,7 +30,7 @@ const TYPESETTING_COVER_IMAGE_EXTENSIONS = new Set([
 ])
 
 export function isInsertableTypesettingDocument(document: {
-  conversion?: Pick<NonNullable<WikiGeneratedDocument["conversion"]>, "status">
+  conversion?: Pick<NonNullable<MyDocument["conversion"]>, "status">
   mimeType: string
 }): boolean {
   const conversionReady =
@@ -65,14 +65,14 @@ export type TypesettingLayoutTaskDisplayStatus =
   | "failed"
   | "cancelled"
 
-export type TypesettingTitleTaskDisplayStatus =
+export type PublicationTitleTaskDisplayStatus =
   | "waiting"
   | "running"
   | "saving"
   | "failed"
   | "cancelled"
 
-export function typesettingTitleRequestPayload({
+export function publicationTitleRequestPayload({
   instruction,
   publicationId,
   requestId,
@@ -97,9 +97,9 @@ export function typesettingTitleRequestPayload({
   }
 }
 
-export function typesettingTitleTaskStatus(
+export function publicationTitleTaskStatus(
   task: ProjectTask
-): TypesettingTitleTaskDisplayStatus {
+): PublicationTitleTaskDisplayStatus {
   if (task.status === "succeeded") return "saving"
   if (task.status === "failed") return "failed"
   if (
@@ -122,7 +122,7 @@ export function typesettingTitleTaskStatus(
   return "waiting"
 }
 
-export function typesettingLayoutRequestPayload({
+export function publicationLayoutRequestPayload({
   instruction,
   publicationId,
   requestId,
@@ -147,7 +147,7 @@ export function typesettingLayoutRequestPayload({
   }
 }
 
-export function typesettingLayoutTaskStatus(
+export function publicationLayoutTaskStatus(
   task: ProjectTask
 ): TypesettingLayoutTaskDisplayStatus {
   if (task.status === "succeeded") return "completed"
@@ -173,9 +173,15 @@ export function typesettingLayoutTaskStatus(
 }
 
 export function isTypesettingLayoutTaskActive(task: ProjectTask): boolean {
-  return !["failed", "succeeded", "cancelled", "stale", "superseded"].includes(
-    task.status
-  )
+  return [
+    "queued",
+    "reserved",
+    "claimed",
+    "running",
+    "converting",
+    "indexing",
+    "cancel_requested",
+  ].includes(task.status)
 }
 
 export function latestTypesettingLayoutTask(
@@ -186,8 +192,8 @@ export function latestTypesettingLayoutTask(
     tasks
       .filter(
         (task) =>
-          task.queue === "typesetting" &&
-          task.type === "format_typesetting_content" &&
+          task.queue === "publication" &&
+          task.type === "format_publication_content" &&
           task.targetId === publicationId
       )
       .sort((left, right) =>
@@ -196,7 +202,7 @@ export function latestTypesettingLayoutTask(
   )
 }
 
-export function typesettingCoverRequestPayload({
+export function publicationCoverRequestPayload({
   instruction,
   publicationId,
   requestId,
@@ -221,7 +227,7 @@ export function typesettingCoverRequestPayload({
   }
 }
 
-export function typesettingCoverTaskStatus(
+export function publicationCoverTaskStatus(
   task: ProjectTask
 ): TypesettingCoverTaskDisplayStatus {
   if (task.status === "succeeded") return "saving"
@@ -280,7 +286,7 @@ export function typesettingPublicationTitles(
   ]
 }
 
-export function selectedTypesettingTitleId(
+export function selectedPublicationTitleId(
   publication: TypesettingPublication
 ): string {
   const titles = typesettingPublicationTitles(publication)
@@ -289,7 +295,7 @@ export function selectedTypesettingTitleId(
     : titles[0].id
 }
 
-export function selectTypesettingTitle(
+export function selectPublicationTitle(
   publication: TypesettingPublication,
   titleId: string
 ): TypesettingPublication {
@@ -304,12 +310,12 @@ export function selectTypesettingTitle(
   }
 }
 
-export function updateTypesettingTitle(
+export function updatePublicationTitle(
   publication: TypesettingPublication,
   titleId: string,
   value: string
 ): TypesettingPublication {
-  const selectedTitleId = selectedTypesettingTitleId(publication)
+  const selectedTitleId = selectedPublicationTitleId(publication)
   const titles = typesettingPublicationTitles(publication).map((title) =>
     title.id === titleId ? { ...title, value } : title
   )
@@ -321,7 +327,7 @@ export function updateTypesettingTitle(
   }
 }
 
-export function addTypesettingTitle(
+export function addPublicationTitle(
   publication: TypesettingPublication,
   title: TypesettingPublicationTitle
 ): TypesettingPublication {
@@ -334,7 +340,7 @@ export function addTypesettingTitle(
   }
 }
 
-export function removeTypesettingTitle(
+export function removePublicationTitle(
   publication: TypesettingPublication,
   titleId: string,
   replacementTitleId?: string
@@ -352,7 +358,7 @@ export function removeTypesettingTitle(
     }
   }
   const remaining = titles.filter(({ id }) => id !== titleId)
-  const currentSelectedTitleId = selectedTypesettingTitleId(publication)
+  const currentSelectedTitleId = selectedPublicationTitleId(publication)
   const selectedTitleId =
     currentSelectedTitleId === titleId
       ? remaining[Math.min(removedIndex, remaining.length - 1)].id
@@ -462,7 +468,7 @@ export function typesettingInsertPosition(
   return Math.max(0, Math.min(lastSelectionEnd ?? documentSize, documentSize))
 }
 
-export function typesettingTitleAfterDocumentInsert(
+export function publicationTitleAfterDocumentInsert(
   publicationTitle: string,
   documentTitle: string
 ): string {
@@ -588,5 +594,5 @@ export function mergeTypesettingConflict({
       publications.push(publication)
     }
   }
-  return { schemaVersion: 2, publications }
+  return { publications }
 }

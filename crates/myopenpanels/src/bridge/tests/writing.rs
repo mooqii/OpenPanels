@@ -1,5 +1,5 @@
     #[test]
-    fn writing_generation_prompt_materializes_captured_context_without_scheduler_noise() {
+    fn writing_prompt_materializes_captured_context_without_scheduler_noise() {
         let _env_lock = crate::TASK_BROKER_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -15,18 +15,19 @@
         .expect("paths");
         crate::control::ensure_project_bootstrap(&paths, crate::control::BootstrapRequest::new())
             .expect("bootstrap");
+        let wiki_space_id = active_wiki_space_id(&paths);
         let raw = crate::wiki::add_raw_document(
             &paths,
             "source.md",
             Some("Captured source"),
             Some("text/markdown"),
             "user",
-            Some("wiki:default"),
+            Some(&wiki_space_id),
             b"# Captured raw source\n",
         )
         .expect("raw document");
         let raw_id = raw["document"]["id"].as_str().expect("raw id");
-        let generated = crate::wiki::create_generated_document(
+        let my_document = crate::wiki::create_my_document(
             &paths,
             "prior.md",
             Some("Prior draft"),
@@ -35,11 +36,11 @@
             None,
             b"# Captured generated source\n",
         )
-        .expect("generated document");
-        let generated_id = generated["document"]["id"].as_str().expect("generated id");
+        .expect("My Document");
+        let my_document_id = my_document["document"]["id"].as_str().expect("My Document id");
         crate::wiki::write_page(
             &paths,
-            "wiki:default",
+            &wiki_space_id,
             "guides/reference.md",
             "# Captured Wiki page\n",
             Some("Reference"),
@@ -49,7 +50,7 @@
         crate::writing::write_selection(
             &paths,
             true,
-            &[generated_id.to_owned()],
+            &[my_document_id.to_owned()],
         )
         .expect("writing selection");
         let created = crate::writing::create_requests(
@@ -76,7 +77,7 @@
         let workspace = temp.path().join("execution");
         fs::create_dir_all(&workspace).expect("workspace");
 
-        let prompt = document_generation_task_prompt(&paths, &task, &workspace).expect("prompt");
+        let prompt = my_document_write_task_prompt(&paths, &task, &workspace).expect("prompt");
 
         assert!(prompt.contains("Write a concise report"));
         assert!(prompt.contains("Follow the user's writing instruction directly"));
@@ -84,10 +85,10 @@
         assert!(prompt.contains("# Captured raw source"));
         assert!(prompt.contains("# Captured generated source"));
         assert!(prompt.contains("guides/reference.md"));
-        assert!(!prompt.contains("writing generate --task-id"));
+        assert!(!prompt.contains("writing write --task-id"));
         assert!(!prompt.contains("operation complete --operation-id"));
         assert!(prompt.contains("outputs/document.md"));
-        assert!(prompt.contains("\"schemaVersion\": 2"));
+        assert!(!prompt.contains("schemaVersion"));
         assert!(!prompt.contains("workflow:noise"));
         assert!(!prompt.contains("writing:noise"));
         assert!(!prompt.contains("executionGeneration"));
@@ -102,8 +103,8 @@
             .join("source.md")
             .is_file());
         assert!(workspace
-            .join("inputs/generated")
-            .join(sanitize_path_part(generated_id))
+            .join("inputs/my-documents")
+            .join(sanitize_path_part(my_document_id))
             .join("content.md")
             .is_file());
         assert_eq!(
@@ -119,7 +120,7 @@
 
         crate::wiki::write_page(
             &paths,
-            "wiki:default",
+            &wiki_space_id,
             "guides/reference.md",
             "# Newer Wiki page\n",
             Some("Reference"),
@@ -127,23 +128,14 @@
         )
         .expect("update Wiki page");
         let task_id = task["id"].as_str().expect("task id");
-        crate::storage::Storage::open(&paths)
-            .expect("storage")
-            .connection()
-            .execute(
-                "UPDATE tasks SET required_protocol_version = 3 WHERE id = ?",
-                [task_id],
-            )
-            .expect("protocol");
         let target = crate::tasks::register_target(
             &paths,
             crate::tasks::TargetRegistration {
                 name: "writing-wiki-reader",
                 host: Some("test"),
                 project_id: None,
-                capabilities: vec!["writing.generateDocument".to_owned()],
+                capabilities: vec!["writing.writeMyDocument".to_owned()],
                 priority: 0,
-                protocol_version: 3,
                 max_concurrency: 1,
                 model_gateway_connection_id: None,
             },
@@ -161,7 +153,7 @@
             claim["executionToken"].as_str().expect("execution token"),
             &crate::content::ReadFileRequest {
                 resource_kind: crate::content::ResourceKind::WikiSpace.as_str().to_owned(),
-                resource_key: "wiki:default".to_owned(),
+                resource_key: wiki_space_id,
                 logical_path: "guides/reference.md".to_owned(),
             },
         )

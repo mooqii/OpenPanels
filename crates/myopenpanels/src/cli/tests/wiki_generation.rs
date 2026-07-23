@@ -5,6 +5,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let storage_dir = temp.path().join(".myopenpanels");
     fs::create_dir_all(&project_dir).expect("project dir");
     create_cli_project(&project_dir, &storage_dir);
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
 
     let (code, stdout, stderr) = run(&[
         "wiki",
@@ -23,7 +24,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "--content",
         "# Research note\n\nA useful source.",
         "--space-id",
-        "wiki:default",
+        wiki_space_id.as_str(),
         "--format",
         "json",
     ]);
@@ -31,7 +32,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let raw = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(raw["document"]["conversion"]["status"], "not_required");
     assert_eq!(
-        raw["document"]["ingestionByWikiSpace"]["wiki:default"]["status"],
+        raw["document"]["ingestionByWikiSpace"][wiki_space_id.as_str()]["status"],
         "queued"
     );
 
@@ -81,7 +82,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     update_wiki_state_field(
         &storage_dir,
         "wikiAgentSkillId",
-        json!("karpathy-llm-wiki-zh"),
+        json!("wiki-default"),
     );
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -135,7 +136,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "skill",
         "read",
         "--skill-id",
-        "myopenpanels-wiki-panel",
+        "myopenpanels-panels",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -161,22 +162,29 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         .unwrap()
         .ends_with("references/wiki-contract.md"));
 
-    let (code, _, _) = run(&[
-        "agent",
-        "skill",
-        "read",
-        "--skill-id",
+    for retired_id in [
         "wiki-panel",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--format",
-        "json",
-    ]);
-    assert_ne!(code, 0, "legacy platform Skill id must be rejected");
+        "myopenpanels-wiki-panel",
+        "karpathy-llm-wiki",
+        "karpathy-llm-wiki-zh",
+    ] {
+        let (code, _, _) = run(&[
+            "agent",
+            "skill",
+            "read",
+            "--skill-id",
+            retired_id,
+            "--project-dir",
+            project_dir.to_str().unwrap(),
+            "--storage-dir",
+            storage_dir.to_str().unwrap(),
+            "--context-id",
+            "ctx",
+            "--format",
+            "json",
+        ]);
+        assert_ne!(code, 0, "retired platform Skill id must be rejected");
+    }
 
     let (code, stdout, stderr) = run(&[
         "task",
@@ -212,10 +220,10 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     );
     assert_eq!(
         project_tasks["tasks"][0]["source"]["wikiSpaceId"],
-        "wiki:default"
+        wiki_space_id
     );
     assert_eq!(project_tasks["tasks"][0]["attempt"], 0);
-    assert_eq!(project_tasks["tasks"][0]["maxAttempts"], 8);
+    assert_eq!(project_tasks["tasks"][0]["attemptLimit"], 3);
     assert!(project_tasks["tasks"][0]["lease"]["owner"].is_null());
     assert!(project_tasks["tasks"][0]["retryAfter"].is_null());
     let (code, stdout, stderr) = run(&[
@@ -347,7 +355,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
             ("retryAfter", Value::Null),
             ("status", json!("failed")),
             ("attempt", json!(3)),
-            ("maxAttempts", json!(3)),
+            ("attemptLimit", json!(3)),
         ],
     );
     let (code, stdout, stderr) = run(&[
@@ -371,7 +379,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         &[
             ("status", json!("queued")),
             ("attempt", json!(0)),
-            ("maxAttempts", json!(3)),
+            ("attemptLimit", json!(3)),
         ],
     );
 
@@ -398,23 +406,13 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(bridge["task"]["id"], task_id);
     assert_eq!(bridge["stdout"], task_id);
     let first_lease_token = bridge["leaseToken"].as_str().unwrap();
-    let (code, _, stderr) = run(&[
-        "task",
-        "release",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        task_id,
-        "--lease-token",
-        first_lease_token,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    tasks::release_task(&paths, task_id, first_lease_token).expect("release task internally");
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -440,39 +438,8 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(timed_out_bridge["timedOut"], true);
     assert_eq!(timed_out_bridge["success"], false);
     let timeout_lease_token = timed_out_bridge["leaseToken"].as_str().unwrap();
-    let (code, _, stderr) = run(&[
-        "task",
-        "release",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        task_id,
-        "--lease-token",
-        timeout_lease_token,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-
-    let (code, _, stderr) = run(&[
-        "task",
-        "retry",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        task_id,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
+    tasks::release_task(&paths, task_id, timeout_lease_token)
+        .expect("release timed-out task internally");
 
     let (code, stdout, stderr) = run(&[
         "agent",
@@ -516,7 +483,8 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let inspected_task = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(inspected_task["task"]["id"], task_id);
     assert_eq!(inspected_task["task"]["dispatchState"], "running");
-    assert!(inspected_task["task"]["assignedTarget"].is_object());
+    assert!(inspected_task["task"]["currentRunnerKey"].is_string());
+    assert!(inspected_task["task"]["executionMethod"].is_object());
     assert!(!storage_dir
         .join("contexts")
         .join("ctx")
@@ -555,7 +523,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "skill",
         "read",
         "--skill-id",
-        "myopenpanels-wiki-panel",
+        "myopenpanels-panels",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -614,7 +582,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "--context-id",
         "ctx",
         "--space-id",
-        "wiki:default",
+        wiki_space_id.as_str(),
         "--path",
         "topics/topic.md",
         "--content-file",
@@ -625,7 +593,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     assert_eq!(code, 0, "{stderr}");
     let page = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(page["task"]["type"], "maintain_wiki");
-    assert_eq!(page["task"]["wikiSpaceId"], "wiki:default");
+    assert_eq!(page["task"]["wikiSpaceId"], wiki_space_id);
     assert_eq!(
         page["task"]["changeEvents"],
         json!([{
@@ -640,25 +608,9 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         .expect("wiki page index item");
     assert_eq!(page_index_item["wordCount"], 21);
 
-    let (code, stdout, stderr) = run(&[
-        "task",
-        "complete",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        task_id,
-        "--lease-token",
-        truncated_lease_token,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 1, "{stdout}\n{stderr}");
-    let complete = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(complete["code"], "execution_fenced");
+    let complete = tasks::complete_task(&paths, task_id, truncated_lease_token, None)
+        .expect_err("stale execution must be fenced");
+    assert_eq!(complete.code(), Some("execution_fenced"));
     let (code, stdout, stderr) = run(&[
         "task",
         "list",
@@ -678,7 +630,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let db = Connection::open(storage_dir.join("main.sqlite3")).expect("db");
     let stored_status: String = db
         .query_row(
-            "SELECT status FROM tasks WHERE id = ? AND queue = 'wiki'",
+            "SELECT status FROM tasks WHERE id = ?",
             params![task_id],
             |row| row.get(0),
         )
@@ -702,7 +654,7 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
         "--mime-type",
         "application/octet-stream",
         "--space-id",
-        "wiki:default",
+        wiki_space_id.as_str(),
         "--format",
         "json",
     ]);
@@ -710,122 +662,4 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     let binary = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(binary["document"]["conversion"]["status"], "queued");
 
-    let convert_task_id = binary["document"]["conversion"]["taskId"]
-        .as_str()
-        .expect("task id");
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "target",
-        "register",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--name",
-        "wiki-converter",
-        "--capability",
-        "wiki.*",
-        "--priority",
-        "100",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let target = serde_json::from_str::<Value>(&stdout).expect("json");
-    let target_id = target["target"]["id"].as_str().expect("target id");
-    let (code, stdout, stderr) = run(&[
-        "task",
-        "claim",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        convert_task_id,
-        "--target-id",
-        target_id,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}\n{stdout}");
-    let conversion_claim = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(conversion_claim["task"]["status"], "running");
-    let conversion_lease = conversion_claim["leaseToken"]
-        .as_str()
-        .expect("lease token");
-
-    let converted_file = project_dir.join("converted.md");
-    fs::write(&converted_file, "# Archive\n\nConverted.").expect("converted");
-    let (code, stdout, stderr) = run(&[
-        "wiki",
-        "raw",
-        "update",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--raw-document-id",
-        binary["document"]["id"].as_str().unwrap(),
-        "--content-file",
-        converted_file.to_str().unwrap(),
-        "--task-id",
-        convert_task_id,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stdout}\n{stderr}");
-    let markdown = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert!(markdown["task"].is_null());
-
-    let (code, stdout, stderr) = run(&[
-        "task",
-        "complete",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        convert_task_id,
-        "--lease-token",
-        conversion_lease,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let conversion_complete = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(conversion_complete["task"]["status"], "succeeded");
-
-    let (code, stdout, stderr) = run(&[
-        "panel",
-        "read",
-        "--detail",
-        "full",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let conversion_state = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(
-        conversion_state["state"]["rawDocuments"][0]["conversion"]["status"],
-        "ready"
-    );
-    assert_eq!(
-        conversion_state["state"]["rawDocuments"][0]["ingestionByWikiSpace"]["wiki:default"]
-            ["status"],
-        "queued"
-    );
 }

@@ -14,6 +14,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "check:release": "node scripts/check-release-constraints.mjs",
+    "sync:capabilities": "node scripts/sync-capability-projections.mjs",
     "package:release:cli": "node scripts/package-myopenpanels.mjs",
     "manifest:release:cli": "node scripts/generate-myopenpanels-release-manifest.mjs",
     "check": "pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"

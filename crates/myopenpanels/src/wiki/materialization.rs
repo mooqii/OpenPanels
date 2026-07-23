@@ -28,10 +28,10 @@ fn raw_read_action(paths: &MyOpenPanelsPaths, document_id: &str) -> Value {
     )
 }
 
-fn generated_read_action(paths: &MyOpenPanelsPaths, document_id: &str) -> Value {
+fn my_document_read_action(paths: &MyOpenPanelsPaths, document_id: &str) -> Value {
     project_wiki_action(
         paths,
-        "wiki.document.read",
+        "my-document.read",
         vec![
             "--document-id".to_owned(),
             document_id.to_owned(),
@@ -110,7 +110,7 @@ fn raw_document_listing(paths: &MyOpenPanelsPaths, panel_dir: &Path, document: &
     item
 }
 
-fn generated_document_listing(paths: &MyOpenPanelsPaths, document: &Value) -> Value {
+fn my_document_listing(paths: &MyOpenPanelsPaths, document: &Value) -> Value {
     let mut item = document.clone();
     let document_id = document.get("id").and_then(Value::as_str).unwrap_or("");
     item["contentFilePath"] = Value::Null;
@@ -118,7 +118,7 @@ fn generated_document_listing(paths: &MyOpenPanelsPaths, document: &Value) -> Va
         "status": "on_demand",
         "localPath": null,
         "version": document.get("contentVersion").cloned().unwrap_or_else(|| json!(0)),
-        "readAction": generated_read_action(paths, document_id),
+        "readAction": my_document_read_action(paths, document_id),
     });
     item
 }
@@ -138,17 +138,17 @@ pub fn list_raw_documents(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> 
     Ok(json!({ "documents": documents }))
 }
 
-fn list_generated_documents_with_access(
+fn list_my_documents_with_access(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Value, CliError> {
     let wiki = get_wiki_bootstrap(paths)?;
     let documents = wiki
         .state
-        .get("generatedDocuments")
+        .get("myDocuments")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(|document| generated_document_listing(paths, document))
+        .map(|document| my_document_listing(paths, document))
         .collect::<Vec<_>>();
     Ok(json!({ "documents": documents }))
 }
@@ -238,18 +238,18 @@ fn materialize_raw_markdown(
     }
 }
 
-fn materialize_generated_content(
+fn materialize_my_document_content(
     paths: &MyOpenPanelsPaths,
     wiki: &WikiBootstrapValue,
     document: &Value,
 ) -> (Option<PathBuf>, Value) {
     let document_id = document.get("id").and_then(Value::as_str).unwrap_or("");
-    let read_action = generated_read_action(paths, document_id);
+    let read_action = my_document_read_action(paths, document_id);
     let result = (|| {
         let content_ref = document
             .get("contentRef")
             .and_then(Value::as_str)
-            .ok_or_else(|| CliError::new("Generated document content reference is missing."))?;
+            .ok_or_else(|| CliError::new("My Document content reference is missing."))?;
         let logical_path = Path::new(content_ref)
             .file_name()
             .and_then(|value| value.to_str())
@@ -262,7 +262,7 @@ fn materialize_generated_content(
         let materialized = crate::content::materialize_active_file(
             paths,
             &wiki.project.id,
-            crate::content::ResourceKind::GeneratedDocument,
+            crate::content::ResourceKind::MyDocument,
             document_id,
             logical_path,
             &destination,
@@ -270,7 +270,7 @@ fn materialize_generated_content(
         if materialized.is_none() && !destination.is_file() {
             return Err(CliError::with_code(
                 "content_unavailable",
-                format!("Generated document content is unavailable: {document_id}"),
+                format!("My Document content is unavailable: {document_id}"),
             ));
         }
         Ok((destination, materialized))
@@ -301,25 +301,25 @@ fn materialize_generated_content(
     }
 }
 
-fn selected_generated_document_context(
+fn selected_my_document_context(
     paths: &MyOpenPanelsPaths,
     wiki: &WikiBootstrapValue,
-    generated_document_ids: &[String],
+    my_document_ids: &[String],
 ) -> Vec<Value> {
-    let generated_documents = wiki
+    let my_documents = wiki
         .state
-        .get("generatedDocuments")
+        .get("myDocuments")
         .and_then(Value::as_array)
         .into_iter()
         .flatten();
-    generated_document_ids
+    my_document_ids
         .iter()
         .filter_map(|id| {
-            let document = generated_documents
+            let document = my_documents
                 .clone()
                 .find(|document| document.get("id").and_then(Value::as_str) == Some(id))?;
             let mut item = document.clone();
-            let (content_path, content_access) = materialize_generated_content(paths, wiki, document);
+            let (content_path, content_access) = materialize_my_document_content(paths, wiki, document);
             item["contentFilePath"] = content_path.map_or(Value::Null, |path| json!(path));
             item["contentAccess"] = content_access;
             Some(item)
@@ -331,12 +331,12 @@ pub(crate) fn agent_content_context(
     paths: &MyOpenPanelsPaths,
     project_id: &str,
     wiki_panel_id: &str,
-    generated_document_ids: &[String],
+    my_document_ids: &[String],
     is_wiki_selected: bool,
 ) -> Result<Value, CliError> {
     let wiki = get_wiki_target(paths, project_id, wiki_panel_id)?;
-    let selected_generated =
-        selected_generated_document_context(paths, &wiki, generated_document_ids);
+    let selected_my_document =
+        selected_my_document_context(paths, &wiki, my_document_ids);
     let wiki_space = resolve_wiki_space(&wiki.state, None)?;
     let page_count = wiki_space
         .value
@@ -346,7 +346,7 @@ pub(crate) fn agent_content_context(
         .unwrap_or(0);
     let local_access = wiki_local_access(paths, &wiki, &wiki_space.id, is_wiki_selected);
     Ok(json!({
-        "selectedGeneratedDocuments": selected_generated,
+        "selectedMyDocuments": selected_my_document,
         "wiki": {
             "available": true,
             "selected": is_wiki_selected,
@@ -405,8 +405,7 @@ fn current_wiki_manifest(
     descriptor: Option<&Value>,
 ) -> Option<Value> {
     let manifest: Value = serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()?;
-    if manifest.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || manifest.get("projectId").and_then(Value::as_str) != Some(wiki.project.id.as_str())
+    if manifest.get("projectId").and_then(Value::as_str) != Some(wiki.project.id.as_str())
         || manifest.get("panelId").and_then(Value::as_str) != Some(wiki.panel.id.as_str())
         || manifest.get("wikiSpaceId").and_then(Value::as_str) != Some(wiki_space_id)
     {
@@ -663,7 +662,6 @@ fn materialize_wiki_space_for(
         let _ = fs::remove_dir_all(&backup_path);
     }
     let manifest = json!({
-        "schemaVersion": 1,
         "projectId": wiki.project.id,
         "panelId": wiki.panel.id,
         "wikiSpaceId": space.id,

@@ -6,7 +6,6 @@ static RECOMMENDED_SKILL_CATALOG: &str = include_str!(concat!(
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RecommendedSkillCatalog {
-    schema_version: u32,
     skills: Vec<RecommendedSkillRegistration>,
 }
 
@@ -51,8 +50,7 @@ struct RecommendedSkillListing {
 
 pub fn recommended_skills(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     sync_builtin_agent_skills(paths)?;
-    migrate_legacy_custom_agent_skills(paths)?;
-    migrate_skill_provenance(paths)?;
+    sync_task_created_agent_skills(paths)?;
     let catalog = load_recommended_skill_catalog(RECOMMENDED_SKILL_CATALOG)?;
     let mut installed_by_name = BTreeMap::new();
     for listing in list_agent_skills(paths)? {
@@ -73,7 +71,6 @@ pub fn recommended_skills(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> 
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(json!({
-        "schemaVersion": catalog.schema_version,
         "skills": skills,
     }))
 }
@@ -83,8 +80,7 @@ pub fn install_recommended_skill(
     catalog_id: &str,
 ) -> Result<Value, CliError> {
     sync_builtin_agent_skills(paths)?;
-    migrate_legacy_custom_agent_skills(paths)?;
-    migrate_skill_provenance(paths)?;
+    sync_task_created_agent_skills(paths)?;
     let catalog = load_recommended_skill_catalog(RECOMMENDED_SKILL_CATALOG)?;
     let registration = catalog
         .skills
@@ -257,15 +253,6 @@ fn load_recommended_skill_catalog(source: &str) -> Result<RecommendedSkillCatalo
             format!("Recommended Skill catalog is invalid: {error}"),
         )
     })?;
-    if catalog.schema_version != 1 {
-        return Err(CliError::with_code(
-            "invalid_recommended_skill_catalog",
-            format!(
-                "Unsupported recommended Skill catalog schema: {}",
-                catalog.schema_version
-            ),
-        ));
-    }
     let mut ids = BTreeSet::new();
     let mut names = BTreeSet::new();
     for skill in &mut catalog.skills {
@@ -314,10 +301,7 @@ fn load_recommended_skill_catalog(source: &str) -> Result<RecommendedSkillCatalo
         let mut modules = BTreeSet::new();
         let mut normalized_modules = Vec::new();
         for module_kind in &skill.module_kinds {
-            let module_kind = match module_kind.as_str() {
-                "publishing-xiaohongshu" => "publishing",
-                value => value,
-            };
+            let module_kind = module_kind.as_str();
             validate_custom_module(module_kind).map_err(|_| {
                 invalid_recommended_catalog_entry(format!(
                     "Recommended Skill '{}' has an unsupported module: {module_kind}",

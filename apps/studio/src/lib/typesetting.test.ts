@@ -6,7 +6,7 @@ import type {
 } from "../types"
 import { isTypesettingState, normalizePanelState } from "./api"
 import {
-  addTypesettingTitle,
+  addPublicationTitle,
   appendTypesettingTags,
   countTypesettingCharacters,
   createTypesettingPublication,
@@ -20,45 +20,40 @@ import {
   moveTypesettingCover,
   parseTypesettingAssetDrag,
   plainTextToTypesettingContent,
-  removeTypesettingTitle,
-  selectTypesettingTitle,
+  publicationCoverRequestPayload,
+  publicationCoverTaskStatus,
+  publicationLayoutRequestPayload,
+  publicationLayoutTaskStatus,
+  publicationTitleAfterDocumentInsert,
+  publicationTitleRequestPayload,
+  removePublicationTitle,
+  selectPublicationTitle,
   TYPESETTING_ASSET_DRAG_TYPE,
   TYPESETTING_AUTOSAVE_DELAY_MS,
-  typesettingCoverRequestPayload,
-  typesettingCoverTaskStatus,
   typesettingImageClickSide,
   typesettingImagesToContent,
   typesettingInsertPosition,
-  typesettingLayoutRequestPayload,
-  typesettingLayoutTaskStatus,
   typesettingTagsFromInput,
-  typesettingTitleAfterDocumentInsert,
-  typesettingTitleRequestPayload,
-  updateTypesettingTitle,
+  updatePublicationTitle,
 } from "./typesetting"
 
 describe("Typesetting state", () => {
   it("normalizes malformed state and accepts complete schema v2 data", () => {
-    expect(normalizePanelState("typesetting", { schemaVersion: 9 })).toEqual({
+    expect(normalizePanelState("typesetting", {})).toEqual({
       publications: [],
-      schemaVersion: 2,
     })
     const publication = createTypesettingPublication(
       "publication:1",
       "2026-07-14T00:00:00Z"
     )
-    expect(
-      isTypesettingState({ schemaVersion: 2, publications: [publication] })
-    ).toBe(true)
+    expect(isTypesettingState({ publications: [publication] })).toBe(true)
     expect(
       isTypesettingState({
-        schemaVersion: 2,
         publications: [{ ...publication, content: null }],
       })
     ).toBe(false)
     expect(
       isTypesettingState({
-        schemaVersion: 2,
         publications: [
           {
             ...publication,
@@ -69,13 +64,11 @@ describe("Typesetting state", () => {
     ).toBe(false)
     expect(
       isTypesettingState({
-        schemaVersion: 2,
         publications: [{ ...publication, tags: ["valid", 42] }],
       })
     ).toBe(false)
     expect(
       isTypesettingState({
-        schemaVersion: 2,
         publications: [
           {
             ...publication,
@@ -88,12 +81,11 @@ describe("Typesetting state", () => {
       selectedTitleId: _selectedTitleId,
       tags: _tags,
       titles: _titles,
-      ...legacyPublication
+      ...minimalPublication
     } = publication
     expect(
       isTypesettingState({
-        schemaVersion: 2,
-        publications: [legacyPublication],
+        publications: [minimalPublication],
       })
     ).toBe(true)
   })
@@ -193,11 +185,11 @@ describe("Typesetting document insertion", () => {
   })
 
   it("fills only an empty publication title", () => {
-    expect(typesettingTitleAfterDocumentInsert("", "Document title")).toBe(
+    expect(publicationTitleAfterDocumentInsert("", "Document title")).toBe(
       "Document title"
     )
     expect(
-      typesettingTitleAfterDocumentInsert("Publication title", "Document title")
+      publicationTitleAfterDocumentInsert("Publication title", "Document title")
     ).toBe("Publication title")
   })
 
@@ -255,29 +247,29 @@ describe("Typesetting document insertion", () => {
       "2026-07-22T00:00:00Z"
     )
     const primaryId = publication.selectedTitleId as string
-    const withPrimary = updateTypesettingTitle(
+    const withPrimary = updatePublicationTitle(
       publication,
       primaryId,
       "Primary title"
     )
-    const withAlternative = addTypesettingTitle(withPrimary, {
+    const withAlternative = addPublicationTitle(withPrimary, {
       id: "title:alternative",
       value: "Channel title",
     })
     expect(withAlternative.title).toBe("Channel title")
-    const editedPrimary = updateTypesettingTitle(
+    const editedPrimary = updatePublicationTitle(
       withAlternative,
       primaryId,
       "Edited primary"
     )
     expect(editedPrimary.title).toBe("Channel title")
-    const selectedPrimary = selectTypesettingTitle(editedPrimary, primaryId)
+    const selectedPrimary = selectPublicationTitle(editedPrimary, primaryId)
     expect(selectedPrimary.title).toBe("Edited primary")
-    const removedPrimary = removeTypesettingTitle(selectedPrimary, primaryId)
+    const removedPrimary = removePublicationTitle(selectedPrimary, primaryId)
     expect(removedPrimary.title).toBe("Channel title")
     expect(removedPrimary.selectedTitleId).toBe("title:alternative")
 
-    const replacement = removeTypesettingTitle(
+    const replacement = removePublicationTitle(
       removedPrimary,
       "title:alternative",
       "title:replacement"
@@ -348,9 +340,7 @@ describe("Typesetting assets and persistence", () => {
       ),
       covers: [{ ...first, source: { kind: "upload" as const } }],
     }
-    expect(
-      isTypesettingState({ schemaVersion: 2, publications: [publication] })
-    ).toBe(true)
+    expect(isTypesettingState({ publications: [publication] })).toBe(true)
   })
 
   it("merges only dirty publication ids and preserves remote work", () => {
@@ -365,11 +355,9 @@ describe("Typesetting assets and persistence", () => {
     }
     const local: TypesettingState = {
       publications: [localA],
-      schemaVersion: 2,
     }
     const remote: TypesettingState = {
       publications: [remoteA, remoteB],
-      schemaVersion: 2,
     }
     expect(
       mergeTypesettingConflict({
@@ -400,8 +388,8 @@ describe("Typesetting assets and persistence", () => {
     const merged = mergeTypesettingConflict({
       deletedIds: new Set(),
       dirtyIds: new Set([localPublication.id]),
-      local: { publications: [localPublication], schemaVersion: 2 },
-      remote: { publications: [remotePublication], schemaVersion: 2 },
+      local: { publications: [localPublication] },
+      remote: { publications: [remotePublication] },
     })
 
     expect(merged.publications[0]?.title).toBe("Local title")
@@ -420,10 +408,9 @@ describe("Typesetting assets and persistence", () => {
       ]),
       deletedIds: new Set(),
       dirtyIds: new Set([publication.id]),
-      local: { publications: [publication], schemaVersion: 2 },
+      local: { publications: [publication] },
       remote: {
         publications: [{ ...publication, covers: [generated] }],
-        schemaVersion: 2,
       },
     })
 
@@ -434,55 +421,55 @@ describe("Typesetting assets and persistence", () => {
 describe("Typesetting cover tasks", () => {
   it("builds the cover request payload and omits blank optional instructions", () => {
     expect(
-      typesettingCoverRequestPayload({
+      publicationCoverRequestPayload({
         instruction: "  bold editorial collage  ",
         publicationId: "publication:1",
         requestId: "cover-request:1",
-        skillId: "typesetting-cover-default",
+        skillId: "publication-cover-default",
       })
     ).toEqual({
       instruction: "bold editorial collage",
       publicationId: "publication:1",
       requestId: "cover-request:1",
-      skillId: "typesetting-cover-default",
+      skillId: "publication-cover-default",
     })
     expect(
-      typesettingCoverRequestPayload({
+      publicationCoverRequestPayload({
         instruction: "  ",
         publicationId: "publication:1",
         requestId: "cover-request:2",
-        skillId: "typesetting-cover-default",
+        skillId: "publication-cover-default",
       })
     ).toEqual({
       publicationId: "publication:1",
       requestId: "cover-request:2",
-      skillId: "typesetting-cover-default",
+      skillId: "publication-cover-default",
     })
   })
 
   it("maps every cover task lifecycle state to its placeholder status", () => {
-    expect(typesettingCoverTaskStatus(task("queued"))).toBe("waiting")
-    expect(typesettingCoverTaskStatus(task("running"))).toBe("running")
-    expect(typesettingCoverTaskStatus(task("succeeded"))).toBe("saving")
-    expect(typesettingCoverTaskStatus(task("failed"))).toBe("failed")
-    expect(typesettingCoverTaskStatus(task("cancelled"))).toBe("cancelled")
+    expect(publicationCoverTaskStatus(task("queued"))).toBe("waiting")
+    expect(publicationCoverTaskStatus(task("running"))).toBe("running")
+    expect(publicationCoverTaskStatus(task("succeeded"))).toBe("saving")
+    expect(publicationCoverTaskStatus(task("failed"))).toBe("failed")
+    expect(publicationCoverTaskStatus(task("cancelled"))).toBe("cancelled")
   })
 })
 
 describe("Typesetting title tasks", () => {
   it("builds a normalized title generation request", () => {
     expect(
-      typesettingTitleRequestPayload({
+      publicationTitleRequestPayload({
         instruction: "  concise and curious  ",
         publicationId: "publication:1",
         requestId: "title-request:1",
-        skillId: "typesetting-title-default",
+        skillId: "publication-title-default",
       })
     ).toEqual({
       instruction: "concise and curious",
       publicationId: "publication:1",
       requestId: "title-request:1",
-      skillId: "typesetting-title-default",
+      skillId: "publication-title-default",
     })
   })
 })
@@ -490,26 +477,32 @@ describe("Typesetting title tasks", () => {
 describe("Typesetting layout tasks", () => {
   it("builds layout payloads and maps terminal status to an unlocked state", () => {
     expect(
-      typesettingLayoutRequestPayload({
+      publicationLayoutRequestPayload({
         instruction: "  emphasize headings  ",
         publicationId: "publication:1",
         requestId: "layout-request:1",
-        skillId: "typesetting-layout-default",
+        skillId: "publication-layout-default",
       })
     ).toEqual({
       instruction: "emphasize headings",
       publicationId: "publication:1",
       requestId: "layout-request:1",
-      skillId: "typesetting-layout-default",
+      skillId: "publication-layout-default",
     })
-    expect(typesettingLayoutTaskStatus(layoutTask("queued"))).toBe("waiting")
-    expect(typesettingLayoutTaskStatus(layoutTask("running"))).toBe("running")
-    expect(typesettingLayoutTaskStatus(layoutTask("succeeded"))).toBe(
+    expect(publicationLayoutTaskStatus(layoutTask("queued"))).toBe("waiting")
+    expect(publicationLayoutTaskStatus(layoutTask("running"))).toBe("running")
+    expect(publicationLayoutTaskStatus(layoutTask("succeeded"))).toBe(
       "completed"
     )
     expect(isTypesettingLayoutTaskActive(layoutTask("failed"))).toBe(false)
     expect(isTypesettingLayoutTaskActive(layoutTask("cancelled"))).toBe(false)
     expect(isTypesettingLayoutTaskActive(layoutTask("queued"))).toBe(true)
+    expect(isTypesettingLayoutTaskActive(layoutTask("running"))).toBe(true)
+    expect(isTypesettingLayoutTaskActive(layoutTask("cancel_requested"))).toBe(
+      true
+    )
+    expect(isTypesettingLayoutTaskActive(layoutTask("archived"))).toBe(false)
+    expect(isTypesettingLayoutTaskActive(layoutTask("completed"))).toBe(false)
   })
 
   it("selects the latest layout task for the publication", () => {
@@ -542,10 +535,9 @@ describe("Typesetting layout tasks", () => {
       contentDirtyIds: new Set(),
       deletedIds: new Set(),
       dirtyIds: new Set([localPublication.id]),
-      local: { publications: [localPublication], schemaVersion: 2 },
+      local: { publications: [localPublication] },
       remote: {
         publications: [{ ...localPublication, content: remoteContent }],
-        schemaVersion: 2,
       },
     })
     expect(merged.publications[0]?.title).toBe("Local title")
@@ -578,7 +570,7 @@ function generatedImage(
     mimeType: "image/png",
     source: {
       kind: "generated",
-      skillId: "typesetting-cover-default",
+      skillId: "publication-cover-default",
       taskId,
     },
     src: `/api/${assetRef}.png`,
@@ -609,14 +601,14 @@ function task(status: string) {
     panelId: "panel:typesetting",
     panelKind: "typesetting",
     projectId: "project:1",
-    queue: "typesetting",
+    queue: "publication",
     status,
     targetId: "publication:1",
-    type: "generate_typesetting_cover",
+    type: "generate_publication_cover",
     updatedAt: "2026-07-21T00:00:00Z",
   }
 }
 
 function layoutTask(status: string) {
-  return { ...task(status), type: "format_typesetting_content" }
+  return { ...task(status), type: "format_publication_content" }
 }

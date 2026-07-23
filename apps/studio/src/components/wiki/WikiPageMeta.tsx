@@ -3,7 +3,7 @@ import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiJson } from "../../lib/api"
 import { formatRelativeOrDate } from "../../lib/date-time"
 import type { WikiPageIndexItem } from "../../types"
-import { countDocumentCharacters } from "./generated-document-display"
+import { countDocumentCharacters } from "./my-document-display"
 
 export function WikiPageMeta({
   apiBase,

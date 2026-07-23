@@ -5,6 +5,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     let storage_dir = temp.path().join(".myopenpanels");
     fs::create_dir_all(&project_dir).expect("project dir");
     create_cli_project(&project_dir, &storage_dir);
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
 
     let (code, stdout, stderr) = run(&[
         "wiki",
@@ -21,7 +22,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         "--content",
         "# Product brief\n\nMyOpenPanels keeps project knowledge local.",
         "--space-id",
-        "wiki:default",
+        wiki_space_id.as_str(),
         "--format",
         "json",
     ]);
@@ -45,7 +46,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         "--context-id",
         "ctx",
         "--space-id",
-        "wiki:default",
+        wiki_space_id.as_str(),
         "--path",
         "concepts/myopenpanels.md",
         "--content-file",
@@ -78,7 +79,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
             &json!({
                 "isWikiSelected": true,
                 "selectedRawDocumentIds": [document["id"]],
-                "selectedGeneratedDocumentIds": [],
+                "selectedMyDocumentIds": [],
             }),
         )
         .expect("legacy selection");
@@ -135,7 +136,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     let context = serde_json::from_str::<Value>(&stdout).expect("json");
     assert_eq!(context["panel"]["selection"]["isExplicit"], false);
     assert_eq!(
-        context["panel"]["selection"]["summary"]["generatedDocumentCount"],
+        context["panel"]["selection"]["summary"]["myDocumentCount"],
         0
     );
     assert!(context["panel"]["selection"]["summary"]
@@ -188,7 +189,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
         "--context-id",
         "ctx",
         "--space-id",
-        "wiki:default",
+        wiki_space_id.as_str(),
         "--query",
         "local indexed Wiki",
         "--format",
@@ -200,7 +201,7 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
 }
 
 #[test]
-fn generated_documents_support_versions_selection_publication_and_deletion() {
+fn my_documents_support_versions_selection_publication_and_deletion() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -212,8 +213,7 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
         Some("ctx"),
     )
     .expect("paths");
-
-    let created = wiki::create_generated_document(
+    let created = wiki::create_my_document(
         &paths,
         "report.md",
         Some("Report"),
@@ -222,14 +222,14 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
         Some("thread:1"),
         b"# Report\n\nVersion one.",
     )
-    .expect("create generated document");
+    .expect("create My Document");
     let document_id = created["document"]["id"]
         .as_str()
         .expect("document id")
         .to_owned();
     assert_eq!(created["document"]["contentVersion"], 1);
     assert_eq!(created["document"]["wordCount"], 18);
-    assert!(wiki::create_generated_document(
+    assert!(wiki::create_my_document(
         &paths,
         "report.pdf",
         None,
@@ -253,14 +253,14 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
     let selection =
         wiki::write_agent_selection(&paths, &[document_id.clone()]).expect("selection");
     assert_eq!(
-        selection["selectedGeneratedDocuments"][0]["id"],
+        selection["selectedMyDocuments"][0]["id"],
         document_id
     );
     assert_eq!(
-        selection["selectedGeneratedDocuments"][0]["contentAccess"]["status"],
+        selection["selectedMyDocuments"][0]["contentAccess"]["status"],
         "ready"
     );
-    assert!(selection["selectedGeneratedDocuments"][0]["contentFilePath"]
+    assert!(selection["selectedMyDocuments"][0]["contentFilePath"]
         .as_str()
         .is_some_and(|path| Path::new(path).is_file()));
     assert_eq!(selection["wiki"]["localAccess"]["status"], "on_demand");
@@ -274,14 +274,14 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
         .expect("revision");
     assert_eq!(revision_after, revision_before);
 
-    let read = wiki::read_generated_document(&paths, &document_id).expect("read");
+    let read = wiki::read_my_document(&paths, &document_id).expect("read");
     assert_eq!(read["content"], "# Report\n\nVersion one.");
     let first_publish =
-        wiki::publish_generated_document(&paths, &document_id, None).expect("first publish");
+        wiki::publish_my_document(&paths, &document_id, None).expect("first publish");
     assert_eq!(first_publish["rawDocument"]["source"], "agent");
-    assert!(wiki::publish_generated_document(&paths, &document_id, None).is_err());
+    assert!(wiki::publish_my_document(&paths, &document_id, None).is_err());
 
-    let updated = wiki::write_generated_document(
+    let updated = wiki::write_my_document(
         &paths,
         &document_id,
         "report.md",
@@ -292,7 +292,7 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
     assert_eq!(updated["document"]["contentVersion"], 2);
     assert_eq!(updated["document"]["wordCount"], 18);
     let second_publish =
-        wiki::publish_generated_document(&paths, &document_id, None).expect("second publish");
+        wiki::publish_my_document(&paths, &document_id, None).expect("second publish");
     assert_eq!(
         second_publish["document"]["publishHistory"]
             .as_array()
@@ -300,14 +300,14 @@ fn generated_documents_support_versions_selection_publication_and_deletion() {
         Some(2)
     );
 
-    wiki::delete_generated_document(&paths, &document_id).expect("delete");
+    wiki::delete_my_document(&paths, &document_id).expect("delete");
     let context = wiki::wiki_context(&paths).expect("context");
     assert_eq!(
         context["state"]["rawDocuments"].as_array().map(Vec::len),
         Some(2)
     );
     assert_eq!(
-        wiki::read_agent_selection(&paths).expect("selection")["selectedGeneratedDocuments"]
+        wiki::read_agent_selection(&paths).expect("selection")["selectedMyDocuments"]
             .as_array()
             .map(Vec::len),
         Some(0)
@@ -327,6 +327,7 @@ fn wiki_document_file_names_can_be_renamed_without_changing_extensions() {
         Some("ctx"),
     )
     .expect("paths");
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
 
     let raw = wiki::add_raw_document(
         &paths,
@@ -334,7 +335,7 @@ fn wiki_document_file_names_can_be_renamed_without_changing_extensions() {
         None,
         Some("text/markdown"),
         "user",
-        Some("wiki:default"),
+        Some(&wiki_space_id),
         b"# Draft",
     )
     .expect("raw document");
@@ -355,43 +356,43 @@ fn wiki_document_file_names_can_be_renamed_without_changing_extensions() {
     );
     assert_eq!(renamed_raw["document"]["title"], "Final 版本 (v2)");
 
-    let generated = wiki::create_generated_document(
+    let my_document = wiki::create_my_document(
         &paths,
-        "generated.md",
+        "my-document.md",
         None,
         Some("text/markdown"),
         None,
         None,
-        b"# Generated",
+        b"# My Document",
     )
-    .expect("generated document");
-    let generated_id = generated["document"]["id"].as_str().expect("generated id");
-    let renamed_generated =
-        wiki::rename_generated_document_file(&paths, generated_id, "article.md")
-            .expect("rename generated document");
+    .expect("My Document");
+    let my_document_id = my_document["document"]["id"].as_str().expect("My Document id");
+    let renamed_my_document =
+        wiki::rename_my_document_file(&paths, my_document_id, "article.md")
+            .expect("rename My Document");
     assert_eq!(
-        renamed_generated["document"]["originalFileName"],
+        renamed_my_document["document"]["originalFileName"],
         "article.md"
     );
     assert_eq!(
-        wiki::read_generated_document(&paths, generated_id).expect("generated content")["content"],
-        "# Generated"
+        wiki::read_my_document(&paths, my_document_id).expect("My Document content")["content"],
+        "# My Document"
     );
-    let renamed_generated =
-        wiki::rename_generated_document_file(&paths, generated_id, "Article 测试 [v2].md")
-            .expect("rename generated document with human-readable characters");
+    let renamed_my_document =
+        wiki::rename_my_document_file(&paths, my_document_id, "Article 测试 [v2].md")
+            .expect("rename My Document with human-readable characters");
     assert_eq!(
-        renamed_generated["document"]["originalFileName"],
+        renamed_my_document["document"]["originalFileName"],
         "Article 测试 [v2].md"
     );
     assert_eq!(
-        renamed_generated["document"]["title"],
+        renamed_my_document["document"]["title"],
         "Article 测试 [v2]"
     );
 
     wiki::write_page(
         &paths,
-        "wiki:default",
+        &wiki_space_id,
         "notes/draft.md",
         "# Page",
         None,
@@ -399,7 +400,7 @@ fn wiki_document_file_names_can_be_renamed_without_changing_extensions() {
     )
     .expect("write page");
     let renamed_page =
-        wiki::rename_page(&paths, "wiki:default", "notes/draft.md", "notes/final.md")
+        wiki::rename_page(&paths, &wiki_space_id, "notes/draft.md", "notes/final.md")
             .expect("rename page");
     assert_eq!(renamed_page["pagePath"], "notes/final.md");
     assert_eq!(
@@ -418,7 +419,7 @@ fn wiki_document_file_names_can_be_renamed_without_changing_extensions() {
         ])
     );
     assert_eq!(
-        wiki::read_page(&paths, "wiki:default", "notes/final.md").expect("renamed page")
+        wiki::read_page(&paths, &wiki_space_id, "notes/final.md").expect("renamed page")
             ["markdown"],
         "# Page"
     );
@@ -437,6 +438,7 @@ fn wiki_document_titles_preserve_spaces_and_unicode() {
         Some("ctx"),
     )
     .expect("paths");
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
 
     let raw = wiki::add_raw_document(
         &paths,
@@ -444,7 +446,7 @@ fn wiki_document_titles_preserve_spaces_and_unicode() {
         None,
         Some("text/markdown"),
         "user",
-        Some("wiki:default"),
+        Some(&wiki_space_id),
         b"# Pixcall",
     )
     .expect("raw document");
@@ -462,7 +464,7 @@ fn wiki_document_titles_preserve_spaces_and_unicode() {
         raw["document"]["originalFileName"]
     );
 
-    let generated = wiki::create_generated_document(
+    let my_document = wiki::create_my_document(
         &paths,
         "Pixcall 基础概念.md",
         None,
@@ -471,16 +473,16 @@ fn wiki_document_titles_preserve_spaces_and_unicode() {
         None,
         b"# Pixcall",
     )
-    .expect("generated document");
-    assert_eq!(generated["document"]["title"], "Pixcall 基础概念");
-    let generated_id = generated["document"]["id"]
+    .expect("My Document");
+    assert_eq!(my_document["document"]["title"], "Pixcall 基础概念");
+    let my_document_id = my_document["document"]["id"]
         .as_str()
-        .expect("generated id");
-    let renamed_generated =
-        wiki::rename_generated_document(&paths, generated_id, "  Pixcall 核心 概念  ")
-            .expect("renamed generated document");
+        .expect("My Document id");
+    let renamed_my_document =
+        wiki::rename_my_document(&paths, my_document_id, "  Pixcall 核心 概念  ")
+            .expect("renamed My Document");
     assert_eq!(
-        renamed_generated["document"]["title"],
+        renamed_my_document["document"]["title"],
         "Pixcall 核心 概念"
     );
 }
@@ -492,10 +494,11 @@ fn wiki_mdx_upload_skips_conversion_and_queues_ingest() {
     let storage_dir = temp.path().join(".myopenpanels");
     fs::create_dir_all(&project_dir).expect("project dir");
     create_cli_project(&project_dir, &storage_dir);
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
     update_wiki_state_field(
         &storage_dir,
         "wikiAgentSkillId",
-        json!("karpathy-llm-wiki-zh"),
+        json!("wiki-default"),
     );
     let mdx_path = project_dir.join("component.mdx");
     let mdx_content = "# Component\n\n<ComponentPreview name=\"Button\" />\n";
@@ -516,7 +519,7 @@ fn wiki_mdx_upload_skips_conversion_and_queues_ingest() {
         "--mime-type",
         "application/octet-stream",
         "--space-id",
-        "wiki:default",
+        wiki_space_id.as_str(),
         "--format",
         "json",
     ]);
@@ -533,7 +536,7 @@ fn wiki_mdx_upload_skips_conversion_and_queues_ingest() {
             .count()
     );
     assert_eq!(
-        result["document"]["ingestionByWikiSpace"]["wiki:default"]["status"],
+        result["document"]["ingestionByWikiSpace"][wiki_space_id.as_str()]["status"],
         "queued"
     );
     assert!(result["state"].get("tasks").is_none());
@@ -565,6 +568,7 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
     let storage_dir = temp.path().join(".myopenpanels");
     fs::create_dir_all(&project_dir).expect("project dir");
     create_cli_project(&project_dir, &storage_dir);
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
 
     let (code, stdout, stderr) = run(&[
         "wiki",
@@ -583,13 +587,13 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
         "--content",
         "# Bridge Source\n\nContent imported by the built-in worker.",
         "--space-id",
-        "wiki:default",
+        wiki_space_id.as_str(),
         "--format",
         "json",
     ]);
     assert_eq!(code, 0, "{stderr}");
     let created = serde_json::from_str::<Value>(&stdout).expect("json");
-    let _task_id = created["document"]["ingestionByWikiSpace"]["wiki:default"]["taskId"]
+    let _task_id = created["document"]["ingestionByWikiSpace"][wiki_space_id.as_str()]["taskId"]
         .as_str()
         .unwrap();
 
@@ -646,202 +650,8 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let status = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(status["status"], "noTarget");
-    assert_eq!(status["queue"]["unhandledCount"], 1);
-}
-
-#[test]
-fn generic_targets_claim_and_complete_project_tasks() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let project_dir = temp.path().join("project");
-    let storage_dir = temp.path().join(".myopenpanels");
-    fs::create_dir_all(&project_dir).expect("project dir");
-    create_cli_project(&project_dir, &storage_dir);
-
-    let (code, stdout, stderr) = run(&[
-        "wiki",
-        "raw",
-        "create",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--title",
-        "Generic Task",
-        "--content",
-        "# Generic Task\n\nQueue protocol coverage.",
-        "--space-id",
-        "wiki:default",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let created = serde_json::from_str::<Value>(&stdout).expect("created json");
-    let task_id = created["document"]["ingestionByWikiSpace"]["wiki:default"]["taskId"]
-        .as_str()
-        .unwrap();
-
-    let (code, stdout, stderr) = run(&[
-        "task",
-        "list",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--pending",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let unhandled = serde_json::from_str::<Value>(&stdout).expect("tasks json");
-    assert_eq!(unhandled["unhandledCount"], 1);
-    assert_eq!(unhandled["tasks"][0]["dispatchState"], "noTarget");
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "target",
-        "register",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--name",
-        "manual-command-target",
-        "--capability",
-        "wiki.ingestMarkdown",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let registered = serde_json::from_str::<Value>(&stdout).expect("target json");
-    let target_id = registered["target"]["id"].as_str().unwrap();
-    assert!(registered.get("token").is_none());
-
-    let (code, _, stderr) = run(&[
-        "project",
-        "create",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--title",
-        "Different active project",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-
-    let (code, stdout, stderr) = run(&[
-        "task",
-        "claim",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--target-id",
-        target_id,
-        "--task-id",
-        task_id,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stdout}\n{stderr}");
-    let claimed = serde_json::from_str::<Value>(&stdout).expect("claim json");
-    assert_eq!(claimed["task"]["id"], task_id);
-    assert_eq!(claimed["task"]["attempt"], 1);
-    let lease_token = claimed["leaseToken"].as_str().unwrap();
-
-    let (code, _, _) = run(&[
-        "task",
-        "heartbeat",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        task_id,
-        "--lease-token",
-        "wrong-token",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 3);
-
-    let result_file = temp.path().join("result.json");
-    fs::write(&result_file, r#"{"executor":"manual-command-target"}"#).expect("result file");
-    let (code, stdout, stderr) = run(&[
-        "task",
-        "complete",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--task-id",
-        task_id,
-        "--lease-token",
-        lease_token,
-        "--result-file",
-        result_file.to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let completed = serde_json::from_str::<Value>(&stdout).expect("complete json");
-    assert_eq!(completed["task"]["status"], "succeeded");
-    assert_eq!(
-        completed["task"]["result"]["executor"],
-        "manual-command-target"
-    );
-
-    let (code, stdout, stderr) = run(&[
-        "agent",
-        "target",
-        "remove",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--target-id",
-        target_id,
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let removed = serde_json::from_str::<Value>(&stdout).expect("remove json");
-    assert_eq!(removed["removed"], true);
-
-    let (code, stdout, stderr) = run(&[
-        "task",
-        "list",
-        "--project-dir",
-        project_dir.to_str().unwrap(),
-        "--storage-dir",
-        storage_dir.to_str().unwrap(),
-        "--context-id",
-        "ctx",
-        "--pending",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(code, 0, "{stderr}");
-    let pending = serde_json::from_str::<Value>(&stdout).expect("pending json");
-    assert_eq!(pending["pendingCount"], 0);
+    assert_eq!(status["status"], "idle");
+    assert_eq!(status["queue"]["unhandledCount"], 0);
 }
 
 #[test]

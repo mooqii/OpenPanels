@@ -1,6 +1,4 @@
 pub const DEFAULT_WIKI_AGENT_SKILL_ID: &str = "wiki-default";
-pub const LEGACY_WIKI_AGENT_SKILL_ID: &str = "karpathy-llm-wiki";
-pub const LEGACY_ZH_WIKI_AGENT_SKILL_ID: &str = "karpathy-llm-wiki-zh";
 
 pub fn read_markdown(paths: &MyOpenPanelsPaths, document_id: &str) -> Result<Value, CliError> {
     if crate::content::broker_execution_available() {
@@ -183,7 +181,6 @@ pub fn set_agent_skill(
     skill_id: &str,
     rebuild_confirmed: bool,
 ) -> Result<Value, CliError> {
-    let skill_id = crate::agent::canonical_agent_skill_id(skill_id);
     let wiki = get_wiki_bootstrap(paths)?;
     crate::agent::wiki_agent_skill_for_project(paths, &wiki.project.id, skill_id)?;
     let current_skill_id = selected_agent_skill_id(&wiki.state);
@@ -265,7 +262,6 @@ pub fn set_agent_skill(
     state.insert("activeWikiPagePath".to_owned(), Value::Null);
     state.insert("wikiAgentSkillId".to_owned(), json!(skill_id));
     state.insert("wikiAgentSkillConfigured".to_owned(), json!(true));
-    let workflow_run_id = create_id("workflow-run");
     let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space_id);
     let mut documents = wiki
         .state
@@ -336,9 +332,8 @@ pub fn set_agent_skill(
             Some(&space_id),
             Some(&mutation_key),
         )?;
-        ingest["workflowRunId"] = json!(workflow_run_id);
         ingest["idempotencyKey"] = json!(format!(
-            "rebuild-ingest:{workflow_run_id}:{document_id}:{markdown_version}"
+            "rebuild-ingest:{space_id}:{document_id}:{markdown_version}"
         ));
         if let Some(conversion_task_id) = conversion_task_id {
             ingest["status"] = json!("waiting");
@@ -367,21 +362,8 @@ pub fn set_agent_skill(
         );
     }
     save_wiki_state(paths, &wiki)?;
-    storage.ensure_workflow_run(
-        &wiki.project.id,
-        &wiki.panel.id,
-        &workflow_run_id,
-        "wiki.rebuild",
-        if queued_task_ids.is_empty() {
-            "succeeded"
-        } else {
-            "active"
-        },
-        &json!({ "agentSkillId": skill_id, "rawDocumentCount": documents.len() }),
-    )?;
     Ok(json!({
         "agentSkillId": skill_id,
-        "rebuildWorkflowRunId": workflow_run_id,
         "cancelledTaskIds": cancelled_task_ids,
         "queuedTaskIds": queued_task_ids,
         "rawDocumentCount": documents.len(),
@@ -390,13 +372,11 @@ pub fn set_agent_skill(
 }
 
 pub fn selected_agent_skill_id(state: &Value) -> &str {
-    crate::agent::canonical_agent_skill_id(
-        state
-            .get("wikiAgentSkillId")
-            .and_then(Value::as_str)
-            .filter(|skill_id| !skill_id.is_empty())
-            .unwrap_or(DEFAULT_WIKI_AGENT_SKILL_ID),
-    )
+    state
+        .get("wikiAgentSkillId")
+        .and_then(Value::as_str)
+        .filter(|skill_id| !skill_id.is_empty())
+        .unwrap_or(DEFAULT_WIKI_AGENT_SKILL_ID)
 }
 
 fn active_conversion_task_id(tasks: &[Value], document_id: &str) -> Option<String> {

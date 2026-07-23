@@ -387,14 +387,6 @@
   border-radius: 6px;
 }
 
-.op-agent-task__meta .op-agent-task__state--ready {
-  color: var(--success);
-}
-
-.op-agent-task__meta .op-agent-task__state--blocked {
-  color: var(--warning);
-}
-
 .op-agent-task__note {
   display: block;
   min-width: 0;
@@ -416,6 +408,40 @@
   display: grid;
   gap: 8px;
   padding-top: 2px;
+}
+
+.op-agent-task__retry {
+  display: grid;
+  gap: 6px;
+}
+
+.op-agent-task__retry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.op-agent-task__retry-actions > button {
+  min-height: 30px;
+  padding-inline: 9px;
+  font-size: 10px;
+}
+
+.op-agent-task__retry-status,
+.op-agent-task__retry-error {
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.op-agent-task__retry-status {
+  color: var(--success);
+}
+
+.op-agent-task__retry-status--failed,
+.op-agent-task__retry-error {
+  color: var(--danger);
 }
 
 .op-agent-task__command,

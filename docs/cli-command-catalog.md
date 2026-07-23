@@ -1,8 +1,7 @@
 # CLI Command Catalog Contract
 
-The Agent command catalog is the machine-readable authority for the business CLI.
-Catalog v3 adds Task execution scope commands; the CLI envelope and Agent
-Guidance Protocol versions are unchanged.
+The Agent command catalog is the machine-readable authority for the business
+CLI. It ships with the CLI and has no independent compatibility version.
 Run `myopenpanels agent catalog --format json` for the domain index, then run
 `myopenpanels agent catalog --domain <domain> --format json` once to obtain every
 command definition in that domain.

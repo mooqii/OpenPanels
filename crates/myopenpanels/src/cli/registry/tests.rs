@@ -11,11 +11,11 @@ mod tests {
             .is_some_and(|domains| !domains.is_empty()));
         assert!(catalog(Some("studio")).is_none());
 
-        let wiki = catalog(Some("wiki")).expect("wiki catalog");
-        let commands = wiki["commands"].as_array().expect("commands");
+        let my_documents = catalog(Some("my-document")).expect("My Documents catalog");
+        let commands = my_documents["commands"].as_array().expect("commands");
         let delete = commands
             .iter()
-            .find(|command| command["intent"] == "wiki.document.delete")
+            .find(|command| command["intent"] == "my-document.delete")
             .expect("document delete");
         assert_eq!(delete["risk"], "high-risk-write");
         let allowed = [

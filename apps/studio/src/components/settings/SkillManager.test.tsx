@@ -145,7 +145,7 @@ describe("SkillManagerDialog", () => {
     expect(
       canInstallSkill({
         folderFileCount: 0,
-        moduleKind: "writing-refinement",
+        moduleKind: "writing-distillation",
         sourceType: "zip",
         url: "",
         zipSelected: true,
@@ -170,8 +170,7 @@ describe("SkillManagerDialog", () => {
 
   it("presents publishing Skills under the shared content publishing module", () => {
     const t = (value: TemplateStringsArray) => value[0] ?? ""
-    expect(moduleLabel("publishing", t)).toBe("Content publishing")
-    expect(moduleLabel("publishing-xiaohongshu", t)).toBe("Content publishing")
+    expect(moduleLabel("release", t)).toBe("Content publishing")
     expect(moduleLabel("unassociated", t)).toBe("Unassociated Skills")
   })
 
@@ -191,17 +190,17 @@ describe("SkillManagerDialog", () => {
       installStatus: "bindingsMissing",
       installedModuleKinds: ["writing"],
       installedSkillId: "custom-editorial",
-      missingModuleKinds: ["publishing"],
-      moduleKinds: ["writing", "publishing"],
+      missingModuleKinds: ["release"],
+      moduleKinds: ["writing", "release"],
       name: "Editorial Style",
       sourceLocator:
         "https://github.com/example/skills/tree/main/editorial-style",
       sourceType: "github",
       sourceUrl: "https://github.com/example/skills/tree/main/editorial-style",
     } satisfies RecommendedSkill
-    const groups = groupRecommendedSkills([recommended], "publishing")
+    const groups = groupRecommendedSkills([recommended], "release")
 
-    expect(groups.map((group) => group.kind)).toEqual(["publishing", "writing"])
+    expect(groups.map((group) => group.kind)).toEqual(["release", "writing"])
     expect(groups[0]?.skills[0]).toBe(recommended)
     expect(groups[1]?.skills[0]).toBe(recommended)
     expect(recommendedSkillAction(recommended)).toBe("associate")

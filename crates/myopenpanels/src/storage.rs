@@ -1,4 +1,7 @@
 include!("storage/projects_panels.rs");
+include!("storage/domain_state.rs");
+include!("storage/domain_projection.rs");
+include!("storage/domain_resources.rs");
 include!("storage/tasks.rs");
 include!("storage/settings_assets_changes.rs");
 include!("storage/task_records.rs");

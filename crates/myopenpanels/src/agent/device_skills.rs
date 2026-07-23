@@ -111,7 +111,7 @@ pub fn discover_device_skills(paths: &MyOpenPanelsPaths) -> Result<Value, CliErr
             .then_with(|| left.key.cmp(&right.key))
     });
     Ok(json!({
-        "availableModuleKinds": ["wiki-update", "writing", "writing-refinement", "typesetting-cover", "typesetting-title", "typesetting-layout", "publishing"],
+        "availableModuleKinds": ["wiki-update", "writing", "writing-distillation", "publication-cover", "publication-title", "publication-layout", "release"],
         "skills": groups,
     }))
 }

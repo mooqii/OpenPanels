@@ -6,6 +6,6 @@ include!("server/skills.rs");
 include!("server/projects_update.rs");
 include!("server/panels.rs");
 include!("server/assets_static.rs");
-include!("server/publishing.rs");
+include!("server/releases.rs");
 include!("server/responses.rs");
 include!("server/tests.rs");

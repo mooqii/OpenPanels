@@ -1,5 +1,3 @@
-const MANAGED_SKILL_SCHEMA_VERSION: u64 = 4;
-
 #[derive(Debug, Clone)]
 struct SkillProvenanceSource {
     source_type: String,
@@ -69,8 +67,7 @@ pub enum SkillUpdateStatus {
 
 pub fn skill_update_ids(paths: &MyOpenPanelsPaths) -> Result<Vec<String>, CliError> {
     sync_builtin_agent_skills(paths)?;
-    migrate_legacy_custom_agent_skills(paths)?;
-    migrate_skill_provenance(paths)?;
+    sync_task_created_agent_skills(paths)?;
     let mut ids = list_agent_skills(paths)?
         .into_iter()
         .filter(|listing| listing.source == "custom")
@@ -208,7 +205,6 @@ pub fn update_managed_skill(
         installed_content_hash: source_hash,
         ..provenance
     };
-    manifest["schemaVersion"] = json!(MANAGED_SKILL_SCHEMA_VERSION);
     manifest["origin"] = json!(next_provenance.source_locator);
     manifest["provenance"] = serde_json::to_value(&next_provenance).map_err(to_cli_error)?;
     manifest["updatedAt"] = json!(crate::control::now_iso());
@@ -235,102 +231,6 @@ pub fn update_managed_skill(
             message: None,
         },
     }))
-}
-
-fn migrate_skill_provenance(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
-    let listings = list_agent_skills(paths)?
-        .into_iter()
-        .filter(|listing| listing.source == "custom")
-        .collect::<Vec<_>>();
-    let needs_device_migration = listings.iter().any(|listing| {
-        read_skill_manifest(listing).ok().is_some_and(|manifest| {
-            manifest.get("provenance").is_none()
-                && manifest.get("origin").and_then(Value::as_str) == Some("device")
-        })
-    });
-    let discovered = if needs_device_migration {
-        Some(discover_device_skill_instances(paths)?)
-    } else {
-        None
-    };
-    for listing in listings {
-        let mut manifest = read_skill_manifest(&listing)?;
-        if skill_provenance_from_manifest(&manifest).is_some() {
-            if manifest["schemaVersion"] != MANAGED_SKILL_SCHEMA_VERSION {
-                upgrade_skill_manifest_schema(&listing, &mut manifest);
-                write_skill_manifest(&listing, &manifest)?;
-            }
-            continue;
-        }
-        if manifest.get("provenance").is_some() {
-            continue;
-        }
-        let Some(origin) = manifest
-            .get("origin")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-        else {
-            continue;
-        };
-        let content_hash = skill_package_hash(Path::new(&listing.local_dir))?;
-        let source = if origin == "device" {
-            unique_matching_device_source(
-                discovered.as_ref().expect("device discovery requested"),
-                &listing.skill.name,
-                &content_hash,
-            )
-        } else {
-            parse_remote_skill_source(&origin)
-                .ok()
-                .map(|source| source.provenance)
-        };
-        let Some(source) = source else {
-            continue;
-        };
-        let provenance = source.with_content_hash(&content_hash);
-        upgrade_skill_manifest_schema(&listing, &mut manifest);
-        manifest["origin"] = json!(provenance.source_locator);
-        manifest["provenance"] = serde_json::to_value(provenance).map_err(to_cli_error)?;
-        write_skill_manifest(&listing, &manifest)?;
-    }
-    Ok(())
-}
-
-fn upgrade_skill_manifest_schema(listing: &AgentSkillListing, manifest: &mut Value) {
-    if manifest
-        .get("schemaVersion")
-        .and_then(Value::as_u64)
-        .unwrap_or_default()
-        < 3
-    {
-        manifest["binding"] =
-            json!({ "moduleKinds": managed_skill_module_kinds(listing) });
-    }
-    manifest["schemaVersion"] = json!(MANAGED_SKILL_SCHEMA_VERSION);
-}
-
-fn unique_matching_device_source(
-    discovered: &BTreeMap<PathBuf, DiscoveredDeviceSkill>,
-    installed_name: &str,
-    installed_hash: &str,
-) -> Option<SkillProvenanceSource> {
-    let name_key = normalized_device_skill_name(installed_name);
-    let mut matches = discovered
-        .iter()
-        .filter(|(_, skill)| normalized_device_skill_name(&skill.name) == name_key)
-        .filter_map(|(path, _)| {
-            (skill_package_hash(path).ok().as_deref() == Some(installed_hash)).then(|| path.clone())
-        });
-    let path = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-    Some(SkillProvenanceSource {
-        source_type: "device".to_owned(),
-        source_locator: path.to_string_lossy().to_string(),
-        revision: None,
-        subpath: None,
-    })
 }
 
 fn managed_skill_provenance(listing: &AgentSkillListing) -> Option<ManagedSkillProvenance> {
@@ -360,7 +260,6 @@ fn manifest_with_device_provenance(
     source_dir: &Path,
 ) -> Result<Value, CliError> {
     let provenance = device_skill_provenance(source_dir)?;
-    manifest["schemaVersion"] = json!(MANAGED_SKILL_SCHEMA_VERSION);
     manifest["origin"] = json!(provenance.source_locator);
     manifest["provenance"] = serde_json::to_value(provenance).map_err(to_cli_error)?;
     Ok(manifest)

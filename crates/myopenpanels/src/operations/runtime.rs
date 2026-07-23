@@ -16,7 +16,6 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 
-pub const OPERATION_PROTOCOL_VERSION: i64 = 2;
 const TERMINAL_OPERATION_ARTIFACT_RETENTION_MINUTES: i64 = 30;
 
 fn operation_id() -> String {
@@ -51,6 +50,29 @@ fn active_operation(paths: &MyOpenPanelsPaths, id: &str, intent: &str) -> Result
     if operation["status"].as_str() != Some("active")
         && operation["status"].as_str() != Some("failed")
     {
+        return Err(CliError::with_code(
+            "operation_not_active",
+            format!("Operation {id} is not active"),
+        ));
+    }
+    Ok(operation)
+}
+
+fn active_my_document_operation(
+    paths: &MyOpenPanelsPaths,
+    id: &str,
+) -> Result<Value, CliError> {
+    let operation = inspect(paths, id)?;
+    if !matches!(
+        operation["intent"].as_str(),
+        Some("my-document.create" | "my-document.revise")
+    ) {
+        return Err(CliError::with_code(
+            "operation_intent_mismatch",
+            format!("Operation {id} is not a My Document operation"),
+        ));
+    }
+    if !matches!(operation["status"].as_str(), Some("active" | "failed")) {
         return Err(CliError::with_code(
             "operation_not_active",
             format!("Operation {id} is not active"),
@@ -191,7 +213,6 @@ pub fn begin_canvas(
         "panelKind": "canvas",
         "skillId": PANELS_SKILL_ID,
         "guideId": null,
-        "protocolVersion": OPERATION_PROTOCOL_VERSION,
         "target": {
             "placeholderShapeId": placeholder.shape_id,
             "bounds": placeholder.bounds,
@@ -337,7 +358,7 @@ pub fn finish_canvas(
     Ok(operation)
 }
 
-pub fn begin_wiki(
+pub fn begin_my_document(
     paths: &MyOpenPanelsPaths,
     title: &str,
     format: &str,
@@ -348,7 +369,7 @@ pub fn begin_wiki(
     let bootstrap = read_project_bootstrap(paths, request)?;
     let id = operation_id();
     let is_update = document_id.is_some();
-    let started = wiki::begin_generated_document_for_target(
+    let started = wiki::begin_my_document_for_target(
         paths,
         &bootstrap.project.id,
         &bootstrap.panel.id,
@@ -364,12 +385,13 @@ pub fn begin_wiki(
         read_agent_skill_for_panel(paths, PANELS_SKILL_ID, None, Some(PanelKind::Wiki))?;
     let operation = json!({
         "id": id, "ownerContextId": paths.context_id,
-        "intent": "wiki.document.generate", "status": "active",
+        "intent": if is_update { "my-document.revise" } else { "my-document.create" },
+        "status": "active",
         "projectId": bootstrap.project.id, "projectTitle": bootstrap.project.title,
         "panelId": bootstrap.panel.id, "panelTitle": bootstrap.panel.title, "panelKind": "wiki",
-        "skillId": PANELS_SKILL_ID, "guideId": null, "protocolVersion": OPERATION_PROTOCOL_VERSION,
+        "skillId": PANELS_SKILL_ID, "guideId": null,
         "target": { "documentId": document_id, "baseContentVersion": started["baseContentVersion"] },
-        "input": { "title": title, "format": format, "mode": if is_update { "update" } else { "create" } },
+        "input": { "title": title, "format": format, "mode": if is_update { "revise" } else { "create" } },
         "result": null, "error": null, "createdAt": now, "updatedAt": now, "completedAt": null,
     });
     save(paths, &operation)?;
@@ -438,12 +460,14 @@ pub(crate) fn ensure_writing_for_task_output(
     if conflicting_operation.is_some() {
         return Err(CliError::with_code(
             "task_output_plan_conflict",
-            "The current Task Attempt has multiple Runtime Writing Operations.",
+            "The current Task execution has multiple Runtime Writing Operations.",
         ));
     }
     if let Some(operation) = storage.read_agent_operation(&id)? {
-        let matches_plan = operation.get("intent").and_then(Value::as_str)
-            == Some("wiki.document.generate")
+        let matches_plan = matches!(
+            operation.get("intent").and_then(Value::as_str),
+            Some("my-document.create" | "my-document.revise")
+        )
             && operation
                 .pointer("/target/writingTaskId")
                 .and_then(Value::as_str)
@@ -498,7 +522,7 @@ fn begin_writing_internal(
     ) {
         return Err(CliError::with_code(
             "task_not_claimed",
-            "Claim the writing task before beginning generation.",
+            "Claim the writing task before beginning the My Document write.",
         ));
     }
     let project_id = task["projectId"].as_str().unwrap_or_default();
@@ -510,7 +534,7 @@ fn begin_writing_internal(
         ));
     }
     let mode = task["input"]["mode"].as_str().unwrap_or("create");
-    let document_id = task["input"]["targetGeneratedDocumentId"].as_str();
+    let document_id = task["input"]["targetMyDocumentId"].as_str();
     let storage = Storage::open(paths)?;
     let project = storage.read_project(project_id)?.ok_or_else(|| {
         CliError::with_code(
@@ -534,7 +558,7 @@ fn begin_writing_internal(
             .read_panel_state(project_id, wiki_panel_id)?
             .ok_or_else(|| CliError::with_code("target_not_found", "Wiki state not found."))?;
         let current_version = wiki_state
-            .get("generatedDocuments")
+            .get("myDocuments")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
@@ -544,7 +568,7 @@ fn begin_writing_internal(
             .ok_or_else(|| {
                 CliError::with_code(
                     "writing_target_not_found",
-                    format!("Generated document not found: {document_id}"),
+                    format!("My Document not found: {document_id}"),
                 )
             })?;
         if current_version != expected_version {
@@ -552,7 +576,7 @@ fn begin_writing_internal(
             return Err(CliError::with_code(
                 "content_conflict",
                 format!(
-                    "Generated document changed from version {expected_version} to {current_version}"
+                    "My Document changed from version {expected_version} to {current_version}"
                 ),
             ));
         }
@@ -560,7 +584,7 @@ fn begin_writing_internal(
     let id = runtime_identity
         .map(|(id, _, _, _)| id.to_owned())
         .unwrap_or_else(operation_id);
-    let started = wiki::begin_generated_document_for_target(
+    let started = wiki::begin_my_document_for_target(
         paths,
         project_id,
         wiki_panel_id,
@@ -570,14 +594,14 @@ fn begin_writing_internal(
         document_id,
         mode == "create",
     )?;
-    let generated_id = started["document"]["id"].as_str().unwrap_or_default();
+    let my_document_id = started["document"]["id"].as_str().unwrap_or_default();
     let now = now_iso();
     let panel_skill =
         read_agent_skill_for_panel(paths, PANELS_SKILL_ID, None, Some(PanelKind::Writing))?;
     let mut operation = json!({
         "id": id,
         "ownerContextId": paths.context_id,
-        "intent": "wiki.document.generate",
+        "intent": if mode == "revise" { "my-document.revise" } else { "my-document.create" },
         "status": "active",
         "projectId": project.id,
         "projectTitle": project.title,
@@ -586,9 +610,8 @@ fn begin_writing_internal(
         "panelKind": "wiki",
         "skillId": PANELS_SKILL_ID,
         "guideId": null,
-        "protocolVersion": OPERATION_PROTOCOL_VERSION,
         "target": {
-            "documentId": generated_id,
+            "documentId": my_document_id,
             "baseContentVersion": started["baseContentVersion"],
             "writingTaskId": task_id,
         },
@@ -613,7 +636,11 @@ fn begin_writing_internal(
     }))
 }
 
-pub fn complete_wiki(paths: &MyOpenPanelsPaths, id: &str, file: &str) -> Result<Value, CliError> {
+pub fn complete_my_document(
+    paths: &MyOpenPanelsPaths,
+    id: &str,
+    file: &str,
+) -> Result<Value, CliError> {
     if crate::content::broker_execution_available() {
         let content = fs::read(file).map_err(to_cli_error)?;
         let file_name = Path::new(file)
@@ -629,13 +656,13 @@ pub fn complete_wiki(paths: &MyOpenPanelsPaths, id: &str, file: &str) -> Result<
         );
     }
     crate::content::require_broker_for_task_execution()?;
-    let mut operation = active_operation(paths, id, "wiki.document.generate")?;
+    let mut operation = active_my_document_operation(paths, id)?;
     let content = fs::read(file).map_err(to_cli_error)?;
     let file_name = Path::new(file)
         .file_name()
         .and_then(|v| v.to_str())
         .unwrap_or("document.md");
-    let result = match wiki::complete_generated_document_for_target(
+    let result = match wiki::complete_my_document_for_target(
         paths,
         operation["projectId"].as_str().unwrap_or_default(),
         operation["panelId"].as_str().unwrap_or_default(),
@@ -669,14 +696,14 @@ pub fn complete_wiki(paths: &MyOpenPanelsPaths, id: &str, file: &str) -> Result<
     Ok(json!({ "operation": operation, "document": result["document"] }))
 }
 
-pub fn finish_wiki(
+pub fn finish_my_document(
     paths: &MyOpenPanelsPaths,
     id: &str,
     status: &str,
     message: Option<&str>,
 ) -> Result<Value, CliError> {
-    let mut operation = active_operation(paths, id, "wiki.document.generate")?;
-    wiki::finish_generated_document_operation(
+    let mut operation = active_my_document_operation(paths, id)?;
+    wiki::finish_my_document_operation(
         paths,
         operation["projectId"].as_str().unwrap_or_default(),
         operation["panelId"].as_str().unwrap_or_default(),
@@ -699,28 +726,28 @@ pub fn finish_wiki(
     Ok(operation)
 }
 
-pub fn retry_wiki_document(
+pub fn retry_my_document(
     paths: &MyOpenPanelsPaths,
     document_id: &str,
 ) -> Result<Value, CliError> {
     let context = wiki::wiki_context(paths)?;
     let project_id = context["project"]["id"].as_str().unwrap_or_default();
     let panel_id = context["panel"]["id"].as_str().unwrap_or_default();
-    let generated = wiki::read_generated_document(paths, document_id)?;
-    let document = &generated["document"];
+    let my_document = wiki::read_my_document(paths, document_id)?;
+    let document = &my_document["document"];
     if document
-        .pointer("/generation/status")
+        .pointer("/writeOperation/status")
         .and_then(Value::as_str)
         != Some("failed")
     {
         return Err(CliError::with_code(
-            "generation_not_failed",
-            "Only a failed generated document can be retried.",
+            "my_document_write_not_failed",
+            "Only a failed My Document can be retried.",
         ));
     }
 
     let operation_id = document
-        .pointer("/generation/operationId")
+        .pointer("/writeOperation/operationId")
         .and_then(Value::as_str)
         .map(str::to_owned);
     let storage = Storage::open(paths)?;
@@ -733,7 +760,10 @@ pub fn retry_wiki_document(
             .list_agent_operations(None, None)?
             .into_iter()
             .find(|candidate| {
-                candidate.get("intent").and_then(Value::as_str) == Some("wiki.document.generate")
+                matches!(
+                    candidate.get("intent").and_then(Value::as_str),
+                    Some("my-document.create" | "my-document.revise")
+                )
                     && candidate.get("projectId").and_then(Value::as_str) == Some(project_id)
                     && candidate.get("panelId").and_then(Value::as_str) == Some(panel_id)
                     && candidate
@@ -754,11 +784,11 @@ pub fn retry_wiki_document(
             .and_then(|value| value.get("id"))
             .and_then(Value::as_str)
         {
-            finish_wiki(
+            finish_my_document(
                 paths,
                 operation_id,
                 "cancelled",
-                Some("Writing generation retried."),
+                Some("My Document write retried."),
             )?;
         }
         let task = crate::tasks::retry_task(paths, &task_id)?;
@@ -773,12 +803,12 @@ pub fn retry_wiki_document(
     let current_content_version = document["contentVersion"].as_u64().unwrap_or(0);
     if current_content_version <= base_content_version {
         return Err(CliError::with_code(
-            "generation_retry_unavailable",
-            "This generation has no saved result to recover. Ask the Agent to generate it again.",
+            "my_document_write_retry_unavailable",
+            "This My Document operation has no saved result to recover. Ask the Agent to write it again.",
         ));
     }
 
-    let recovered = wiki::recover_generated_document_for_target(
+    let recovered = wiki::recover_my_document_for_target(
         paths,
         project_id,
         panel_id,
@@ -810,10 +840,10 @@ pub fn complete(
         if metadata.is_some() {
             return Err(CliError::with_code(
                 "invalid_argument",
-                "Wiki generation completion does not accept --metadata-file.",
+                "My Document completion does not accept --metadata-file.",
             ));
         }
-        return complete_wiki(paths, id, artifact_file);
+        return complete_my_document(paths, id, artifact_file);
     }
     let operation = inspect(paths, id)?;
     match operation.get("intent").and_then(Value::as_str) {
@@ -826,14 +856,14 @@ pub fn complete(
             })?;
             complete_canvas(paths, id, artifact_file, metadata)
         }
-        Some("wiki.document.generate") => {
+        Some("my-document.create" | "my-document.revise") => {
             if metadata.is_some() {
                 return Err(CliError::with_code(
                     "invalid_argument",
-                    "Wiki generation completion does not accept --metadata-file.",
+                    "My Document completion does not accept --metadata-file.",
                 ));
             }
-            complete_wiki(paths, id, artifact_file)
+            complete_my_document(paths, id, artifact_file)
         }
         Some(intent) => Err(CliError::with_code(
             "operation_intent_mismatch",
@@ -855,7 +885,9 @@ pub fn finish_any(
     let operation = inspect(paths, id)?;
     match operation.get("intent").and_then(Value::as_str) {
         Some("canvas.image.generate") => finish_canvas(paths, id, status, message),
-        Some("wiki.document.generate") => finish_wiki(paths, id, status, message),
+        Some("my-document.create" | "my-document.revise") => {
+            finish_my_document(paths, id, status, message)
+        }
         Some(intent) => Err(CliError::with_code(
             "operation_intent_mismatch",
             format!("Operation {id} has unsupported intent {intent}"),

@@ -21,7 +21,7 @@ use crate::studio::{
 use crate::tasks;
 use crate::trace::{self, TraceEventInput};
 use crate::types::PanelKind;
-use crate::typesetting;
+use crate::publication;
 use crate::update::{check_for_update, download_update, install_update};
 use crate::wiki;
 use axum::body::Body;
@@ -115,6 +115,7 @@ async fn run_server_async(
     std_listener.set_nonblocking(true).map_err(to_cli_error)?;
     let listener = tokio::net::TcpListener::from_std(std_listener).map_err(to_cli_error)?;
     tasks::recover_builtin_worker_tasks_after_restart(&paths)?;
+    content::recover_filesystem(&paths)?;
     let worker = bridge::start_builtin_worker_loop(paths.clone());
     content::start_gc_loop(paths.clone());
     write_studio_session(&paths, &studio_session_for_server(host, port, &paths))?;
@@ -200,34 +201,10 @@ fn build_router(
         .route("/api/events", get(api_project_events))
         .route("/api/tasks", get(api_tasks))
         .route("/api/tasks/next", get(api_next_task))
-        .route(
-            "/api/tasks/{task_id}",
-            get(api_inspect_task).delete(api_task_delete),
-        )
+        .route("/api/tasks/{task_id}", get(api_inspect_task))
         .route("/api/tasks/{task_id}/retry", post(api_task_retry))
-        .route(
-            "/api/tasks/wiki-update-groups/dispatch",
-            put(api_wiki_update_group_dispatch),
-        )
-        .route("/api/tasks/{task_id}/dispatch", put(api_task_dispatch))
         .route("/api/tasks/{task_id}/cancel", post(api_task_cancel))
         .route("/api/tasks/{task_id}/archive", post(api_task_archive))
-        .route("/api/tasks/{task_id}/events", get(api_task_events))
-        .route("/api/tasks/{task_id}/attempts", get(api_task_attempts))
-        .route("/api/workflow-runs", get(api_workflow_runs))
-        .route(
-            "/api/workflow-runs/{workflow_run_id}",
-            get(api_workflow_run),
-        )
-        .route("/api/agent/targets", get(api_agent_targets))
-        .route(
-            "/api/agent/routes",
-            get(api_agent_routes).put(api_set_agent_route),
-        )
-        .route(
-            "/api/agent/routes/{capability}",
-            delete(api_remove_agent_route),
-        )
         .route("/api/agent/skills", get(api_agent_skills))
         .route("/api/skills", get(api_skills))
         .route("/api/skills/recommended", get(api_recommended_skills))
@@ -280,44 +257,51 @@ fn build_router(
         )
         .route("/api/panels", post(api_open_panel))
         .route("/api/artifacts", post(api_insert_artifact))
+        .route("/api/assets", get(api_assets).post(api_write_asset))
+        .route("/api/assets/import", post(api_import_asset))
+        .route("/api/assets/{asset_id}/content", get(api_asset_content))
         .route(
-            "/api/typesetting/canvas-assets",
-            get(api_typesetting_canvas_assets),
+            "/api/assets/canvas",
+            get(api_publication_canvas_assets),
         )
         .route(
-            "/api/typesetting/cover-skills",
-            get(api_typesetting_cover_skills),
+            "/api/publications/cover-skills",
+            get(api_publication_cover_skills),
         )
         .route(
-            "/api/typesetting/cover-requests",
-            post(api_typesetting_cover_request),
+            "/api/publications/cover-requests",
+            post(api_publication_cover_request),
         )
         .route(
-            "/api/typesetting/title-skills",
-            get(api_typesetting_title_skills),
+            "/api/publications/title-skills",
+            get(api_publication_title_skills),
         )
         .route(
-            "/api/typesetting/title-requests",
-            post(api_typesetting_title_request),
+            "/api/publications/title-requests",
+            post(api_publication_title_request),
         )
         .route(
-            "/api/typesetting/layout-skills",
-            get(api_typesetting_layout_skills),
+            "/api/publications/layout-skills",
+            get(api_publication_layout_skills),
         )
         .route(
-            "/api/typesetting/layout-requests",
-            post(api_typesetting_layout_request),
+            "/api/publications/layout-requests",
+            post(api_publication_layout_request),
         )
         .route(
-            "/api/publishing/preferences",
+            "/api/publications",
+            get(api_publications).put(api_update_publications),
+        )
+        .route(
+            "/api/panels/publishing/preferences",
             put(api_publishing_preferences),
         )
         .route(
-            "/api/publishing/releases",
-            post(api_publishing_create_release),
+            "/api/releases",
+            get(api_releases).post(api_publishing_create_release),
         )
         .route(
-            "/api/publishing/releases/{release_id}/attempts",
+            "/api/releases/{release_id}/attempts",
             post(api_publishing_create_attempt),
         )
         .route(
@@ -339,8 +323,8 @@ fn build_router(
         )
         .route("/api/writing/requests", post(api_writing_create_request))
         .route(
-            "/api/writing/refinement-requests",
-            post(api_writing_create_refinement_request),
+            "/api/writing/distillation-requests",
+            post(api_writing_create_distillation_request),
         )
         .route("/api/wiki/context", get(api_wiki_context))
         .route(
@@ -352,12 +336,12 @@ fn build_router(
             get(api_wiki_raw_documents).post(api_wiki_add_raw_document),
         )
         .route(
-            "/api/wiki/generated-documents/{document_id}/original",
-            get(api_wiki_generated_document_original),
+            "/api/my-documents/{document_id}/original",
+            get(api_my_document_original),
         )
         .route(
-            "/api/wiki/generated-documents/{document_id}/reveal",
-            post(api_wiki_reveal_generated_document_original),
+            "/api/my-documents/{document_id}/reveal",
+            post(api_reveal_my_document_original),
         )
         .route(
             "/api/wiki/raw-documents/{document_id}/markdown",
@@ -384,22 +368,30 @@ fn build_router(
             patch(api_wiki_rename_raw_document).delete(api_wiki_delete_raw_document),
         )
         .route(
-            "/api/wiki/generated-documents",
-            get(api_wiki_generated_documents).post(api_wiki_create_generated_document),
+            "/api/my-documents",
+            get(api_my_documents).post(api_import_my_document),
         )
         .route(
-            "/api/wiki/generated-documents/{document_id}",
-            get(api_wiki_read_generated_document)
-                .put(api_wiki_update_generated_document)
-                .delete(api_wiki_delete_generated_document),
+            "/api/my-documents/create",
+            post(api_create_my_document),
         )
         .route(
-            "/api/wiki/generated-documents/{document_id}/publish",
-            post(api_wiki_publish_generated_document),
+            "/api/my-documents/{document_id}",
+            get(api_read_my_document)
+                .put(api_update_my_document)
+                .delete(api_delete_my_document),
         )
         .route(
-            "/api/wiki/generated-documents/{document_id}/retry",
-            post(api_wiki_retry_generated_document),
+            "/api/wiki-sources/from-my-document/{document_id}",
+            post(api_publish_my_document),
+        )
+        .route(
+            "/api/my-documents/{document_id}/retry",
+            post(api_retry_my_document),
+        )
+        .route(
+            "/api/my-documents/{document_id}/revise",
+            post(api_revise_my_document),
         )
         .route(
             "/api/wiki/active-space",
@@ -450,14 +442,6 @@ fn build_router(
         .route(
             "/api/projects/{project_id}/panels/{panel_id}/selection-materializations/{request_id}",
             post(api_complete_selection_materialization),
-        )
-        .route(
-            "/api/projects/{project_id}/panels/{panel_id}/assets",
-            post(api_write_panel_asset),
-        )
-        .route(
-            "/api/projects/{project_id}/panels/{panel_id}/assets/import",
-            post(api_import_typesetting_asset),
         )
         .route(
             "/api/projects/{project_id}/panels/{panel_id}/assets/{*asset_name}",

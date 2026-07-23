@@ -122,7 +122,7 @@ export function BottomPanelTabs({
                       : "Wiki"
                     : panel.kind === "writing"
                       ? t`Writing`
-                    : panel.kind === "typesetting"
+                      : panel.kind === "typesetting"
                         ? t`Typeset`
                         : panel.kind === "publishing"
                           ? t`Publish`
@@ -329,29 +329,24 @@ function ProjectTitleControl({
 export class MyOpenPanelsBrowserAssetStore implements AssetStore {
   private readonly apiBase: string
   private readonly panelId: string
-  private readonly projectId: string
 
-  constructor(apiBase: string, projectId: string, panelId: string) {
+  constructor(apiBase: string, _projectId: string, panelId: string) {
     this.apiBase = apiBase
-    this.projectId = projectId
     this.panelId = panelId
   }
 
   async upload(_asset: Partial<Asset>, file: File) {
     const dataUrl = await fileToDataUrl(file)
-    const response = await apiFetch(
-      this.apiBase,
-      `/api/projects/${encodeURIComponent(this.projectId)}/panels/${encodeURIComponent(this.panelId)}/assets`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          dataUrl,
-          fileName: file.name || "image.png",
-          mimeType: file.type || "image/png",
-        }),
-      }
-    )
+    const response = await apiFetch(this.apiBase, "/api/assets", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        dataUrl,
+        fileName: file.name || "image.png",
+        mimeType: file.type || "image/png",
+        originPanelId: this.panelId,
+      }),
+    })
     return (await response.json()) as {
       meta?: Record<string, unknown>
       mimeType?: string

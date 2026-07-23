@@ -9,10 +9,7 @@ use crate::control::{
 };
 use crate::error::{CliError, CliErrorCategory, CliRecoveryAction};
 use crate::operations;
-use crate::paths::{
-    redirect_deprecated_default_storage_dir, resolve_myopenpanels_paths,
-    resolve_studio_service_paths,
-};
+use crate::paths::{resolve_myopenpanels_paths, resolve_studio_service_paths};
 use crate::selection::read_selection_asset_for_panel;
 use crate::server::{run_server, run_server_with_owner_lock};
 use crate::storage::Storage;
@@ -45,7 +42,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-const CLI_ENVELOPE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct Invocation {
@@ -87,7 +83,6 @@ struct ResponseMeta<'a> {
 #[serde(rename_all = "camelCase")]
 struct SuccessPayload<'a, T: Serialize> {
     ok: bool,
-    schema_version: u32,
     intent: &'a str,
     data: &'a T,
     actions: &'a ResponseActions,
@@ -98,7 +93,6 @@ struct SuccessPayload<'a, T: Serialize> {
 #[serde(rename_all = "camelCase")]
 struct ErrorPayload<'a> {
     ok: bool,
-    schema_version: u32,
     intent: &'a str,
     error: ErrorDetail<'a>,
     actions: ResponseActions,
@@ -296,18 +290,18 @@ fn run_parsed_cli(
         CommandGroup::Panel => run_panel_command(parsed, stdout),
         CommandGroup::Canvas => run_canvas_command(parsed, stdout),
         CommandGroup::Wiki => run_wiki_command(parsed, stdout),
+        CommandGroup::WikiSource => run_wiki_source_command(parsed, stdout),
+        CommandGroup::MyDocument => run_my_document_command(parsed, stdout),
         CommandGroup::Writing => run_writing_command(parsed, stdout),
-        CommandGroup::Typesetting => run_typesetting_command(parsed, stdout),
-        CommandGroup::Publishing => run_publishing_command(parsed, stdout),
+        CommandGroup::Publication => run_publication_command(parsed, stdout),
+        CommandGroup::Release => run_release_command(parsed, stdout),
+        CommandGroup::Asset => run_asset_command(parsed, stdout),
         CommandGroup::Operation => run_operation_command(parsed, stdout),
         CommandGroup::Task => run_tasks_command(parsed, stdout),
-        CommandGroup::Workflow => run_workflow_runs_command(parsed, stdout),
         CommandGroup::InternalStudioServe => {
-            let storage_dir =
-                redirect_deprecated_default_storage_dir(string_flag(parsed, "storage-dir"))?;
             let paths = resolve_myopenpanels_paths(
                 string_flag(parsed, "project-dir"),
-                storage_dir.as_deref().and_then(std::path::Path::to_str),
+                string_flag(parsed, "storage-dir"),
                 string_flag(parsed, "context-id"),
             )?;
             let service_paths = resolve_studio_service_paths(&paths)?;

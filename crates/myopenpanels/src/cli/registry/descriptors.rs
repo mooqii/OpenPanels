@@ -135,8 +135,6 @@ fn is_integer_argument(name: &str) -> bool {
                 | "max_concurrency"
                 | "port"
                 | "priority"
-                | "protocol_version"
-                | "required_protocol_version"
                 | "timeout"
         )
 }
@@ -178,7 +176,7 @@ fn example_argv(spec: &CommandDefinition, args: &[&clap::Arg]) -> Vec<String> {
     }
     match spec.intent {
         "wiki.raw.create" => argv.extend(["--content".to_owned(), "<CONTENT>".to_owned()]),
-        "wiki.document.update" => argv.extend(["--title".to_owned(), "<TITLE>".to_owned()]),
+        "my-document.update" => argv.extend(["--title".to_owned(), "<TITLE>".to_owned()]),
         _ => {}
     }
     argv.extend(["--format".to_owned(), "json".to_owned()]);
@@ -196,13 +194,11 @@ fn risk_for(spec: &CommandDefinition) -> &'static str {
         spec.intent,
         "update.install"
             | "studio.stop"
-            | "wiki.document.delete"
-            | "wiki.document.publish"
+            | "my-document.delete"
+            | "wiki-source.create-from-my-document"
             | "writing.skill.install"
             | "task.cancel"
             | "task.archive"
-            | "agent.target.remove"
-            | "agent.route.remove"
     ) {
         "high-risk-write"
     } else {
@@ -226,4 +222,3 @@ fn find_leaf<'a>(root: &'a Command, path: &[&str]) -> Option<&'a Command> {
     }
     Some(command)
 }
-

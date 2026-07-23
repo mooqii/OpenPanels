@@ -50,6 +50,12 @@ struct RemoteSkillCandidate {
     subpath: String,
 }
 
+#[derive(Clone, Copy)]
+enum SkillZipSymlinkPolicy {
+    Reject,
+    Ignore,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UrlSkillImportSelection {
@@ -95,7 +101,7 @@ pub fn import_skill_from_zip(
         ));
     }
     let temporary = tempfile::tempdir().map_err(to_cli_error)?;
-    extract_skill_zip(archive, temporary.path())?;
+    extract_skill_zip(archive, temporary.path(), SkillZipSymlinkPolicy::Reject)?;
     install_imported_skill(
         paths,
         temporary.path(),
@@ -197,7 +203,7 @@ pub fn import_skills_from_url(
     }
 
     sync_builtin_agent_skills(paths)?;
-    migrate_legacy_custom_agent_skills(paths)?;
+    sync_task_created_agent_skills(paths)?;
     for (candidate, _) in &selected {
         let name_key = normalized_device_skill_name(&candidate.name);
         let Some(listing) = find_installed_skill_by_identity(paths, &name_key)? else {
@@ -324,7 +330,7 @@ fn prepare_remote_archive(source_url: &str) -> Result<PreparedRemoteArchive, Cli
         ));
     }
     let temporary = tempfile::tempdir().map_err(to_cli_error)?;
-    extract_skill_zip(&archive, temporary.path())?;
+    extract_skill_zip(&archive, temporary.path(), SkillZipSymlinkPolicy::Ignore)?;
     let archive_root = resolve_import_archive_root(temporary.path())?;
     let search_root = resolve_import_subpath(&archive_root, source.subpath.as_deref())?;
     Ok(PreparedRemoteArchive {
@@ -345,7 +351,7 @@ fn install_imported_skill(
     provenance_source: Option<SkillProvenanceSource>,
 ) -> Result<Value, CliError> {
     sync_builtin_agent_skills(paths)?;
-    migrate_legacy_custom_agent_skills(paths)?;
+    sync_task_created_agent_skills(paths)?;
     let search_root = resolve_import_search_root(extracted_root, requested_subpath)?;
     let package_root = find_single_imported_skill(&search_root)?;
     let (name, description) = validate_imported_skill(&package_root)?;
@@ -376,7 +382,7 @@ fn install_skill_package(
         validate_custom_module(module_kind)?;
     }
     sync_builtin_agent_skills(paths)?;
-    migrate_legacy_custom_agent_skills(paths)?;
+    sync_task_created_agent_skills(paths)?;
     let name_key = normalized_device_skill_name(&name);
     let content_hash = skill_package_hash(package_root)?;
     let provenance = provenance_source.map(|source| source.with_content_hash(&content_hash));
@@ -478,7 +484,6 @@ fn imported_skill_manifest(
     provenance: Option<&SkillProvenance>,
 ) -> Value {
     let mut manifest = json!({
-        "schemaVersion": MANAGED_SKILL_SCHEMA_VERSION,
         "source": "custom",
         "skillId": skill_id,
         "name": name,
@@ -528,7 +533,11 @@ fn materialize_import_files(root: &Path, files: &[SkillImportFile]) -> Result<()
     Ok(())
 }
 
-fn extract_skill_zip(archive: &[u8], target: &Path) -> Result<(), CliError> {
+fn extract_skill_zip(
+    archive: &[u8],
+    target: &Path,
+    symlink_policy: SkillZipSymlinkPolicy,
+) -> Result<(), CliError> {
     use std::io::{Cursor, Read};
     let mut zip = zip::ZipArchive::new(Cursor::new(archive))
         .map_err(|_| invalid_skill_import("The selected file is not a valid zip archive."))?;
@@ -552,9 +561,14 @@ fn extract_skill_zip(archive: &[u8], target: &Path) -> Result<(), CliError> {
             .unix_mode()
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
         {
-            return Err(invalid_skill_import(
-                "Symbolic links are not allowed in uploaded Skills.",
-            ));
+            match symlink_policy {
+                SkillZipSymlinkPolicy::Reject => {
+                    return Err(invalid_skill_import(
+                        "Symbolic links are not allowed in uploaded Skills.",
+                    ));
+                }
+                SkillZipSymlinkPolicy::Ignore => continue,
+            }
         }
         if entry.is_dir() {
             fs::create_dir_all(target.join(enclosed)).map_err(to_cli_error)?;

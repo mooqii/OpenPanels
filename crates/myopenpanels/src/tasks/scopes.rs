@@ -68,7 +68,6 @@ pub(crate) fn claim_task_scope_with_broker_url(
             None,
             None,
             None,
-            WikiBatchPolicy::CompatibleWindow,
             task_broker_url,
         )?,
         TaskExecutionScope::ExactTask { task_id } => claim_once(
@@ -78,7 +77,6 @@ pub(crate) fn claim_task_scope_with_broker_url(
             Some(task_id),
             None,
             None,
-            WikiBatchPolicy::Exact,
             task_broker_url,
         )?,
         TaskExecutionScope::WikiMutationDrain { mutation_key, .. } => {
@@ -92,7 +90,6 @@ pub(crate) fn claim_task_scope_with_broker_url(
                     Some(&task_id),
                     None,
                     None,
-                    WikiBatchPolicy::CompatibleWindow,
                     task_broker_url,
                 )?,
                 None => None,
@@ -194,7 +191,7 @@ fn scope_payload(
                 "retryAfter": task.get("retryAfter"),
                 "nextRunAt": task.get("nextRunAt"),
                 "attempts": task.get("attempt"),
-                "maxAttempts": task.get("maxAttempts"),
+                "attemptLimit": task.get("attemptLimit"),
                 "lease": task.get("lease"),
                 "error": task.get("error"),
                 "mutationBlocked": task.get("mutationBlocked"),
@@ -215,9 +212,6 @@ fn scope_payload(
             "leaseToken": Value::Null,
         })
     });
-    if payload.get("batch").is_none() {
-        payload["batch"] = Value::Null;
-    }
     if payload.get("leaseToken").is_none() {
         payload["leaseToken"] = Value::Null;
     }

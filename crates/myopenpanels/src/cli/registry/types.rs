@@ -3,9 +3,6 @@ use crate::error::CliError;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const COMMAND_CATALOG_VERSION: u32 = 6;
-const COMMAND_CATALOG_SCHEMA_VERSION: u32 = 1;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommandId {
     Catalog(usize),
@@ -22,11 +19,13 @@ pub(crate) enum CommandGroup {
     Panel,
     Canvas,
     Wiki,
+    WikiSource,
+    MyDocument,
     Writing,
-    Typesetting,
-    Publishing,
+    Publication,
+    Release,
+    Asset,
     Task,
-    Workflow,
     Operation,
     Agent,
     InternalStudioServe,
@@ -71,11 +70,13 @@ impl CommandId {
                 "panel" => CommandGroup::Panel,
                 "canvas" => CommandGroup::Canvas,
                 "wiki" => CommandGroup::Wiki,
+                "wiki-source" => CommandGroup::WikiSource,
+                "my-document" => CommandGroup::MyDocument,
                 "writing" => CommandGroup::Writing,
-                "typesetting" => CommandGroup::Typesetting,
-                "publishing" => CommandGroup::Publishing,
+                "publication" => CommandGroup::Publication,
+                "release" => CommandGroup::Release,
+                "asset" => CommandGroup::Asset,
                 "task" => CommandGroup::Task,
-                "workflow" => CommandGroup::Workflow,
                 "operation" => CommandGroup::Operation,
                 "agent" => CommandGroup::Agent,
                 path => panic!("unsupported registered command group: {path}"),
@@ -102,7 +103,6 @@ enum CommandAudience {
     Host,
     Protocol,
     Operator,
-    #[allow(dead_code)]
     Internal,
 }
 

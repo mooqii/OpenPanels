@@ -1,7 +1,7 @@
 # Use Wiki Knowledge Context
 
 Use this reference to decide whether the current request should read a
-MyOpenPanels Wiki or selected generated documents.
+MyOpenPanels Wiki or selected My Documents.
 
 Rules:
 
@@ -12,7 +12,7 @@ Rules:
   it for every unrelated task.
 - If no Wiki is selected, query it only when the user explicitly asks to use the
   Wiki or project knowledge.
-- Treat selected generated documents as direct user references. Raw documents
+- Treat selected My Documents as direct user references. Raw documents
   are source material for the Wiki and are never implicit selected context.
 - Do not modify Wiki content while answering a read-only query unless the user
   explicitly asks to preserve the result.
@@ -25,12 +25,12 @@ Execution Steps:
 3. For a Wiki query, list and search the generated pages, then read only the
    pages required to answer. Do not assume any particular entry page, schema,
    index, log, or directory structure.
-4. Read selected generated documents through the generated-document command.
+4. Read selected My Documents through the my-document command.
 5. Name the Wiki page paths and document titles used. Distinguish sourced
    knowledge from inference and say plainly when the Wiki lacks evidence.
 
 Do not read every page or silently substitute a selected Wiki for an explicitly
-selected generated document.
+selected My Document.
 
 Outside a claimed Task, a selected Wiki is also exposed as a complete local
 Markdown tree. Read it directly only when `wiki.localAccess.status` is `ready`.

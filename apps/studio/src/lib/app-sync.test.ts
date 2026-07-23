@@ -308,29 +308,26 @@ function writingState(): WritingState {
     createDraft: "",
     draft: "",
     mode: "create",
-    refinementName: "",
+    distillationName: "",
     revisionDraft: "",
-    schemaVersion: 5,
     selectedCreateWritingSkillIds: ["writing-default"],
-    selectedRefinementSkillId: "writing-refinement-default",
+    selectedDistillationSkillId: "writing-distillation-default",
     selectedRevisionWritingSkillId: "writing-default",
-    targetGeneratedDocumentId: null,
+    targetMyDocumentId: null,
   }
 }
 
 function typesettingState(): TypesettingState {
   return {
     publications: [],
-    schemaVersion: 2,
   }
 }
 
 function publishingState(): PublishingState {
   return {
     releases: [],
-    schemaVersion: 1,
     selectedPublicationId: null,
-    selectedSkillIds: { xiaohongshu: "publishing-xiaohongshu" },
+    selectedSkillIds: { xiaohongshu: "release-xiaohongshu" },
   }
 }
 
@@ -383,9 +380,8 @@ function wikiState(): WikiState {
     activeWikiPagePath: "index.md",
     activeWikiSpaceId: "wiki:default",
     rawDocuments: [],
-    generatedDocuments: [],
+    myDocuments: [],
     ruleSets: [],
-    schemaVersion: 4,
     wikiSpaces: [],
   }
 }

@@ -35,8 +35,8 @@ import {
   wikiRawOriginalUrl,
 } from "../../lib/api"
 import type {
+  MyDocument,
   MyOpenPanelsTransport,
-  WikiGeneratedDocument,
   WikiRawDocument,
 } from "../../types"
 
@@ -53,7 +53,7 @@ type DocumentPreview =
     }
   | {
       content: string | null
-      document: WikiGeneratedDocument
+      document: MyDocument
       error: string | null
       format: "markdown" | "text"
       kind: "generated"
@@ -299,6 +299,8 @@ function ToolbarButton({
         aria-label={label}
         isDisabled={disabled}
         isIconOnly
+        // Keep the ProseMirror selection intact until the command runs.
+        onMouseDown={(event) => event.preventDefault()}
         onPress={onPress}
         size="md"
         variant={active ? "primary" : "ghost"}

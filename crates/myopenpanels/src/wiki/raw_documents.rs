@@ -48,7 +48,6 @@ pub fn add_raw_document(
         )?;
     }
 
-    let workflow_run_id = create_id("workflow-run");
     let content_hash = sha256_hex(content);
     let mut conversion_task = if is_text {
         None
@@ -65,14 +64,12 @@ pub fn add_raw_document(
         )?)
     };
     if let Some(task) = conversion_task.as_mut() {
-        task["workflowRunId"] = json!(workflow_run_id);
         task["idempotencyKey"] = json!(format!("convert:{document_id}:{content_hash}"));
         if let Some(stored) = wiki
             .tasks
             .iter_mut()
             .find(|stored| stored["id"] == task["id"])
         {
-            stored["workflowRunId"] = task["workflowRunId"].clone();
             stored["idempotencyKey"] = task["idempotencyKey"].clone();
         }
     }
@@ -103,7 +100,6 @@ pub fn add_raw_document(
             .and_then(|value| value["id"].as_str())
             .unwrap_or_default();
         task["status"] = json!("waiting");
-        task["workflowRunId"] = json!(workflow_run_id);
         task["dependsOnTaskIds"] = json!([conversion_id]);
         task["idempotencyKey"] = json!(format!("ingest:{document_id}:1"));
         if let Some(stored) = wiki
@@ -116,17 +112,13 @@ pub fn add_raw_document(
         Some(task)
     };
     if let Some(task) = ingest_task.as_mut() {
-        if task.get("workflowRunId").is_none() {
-            task["workflowRunId"] = json!(workflow_run_id);
-            task["idempotencyKey"] = json!(format!("ingest:{document_id}:1"));
-            if let Some(stored) = wiki
-                .tasks
-                .iter_mut()
-                .find(|stored| stored["id"] == task["id"])
-            {
-                stored["workflowRunId"] = task["workflowRunId"].clone();
-                stored["idempotencyKey"] = task["idempotencyKey"].clone();
-            }
+        task["idempotencyKey"] = json!(format!("ingest:{document_id}:1"));
+        if let Some(stored) = wiki
+            .tasks
+            .iter_mut()
+            .find(|stored| stored["id"] == task["id"])
+        {
+            stored["idempotencyKey"] = task["idempotencyKey"].clone();
         }
     }
     let mut ingestion = Map::new();
@@ -178,21 +170,6 @@ pub fn add_raw_document(
     state_array_mut(&mut wiki.state, "rawDocuments")?.insert(0, document.clone());
     state_object_mut(&mut wiki.state)?
         .insert("activeRawDocumentId".to_owned(), document["id"].clone());
-    let meta_path = wiki_panel_path(
-        &panel_dir,
-        &wiki_ref(&["raw", document["id"].as_str().unwrap_or("raw"), "meta.json"]),
-    )?;
-    if let Some(parent) = meta_path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(
-        meta_path,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&document).map_err(to_cli_error)?
-        ),
-    )
-    .map_err(to_cli_error)?;
     save_wiki_state(paths, &wiki)?;
     trace::record_simple(
         "task",
@@ -307,17 +284,6 @@ pub fn delete_raw_document(
         .position(|document| document.get("id").and_then(Value::as_str) == Some(document_id))
         .ok_or_else(|| CliError::new(format!("Wiki raw document not found: {document_id}")))?;
     let document = documents.remove(index);
-    let now = now_iso();
-    for task in &mut wiki.tasks {
-        let matches_document = task.get("documentId").and_then(Value::as_str) == Some(document_id)
-            || task.get("targetId").and_then(Value::as_str) == Some(document_id);
-        if matches_document {
-            task["status"] = json!("cancelled");
-            task["error"] =
-                json!({ "code": "prerequisite_deleted", "message": "Source document deleted" });
-            task["updatedAt"] = json!(now);
-        }
-    }
     let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space.id);
     let task = create_wiki_maintenance_task(
         &wiki.state,
@@ -350,13 +316,7 @@ pub fn delete_raw_document(
         .panel_dir(&wiki.project.id, &wiki.panel.id)
         .join("raw")
         .join(sanitize_path_part(document_id));
-    crate::tasks::cancel_tasks_for_resource(
-        paths,
-        &wiki.project.id,
-        "wiki.rawDocument",
-        document_id,
-        "prerequisite_deleted",
-    )?;
+    save_wiki_state(paths, &wiki)?;
     crate::content::archive_resource(
         paths,
         Some(&wiki.project.id),
@@ -372,7 +332,6 @@ pub fn delete_raw_document(
             }
         })
         .map_err(to_cli_error)?;
-    save_wiki_state(paths, &wiki)?;
     Ok(json!({ "document": document, "task": task, "state": wiki.state }))
 }
 
@@ -408,15 +367,6 @@ pub fn rename_raw_document(
     document["title"] = json!(title_from_file_name(file_name));
     document["updatedAt"] = json!(now);
     let document = document.clone();
-    let meta_path = wiki_panel_path(&panel_dir, &wiki_ref(&["raw", document_id, "meta.json"]))?;
-    fs::write(
-        meta_path,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&document).map_err(to_cli_error)?
-        ),
-    )
-    .map_err(to_cli_error)?;
     save_wiki_state(paths, &wiki)?;
     Ok(json!({ "document": document, "state": wiki.state }))
 }
@@ -434,25 +384,11 @@ pub fn rename_raw_document_title(
         ));
     }
     let mut wiki = get_wiki_bootstrap(paths)?;
-    let storage = Storage::open(paths)?;
     let now = now_iso();
     let document = find_document_mut(&mut wiki.state, document_id)?;
     document["title"] = json!(title);
     document["updatedAt"] = json!(now);
     let document = document.clone();
-    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
-    let meta_path = wiki_panel_path(
-        &panel_dir,
-        &wiki_ref(&["raw", document_id, "meta.json"]),
-    )?;
-    fs::write(
-        meta_path,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&document).map_err(to_cli_error)?
-        ),
-    )
-    .map_err(to_cli_error)?;
     save_wiki_state(paths, &wiki)?;
     Ok(json!({ "document": document, "state": wiki.state }))
 }

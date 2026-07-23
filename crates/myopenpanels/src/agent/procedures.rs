@@ -1,4 +1,16 @@
 #[derive(Debug, Clone)]
+struct AgentProcedureRegistration {
+    command_intents: Vec<String>,
+    description: String,
+    key: String,
+    local_skill: LocalSkillPolicy,
+    panel_kind: Option<String>,
+    references: Vec<String>,
+    selection_policy: String,
+    system_skill_id: String,
+}
+
+#[derive(Debug, Clone)]
 struct AgentProcedure {
     registration: AgentProcedureRegistration,
     skill_id: String,
@@ -12,41 +24,85 @@ struct AgentProcedureCatalog {
 fn load_agent_procedures() -> Result<AgentProcedureCatalog, CliError> {
     let registry: BuiltinSkillRegistry =
         serde_json::from_str(BUILTIN_SKILL_REGISTRY).map_err(to_cli_error)?;
-    if registry.schema_version != 4 {
-        return Err(CliError::new(format!(
-            "Unsupported built-in Skill registry schema: {}",
-            registry.schema_version
-        )));
-    }
-
-    let mut keys = BTreeSet::new();
+    let capability_catalog = capability_catalog()?;
+    let system_skills = registry
+        .system_skills
+        .into_iter()
+        .map(|skill| (skill.id.clone(), skill))
+        .collect::<BTreeMap<_, _>>();
+    let handler_keys = crate::bridge::task_handler_keys()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut used_handler_keys = BTreeSet::new();
     let mut procedures = Vec::new();
     let mut task_handoff_keys = BTreeSet::new();
-    for skill in registry.system_skills {
-        for procedure in &skill.procedures {
-            validate_agent_procedure(&skill, procedure)?;
-            if !keys.insert(procedure.key.clone()) {
-                return Err(CliError::with_code(
-                    "duplicate_agent_procedure",
-                    format!("Duplicate Agent Procedure key: {}", procedure.key),
-                ));
+
+    for capability in &capability_catalog.capabilities {
+        let skill = system_skills
+            .get(&capability.platform_contract.system_skill_id)
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "capability_catalog_invalid",
+                    format!(
+                        "Capability {} references unknown system Skill {}.",
+                        capability.key, capability.platform_contract.system_skill_id
+                    ),
+                )
+            })?;
+        validate_capability_registration(skill, capability)?;
+        match &capability.invocation {
+            CapabilityInvocation::Procedure {
+                selection_policy,
+                command_intents,
+            } => {
+                crate::cli::registry::descriptors_for_intents(command_intents)?;
+                let registration = AgentProcedureRegistration {
+                    command_intents: command_intents.clone(),
+                    description: capability.description.clone(),
+                    key: capability.key.clone(),
+                    local_skill: capability.local_skill.clone(),
+                    panel_kind: capability.panel_kind.clone(),
+                    references: capability.platform_contract.references.clone(),
+                    selection_policy: selection_policy.clone(),
+                    system_skill_id: capability.platform_contract.system_skill_id.clone(),
+                };
+                procedures.push(AgentProcedure {
+                    skill_id: registration.system_skill_id.clone(),
+                    registration,
+                });
             }
-            procedures.push(AgentProcedure {
-                registration: procedure.clone(),
-                skill_id: skill.id.clone(),
-            });
-        }
-        for handoff in &skill.task_handoffs {
-            validate_task_handoff(&skill, handoff)?;
-            if !keys.insert(handoff.key.clone()) {
-                return Err(CliError::with_code(
-                    "duplicate_agent_route",
-                    format!("Duplicate Agent route key: {}", handoff.key),
-                ));
+            CapabilityInvocation::Task { routes } => {
+                for route in routes {
+                    if !handler_keys.contains(&route.handler_key) {
+                        return Err(CliError::with_code(
+                            "task_handler_not_found",
+                            format!(
+                                "Task Capability {} references unknown Handler {}.",
+                                capability.key, route.handler_key
+                            ),
+                        ));
+                    }
+                    used_handler_keys.insert(route.handler_key.clone());
+                }
+                task_handoff_keys.insert(capability.key.clone());
             }
-            task_handoff_keys.insert(handoff.key.clone());
+            CapabilityInvocation::TaskScope { .. } => {
+                task_handoff_keys.insert(capability.key.clone());
+            }
         }
     }
+
+    if used_handler_keys != handler_keys {
+        let unused = handler_keys
+            .difference(&used_handler_keys)
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(CliError::with_code(
+            "task_handler_unregistered",
+            format!("Task Handlers are not referenced by the Capability Catalog: {unused:?}."),
+        ));
+    }
+
     procedures.sort_by(|left, right| left.registration.key.cmp(&right.registration.key));
     Ok(AgentProcedureCatalog {
         procedures,
@@ -71,101 +127,63 @@ fn panel_contract_reference(panel_kind: PanelKind) -> Option<&'static str> {
         PanelKind::Canvas => Some("references/canvas-contract.md"),
         PanelKind::Wiki => Some("references/wiki-contract.md"),
         PanelKind::Writing => Some("references/writing-contract.md"),
-        PanelKind::Typesetting => Some("references/typesetting-contract.md"),
-        PanelKind::Publishing => Some("references/publishing-contract.md"),
+        PanelKind::Typesetting => Some("references/publication-contract.md"),
+        PanelKind::Publishing => Some("references/release-contract.md"),
     }
 }
 
+#[cfg(test)]
 fn validate_agent_procedure(
     skill: &BuiltinSkillRegistration,
     procedure: &AgentProcedureRegistration,
 ) -> Result<(), CliError> {
-    if procedure.key.trim().is_empty()
-        || procedure.description.trim().is_empty()
-        || !matches!(
-            procedure.selection_policy.as_str(),
-            "none" | "summary" | "optional-detail" | "active-detail" | "explicit-detail"
-        )
-    {
-        return Err(CliError::with_code(
-            "agent_procedure_invalid",
-            format!("Agent Procedure registration is invalid: {}", procedure.key),
-        ));
-    }
-    validate_agent_route(
+    crate::cli::registry::descriptors_for_intents(&procedure.command_intents)?;
+    validate_capability_contract(
         skill,
         &procedure.key,
-        &procedure.description,
         procedure.panel_kind.as_deref(),
         &procedure.references,
-        &procedure.command_intents,
-        "agent_procedure_invalid",
-        "Agent Procedure",
     )
 }
 
-fn validate_task_handoff(
+fn validate_capability_registration(
     skill: &BuiltinSkillRegistration,
-    handoff: &TaskHandoffRegistration,
+    capability: &CapabilityDefinition,
 ) -> Result<(), CliError> {
-    validate_agent_route(
+    validate_capability_contract(
         skill,
-        &handoff.key,
-        &handoff.description,
-        handoff.panel_kind.as_deref(),
-        std::slice::from_ref(&handoff.reference),
-        &handoff.command_intents,
-        "task_handoff_invalid",
-        "Task Handoff",
+        &capability.key,
+        capability.panel_kind.as_deref(),
+        &capability.platform_contract.references,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn validate_agent_route(
+fn validate_capability_contract(
     skill: &BuiltinSkillRegistration,
     key: &str,
-    description: &str,
     panel_kind: Option<&str>,
     references: &[String],
-    command_intents: &[String],
-    invalid_code: &str,
-    label: &str,
 ) -> Result<(), CliError> {
-    if key.trim().is_empty()
-        || description.trim().is_empty()
-        || references.is_empty()
-        || command_intents.is_empty()
-    {
-        return Err(CliError::with_code(
-            invalid_code,
-            format!("{label} registration is invalid: {key}"),
-        ));
-    }
-    let panel_kind = panel_kind
-        .map(|kind| {
-            PanelKind::parse(kind).ok_or_else(|| {
-                CliError::with_code(
-                    invalid_code,
-                    format!("{label} {key} has an invalid panel kind: {kind}"),
-                )
-            })
-        })
-        .transpose()?;
     if let Some(panel_kind) = panel_kind {
-        let panel_kind = panel_kind.as_str();
         if !skill
             .applies_to
             .iter()
             .any(|candidate| candidate == panel_kind || candidate == "any")
         {
             return Err(CliError::with_code(
-                invalid_code,
+                "capability_catalog_invalid",
                 format!(
-                    "{label} {key} targets {panel_kind}, but Skill {} does not.",
+                    "Capability {key} targets {panel_kind}, but Skill {} does not.",
                     skill.id
                 ),
             ));
         }
+    }
+    if references.is_empty() {
+        return Err(CliError::with_code(
+            "capability_catalog_invalid",
+            format!("Capability {key} has no platform references."),
+        ));
     }
     let mut seen_references = BTreeSet::new();
     for reference in references {
@@ -178,32 +196,26 @@ fn validate_agent_route(
             || !seen_references.insert(reference)
         {
             return Err(CliError::with_code(
-                invalid_code,
-                format!("{label} reference is invalid or duplicated: {key}"),
+                "capability_catalog_invalid",
+                format!("Capability {key} has an invalid or duplicate platform reference."),
             ));
         }
         let embedded_reference = Path::new(&skill.package_dir).join(reference_path);
         if SYSTEM_SKILLS.get_file(&embedded_reference).is_none() {
             return Err(CliError::with_code(
-                if label == "Agent Procedure" {
-                    "agent_procedure_reference_not_found"
-                } else {
-                    "task_handoff_reference_not_found"
-                },
+                "capability_reference_not_found",
                 format!(
-                    "{label} {key} reference is missing: {}",
+                    "Capability {key} reference is missing: {}",
                     embedded_reference.display(),
                 ),
             ));
         }
     }
-    crate::cli::registry::descriptors_for_intents(command_intents)?;
     Ok(())
 }
 
 fn agent_procedure_bootstrap(
     paths: &MyOpenPanelsPaths,
-    cli_version: &str,
     visible: &ProjectBootstrap,
     procedure_key: &str,
 ) -> Result<Value, CliError> {
@@ -353,7 +365,27 @@ fn agent_procedure_bootstrap(
             .collect::<Vec<_>>(),
     })];
     if let Some(target) = target {
-        for selected_skill_id in selected_portable_skill_ids(target) {
+        let selected_skill_ids = match procedure.registration.local_skill.mode.as_str() {
+            "none" => Vec::new(),
+            "fixed" => procedure
+                .registration
+                .local_skill
+                .skill_id
+                .as_deref()
+                .into_iter()
+                .collect(),
+            _ => selected_portable_skill_ids(target),
+        };
+        if procedure.registration.local_skill.mode == "required" && selected_skill_ids.is_empty() {
+            blockers.push(json!({
+                "code": "local_skill_required",
+                "message": format!(
+                    "Procedure {} requires a selected Local Skill.",
+                    procedure.registration.key
+                ),
+            }));
+        }
+        for selected_skill_id in selected_skill_ids {
             let Some(selected_skill) = skills
                 .iter()
                 .find(|skill| skill.metadata.id == selected_skill_id)
@@ -385,19 +417,19 @@ fn agent_procedure_bootstrap(
     }
 
     Ok(json!({
-        "protocolVersion": AGENT_GUIDANCE_PROTOCOL_VERSION,
-        "procedureCatalogVersion": AGENT_PROCEDURE_CATALOG_VERSION,
-        "commandCatalogVersion": crate::cli::registry::COMMAND_CATALOG_VERSION,
-        "cliVersion": cli_version,
         "bootstrapBudget": {
             "maxBytes": MAX_BOOTSTRAP_ENVELOPE_BYTES,
             "unit": "utf8",
         },
         "agentProcedure": {
             "key": procedure.registration.key,
+            "moduleKey": crate::capabilities::module_key_for_capability(
+                &procedure.registration.key
+            ),
             "description": procedure.registration.description,
             "panelKind": procedure.registration.panel_kind,
             "selectionPolicy": procedure.registration.selection_policy,
+            "localSkill": procedure.registration.local_skill,
             "skillId": procedure.skill_id,
             "referencePath": primary_reference_path.display().to_string(),
             "referencePaths": reference_paths
@@ -425,7 +457,6 @@ fn agent_procedure_bootstrap(
         "operations": compact_operation_summary(&operations),
         "skills": skill_entries,
         "commands": {
-            "catalogVersion": crate::cli::registry::COMMAND_CATALOG_VERSION,
             "items": commands,
         },
         "actions": {
@@ -559,7 +590,7 @@ fn selected_portable_skill_ids(target: &ProjectBootstrap) -> Vec<&str> {
                 .as_str()
                 .into_iter()
                 .collect(),
-            Some("refine") => target.state["selectedRefinementSkillId"]
+            Some("distill") => target.state["selectedDistillationSkillId"]
                 .as_str()
                 .into_iter()
                 .collect(),

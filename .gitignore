@@ -3,4 +3,7 @@ node_modules/
 dist/
 target/
 .myopenpanels/
+.myopenpanels.archive-*/
+.myopenpanels.pre-v1-*/
+.myopenpanels.backup-*/
 *.log

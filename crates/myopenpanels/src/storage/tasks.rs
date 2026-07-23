@@ -8,25 +8,12 @@ impl Storage {
     ) -> Result<(), CliError> {
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
-        let mut changed = 0usize;
+        let mut changed = false;
+        let mut dependencies = Vec::new();
         for task in tasks {
-            let id = task
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| CliError::new("Project task id is required."))?;
-            let created_at = task
-                .get("createdAt")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(crate::control::now_iso);
-            let updated_at = task
-                .get("updatedAt")
-                .and_then(Value::as_str)
-                .unwrap_or(&created_at);
-            let task_type = task
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
+            let id = required_task_string(task, "id")?;
+            let task_type = task.get("type").and_then(Value::as_str).unwrap_or("unknown");
+            let route = crate::capabilities::task_route_for_queue_and_type(queue, task_type)?;
             let input = json!({
                 "documentId": task.get("documentId"),
                 "documentKind": task.get("documentKind"),
@@ -37,116 +24,130 @@ impl Storage {
                 "wikiSpaceId": task.get("wikiSpaceId"),
                 "agentSkillId": task.get("agentSkillId"),
             });
-            let workflow_run_id = task
-                .get("workflowRunId")
+            crate::capabilities::validate_task_local_skill(
+                queue,
+                task_type,
+                &route.capability,
+                &input,
+                &source,
+            )?;
+            let created_at = task
+                .get("createdAt")
                 .and_then(Value::as_str)
                 .map(str::to_owned)
-                .unwrap_or_else(|| workflow_run_id_for_task(id));
-            insert_workflow_run_if_missing(
-                &tx,
-                &workflow_run_id,
-                project_id,
-                panel_id,
-                &format!("{queue}.{task_type}"),
-                task.get("sourceWorkflowRunId").and_then(Value::as_str),
-                &source,
-                &created_at,
-            )?;
-            let already_exists = tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?)",
-                    [id],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(to_cli_error)?;
-            changed += tx
+                .unwrap_or_else(crate::control::now_iso);
+            let updated_at = task
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .unwrap_or(&created_at);
+            let status = normalize_task_status(
+                task.get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("queued"),
+            );
+            let depends_on = task
+                .get("dependsOnTaskId")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    task.get("dependsOnTaskIds")
+                        .and_then(Value::as_array)
+                        .and_then(|values| values.first())
+                        .and_then(Value::as_str)
+                });
+            dependencies.push((id.to_owned(), depends_on.map(str::to_owned)));
+            changed |= tx
                 .execute(
                     r#"
                     INSERT INTO tasks (
-                      id, project_id, panel_id, queue, type, capability, status, target_ref,
-                      input_json, source_json, attempts, max_attempts, created_at, updated_at,
-                      workflow_run_id, idempotency_key, available_at, required_protocol_version,
-                      mutation_key, mutation_sequence
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      id, project_id, origin_panel_id, handler_key, status, target_ref,
+                      input_json, source_json, error_json, depends_on_task_id, mutation_key,
+                      attempt_count, available_at, idempotency_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                       status = CASE
-                        WHEN excluded.status IN ('waiting', 'cancelled', 'stale', 'superseded')
-                             AND tasks.status NOT IN ('succeeded', 'cancelled', 'stale', 'superseded')
+                        WHEN tasks.status = 'succeeded' THEN tasks.status
+                        WHEN excluded.status IN ('failed', 'cancelled', 'superseded', 'succeeded')
+                          THEN excluded.status
+                        WHEN tasks.status = 'failed' AND excluded.status = 'queued'
                           THEN excluded.status
                         ELSE tasks.status
                       END,
-                      updated_at = MAX(tasks.updated_at, excluded.updated_at),
                       input_json = excluded.input_json,
                       source_json = excluded.source_json,
+                      error_json = CASE
+                        WHEN excluded.status IN ('failed', 'cancelled', 'superseded')
+                          THEN excluded.error_json
+                        WHEN tasks.status = 'failed' AND excluded.status = 'queued'
+                          THEN NULL
+                        ELSE tasks.error_json
+                      END,
+                      depends_on_task_id = COALESCE(tasks.depends_on_task_id, excluded.depends_on_task_id),
                       mutation_key = COALESCE(tasks.mutation_key, excluded.mutation_key),
-                      mutation_sequence = COALESCE(tasks.mutation_sequence, excluded.mutation_sequence),
-                      terminal_reason_json = CASE
-                        WHEN excluded.status IN ('cancelled', 'stale', 'superseded')
-                          THEN COALESCE(tasks.terminal_reason_json, json_object('code', excluded.status))
-                        ELSE tasks.terminal_reason_json
-                      END
+                      updated_at = MAX(tasks.updated_at, excluded.updated_at)
                     "#,
                     params![
                         id,
                         project_id,
                         panel_id,
-                        queue,
-                        task_type,
-                        project_task_capability(queue, task_type),
-                        task.get("status")
-                            .and_then(Value::as_str)
-                            .unwrap_or("queued"),
+                        route.handler_key,
+                        status,
                         task.get("targetId").and_then(Value::as_str).unwrap_or(""),
                         serde_json::to_string(&input).map_err(to_cli_error)?,
                         serde_json::to_string(&source).map_err(to_cli_error)?,
-                        task.get("attempt").and_then(Value::as_i64).unwrap_or(0),
-                        task.get("maxAttempts").and_then(Value::as_i64).unwrap_or(8),
+                        task.get("error")
+                            .filter(|value| !value.is_null())
+                            .map(serde_json::to_string)
+                            .transpose()
+                            .map_err(to_cli_error)?,
+                        Option::<&str>::None,
+                        task.get("mutationKey").and_then(Value::as_str),
+                        task.get("attempt").and_then(Value::as_i64).unwrap_or(0).clamp(0, crate::tasks::TASK_EXECUTION_LIMIT),
+                        task.get("availableAt").and_then(Value::as_str).unwrap_or(&created_at),
+                        task.get("idempotencyKey").and_then(Value::as_str),
                         created_at,
                         updated_at,
-                        workflow_run_id,
-                        task.get("idempotencyKey").and_then(Value::as_str),
-                        task.get("availableAt")
-                            .and_then(Value::as_str)
-                            .unwrap_or(&created_at),
-                        crate::content::EXECUTION_PROTOCOL_VERSION,
-                        task.get("mutationKey").and_then(Value::as_str),
-                        task.get("mutationSequence").and_then(Value::as_i64),
                     ],
                 )
-                .map_err(to_cli_error)?;
-            if !already_exists {
-                insert_task_created_records(
-                    &tx,
-                    id,
-                    &workflow_run_id,
-                    project_id,
-                    task.get("status")
-                        .and_then(Value::as_str)
-                        .unwrap_or("queued"),
-                    &project_task_capability(queue, task_type),
-                    &input,
-                    &created_at,
-                )?;
-            }
+                .map_err(to_cli_error)?
+                > 0;
         }
-        for task in tasks {
-            let Some(task_id) = task.get("id").and_then(Value::as_str) else {
-                continue;
-            };
-            if let Some(dependencies) = task.get("dependsOnTaskIds").and_then(Value::as_array) {
-                for prerequisite_id in dependencies.iter().filter_map(Value::as_str) {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO task_dependencies (task_id, prerequisite_task_id, success_condition, failure_policy, created_at) VALUES (?, ?, 'succeeded', 'cancel', ?)",
-                        params![task_id, prerequisite_id, crate::control::now_iso()],
-                    )
-                    .map_err(to_cli_error)?;
-                }
-            }
+        for (task_id, depends_on) in dependencies {
+            changed |= tx
+                .execute(
+                    "UPDATE tasks SET depends_on_task_id = ? WHERE id = ? AND project_id = ? AND depends_on_task_id IS NOT ?",
+                    params![depends_on, task_id, project_id, depends_on],
+                )
+                .map_err(to_cli_error)?
+                > 0;
         }
-        if changed > 0 {
+        if changed {
             record_scope(&tx, "tasks", Some(project_id), None)?;
         }
+        sync_task_resources_for_project(&tx, project_id)?;
         tx.commit().map_err(to_cli_error)
+    }
+
+    pub fn insert_capability_task(
+        &self,
+        project_id: &str,
+        panel_id: &str,
+        capability_key: &str,
+        task_type: &str,
+        target_ref: &str,
+        input: &Value,
+        source: &Value,
+    ) -> Result<Value, CliError> {
+        let route = crate::capabilities::task_route_for_capability(capability_key, task_type)?;
+        self.insert_task(
+            project_id,
+            panel_id,
+            &route.queue,
+            &route.task_type,
+            &route.capability,
+            target_ref,
+            input,
+            source,
+        )
     }
 
     pub fn insert_task(
@@ -160,100 +161,38 @@ impl Storage {
         input: &Value,
         source: &Value,
     ) -> Result<Value, CliError> {
-        let id = crate::ids::random_id("task");
-        let workflow_run_id = workflow_run_id_for_task(&id);
-        let now = crate::control::now_iso();
-        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
-            .map_err(to_cli_error)?;
-        insert_workflow_run_if_missing(
-            &tx,
-            &workflow_run_id,
-            project_id,
-            panel_id,
-            &format!("{queue}.{task_type}"),
-            None,
-            source,
-            &now,
-        )?;
-        tx.execute(
-            r#"
-                INSERT INTO tasks (
-                  id, project_id, panel_id, queue, type, capability, status, target_ref,
-                  input_json, source_json, attempts, max_attempts, created_at, updated_at,
-                  workflow_run_id, idempotency_key, available_at, required_protocol_version,
-                  dispatch_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, 8, ?, ?, ?, NULL, ?, ?, 'auto')
-            "#,
-            params![
-                id,
-                project_id,
-                panel_id,
-                queue,
-                task_type,
-                capability,
-                target_ref,
-                serde_json::to_string(input).map_err(to_cli_error)?,
-                serde_json::to_string(source).map_err(to_cli_error)?,
-                now,
-                now,
-                workflow_run_id,
-                now,
-                crate::content::EXECUTION_PROTOCOL_VERSION,
-            ],
-        )
-        .map_err(to_cli_error)?;
-        insert_task_created_records(
-            &tx,
-            &id,
-            &workflow_run_id,
-            project_id,
-            "queued",
+        crate::capabilities::validate_task_local_skill(
+            queue,
+            task_type,
             capability,
             input,
-            &now,
+            source,
         )?;
-        record_scope(&tx, "tasks", Some(project_id), None)?;
-        tx.commit().map_err(to_cli_error)?;
-        self.list_tasks(project_id)?
-            .into_iter()
-            .find(|task| task.get("id").and_then(Value::as_str) == Some(id.as_str()))
-            .ok_or_else(|| CliError::new(format!("Created task was not found: {id}")))
-    }
-
-    pub(crate) fn ensure_workflow_run(
-        &self,
-        project_id: &str,
-        panel_id: &str,
-        workflow_run_id: &str,
-        definition_key: &str,
-        status: &str,
-        source: &Value,
-    ) -> Result<(), CliError> {
+        let route = crate::capabilities::task_route(queue, task_type, capability)?
+            .ok_or_else(|| CliError::with_code("task_route_not_found", "Task handler not found."))?;
+        let id = crate::ids::random_id("task");
+        let now = crate::control::now_iso();
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
-        let now = crate::control::now_iso();
-        insert_workflow_run_if_missing(
+        insert_task_row(
             &tx,
-            workflow_run_id,
+            &id,
             project_id,
             panel_id,
-            definition_key,
-            None,
+            route.handler_key.as_str(),
+            target_ref,
+            input,
             source,
+            None,
+            None,
+            None,
             &now,
         )?;
-        tx.execute(
-            "UPDATE workflow_runs SET definition_key = ?, status = ?, source_json = ?, updated_at = ? WHERE id = ?",
-            params![
-                definition_key,
-                status,
-                serde_json::to_string(source).map_err(to_cli_error)?,
-                now,
-                workflow_run_id
-            ],
-        )
-        .map_err(to_cli_error)?;
-        tx.commit().map_err(to_cli_error)
+        sync_task_resources_for_project(&tx, project_id)?;
+        record_scope(&tx, "tasks", Some(project_id), None)?;
+        tx.commit().map_err(to_cli_error)?;
+        self.read_task_value(project_id, &id)?
+            .ok_or_else(|| CliError::new(format!("Created task was not found: {id}")))
     }
 
     pub fn insert_tasks_with_panel_states(
@@ -267,29 +206,27 @@ impl Storage {
             return Ok((Vec::new(), Vec::new()));
         }
         let now = crate::control::now_iso();
-        let task_ids = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
-        let workflow_run_id = crate::ids::random_id("workflow-run");
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
-        insert_workflow_run_if_missing(
-            &tx,
-            &workflow_run_id,
-            project_id,
-            panel_id,
-            tasks
-                .first()
-                .map(|task| task.queue.as_str())
-                .unwrap_or("task"),
-            None,
-            &json!({ "createdBy": "task.insertMany" }),
-            &now,
-        )?;
-        for (task, id) in tasks.iter().zip(&task_ids) {
+        for task in tasks {
+            crate::capabilities::validate_task_local_skill(
+                &task.queue,
+                &task.task_type,
+                &task.capability,
+                &task.input,
+                &task.source,
+            )?;
+            let route = crate::capabilities::task_route(
+                &task.queue,
+                &task.task_type,
+                &task.capability,
+            )?
+            .ok_or_else(|| CliError::with_code("task_route_not_found", "Task handler not found."))?;
             if task.exclusive_non_terminal {
                 let busy = tx
                     .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id = ? AND panel_id = ? AND queue = ? AND type = ? AND target_ref = ? AND status NOT IN ('failed', 'succeeded', 'cancelled', 'stale', 'superseded'))",
-                        params![project_id, panel_id, &task.queue, &task.task_type, &task.target_ref],
+                        "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id = ? AND origin_panel_id = ? AND handler_key = ? AND target_ref = ? AND status IN ('queued', 'running'))",
+                        params![project_id, panel_id, route.handler_key, task.target_ref],
                         |row| row.get::<_, bool>(0),
                     )
                     .map_err(to_cli_error)?;
@@ -300,44 +237,18 @@ impl Storage {
                     ));
                 }
             }
-            tx.execute(
-                r#"
-                INSERT INTO tasks (
-                  id, project_id, panel_id, queue, type, capability, status, target_ref,
-                  input_json, source_json, attempts, max_attempts, created_at, updated_at,
-                  workflow_run_id, idempotency_key, available_at, required_protocol_version,
-                  dispatch_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
-                "#,
-                params![
-                    id,
-                    project_id,
-                    panel_id,
-                    &task.queue,
-                    &task.task_type,
-                    &task.capability,
-                    &task.target_ref,
-                    serde_json::to_string(&task.input).map_err(to_cli_error)?,
-                    serde_json::to_string(&task.source).map_err(to_cli_error)?,
-                    task.max_attempts,
-                    now,
-                    now,
-                    workflow_run_id,
-                    task.idempotency_key,
-                    now,
-                    crate::content::EXECUTION_PROTOCOL_VERSION,
-                    &task.dispatch_mode,
-                ],
-            )
-            .map_err(to_cli_error)?;
-            insert_task_created_records(
+            insert_task_row(
                 &tx,
-                id,
-                &workflow_run_id,
+                &task.id,
                 project_id,
-                "queued",
-                &task.capability,
+                panel_id,
+                &route.handler_key,
+                &task.target_ref,
                 &task.input,
+                &task.source,
+                None,
+                None,
+                task.idempotency_key.as_deref(),
                 &now,
             )?;
         }
@@ -347,227 +258,228 @@ impl Storage {
                 Self::write_panel_state_in_transaction(&tx, project_id, state_panel_id, state)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        sync_task_resources_for_project(&tx, project_id)?;
         record_scope(&tx, "tasks", Some(project_id), None)?;
         tx.commit().map_err(to_cli_error)?;
 
-        let mut created = self
-            .list_tasks(project_id)?
-            .into_iter()
-            .filter_map(|task| {
-                let id = task.get("id").and_then(Value::as_str)?.to_owned();
-                Some((id, task))
-            })
-            .collect::<HashMap<_, _>>();
-        let tasks = task_ids
-            .into_iter()
-            .map(|id| {
-                created
-                    .remove(&id)
-                    .ok_or_else(|| CliError::new(format!("Created task was not found: {id}")))
+        let created = tasks
+            .iter()
+            .map(|task| {
+                self.read_task_value(project_id, &task.id)?
+                    .ok_or_else(|| CliError::new(format!("Created task was not found: {}", task.id)))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok((tasks, revisions))
+        Ok((created, revisions))
     }
 
     pub fn list_tasks(&self, project_id: &str) -> Result<Vec<Value>, CliError> {
-        let mut statement = self
-            .connection
-            .prepare(
-                r#"
-                SELECT
-                  t.id, t.queue, t.project_id, t.panel_id, p.kind, t.type, t.status,
-                  t.target_ref, t.created_at, t.updated_at, t.attempts, t.max_attempts,
-                  t.lease_owner, t.lease_expires_at, t.last_heartbeat_at, t.retry_after,
-                  t.capability, t.assigned_agent_id, t.result_json, t.error_json, t.completed_at,
-                  t.input_json, t.source_json, t.workflow_run_id, t.execution_generation,
-                  t.available_at, t.archived_at, t.terminal_reason_json,
-                  t.required_protocol_version, t.dispatch_mode,
-                  t.requested_gateway_connection_id,
-                  t.mutation_key, t.mutation_sequence,
-                  current_target.name, current_target.host,
-                  current_target.model_gateway_connection_id,
-                  COALESCE(
-                    (SELECT json_object(
-                       'modelGatewayConnectionId', latest.model_gateway_connection_id,
-                       'executorSnapshotJson', latest.executor_snapshot_json
-                     )
-                     FROM task_attempts latest
-                     WHERE latest.task_id = t.id
-                     ORDER BY latest.execution_generation DESC, latest.started_at DESC
-                     LIMIT 1),
-                    (SELECT json_object(
-                       'modelGatewayConnectionId', latest.model_gateway_connection_id,
-                       'executorSnapshotJson', latest.executor_snapshot_json
-                     )
-                     FROM task_attempts latest
-                     WHERE latest.task_id = json_extract(t.result_json, '$.leaderTaskId')
-                     ORDER BY latest.execution_generation DESC, latest.started_at DESC
-                     LIMIT 1)
-                  )
-                FROM tasks t
-                JOIN panels p ON p.project_id = t.project_id AND p.id = t.panel_id
-                LEFT JOIN agent_targets current_target ON current_target.id = t.assigned_agent_id
-                WHERE t.project_id = ?
-                ORDER BY t.updated_at DESC, t.id ASC
-                "#,
-            )
-            .map_err(to_cli_error)?;
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT t.id, t.project_id, t.origin_panel_id, COALESCE(p.kind, ''), t.handler_key,
+                   t.status, t.target_ref, t.input_json, t.source_json, t.result_json,
+                   t.error_json, t.depends_on_task_id, t.retry_of_task_id, t.mutation_key,
+                   t.attempt_count, t.attempt_history_json, t.current_runner_key, t.available_at,
+                   t.execution_generation, t.lease_owner, t.lease_expires_at,
+                   t.heartbeat_at, t.created_at, t.updated_at, t.completed_at, t.archived_at
+            FROM tasks t
+            LEFT JOIN panels p ON p.project_id = t.project_id AND p.id = t.origin_panel_id
+            WHERE t.project_id = ?
+            ORDER BY t.updated_at DESC, t.id ASC
+            "#,
+        ).map_err(to_cli_error)?;
         let rows = statement
-            .query_map(params![project_id], |row| {
-                let input_json: String = row.get(21)?;
-                let source_json: String = row.get(22)?;
-                let input =
-                    serde_json::from_str::<Value>(&input_json).unwrap_or_else(|_| json!({}));
-                let source =
-                    serde_json::from_str::<Value>(&source_json).unwrap_or_else(|_| json!({}));
-                let queue = row.get::<_, String>(1)?;
-                let panel_kind = row.get::<_, String>(4)?;
-                let task_type = row.get::<_, String>(5)?;
-                let status = row.get::<_, String>(6)?;
-                let target_id = row.get::<_, String>(7)?;
-                let attempts = row.get::<_, i64>(10)?;
-                let max_attempts = row.get::<_, i64>(11)?;
-                let lease_owner = row.get::<_, Option<String>>(12)?;
-                let lease_expires_at = row.get::<_, Option<String>>(13)?;
-                let last_heartbeat_at = row.get::<_, Option<String>>(14)?;
-                let retry_after = row.get::<_, Option<String>>(15)?;
-                let capability = row.get::<_, Option<String>>(16)?;
-                let assigned_agent_id = row.get::<_, Option<String>>(17)?;
-                let result_json = row.get::<_, Option<String>>(18)?;
-                let error_json = row.get::<_, Option<String>>(19)?;
-                let completed_at = row.get::<_, Option<String>>(20)?;
-                let terminal_reason_json = row.get::<_, Option<String>>(27)?;
-                let result = result_json
-                    .as_deref()
-                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                    .unwrap_or(Value::Null);
-                let error = error_json
-                    .as_deref()
-                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                    .unwrap_or(Value::Null);
-                let terminal_reason = terminal_reason_json
-                    .as_deref()
-                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                    .unwrap_or(Value::Null);
-                let current_target_name = row.get::<_, Option<String>>(33)?;
-                let current_target_host = row.get::<_, Option<String>>(34)?;
-                let current_connection_id = row.get::<_, Option<String>>(35)?;
-                let latest_execution = row
-                    .get::<_, Option<String>>(36)?
-                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                    .unwrap_or(Value::Null);
-                let latest_connection_id = latest_execution
-                    .get("modelGatewayConnectionId")
-                    .and_then(Value::as_str);
-                let latest_executor_snapshot = latest_execution
-                    .get("executorSnapshotJson")
-                    .and_then(Value::as_str)
-                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                    .unwrap_or(Value::Null);
-                let (connection_id, target_name, target_host) =
-                    if current_target_name.is_some() || current_target_host.is_some() {
-                        (
-                            current_connection_id.as_deref(),
-                            current_target_name.as_deref(),
-                            current_target_host.as_deref(),
-                        )
-                    } else {
-                        (
-                            latest_connection_id.or_else(|| {
-                                latest_executor_snapshot
-                                    .get("modelGatewayConnectionId")
-                                    .and_then(Value::as_str)
-                            }),
-                            latest_executor_snapshot
-                                .get("targetName")
-                                .and_then(Value::as_str),
-                            latest_executor_snapshot.get("host").and_then(Value::as_str),
-                        )
-                    };
-                Ok(TaskRecord {
-                    id: row.get(0)?,
-                    workflow_run_id: row.get(23)?,
-                    queue: queue.clone(),
-                    project_id: row.get(2)?,
-                    panel_id: row.get(3)?,
-                    panel_kind,
-                    task_type: task_type.clone(),
-                    status: TaskStatus(status),
-                    target_id,
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
-                    attempt: attempts,
-                    max_attempts,
-                    lease: TaskLease {
-                        owner: assigned_agent_id.clone().or(lease_owner),
-                        expires_at: lease_expires_at,
-                        heartbeat_at: last_heartbeat_at,
-                    },
-                    retry_after,
-                    capability: capability.unwrap_or_default(),
-                    assigned_target_id: assigned_agent_id,
-                    completed_at,
-                    execution_generation: row.get(24)?,
-                    execution_method: task_execution_method(
-                        connection_id,
-                        target_name,
-                        target_host,
-                    ),
-                    available_at: row.get(25)?,
-                    archived_at: row.get(26)?,
-                    terminal_reason,
-                    required_protocol_version: row.get(28)?,
-                    dispatch_mode: row.get(29)?,
-                    requested_gateway_connection_id: row.get(30)?,
-                    mutation_key: row.get(31)?,
-                    mutation_sequence: row.get(32)?,
-                    input,
-                    source,
-                    result,
-                    error,
-                })
-            })
+            .query_map([project_id], task_value_from_row)
             .map_err(to_cli_error)?;
-        rows.map(|row| {
-            row.map_err(to_cli_error)
-                .and_then(|task| serde_json::to_value(task).map_err(to_cli_error))
+        let mut tasks = rows
+            .map(|row| row.map_err(to_cli_error))
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        for task in &mut tasks {
+            let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
+            task["resources"] = json!(self.task_resource_links(task_id)?);
+        }
+        Ok(tasks)
+    }
+
+    fn read_task_value(&self, project_id: &str, task_id: &str) -> Result<Option<Value>, CliError> {
+        self.list_tasks(project_id).map(|tasks| {
+            tasks
+                .into_iter()
+                .find(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
         })
-        .collect()
     }
 
     pub fn task_panel_target(&self, task_id: &str) -> Result<Option<(String, String)>, CliError> {
         self.connection
             .query_row(
-                "SELECT project_id, panel_id FROM tasks WHERE id = ? LIMIT 1",
+                "SELECT project_id, origin_panel_id FROM tasks WHERE id = ? AND origin_panel_id IS NOT NULL LIMIT 1",
                 [task_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(to_cli_error)
     }
+
+    fn task_resource_links(&self, task_id: &str) -> Result<Vec<Value>, CliError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"
+                SELECT tr.resource_id, r.kind, tr.role, tr.captured_version
+                FROM task_resources tr
+                JOIN resources r ON r.id = tr.resource_id
+                WHERE tr.task_id = ?
+                ORDER BY
+                  CASE tr.role
+                    WHEN 'primary' THEN 0
+                    WHEN 'input' THEN 1
+                    WHEN 'output' THEN 2
+                    ELSE 3
+                  END,
+                  tr.resource_id
+                "#,
+            )
+            .map_err(to_cli_error)?;
+        let rows = statement
+            .query_map([task_id], |row| {
+                Ok(json!({
+                    "resourceId": row.get::<_, String>(0)?,
+                    "resourceKind": row.get::<_, String>(1)?,
+                    "role": row.get::<_, String>(2)?,
+                    "capturedVersion": row.get::<_, Option<i64>>(3)?,
+                }))
+            })
+            .map_err(to_cli_error)?;
+        rows.map(|row| row.map_err(to_cli_error)).collect()
+    }
 }
 
-fn task_execution_method(
-    connection_id: Option<&str>,
-    target_name: Option<&str>,
-    target_host: Option<&str>,
-) -> Value {
-    if target_host == Some("agent-message") {
-        return json!({ "kind": "manualInstruction" });
-    }
-    if let Some(provider_id) = connection_id.and_then(|id| id.strip_prefix("local-cli:")) {
-        return json!({
+#[allow(clippy::too_many_arguments)]
+fn insert_task_row(
+    connection: &Connection,
+    id: &str,
+    project_id: &str,
+    panel_id: &str,
+    handler_key: &str,
+    target_ref: &str,
+    input: &Value,
+    source: &Value,
+    depends_on_task_id: Option<&str>,
+    retry_of_task_id: Option<&str>,
+    idempotency_key: Option<&str>,
+    now: &str,
+) -> Result<(), CliError> {
+    connection.execute(
+        r#"
+        INSERT INTO tasks (
+          id, project_id, origin_panel_id, handler_key, status, target_ref,
+          input_json, source_json, depends_on_task_id, retry_of_task_id,
+          available_at, idempotency_key, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+        params![
+            id,
+            project_id,
+            panel_id,
+            handler_key,
+            target_ref,
+            serde_json::to_string(input).map_err(to_cli_error)?,
+            serde_json::to_string(source).map_err(to_cli_error)?,
+            depends_on_task_id,
+            retry_of_task_id,
+            now,
+            idempotency_key,
+            now,
+            now,
+        ],
+    ).map_err(to_cli_error)?;
+    Ok(())
+}
+
+fn task_value_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let parse = |index: usize| -> Value {
+        row.get::<_, String>(index)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or(Value::Null)
+    };
+    let parse_optional = |index: usize| -> Value {
+        row.get::<_, Option<String>>(index)
+            .ok()
+            .flatten()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or(Value::Null)
+    };
+    let handler_key = row.get::<_, String>(4)?;
+    let route = crate::capabilities::task_route_for_handler(&handler_key)
+        .ok()
+        .flatten();
+    let current_runner = row.get::<_, Option<String>>(16)?;
+    let execution_method = current_runner
+        .as_deref()
+        .map(|provider_id| json!({
             "kind": "localCli",
-            "connectionId": connection_id,
+            "connectionId": format!("local-cli:{provider_id}"),
             "providerId": provider_id,
-        });
+        }))
+        .unwrap_or(Value::Null);
+    let attempt_history = parse(15);
+    let error = parse_optional(10);
+    let available_at = row.get::<_, String>(17)?;
+    let retry_after = (available_at > crate::control::now_iso())
+        .then(|| available_at.clone());
+    Ok(json!({
+        "id": row.get::<_, String>(0)?,
+        "projectId": row.get::<_, String>(1)?,
+        "panelId": row.get::<_, Option<String>>(2)?,
+        "panelKind": row.get::<_, String>(3)?,
+        "handlerKey": handler_key,
+        "queue": route.map(|value| value.queue.as_str()).unwrap_or(""),
+        "type": route.map(|value| value.task_type.as_str()).unwrap_or(""),
+        "capability": route.map(|value| value.capability.as_str()).unwrap_or(""),
+        "status": row.get::<_, String>(5)?,
+        "targetId": row.get::<_, String>(6)?,
+        "input": parse(7),
+        "source": parse(8),
+        "result": parse_optional(9),
+        "error": error,
+        "terminalReason": error,
+        "dependsOnTaskId": row.get::<_, Option<String>>(11)?,
+        "retryOfTaskId": row.get::<_, Option<String>>(12)?,
+        "mutationKey": row.get::<_, Option<String>>(13)?,
+        "attempt": row.get::<_, i64>(14)?,
+        "attemptLimit": crate::tasks::TASK_EXECUTION_LIMIT,
+        "attempts": attempt_history,
+        "currentRunnerKey": current_runner,
+        "availableAt": available_at,
+        "retryAfter": retry_after,
+        "executionGeneration": row.get::<_, i64>(18)?,
+        "executionMethod": execution_method,
+        "lease": {
+            "owner": row.get::<_, Option<String>>(19)?,
+            "expiresAt": row.get::<_, Option<String>>(20)?,
+            "heartbeatAt": row.get::<_, Option<String>>(21)?,
+        },
+        "createdAt": row.get::<_, String>(22)?,
+        "updatedAt": row.get::<_, String>(23)?,
+        "completedAt": row.get::<_, Option<String>>(24)?,
+        "archivedAt": row.get::<_, Option<String>>(25)?,
+    }))
+}
+
+fn normalize_task_status(status: &str) -> &'static str {
+    match status {
+        "succeeded" => "succeeded",
+        "failed" => "failed",
+        "cancelled" | "cancel_requested" => "cancelled",
+        "stale" | "superseded" => "superseded",
+        "reserved" | "running" | "claimed" | "converting" | "indexing" => "running",
+        _ => "queued",
     }
-    if connection_id.is_some() || target_name.is_some() {
-        return json!({
-            "kind": "agentTarget",
-            "connectionId": connection_id,
-            "label": target_name,
-        });
-    }
-    Value::Null
+}
+
+fn required_task_string<'a>(task: &'a Value, key: &str) -> Result<&'a str, CliError> {
+    task.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new(format!("Project task {key} is required.")))
 }

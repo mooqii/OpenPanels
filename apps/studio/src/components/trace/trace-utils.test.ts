@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest"
 import type { ProjectTask, TraceCategory, TraceEvent } from "../../types"
 import {
-  canDeleteTask,
-  groupWikiUpdateTasks,
+  canArchiveTask,
+  formatTaskError,
   isPendingTask,
   manualAgentScopeCandidates,
   manualTaskInstruction,
-  taskDeleteNeedsConfirmation,
+  pendingTaskCount,
+  retryTaskAgentMessage,
   traceEventMatchesFilter,
 } from "./trace-utils"
 
@@ -62,68 +63,27 @@ function projectTask(overrides: Partial<ProjectTask>): ProjectTask {
   }
 }
 
-describe("Wiki update task groups", () => {
-  it("projects serial Wiki mutations as one aggregate task", () => {
-    const grouped = groupWikiUpdateTasks([
-      projectTask({
-        id: "task:one",
-        mutationKey: "wiki:project:panel:default",
-        mutationSequence: 1,
-        status: "succeeded",
-      }),
-      projectTask({
-        id: "task:two",
-        mutationKey: "wiki:project:panel:default",
-        mutationSequence: 2,
-        status: "claimed",
-        type: "maintain_wiki",
-      }),
-      projectTask({
-        id: "task:conversion",
-        mutationKey: null,
-        type: "convert_document_to_markdown",
-      }),
-    ])
-
-    expect(grouped).toHaveLength(2)
-    const wikiGroup = grouped.find((task) => task.wikiUpdateGroup)
-    expect(wikiGroup?.status).toBe("running")
-    expect(wikiGroup?.wikiUpdateGroup?.taskIds).toEqual([
-      "task:one",
-      "task:two",
-    ])
-    expect(wikiGroup?.result).toEqual({ completedTaskCount: 1, taskCount: 2 })
-  })
-})
-
-describe("task deletion rules", () => {
-  it("allows pending and terminal tasks but rejects active tasks and aggregates", () => {
-    expect(canDeleteTask(projectTask({ status: "waiting" }))).toBe(true)
-    expect(canDeleteTask(projectTask({ status: "queued" }))).toBe(true)
-    expect(canDeleteTask(projectTask({ status: "failed" }))).toBe(true)
-    expect(canDeleteTask(projectTask({ status: "succeeded" }))).toBe(true)
-    expect(canDeleteTask(projectTask({ status: "running" }))).toBe(false)
-
-    const aggregate = groupWikiUpdateTasks([
-      projectTask({ mutationKey: "wiki:mutation", status: "queued" }),
-    ])[0]
-    expect(canDeleteTask(aggregate)).toBe(false)
+describe("task archive rules", () => {
+  it("allows terminal tasks and rejects queued or running tasks", () => {
+    expect(canArchiveTask(projectTask({ status: "failed" }))).toBe(true)
+    expect(canArchiveTask(projectTask({ status: "succeeded" }))).toBe(true)
+    expect(canArchiveTask(projectTask({ status: "cancelled" }))).toBe(true)
+    expect(canArchiveTask(projectTask({ status: "superseded" }))).toBe(true)
+    expect(canArchiveTask(projectTask({ status: "queued" }))).toBe(false)
+    expect(canArchiveTask(projectTask({ status: "running" }))).toBe(false)
+    expect(isPendingTask(projectTask({ status: "queued" }))).toBe(true)
+    expect(isPendingTask(projectTask({ status: "failed" }))).toBe(false)
   })
 
-  it("confirms only waiting work that can still run", () => {
+  it("uses the same pending definition for counts and filtering", () => {
     expect(
-      taskDeleteNeedsConfirmation(projectTask({ status: "waiting" }))
-    ).toBe(true)
-    expect(taskDeleteNeedsConfirmation(projectTask({ status: "queued" }))).toBe(
-      true
-    )
-    expect(taskDeleteNeedsConfirmation(projectTask({ status: "failed" }))).toBe(
-      false
-    )
-    expect(isPendingTask(projectTask({ status: "failed" }))).toBe(true)
+      pendingTaskCount([
+        projectTask({ id: "task:queued", status: "queued" }),
+        projectTask({ id: "task:failed", status: "failed" }),
+      ])
+    ).toBe(1)
   })
 })
-
 describe("manual task instructions", () => {
   it("includes the exact scope command in the current language", () => {
     const scope = { kind: "exact-task", taskId: "task:manual" } as const
@@ -235,5 +195,27 @@ describe("manual task instructions", () => {
         },
       },
     ])
+  })
+})
+
+describe("retry task Agent messages", () => {
+  it("reads the failed task before retrying it exactly once", () => {
+    const message = retryTaskAgentMessage("task:failed", "zh-CN", {
+      channel: "development",
+    })
+
+    expect(message).toContain("scripts/myopenpanels-dev task read")
+    expect(message).toContain(
+      "scripts/myopenpanels-dev task retry --task-id task:failed --format json"
+    )
+    expect(message).toContain("只运行一次")
+    expect(message).toContain("不要领取或执行新任务")
+    expect(message).not.toContain("task handoff start")
+  })
+})
+
+describe("task errors", () => {
+  it("preserves Error messages", () => {
+    expect(formatTaskError(new Error("Retry rejected"))).toBe("Retry rejected")
   })
 })

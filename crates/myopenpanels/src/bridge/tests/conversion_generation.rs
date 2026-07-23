@@ -15,6 +15,7 @@
             crate::control::BootstrapRequest::new(),
         )
         .expect("bootstrap");
+        let wiki_space_id = active_wiki_space_id(&paths);
         let original_bytes = b"PROMPT-SECRET-BINARY\0\xff";
         crate::wiki::add_raw_document(
             &paths,
@@ -22,7 +23,7 @@
             Some("Conversion source"),
             Some("application/pdf"),
             "user",
-            Some("wiki:default"),
+            Some(&wiki_space_id),
             original_bytes,
         )
         .expect("raw document");
@@ -55,13 +56,10 @@
             original_bytes
         );
         assert!(workspace.join("task-context.json").is_file());
-        assert!(workspace.join("instructions/convert-document.md").is_file());
         assert!(workspace.join("outputs").is_dir());
-        assert!(prompt.contains("# Conversion Instructions"));
-        assert!(prompt.contains("Convert A Raw Document To Markdown"));
         assert!(prompt.contains(original_path.to_str().unwrap()));
         assert!(!prompt.contains("wiki raw update"));
-        assert!(prompt.contains("\"schemaVersion\": 2"));
+        assert!(!prompt.contains("schemaVersion"));
         assert!(prompt.contains("outputs/source.md"));
         assert!(!prompt.contains("PROMPT-SECRET-BINARY"));
         assert!(!prompt.contains("workflow:noise"));
@@ -103,13 +101,14 @@
             crate::control::BootstrapRequest::new(),
         )
         .expect("bootstrap");
+        let wiki_space_id = active_wiki_space_id(&paths);
         let uploaded = crate::wiki::add_raw_document(
             &paths,
             "automatic.pdf",
             Some("Automatic conversion"),
             Some("application/pdf"),
             "user",
-            Some("wiki:default"),
+            Some(&wiki_space_id),
             b"binary fixture",
         )
         .expect("raw document");
@@ -129,7 +128,6 @@
                 project_id: Some(&bootstrap.project.id),
                 capabilities: vec!["wiki.convertDocument".to_owned()],
                 priority: 0,
-                protocol_version: 3,
                 max_concurrency: 1,
                 model_gateway_connection_id: None,
             },
@@ -143,12 +141,12 @@
         )
         .expect("claim");
         #[cfg(unix)]
-        let command = r#"printf '# Automatic Runtime\n' > outputs/source.md && printf '%s' '{"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#.to_owned();
+        let command = r#"printf '# Automatic Runtime\n' > outputs/source.md && printf '%s' '{"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#.to_owned();
         #[cfg(windows)]
         let command = {
             use base64::Engine as _;
 
-            let script = r##"[IO.File]::WriteAllText('outputs/source.md', "# Automatic Runtime`n"); [IO.File]::WriteAllText('execution-result.json', '{"schemaVersion":2,"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}')"##;
+            let script = r##"[IO.File]::WriteAllText('outputs/source.md', "# Automatic Runtime`n"); [IO.File]::WriteAllText('execution-result.json', '{"outcome":"converted","summary":"Converted automatically.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}')"##;
             let utf16 = script
                 .encode_utf16()
                 .flat_map(u16::to_le_bytes)
@@ -187,6 +185,37 @@
             markdown["markdown"].as_str().unwrap().replace("\r\n", "\n"),
             "# Automatic Runtime\n"
         );
+        let storage = crate::storage::Storage::open(&paths).expect("storage");
+        let tasks = storage
+            .list_tasks(&bootstrap.project.id)
+            .expect("tasks after conversion");
+        let ingestion_tasks = tasks
+            .iter()
+            .filter(|candidate| {
+                candidate["type"] == "ingest_markdown_into_wiki"
+                    && candidate["input"]["documentId"] == document_id
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ingestion_tasks.len(),
+            1,
+            "conversion must reuse the dependent ingestion Task"
+        );
+        assert_eq!(
+            ingestion_tasks[0]["dependsOnTaskId"], task["id"],
+            "claiming the conversion Task must not clear the ingestion dependency"
+        );
+        let state = storage
+            .read_panel_state(&bootstrap.project.id, &bootstrap.panel.id)
+            .expect("panel state")
+            .expect("Wiki state");
+        let ingestion =
+            &state["rawDocuments"][0]["ingestionByWikiSpace"][wiki_space_id.as_str()];
+        assert_eq!(ingestion["status"], "queued");
+        assert_eq!(
+            ingestion["taskId"], ingestion_tasks[0]["id"],
+            "the document projection must reference a persisted Task"
+        );
     }
 
     #[test]
@@ -206,7 +235,7 @@
             crate::control::BootstrapRequest::new(),
         )
         .expect("bootstrap");
-        let imported = crate::wiki::import_generated_document(
+        let imported = crate::wiki::import_my_document(
             &paths,
             "brief.pdf",
             Some("Brief"),
@@ -223,7 +252,7 @@
             .into_iter()
             .find(|task| task["id"] == task_id)
             .expect("conversion task");
-        assert_eq!(task["input"]["documentKind"], "generated");
+        assert_eq!(task["input"]["documentKind"], "my_document");
 
         let target = crate::tasks::register_target(
             &paths,
@@ -233,7 +262,6 @@
                 project_id: Some(&bootstrap.project.id),
                 capabilities: vec!["wiki.convertDocument".to_owned()],
                 priority: 0,
-                protocol_version: 3,
                 max_concurrency: 1,
                 model_gateway_connection_id: None,
             },
@@ -247,12 +275,12 @@
         )
         .expect("claim");
         #[cfg(unix)]
-        let command = r#"printf '# Imported Document\n' > outputs/source.md && printf '%s' '{"schemaVersion":2,"outcome":"converted","summary":"Converted imported document.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#.to_owned();
+        let command = r#"printf '# Imported Document\n' > outputs/source.md && printf '%s' '{"outcome":"converted","summary":"Converted imported document.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}' > execution-result.json"#.to_owned();
         #[cfg(windows)]
         let command = {
             use base64::Engine as _;
 
-            let script = r##"[IO.File]::WriteAllText('outputs/source.md', "# Imported Document`n"); [IO.File]::WriteAllText('execution-result.json', '{"schemaVersion":2,"outcome":"converted","summary":"Converted imported document.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}')"##;
+            let script = r##"[IO.File]::WriteAllText('outputs/source.md', "# Imported Document`n"); [IO.File]::WriteAllText('execution-result.json', '{"outcome":"converted","summary":"Converted imported document.","artifacts":[{"role":"source-markdown","relativePath":"outputs/source.md"}]}')"##;
             let utf16 = script
                 .encode_utf16()
                 .flat_map(u16::to_le_bytes)
@@ -279,7 +307,7 @@
         .expect("automatic execution");
         assert_eq!(result["success"], true, "{result}");
 
-        let completed = crate::wiki::read_generated_document(&paths, document_id)
+        let completed = crate::wiki::read_my_document(&paths, document_id)
             .expect("completed document");
         assert_eq!(completed["content"], "# Imported Document\n");
         assert_eq!(completed["document"]["contentVersion"], 1);
@@ -321,13 +349,14 @@
             crate::control::BootstrapRequest::new(),
         )
         .expect("bootstrap");
+        let wiki_space_id = active_wiki_space_id(&paths);
         let uploaded = crate::wiki::add_raw_document(
             &paths,
             "source.pdf",
             Some("Source"),
             Some("application/pdf"),
             "user",
-            Some("wiki:default"),
+            Some(&wiki_space_id),
             b"pdf fixture",
         )
         .expect("raw document");
@@ -339,14 +368,6 @@
             .into_iter()
             .find(|task| task["type"] == "convert_document_to_markdown")
             .expect("conversion task");
-        crate::storage::Storage::open(&paths)
-            .expect("storage")
-            .connection()
-            .execute(
-                "UPDATE tasks SET required_protocol_version = 3 WHERE id = ?",
-                [task["id"].as_str().expect("task id")],
-            )
-            .expect("protocol");
         let _broker = crate::content::enable_test_task_broker();
         let target = crate::tasks::register_target(
             &paths,
@@ -356,7 +377,6 @@
                 project_id: None,
                 capabilities: vec!["wiki.convertDocument".to_owned()],
                 priority: 0,
-                protocol_version: 3,
                 max_concurrency: 1,
                 model_gateway_connection_id: None,
             },
@@ -386,7 +406,6 @@
         assert_eq!(malformed.code(), Some("invalid_output"));
 
         let valid_result = json!({
-            "schemaVersion": 1,
             "outcome": "converted",
             "summary": "Converted the source faithfully.",
             "output": {
@@ -431,7 +450,6 @@
         fs::write(
             workspace.join(EXECUTION_RESULT_FILE),
             serde_json::to_vec(&json!({
-                "schemaVersion": 1,
                 "outcome": "converted",
                 "summary": "Converted the wrong source.",
                 "output": {
@@ -461,7 +479,7 @@
             },
         )
         .expect_err("non-UTF-8 Markdown must fail at staging");
-        assert_eq!(non_utf8.code(), Some("invalid_output"));
+        assert_eq!(non_utf8.code(), Some("content_too_large"));
 
         crate::content::stage_file(
             &paths,
@@ -523,7 +541,7 @@
     }
 
     #[test]
-    fn generation_result_requires_one_matching_prepared_operation() {
+    fn my_document_write_requires_one_matching_prepared_operation() {
         use base64::Engine as _;
 
         let _env_lock = crate::TASK_BROKER_ENV_LOCK
@@ -536,7 +554,7 @@
         let paths = crate::paths::resolve_myopenpanels_paths(
             Some(project.to_str().unwrap()),
             Some(storage.to_str().unwrap()),
-            Some("bridge-generation-result-test"),
+            Some("bridge-my-document-write-result-test"),
         )
         .expect("paths");
         crate::control::ensure_project_bootstrap(&paths, crate::control::BootstrapRequest::new())
@@ -552,26 +570,17 @@
         .expect("request");
         let task = created["tasks"][0].clone();
         let task_id = task["id"].as_str().expect("task id");
-        let document_id = task["input"]["targetGeneratedDocumentId"]
+        let document_id = task["input"]["targetMyDocumentId"]
             .as_str()
             .expect("document id");
-        crate::storage::Storage::open(&paths)
-            .expect("storage")
-            .connection()
-            .execute(
-                "UPDATE tasks SET required_protocol_version = 3 WHERE id = ?",
-                [task_id],
-            )
-            .expect("protocol");
         let target = crate::tasks::register_target(
             &paths,
             crate::tasks::TargetRegistration {
-                name: "generation-validator",
+                name: "my-document-write-validator",
                 host: Some("test"),
                 project_id: None,
-                capabilities: vec!["writing.generateDocument".to_owned()],
+                capabilities: vec!["writing.writeMyDocument".to_owned()],
                 priority: 0,
-                protocol_version: 3,
                 max_concurrency: 1,
                 model_gateway_connection_id: None,
             },
@@ -589,9 +598,8 @@
         fs::create_dir_all(&workspace).expect("workspace");
         let valid_result = |operation_id: &str| {
             json!({
-                "schemaVersion": 1,
-                "outcome": "generated",
-                "summary": "Generated the requested plain-text document.",
+                "outcome": "written",
+                "summary": "Wrote the requested plain-text document.",
                 "output": {
                     "documentId": document_id,
                     "operationId": operation_id,
@@ -600,7 +608,7 @@
             })
         };
 
-        let missing = validate_generation_execution_result(&paths, &task, &workspace)
+        let missing = validate_my_document_write_execution_result(&paths, &task, &workspace)
             .expect_err("missing result must fail");
         assert_eq!(missing.code(), Some("invalid_output"));
 
@@ -613,7 +621,7 @@
             serde_json::to_vec(&valid_result(operation_id)).expect("serialize"),
         )
         .expect("result");
-        let unstaged = validate_generation_execution_result(&paths, &task, &workspace)
+        let unstaged = validate_my_document_write_execution_result(&paths, &task, &workspace)
             .expect_err("unprepared result must fail");
         assert_eq!(unstaged.code(), Some("invalid_output"));
 
@@ -624,20 +632,20 @@
                 operation_id: operation_id.to_owned(),
                 file_name: "document.txt".to_owned(),
                 content_base64: base64::engine::general_purpose::STANDARD
-                    .encode(b"Generated plain text\n"),
+                    .encode(b"Written plain text\n"),
             },
         )
         .expect("prepare operation");
         let result =
-            validate_generation_execution_result(&paths, &task, &workspace).expect("valid result");
-        assert_eq!(result["outcome"], "generated");
+            validate_my_document_write_execution_result(&paths, &task, &workspace).expect("valid result");
+        assert_eq!(result["outcome"], "written");
 
         fs::write(
             workspace.join(EXECUTION_RESULT_FILE),
             serde_json::to_vec(&valid_result("operation:wrong")).expect("serialize"),
         )
         .expect("mismatched result");
-        let mismatch = validate_generation_execution_result(&paths, &task, &workspace)
+        let mismatch = validate_my_document_write_execution_result(&paths, &task, &workspace)
             .expect_err("mismatched Operation must fail");
         assert_eq!(mismatch.code(), Some("invalid_output"));
 
@@ -654,8 +662,8 @@
         )
         .expect("complete task");
         let completed =
-            crate::wiki::read_generated_document(&paths, document_id).expect("completed document");
+            crate::wiki::read_my_document(&paths, document_id).expect("completed document");
         assert_eq!(completed["document"]["contentVersion"], 1);
         assert_eq!(completed["document"]["format"], "text");
-        assert_eq!(completed["content"], "Generated plain text\n");
+        assert_eq!(completed["content"], "Written plain text\n");
     }

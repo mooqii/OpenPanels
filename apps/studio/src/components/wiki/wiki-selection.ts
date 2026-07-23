@@ -1,6 +1,6 @@
 export interface WikiAgentSelection {
   isWikiSelected: boolean
-  selectedGeneratedDocumentIds: string[]
+  selectedMyDocumentIds: string[]
 }
 
 export function normalizeWikiAgentSelection(
@@ -9,18 +9,16 @@ export function normalizeWikiAgentSelection(
 ): WikiAgentSelection {
   return {
     isWikiSelected: isWritingPanel && Boolean(selection?.isWikiSelected),
-    selectedGeneratedDocumentIds: selection?.selectedGeneratedDocumentIds ?? [],
+    selectedMyDocumentIds: selection?.selectedMyDocumentIds ?? [],
   }
 }
 
 export function wikiAgentSelectionRequest(
   selection: WikiAgentSelection,
   isWritingPanel: boolean
-):
-  | WikiAgentSelection
-  | Pick<WikiAgentSelection, "selectedGeneratedDocumentIds"> {
+): WikiAgentSelection | Pick<WikiAgentSelection, "selectedMyDocumentIds"> {
   const normalized = normalizeWikiAgentSelection(selection, isWritingPanel)
   return isWritingPanel
     ? normalized
-    : { selectedGeneratedDocumentIds: normalized.selectedGeneratedDocumentIds }
+    : { selectedMyDocumentIds: normalized.selectedMyDocumentIds }
 }

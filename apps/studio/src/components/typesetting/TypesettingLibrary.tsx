@@ -1,13 +1,18 @@
 import { Button, Tabs, Tooltip } from "@heroui/react"
 import {
   FileInput,
-  FileText,
   Image as ImageIcon,
   LoaderCircle,
   Plus,
   X,
 } from "lucide-react"
-import { type ReactNode, useEffect, useState } from "react"
+import {
+  type DragEventHandler,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useState,
+} from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiJson, apiUrl } from "../../lib/api"
 import { formatRelativeOrDate } from "../../lib/date-time"
@@ -18,14 +23,12 @@ import {
   TYPESETTING_ASSET_DRAG_TYPE,
 } from "../../lib/typesetting"
 import type {
+  MyDocument,
   MyOpenPanelsTransport,
   TypesettingCanvasAsset,
   TypesettingPublication,
-  WikiGeneratedDocument,
-  WikiState,
 } from "../../types"
-import { GeneratedDocumentsEmpty } from "../wiki/DocumentModuleEmpty"
-import { GeneratedDocumentMeta } from "../wiki/GeneratedDocumentMeta"
+import { MyDocumentItem, MyDocumentsModule } from "../wiki/MyDocumentsModule"
 import {
   nextCollapsedLibraryModules,
   type TypesettingLibraryModule,
@@ -34,34 +37,52 @@ import {
 type AssetScope = "current" | "all"
 export function TypesettingLibrary({
   activePublicationId,
+  addMyDocumentFiles,
   className,
+  createMyDocument,
+  handleMyDocumentDragEnter,
+  handleMyDocumentDragLeave,
+  handleMyDocumentDragOver,
+  handleMyDocumentDrop,
   onClose,
   onCreatePublication,
-  onOpenGenerated,
-  onOpenGeneratedOriginal,
-  onInsertGenerated,
+  onOpenMyDocument,
+  onOpenMyDocumentOriginal,
+  onInsertMyDocument,
   onOpenPublication,
   projectId,
   publications,
   insertingDocumentId,
   isInsertDisabled,
+  isMyDocumentBusy,
+  isMyDocumentDragActive,
+  myDocumentFileInputRef,
   transport,
-  wiki,
+  myDocuments,
 }: {
   activePublicationId: string | null
+  addMyDocumentFiles: (files: FileList | null) => Promise<void>
   className: string
+  createMyDocument: () => Promise<void>
+  handleMyDocumentDragEnter: DragEventHandler<HTMLElement>
+  handleMyDocumentDragLeave: DragEventHandler<HTMLElement>
+  handleMyDocumentDragOver: DragEventHandler<HTMLElement>
+  handleMyDocumentDrop: DragEventHandler<HTMLElement>
   onClose: () => void
   onCreatePublication: () => void
-  onOpenGenerated: (document: WikiGeneratedDocument) => void
-  onOpenGeneratedOriginal: (document: WikiGeneratedDocument) => void
-  onInsertGenerated: (document: WikiGeneratedDocument) => void
+  onOpenMyDocument: (document: MyDocument) => void
+  onOpenMyDocumentOriginal: (document: MyDocument) => void
+  onInsertMyDocument: (document: MyDocument) => void
   onOpenPublication: (publication: TypesettingPublication) => void
   projectId: string
   publications: TypesettingPublication[]
   insertingDocumentId: string | null
   isInsertDisabled: boolean
+  isMyDocumentBusy: boolean
+  isMyDocumentDragActive: boolean
+  myDocumentFileInputRef: RefObject<HTMLInputElement | null>
   transport: MyOpenPanelsTransport
-  wiki: WikiState
+  myDocuments: MyDocument[]
 }) {
   const { t } = useMyOpenPanelsI18n()
   const [scope, setScope] = useState<AssetScope>("current")
@@ -76,9 +97,7 @@ export function TypesettingLibrary({
     let cancelled = false
     setLoading(true)
     setError(null)
-    const url = new URL(
-      apiUrl(transport.apiBase, "/api/typesetting/canvas-assets")
-    )
+    const url = new URL(apiUrl(transport.apiBase, "/api/assets/canvas"))
     url.searchParams.set("projectId", projectId)
     url.searchParams.set("scope", scope)
     apiJson<{ assets?: TypesettingCanvasAsset[] }>(transport.apiBase, url)
@@ -140,66 +159,62 @@ export function TypesettingLibrary({
           transport={transport}
         />
 
-        <LibraryModule
-          isCollapsed={collapsedLibraryModules.has("generated")}
-          isEmpty={wiki.generatedDocuments.length === 0}
-          onToggle={() => toggleLibraryModule("generated")}
-          title={t`My Documents`}
+        <MyDocumentsModule
+          addFiles={addMyDocumentFiles}
+          className="op-typesetting-my-documents-module"
+          createDocument={createMyDocument}
+          fileInputRef={myDocumentFileInputRef}
+          isBusy={isMyDocumentBusy}
+          isCollapsed={collapsedLibraryModules.has("myDocuments")}
+          isDragActive={isMyDocumentDragActive}
+          isEmpty={myDocuments.length === 0}
+          onDragEnter={handleMyDocumentDragEnter}
+          onDragLeave={handleMyDocumentDragLeave}
+          onDragOver={handleMyDocumentDragOver}
+          onDrop={handleMyDocumentDrop}
+          onToggle={() => toggleLibraryModule("myDocuments")}
         >
-          {wiki.generatedDocuments.length ? (
-            wiki.generatedDocuments.map((document) => (
-              <div className="op-typesetting-document" key={document.id}>
-                <button
-                  aria-label={document.title}
-                  className="op-generated-document-open"
-                  onClick={() => onOpenGenerated(document)}
-                  type="button"
-                />
-                <FileText size={15} />
-                <span className="op-generated-document-copy">
-                  <strong>{document.title}</strong>
-                  <GeneratedDocumentMeta
-                    apiBase={transport.apiBase}
-                    document={document}
-                    onOpenOriginal={
-                      document.importSource
-                        ? () => onOpenGeneratedOriginal(document)
-                        : undefined
+          {myDocuments.map((document) => (
+            <MyDocumentItem
+              className="op-typesetting-document"
+              document={document}
+              key={document.id}
+              onOpen={() => onOpenMyDocument(document)}
+              onOpenOriginal={
+                document.importSource
+                  ? () => onOpenMyDocumentOriginal(document)
+                  : undefined
+              }
+              transport={transport}
+            >
+              <span className="op-typesetting-document__tools">
+                <Tooltip closeDelay={0} delay={0}>
+                  <Button
+                    aria-label={t`Insert document content into content details`}
+                    isDisabled={
+                      !isInsertableTypesettingDocument(document) ||
+                      isInsertDisabled ||
+                      insertingDocumentId === document.id
                     }
-                  />
-                </span>
-                {isInsertableTypesettingDocument(document) ? (
-                  <span className="op-typesetting-document__tools">
-                    <Tooltip closeDelay={0} delay={0}>
-                      <Button
-                        aria-label={t`Insert document content into content details`}
-                        isDisabled={
-                          isInsertDisabled ||
-                          insertingDocumentId === document.id
-                        }
-                        isIconOnly
-                        onPress={() => onInsertGenerated(document)}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        {insertingDocumentId === document.id ? (
-                          <LoaderCircle className="op-spin" size={15} />
-                        ) : (
-                          <FileInput size={15} />
-                        )}
-                      </Button>
-                      <Tooltip.Content placement="right">
-                        {t`Insert document content into content details`}
-                      </Tooltip.Content>
-                    </Tooltip>
-                  </span>
-                ) : null}
-              </div>
-            ))
-          ) : (
-            <GeneratedDocumentsEmpty />
-          )}
-        </LibraryModule>
+                    isIconOnly
+                    onPress={() => onInsertMyDocument(document)}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {insertingDocumentId === document.id ? (
+                      <LoaderCircle className="op-spin" size={15} />
+                    ) : (
+                      <FileInput size={15} />
+                    )}
+                  </Button>
+                  <Tooltip.Content placement="right">
+                    {t`Insert document content into content details`}
+                  </Tooltip.Content>
+                </Tooltip>
+              </span>
+            </MyDocumentItem>
+          ))}
+        </MyDocumentsModule>
 
         <LibraryModule
           className="op-typesetting-assets-module"
@@ -284,7 +299,7 @@ function LibraryModule({
   action,
   children,
   className = "",
-  isCollapsed,
+  isCollapsed = false,
   isEmpty = false,
   onToggle,
   title,
@@ -292,23 +307,31 @@ function LibraryModule({
   action?: ReactNode
   children: ReactNode
   className?: string
-  isCollapsed: boolean
+  isCollapsed?: boolean
   isEmpty?: boolean
-  onToggle: () => void
+  onToggle?: () => void
   title: string
 }) {
+  const canCollapse = Boolean(onToggle)
+  const classes = [
+    "op-typesetting-library-module",
+    className,
+    canCollapse && isCollapsed ? "is-collapsed" : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
   return (
-    <section
-      className={
-        isCollapsed
-          ? `is-collapsed op-typesetting-library-module ${className}`.trim()
-          : `op-typesetting-library-module ${className}`.trim()
-      }
-    >
+    <section className={classes}>
       <div className="op-typesetting-library-module__header">
-        <button aria-expanded={!isCollapsed} onClick={onToggle} type="button">
-          <h3 className="op-typesetting-library-module__title">{title}</h3>
-        </button>
+        {onToggle ? (
+          <button aria-expanded={!isCollapsed} onClick={onToggle} type="button">
+            <h3 className="op-typesetting-library-module__title">{title}</h3>
+          </button>
+        ) : (
+          <div className="op-typesetting-library-module__static-title">
+            <h3 className="op-typesetting-library-module__title">{title}</h3>
+          </div>
+        )}
         {action}
       </div>
       <div
@@ -331,7 +354,8 @@ function LibraryEmpty({ children }: { children: ReactNode }) {
 export function PublicationContentModule({
   activePublicationId,
   className = "",
-  isCollapsed,
+  createButtonIconOnly = false,
+  isCollapsed = false,
   onCreatePublication,
   onOpenPublication,
   onToggle,
@@ -342,10 +366,11 @@ export function PublicationContentModule({
 }: {
   activePublicationId: string | null
   className?: string
-  isCollapsed: boolean
+  createButtonIconOnly?: boolean
+  isCollapsed?: boolean
   onCreatePublication?: () => void
   onOpenPublication: (publication: TypesettingPublication) => void
-  onToggle: () => void
+  onToggle?: () => void
   publications: TypesettingPublication[]
   renderPublicationMeta?: (publication: TypesettingPublication) => ReactNode
   renderPublicationStatus?: (publication: TypesettingPublication) => ReactNode
@@ -357,9 +382,17 @@ export function PublicationContentModule({
     <LibraryModule
       action={
         onCreatePublication ? (
-          <Button onPress={onCreatePublication} size="sm" variant="primary">
+          <Button
+            aria-label={
+              createButtonIconOnly ? t`New publication content` : undefined
+            }
+            isIconOnly={createButtonIconOnly}
+            onPress={onCreatePublication}
+            size="sm"
+            variant="primary"
+          >
             <Plus size={14} />
-            {t`New`}
+            {createButtonIconOnly ? null : t`New`}
           </Button>
         ) : undefined
       }

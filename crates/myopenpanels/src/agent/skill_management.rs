@@ -21,7 +21,7 @@ pub struct ManagedSkillModule {
     pub skills: Vec<ManagedSkill>,
 }
 
-pub fn list_writing_refinement_agent_skills(
+pub fn list_writing_distillation_agent_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
     Ok(list_agent_skills(paths)?
@@ -31,28 +31,28 @@ pub fn list_writing_refinement_agent_skills(
                 &item.skill.applies_to,
                 &item.skill.task_types,
                 Some("writing"),
-                Some("refine_writing_skill"),
+                Some("distill_writing_skill"),
             )
         })
         .collect())
 }
 
-pub fn writing_refinement_agent_skill(
+pub fn writing_distillation_agent_skill(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,
 ) -> Result<AgentSkillListing, CliError> {
-    list_writing_refinement_agent_skills(paths)?
+    list_writing_distillation_agent_skills(paths)?
         .into_iter()
         .find(|item| item.skill.id == skill_id)
         .ok_or_else(|| {
             CliError::with_code(
-                "writing_refinement_skill_not_found",
-                format!("Writing refinement Skill not found: {skill_id}"),
+                "writing_distillation_skill_not_found",
+                format!("Writing distillation Skill not found: {skill_id}"),
             )
         })
 }
 
-pub fn list_typesetting_cover_skills(
+pub fn list_publication_cover_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
     sync_builtin_agent_skills(paths)?;
@@ -63,28 +63,28 @@ pub fn list_typesetting_cover_skills(
                 &item.skill.applies_to,
                 &item.skill.task_types,
                 Some("typesetting"),
-                Some(crate::typesetting::COVER_TASK_TYPE),
+                Some(crate::publication::COVER_TASK_TYPE),
             )
         })
         .collect())
 }
 
-pub fn typesetting_cover_skill(
+pub fn publication_cover_skill(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,
 ) -> Result<AgentSkillListing, CliError> {
-    list_typesetting_cover_skills(paths)?
+    list_publication_cover_skills(paths)?
         .into_iter()
         .find(|item| item.skill.id == skill_id)
         .ok_or_else(|| {
             CliError::with_code(
-                "typesetting_cover_skill_not_found",
-                format!("Typesetting Cover Skill not found: {skill_id}"),
+                "publication_cover_skill_not_found",
+                format!("Publication Cover Skill not found: {skill_id}"),
             )
         })
 }
 
-pub fn list_typesetting_title_skills(
+pub fn list_publication_title_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
     sync_builtin_agent_skills(paths)?;
@@ -95,28 +95,28 @@ pub fn list_typesetting_title_skills(
                 &item.skill.applies_to,
                 &item.skill.task_types,
                 Some("typesetting"),
-                Some(crate::typesetting::TITLE_TASK_TYPE),
+                Some(crate::publication::TITLE_TASK_TYPE),
             )
         })
         .collect())
 }
 
-pub fn typesetting_title_skill(
+pub fn publication_title_skill(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,
 ) -> Result<AgentSkillListing, CliError> {
-    list_typesetting_title_skills(paths)?
+    list_publication_title_skills(paths)?
         .into_iter()
         .find(|item| item.skill.id == skill_id)
         .ok_or_else(|| {
             CliError::with_code(
-                "typesetting_title_skill_not_found",
-                format!("Typesetting Title Skill not found: {skill_id}"),
+                "publication_title_skill_not_found",
+                format!("Publication Title Skill not found: {skill_id}"),
             )
         })
 }
 
-pub fn list_typesetting_layout_skills(
+pub fn list_publication_layout_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
     sync_builtin_agent_skills(paths)?;
@@ -127,31 +127,30 @@ pub fn list_typesetting_layout_skills(
                 &item.skill.applies_to,
                 &item.skill.task_types,
                 Some("typesetting"),
-                Some(crate::typesetting::LAYOUT_TASK_TYPE),
+                Some(crate::publication::LAYOUT_TASK_TYPE),
             )
         })
         .collect())
 }
 
-pub fn typesetting_layout_skill(
+pub fn publication_layout_skill(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,
 ) -> Result<AgentSkillListing, CliError> {
-    list_typesetting_layout_skills(paths)?
+    list_publication_layout_skills(paths)?
         .into_iter()
         .find(|item| item.skill.id == skill_id)
         .ok_or_else(|| {
             CliError::with_code(
-                "typesetting_layout_skill_not_found",
-                format!("Typesetting Layout Skill not found: {skill_id}"),
+                "publication_layout_skill_not_found",
+                format!("Publication Layout Skill not found: {skill_id}"),
             )
         })
 }
 
 pub fn managed_skills(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     sync_builtin_agent_skills(paths)?;
-    migrate_legacy_custom_agent_skills(paths)?;
-    migrate_skill_provenance(paths)?;
+    sync_task_created_agent_skills(paths)?;
     let listings = list_agent_skills(paths)?;
     let mut system_skills = Vec::new();
     let mut modules = BTreeMap::<String, Vec<ManagedSkill>>::new();
@@ -357,23 +356,23 @@ fn managed_skill_module_kinds(listing: &AgentSkillListing) -> Vec<String> {
     {
         module_kinds.push("wiki-update".to_owned());
     }
-    if has_panel("writing") && has_task("generate_document") {
+    if has_panel("writing") && has_task("write_my_document") {
         module_kinds.push("writing".to_owned());
     }
-    if has_panel("writing") && has_task("refine_writing_skill") {
-        module_kinds.push("writing-refinement".to_owned());
+    if has_panel("writing") && has_task("distill_writing_skill") {
+        module_kinds.push("writing-distillation".to_owned());
     }
     if has_panel("publishing") {
-        module_kinds.push("publishing".to_owned());
+        module_kinds.push("release".to_owned());
     }
-    if has_panel("typesetting") && has_task(crate::typesetting::COVER_TASK_TYPE) {
-        module_kinds.push("typesetting-cover".to_owned());
+    if has_panel("typesetting") && has_task(crate::publication::COVER_TASK_TYPE) {
+        module_kinds.push("publication-cover".to_owned());
     }
-    if has_panel("typesetting") && has_task(crate::typesetting::TITLE_TASK_TYPE) {
-        module_kinds.push("typesetting-title".to_owned());
+    if has_panel("typesetting") && has_task(crate::publication::TITLE_TASK_TYPE) {
+        module_kinds.push("publication-title".to_owned());
     }
-    if has_panel("typesetting") && has_task(crate::typesetting::LAYOUT_TASK_TYPE) {
-        module_kinds.push("typesetting-layout".to_owned());
+    if has_panel("typesetting") && has_task(crate::publication::LAYOUT_TASK_TYPE) {
+        module_kinds.push("publication-layout".to_owned());
     }
     for applies_to in &listing.skill.applies_to {
         if !matches!(
@@ -453,7 +452,7 @@ pub fn list_publishing_skills(
                 && item.skill.task_types.iter().any(|value| {
                     matches!(
                         value.as_str(),
-                        "publish_xiaohongshu_note" | "publish_wechat_official_account_draft"
+                        "release_xiaohongshu" | "release_wechat_official_account"
                     )
                 })
         })
@@ -504,7 +503,7 @@ fn clear_writing_skill_module_selections(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,
     clear_writing: bool,
-    clear_refinement: bool,
+    clear_distillation: bool,
 ) -> Result<(), CliError> {
     let storage = crate::storage::Storage::open(paths)?;
     for project in storage.list_projects()? {
@@ -541,13 +540,13 @@ fn clear_writing_skill_module_selections(
                     changed = true;
                 }
             }
-            if clear_refinement && state
-                .get("selectedRefinementSkillId")
+            if clear_distillation && state
+                .get("selectedDistillationSkillId")
                 .and_then(Value::as_str)
                 == Some(skill_id)
             {
-                state["selectedRefinementSkillId"] =
-                    json!(crate::writing::DEFAULT_WRITING_REFINEMENT_SKILL_ID);
+                state["selectedDistillationSkillId"] =
+                    json!(crate::writing::DEFAULT_WRITING_DISTILLATION_SKILL_ID);
                 changed = true;
             }
             if changed {
@@ -558,21 +557,9 @@ fn clear_writing_skill_module_selections(
     Ok(())
 }
 
-pub(crate) fn migrate_legacy_custom_agent_skills(
-    paths: &MyOpenPanelsPaths,
-) -> Result<(), CliError> {
+pub(crate) fn sync_task_created_agent_skills(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
     let skills_dir = paths.storage_dir.join("skills");
     fs::create_dir_all(&skills_dir).map_err(to_cli_error)?;
-    let legacy_dir = paths.storage_dir.join("writing-skills");
-    if legacy_dir.is_dir() {
-        for entry in fs::read_dir(&legacy_dir).map_err(to_cli_error)? {
-            let entry = entry.map_err(to_cli_error)?;
-            if !entry.file_type().map_err(to_cli_error)?.is_dir() {
-                continue;
-            }
-            migrate_custom_skill_dir(&entry.path(), &skills_dir)?;
-        }
-    }
     for (skill_id, source, manifest, local_dir) in
         crate::content::active_writing_skill_sources(paths)?
     {
@@ -588,39 +575,12 @@ pub(crate) fn migrate_legacy_custom_agent_skills(
         {
             continue;
         }
-        install_migrated_custom_skill(&source_dir, &target_dir, &source, &manifest)?;
+        install_task_created_skill(&source_dir, &target_dir, &source, &manifest)?;
     }
     Ok(())
 }
 
-fn migrate_custom_skill_dir(source_dir: &Path, skills_dir: &Path) -> Result<(), CliError> {
-    let skill_path = source_dir.join("SKILL.md");
-    let manifest_path = source_dir.join("manifest.json");
-    if !skill_path.is_file() || !manifest_path.is_file() {
-        return Ok(());
-    }
-    let source = fs::read_to_string(&skill_path).map_err(to_cli_error)?;
-    let manifest: Value =
-        serde_json::from_slice(&fs::read(&manifest_path).map_err(to_cli_error)?)
-            .map_err(to_cli_error)?;
-    let skill_id = manifest
-        .get("skillId")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| {
-            source_dir
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("default")
-        });
-    let target_dir = skills_dir.join(crate::paths::sanitize_path_part(skill_id));
-    install_migrated_custom_skill(source_dir, &target_dir, &source, &manifest)?;
-    if source_dir != target_dir {
-        fs::remove_dir_all(source_dir).map_err(to_cli_error)?;
-    }
-    Ok(())
-}
-
-fn install_migrated_custom_skill(
+fn install_task_created_skill(
     source_dir: &Path,
     target_dir: &Path,
     source: &str,
@@ -636,12 +596,12 @@ fn install_migrated_custom_skill(
         }
         return Err(CliError::with_code(
             "writing_skill_conflict",
-            format!("Custom Skill migration target already exists: {}", target_dir.display()),
+            format!("Task-created Skill target already exists: {}", target_dir.display()),
         ));
     }
     let parent = target_dir.parent().ok_or_else(|| CliError::new("Invalid Skill path"))?;
     let staging = parent.join(format!(
-        ".skill-migration-{}",
+        ".skill-install-{}",
         crate::ids::random_base64url_96()
     ));
     copy_skill_package(source_dir, &staging)?;

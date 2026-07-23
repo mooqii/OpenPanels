@@ -1,12 +1,6 @@
 fn load_agent_skill_dirs() -> Result<Vec<(AgentSkill, &'static Dir<'static>)>, CliError> {
     let registry: BuiltinSkillRegistry =
         serde_json::from_str(BUILTIN_SKILL_REGISTRY).map_err(to_cli_error)?;
-    if registry.schema_version != 4 {
-        return Err(CliError::new(format!(
-            "Unsupported built-in Skill registry schema: {}",
-            registry.schema_version
-        )));
-    }
     let mut registered_ids = BTreeSet::new();
     let mut system_registrations = BTreeMap::new();
     let mut preset_registrations = BTreeMap::new();

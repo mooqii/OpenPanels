@@ -51,10 +51,10 @@ export interface SkillUrlScanResponse {
 const ASSOCIATION_MODULES = [
   "wiki-update",
   "writing",
-  "writing-refinement",
-  "typesetting-cover",
-  "typesetting-title",
-  "typesetting-layout",
+  "writing-distillation",
+  "publication-cover",
+  "publication-title",
+  "publication-layout",
   "publishing",
 ] as const
 

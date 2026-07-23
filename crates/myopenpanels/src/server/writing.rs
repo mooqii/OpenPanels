@@ -10,7 +10,7 @@ async fn api_agent_skills(State(state): State<Arc<AppState>>) -> Response {
 struct WritingSelectionBody {
     is_wiki_selected: bool,
     #[serde(default)]
-    selected_generated_document_ids: Vec<String>,
+    selected_my_document_ids: Vec<String>,
 }
 
 async fn api_writing_selection(State(state): State<Arc<AppState>>) -> Response {
@@ -27,7 +27,7 @@ async fn api_writing_set_selection(
     match crate::writing::write_selection(
         &state.paths,
         body.is_wiki_selected,
-        &body.selected_generated_document_ids,
+        &body.selected_my_document_ids,
     ) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),
@@ -41,12 +41,12 @@ struct WritingDraftBody {
     draft: String,
     mode: String,
     #[serde(default)]
-    refinement_name: String,
-    target_generated_document_id: Option<String>,
+    distillation_name: String,
+    target_my_document_id: Option<String>,
     #[serde(default)]
     selected_create_writing_skill_ids: Vec<String>,
     selected_revision_writing_skill_id: Option<String>,
-    selected_refinement_skill_id: Option<String>,
+    selected_distillation_skill_id: Option<String>,
     revision_draft: Option<String>,
 }
 
@@ -54,15 +54,15 @@ async fn api_writing_save_draft(
     State(state): State<Arc<AppState>>,
     Json(body): Json<WritingDraftBody>,
 ) -> Response {
-    match crate::writing::save_draft_with_refinement_skill(
+    match crate::writing::save_draft_with_distillation_skill(
         &state.paths,
         &body.draft,
         &body.mode,
-        &body.refinement_name,
-        body.target_generated_document_id.as_deref(),
+        &body.distillation_name,
+        body.target_my_document_id.as_deref(),
         &body.selected_create_writing_skill_ids,
         body.selected_revision_writing_skill_id.as_deref(),
-        body.selected_refinement_skill_id.as_deref(),
+        body.selected_distillation_skill_id.as_deref(),
         body.create_draft.as_deref(),
         body.revision_draft.as_deref(),
     ) {
@@ -76,18 +76,18 @@ async fn api_writing_save_draft(
 struct WritingRequestBody {
     instruction: String,
     mode: String,
-    target_generated_document_id: Option<String>,
+    target_my_document_id: Option<String>,
     writing_skill_ids: Vec<String>,
 }
 
 async fn api_writing_skills(State(state): State<Arc<AppState>>) -> Response {
     match (
         crate::agent::list_writing_agent_skills(&state.paths),
-        crate::agent::list_writing_refinement_agent_skills(&state.paths),
+        crate::agent::list_writing_distillation_agent_skills(&state.paths),
     ) {
-        (Ok(skills), Ok(refinement_skills)) => json_response(
+        (Ok(skills), Ok(distillation_skills)) => json_response(
             StatusCode::OK,
-            &json!({ "skills": skills, "refinementSkills": refinement_skills }),
+            &json!({ "skills": skills, "distillationSkills": distillation_skills }),
         ),
         (Err(error), _) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
         (_, Err(error)) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
@@ -145,7 +145,7 @@ async fn api_writing_create_request(
         &state.paths,
         &body.instruction,
         &body.mode,
-        body.target_generated_document_id.as_deref(),
+        body.target_my_document_id.as_deref(),
         &body.writing_skill_ids,
     ) {
         Ok(payload) => json_response(StatusCode::CREATED, &payload),
@@ -155,19 +155,19 @@ async fn api_writing_create_request(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct WritingRefinementRequestBody {
+struct WritingDistillationRequestBody {
     name: String,
-    refiner_skill_id: Option<String>,
+    distiller_skill_id: Option<String>,
 }
 
-async fn api_writing_create_refinement_request(
+async fn api_writing_create_distillation_request(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<WritingRefinementRequestBody>,
+    Json(body): Json<WritingDistillationRequestBody>,
 ) -> Response {
-    match crate::writing::create_refinement_request_with_skill(
+    match crate::writing::create_distillation_request_with_skill(
         &state.paths,
         &body.name,
-        body.refiner_skill_id.as_deref(),
+        body.distiller_skill_id.as_deref(),
     ) {
         Ok(payload) => json_response(StatusCode::CREATED, &payload),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),

@@ -1,4 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
+import {
+  renderCapabilityMatrix,
+  renderEntryCapabilityIndex,
+} from "./lib/capability-projections.mjs"
 
 const ROOT = new URL("..", import.meta.url)
 const RELEASE_TARGETS = [
@@ -57,6 +61,10 @@ const entrySkillInstall = readFileSync(
   new URL("skills/myopenpanels/references/install.md", ROOT),
   "utf8"
 )
+const capabilityDoc = readFileSync(
+  new URL("docs/module-capabilities.md", ROOT),
+  "utf8"
+)
 const entrySkillVersion = entrySkill.match(
   /^\s+version:\s*["']([^"']+)["']/m
 )?.[1]
@@ -67,9 +75,92 @@ const cliSource = readFileSync(
   new URL("crates/myopenpanels/src/cli.rs", ROOT),
   "utf8"
 )
+const currentContractSources = [
+  "crates/myopenpanels/src/agent/bootstrap.rs",
+  "crates/myopenpanels/src/agent/skills_context.rs",
+  "crates/myopenpanels/src/agent/skill_parsing.rs",
+  "crates/myopenpanels/src/agent/skill_management.rs",
+  "crates/myopenpanels/src/control/runtime.rs",
+  "crates/myopenpanels/src/wiki/markdown_skills.rs",
+  "crates/myopenpanels/src/writing/requests.rs",
+].map((path) => readFileSync(new URL(path, ROOT), "utf8"))
+const retiredRuntimeContracts = [
+  "karpathy-llm-wiki",
+  "myopenpanels-canvas-panel",
+  "myopenpanels-wiki-panel",
+  "myopenpanels-writing-panel",
+  "writing-skill-distiller",
+  "custom_writing_skill_from_source",
+  "custom_writing_skills_dir",
+  "legacy_skill_from_parts",
+  "migrate_legacy_custom_agent_skills",
+]
+for (const retired of retiredRuntimeContracts) {
+  assert(
+    currentContractSources.every((source) => !source.includes(retired)),
+    `Retired runtime contract must not return: ${retired}`
+  )
+}
+const cliSynchronizedContractSources = [
+  "agent-resources/builtin-skill-registry.json",
+  "agent-resources/module-capability-catalog.json",
+  "agent-resources/recommended-skills.json",
+  "crates/myopenpanels/src/capabilities.rs",
+  "crates/myopenpanels/src/agent/bootstrap.rs",
+  "crates/myopenpanels/src/agent/procedures.rs",
+  "crates/myopenpanels/src/agent/recommended_skills.rs",
+  "crates/myopenpanels/src/agent/skill_associations.rs",
+  "crates/myopenpanels/src/agent/skill_import.rs",
+  "crates/myopenpanels/src/agent/skill_parsing.rs",
+  "crates/myopenpanels/src/agent/skill_updates.rs",
+  "crates/myopenpanels/src/bridge/document_prompts.rs",
+  "crates/myopenpanels/src/bridge/finalization.rs",
+  "crates/myopenpanels/src/bridge/result_validation.rs",
+  "crates/myopenpanels/src/bridge/task_handlers.rs",
+  "crates/myopenpanels/src/bridge/publication_prompts.rs",
+  "crates/myopenpanels/src/bridge/writing_wiki_prompts.rs",
+  "crates/myopenpanels/src/cli/runtime_core.rs",
+  "crates/myopenpanels/src/cli/registry/specs.rs",
+  "crates/myopenpanels/src/cli/registry/types.rs",
+  "crates/myopenpanels/src/content/filesystem.rs",
+  "crates/myopenpanels/src/control/runtime.rs",
+  "crates/myopenpanels/src/operations/runtime.rs",
+  "crates/myopenpanels/src/release.rs",
+  "crates/myopenpanels/src/tasks/handoffs.rs",
+  "crates/myopenpanels/src/tasks/query_targets.rs",
+  "crates/myopenpanels/src/publication.rs",
+  "crates/myopenpanels/src/wiki/materialization.rs",
+  "crates/myopenpanels/src/wiki/state.rs",
+  "crates/myopenpanels/src/writing/requests.rs",
+  "crates/myopenpanels/src/writing/skills.rs",
+  "apps/studio/src/canvas/store.ts",
+  "apps/studio/src/canvas/types/records.ts",
+  "apps/studio/src/lib/api.ts",
+  "apps/studio/src/lib/typesetting.ts",
+  "apps/studio/src/types.ts",
+].map((path) => ({ path, source: readFileSync(new URL(path, ROOT), "utf8") }))
+for (const forbidden of [
+  '"schemaVersion"',
+  "schema_version",
+  '"protocolVersion"',
+  "protocol_version",
+  '"catalogVersion"',
+  "CATALOG_VERSION",
+  "PROTOCOL_VERSION",
+  '"adapterVersion"',
+  "adapter_version",
+  '"taskHandoffVersion"',
+]) {
+  for (const { path, source } of cliSynchronizedContractSources) {
+    assert(
+      !source.includes(forbidden),
+      `CLI-synchronized contract must not carry an independent version (${forbidden}): ${path}`
+    )
+  }
+}
 assert(
   !cliSource.includes('"  agent context'),
-  "Protocol v1 agent context must not return to the public CLI surface."
+  "Retired agent context must not return to the public CLI surface."
 )
 assert(
   entrySkillVersion,
@@ -93,7 +184,6 @@ for (const required of [
   "打开面板",
   "--procedure",
   "Task Handoff",
-  "Workflow Runs",
 ]) {
   assert(
     entrySkill.includes(required),
@@ -133,9 +223,8 @@ assert(
 )
 
 const builtinRegistry = readJson("agent-resources/builtin-skill-registry.json")
-assert(
-  builtinRegistry.schemaVersion === 4,
-  "Built-in Skill registry must use schemaVersion 4."
+const capabilityCatalog = readJson(
+  "agent-resources/module-capability-catalog.json"
 )
 const forbiddenPortableSkillText = [
   "myopenpanels",
@@ -152,9 +241,7 @@ const forbiddenPortableSkillText = [
   "bridge-managed",
 ]
 const builtinSkillIds = new Set()
-const agentRouteKeys = new Set()
-let agentProcedureCount = 0
-let taskHandoffCount = 0
+const systemSkills = new Map()
 for (const [group, registrations] of [
   ["system-skills", builtinRegistry.systemSkills],
   ["preset-skills", builtinRegistry.presetSkills],
@@ -193,7 +280,8 @@ for (const [group, registrations] of [
       .sort()
     assert(
       JSON.stringify(keys) === JSON.stringify(["description", "name"]),
-      `Built-in Skill must use only name and description frontmatter: ${registration.id}`
+      "Built-in Skill must use only name and description frontmatter: " +
+        registration.id
     )
     const skillName = frontmatter.match(/^name:\s*(.+)$/m)?.[1]?.trim()
     assert(
@@ -206,111 +294,213 @@ for (const [group, registrations] of [
         for (const forbidden of forbiddenPortableSkillText) {
           assert(
             !content.includes(forbidden),
-            `Preset Skill ${registration.id} contains platform contract text ${forbidden}: ${file.pathname}`
+            "Preset Skill " +
+              registration.id +
+              " contains platform contract text " +
+              forbidden +
+              ": " +
+              file.pathname
           )
         }
       }
     } else {
-      assert(
-        !("workflows" in registration),
-        `System Skill must not declare legacy Workflows: ${registration.id}`
-      )
-      assert(
-        Array.isArray(registration.procedures),
-        `System Skill must declare Procedures: ${registration.id}`
-      )
-      assert(
-        Array.isArray(registration.taskHandoffs),
-        `System Skill must declare Task Handoffs: ${registration.id}`
-      )
-      for (const procedure of registration.procedures) {
+      for (const legacyField of ["workflows", "procedures", "taskHandoffs"]) {
         assert(
-          !agentRouteKeys.has(procedure.key),
-          `Duplicate Agent Procedure key: ${procedure.key}`
-        )
-        agentRouteKeys.add(procedure.key)
-        agentProcedureCount += 1
-        assert(
-          !("executionMode" in procedure),
-          `Agent Procedure must not declare executionMode: ${procedure.key}`
-        )
-        assert(
-          [
-            "none",
-            "summary",
-            "optional-detail",
-            "active-detail",
-            "explicit-detail",
-          ].includes(procedure.selectionPolicy),
-          `Invalid Agent Procedure selectionPolicy: ${procedure.key}`
-        )
-        assert(
-          Array.isArray(procedure.commandIntents) &&
-            procedure.commandIntents.length > 0,
-          `Agent Procedure command intents are missing: ${procedure.key}`
-        )
-        assert(
-          Array.isArray(procedure.references) &&
-            procedure.references.length > 0,
-          `Agent Procedure references are missing: ${procedure.key}`
-        )
-        assert(
-          new Set(procedure.references).size === procedure.references.length,
-          `Agent Procedure references are duplicated: ${procedure.key}`
-        )
-        for (const reference of procedure.references) {
-          assert(
-            typeof reference === "string" &&
-              reference.length > 0 &&
-              !reference.startsWith("/") &&
-              !reference.split("/").includes(".."),
-            `Agent Procedure reference is invalid: ${procedure.key}`
-          )
-          assert(
-            existsSync(new URL(`${packagePath}/${reference}`, ROOT)),
-            `Agent Procedure reference is missing: ${procedure.key}`
-          )
-        }
-        assert(
-          entrySkill.includes(`\`${procedure.key}\``),
-          `Entry Skill is missing Agent Procedure route: ${procedure.key}`
+          !(legacyField in registration),
+          "System Skill registration must not own " +
+            legacyField +
+            ": " +
+            registration.id
         )
       }
-      for (const handoff of registration.taskHandoffs) {
-        assert(
-          !agentRouteKeys.has(handoff.key),
-          `Duplicate Agent route key: ${handoff.key}`
-        )
-        agentRouteKeys.add(handoff.key)
-        taskHandoffCount += 1
-        assert(
-          !("executionMode" in handoff || "selectionPolicy" in handoff),
-          `Task Handoff must not declare Procedure fields: ${handoff.key}`
-        )
-        assert(
-          Array.isArray(handoff.commandIntents) &&
-            handoff.commandIntents.length > 0,
-          `Task Handoff command intents are missing: ${handoff.key}`
-        )
-        assert(
-          existsSync(new URL(`${packagePath}/${handoff.reference}`, ROOT)),
-          `Task Handoff reference is missing: ${handoff.key}`
-        )
-        assert(
-          entrySkill.includes(`\`${handoff.key}\``),
-          `Entry Skill is missing Task Handoff route: ${handoff.key}`
-        )
-      }
+      systemSkills.set(registration.id, { packagePath, registration })
     }
   }
 }
+
+const agentRouteKeys = new Set()
+const taskRoutes = new Set()
+let procedureCount = 0
+let taskCapabilityCount = 0
+const validateCapabilityBase = (capability) => {
+  assert(
+    typeof capability.key === "string" && capability.key.length > 0,
+    "Capability key is missing."
+  )
+  assert(
+    typeof capability.description === "string" &&
+      capability.description.length > 0,
+    `Capability description is missing: ${capability.key}`
+  )
+  assert(
+    !agentRouteKeys.has(capability.key),
+    `Duplicate Agent route key: ${capability.key}`
+  )
+  agentRouteKeys.add(capability.key)
+  const contract = capability.platformContract
+  assert(
+    contract && typeof contract === "object",
+    `Capability platform contract is missing: ${capability.key}`
+  )
+  const skill = systemSkills.get(contract.systemSkillId)
+  assert(
+    skill,
+    `Capability ${capability.key} references unknown system Skill ${contract.systemSkillId}.`
+  )
+  assert(
+    capability.panelKind === null ||
+      skill.registration.appliesTo.includes("any") ||
+      skill.registration.appliesTo.includes(capability.panelKind),
+    `Capability panel kind does not match its system Skill: ${capability.key}`
+  )
+  assert(
+    Array.isArray(contract.references) && contract.references.length > 0,
+    `Capability platform references are missing: ${capability.key}`
+  )
+  assert(
+    new Set(contract.references).size === contract.references.length,
+    `Capability platform references are duplicated: ${capability.key}`
+  )
+  for (const reference of contract.references) {
+    assert(
+      typeof reference === "string" &&
+        reference.length > 0 &&
+        !reference.startsWith("/") &&
+        !reference.split("/").includes(".."),
+      `Capability platform reference is invalid: ${capability.key}`
+    )
+    assert(
+      existsSync(new URL(`${skill.packagePath}/${reference}`, ROOT)),
+      `Capability platform reference is missing: ${capability.key}`
+    )
+  }
+  const localSkill = capability.localSkill
+  assert(
+    localSkill &&
+      ["none", "optional", "required", "fixed"].includes(localSkill.mode),
+    `Capability Local Skill policy is invalid: ${capability.key}`
+  )
+  assert(
+    localSkill.mode === "fixed"
+      ? typeof localSkill.skillId === "string" && localSkill.skillId.length > 0
+      : !("skillId" in localSkill),
+    `Capability fixed Local Skill policy is invalid: ${capability.key}`
+  )
+  assert(
+    entrySkill.includes(`\`${capability.key}\``),
+    `Entry Skill is missing Capability route: ${capability.key}`
+  )
+}
+
 assert(
-  agentProcedureCount === 19,
-  `Expected 19 Agent Procedures; got ${agentProcedureCount}.`
+  Array.isArray(capabilityCatalog.capabilities),
+  "Module Capability Catalog capabilities must be an array."
+)
+for (const capability of capabilityCatalog.capabilities) {
+  validateCapabilityBase(capability)
+  const invocation = capability.invocation
+  assert(
+    invocation && typeof invocation === "object",
+    `Capability invocation is missing: ${capability.key}`
+  )
+  if (invocation.kind === "procedure") {
+    procedureCount += 1
+    assert(
+      !("taskPointer" in capability.localSkill),
+      `Procedure Local Skill policy cannot declare taskPointer: ${capability.key}`
+    )
+    assert(
+      [
+        "none",
+        "summary",
+        "optional-detail",
+        "active-detail",
+        "explicit-detail",
+      ].includes(invocation.selectionPolicy),
+      `Invalid Agent Procedure selectionPolicy: ${capability.key}`
+    )
+    assert(
+      Array.isArray(invocation.commandIntents) &&
+        invocation.commandIntents.length > 0,
+      `Agent Procedure command intents are missing: ${capability.key}`
+    )
+    continue
+  }
+  taskCapabilityCount += 1
+  if (invocation.kind === "task") {
+    assert(
+      capability.localSkill.mode === "none"
+        ? !("taskPointer" in capability.localSkill)
+        : typeof capability.localSkill.taskPointer === "string" &&
+            /^\/(input|source)\//.test(capability.localSkill.taskPointer),
+      `Task Local Skill pointer is invalid: ${capability.key}`
+    )
+    assert(
+      Array.isArray(invocation.routes) && invocation.routes.length > 0,
+      `Task Capability routes are missing: ${capability.key}`
+    )
+    for (const route of invocation.routes) {
+      const routeKey = [route.queue, route.taskType, route.capability].join(
+        "\u0000"
+      )
+      assert(
+        !taskRoutes.has(routeKey),
+        `Duplicate Task Capability route: ${capability.key}`
+      )
+      taskRoutes.add(routeKey)
+      for (const field of ["queue", "taskType", "capability", "handlerKey"]) {
+        assert(
+          typeof route[field] === "string" && route[field].length > 0,
+          `Task Capability route field is missing: ${capability.key}.${field}`
+        )
+      }
+    }
+    continue
+  }
+  assert(
+    invocation.kind === "task-scope" &&
+      capability.localSkill.mode === "none" &&
+      !("taskPointer" in capability.localSkill) &&
+      Array.isArray(invocation.scopeKinds) &&
+      invocation.scopeKinds.length > 0 &&
+      new Set(invocation.scopeKinds).size === invocation.scopeKinds.length &&
+      invocation.scopeKinds.every((scopeKind) =>
+        ["exact-task", "project-drain", "wiki-mutation-drain"].includes(
+          scopeKind
+        )
+      ),
+    `Task Capability scope kinds are invalid: ${capability.key}`
+  )
+}
+
+const expectedCapabilityIndex = renderEntryCapabilityIndex(capabilityCatalog)
+const capabilityIndex = entrySkill.match(
+  /<!-- BEGIN GENERATED CAPABILITY INDEX -->\n([\s\S]*?)\n<!-- END GENERATED CAPABILITY INDEX -->/
+)?.[1]
+assert(
+  capabilityIndex === expectedCapabilityIndex,
+  "MyOpenPanels Entry Skill Capability index is out of date."
+)
+const expectedCapabilityMatrix = renderCapabilityMatrix(capabilityCatalog)
+const capabilityMatrix = capabilityDoc.match(
+  /<!-- BEGIN GENERATED CAPABILITY MATRIX -->\n([\s\S]*?)\n<!-- END GENERATED CAPABILITY MATRIX -->/
+)?.[1]
+assert(
+  capabilityMatrix === expectedCapabilityMatrix,
+  "Panel Capability matrix is out of date."
+)
+
+assert(
+  procedureCount === 19,
+  `Expected 19 Agent Procedures; got ${procedureCount}.`
 )
 assert(
-  taskHandoffCount === 9,
-  `Expected 9 Task Handoffs; got ${taskHandoffCount}.`
+  taskCapabilityCount === 9,
+  `Expected 9 Task Capabilities; got ${taskCapabilityCount}.`
+)
+assert(
+  taskRoutes.size === 10,
+  `Expected 10 Task routes; got ${taskRoutes.size}.`
 )
 
 const manifest = {

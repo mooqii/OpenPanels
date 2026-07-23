@@ -1,10 +1,10 @@
-export type WikiModule = "structured" | "generated"
+export type WikiModule = "structured" | "myDocuments"
 
 export function nextCollapsedModules(
   current: ReadonlySet<WikiModule>,
   module: WikiModule
 ): Set<WikiModule> {
-  const accordionModules: readonly WikiModule[] = ["generated", "structured"]
+  const accordionModules: readonly WikiModule[] = ["myDocuments", "structured"]
   const next = new Set(current)
 
   if (next.has(module)) {

@@ -17,7 +17,7 @@ pub(super) async fn api_wiki_selection(State(state): State<Arc<AppState>>) -> Re
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct WikiSelectionBody {
-    selected_generated_document_ids: Option<Vec<String>>,
+    selected_my_document_ids: Option<Vec<String>>,
 }
 
 pub(super) async fn api_wiki_set_selection(
@@ -26,7 +26,7 @@ pub(super) async fn api_wiki_set_selection(
 ) -> Response {
     match wiki::write_agent_selection(
         &state.paths,
-        body.selected_generated_document_ids
+        body.selected_my_document_ids
             .as_deref()
             .unwrap_or(&[]),
     ) {
@@ -35,13 +35,13 @@ pub(super) async fn api_wiki_set_selection(
     }
 }
 
-fn wiki_document_error(error: CliError) -> Response {
+fn my_document_error(error: CliError) -> Response {
     let status = match error.code() {
         Some("not_found") => StatusCode::NOT_FOUND,
         Some(
-            "generation_in_progress" | "generation_not_failed" | "generation_retry_unavailable",
+            "my_document_write_in_progress" | "my_document_write_not_failed" | "my_document_write_retry_unavailable",
         ) => StatusCode::CONFLICT,
-        Some("invalid_generated_document" | "invalid_raw_document" | "already_published") => {
+        Some("invalid_my_document" | "invalid_raw_document" | "already_published") => {
             StatusCode::BAD_REQUEST
         }
         _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -49,16 +49,16 @@ fn wiki_document_error(error: CliError) -> Response {
     json_error(status, error.message())
 }
 
-pub(super) async fn api_wiki_generated_documents(State(state): State<Arc<AppState>>) -> Response {
-    match wiki::list_generated_documents(&state.paths) {
+pub(super) async fn api_my_documents(State(state): State<Arc<AppState>>) -> Response {
+    match crate::my_document::list_my_documents(&state.paths) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
     }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct GeneratedDocumentBody {
+pub(super) struct MyDocumentBody {
     content: Option<String>,
     data_url: Option<String>,
     file_name: Option<String>,
@@ -68,14 +68,14 @@ pub(super) struct GeneratedDocumentBody {
     title: Option<String>,
 }
 
-pub(super) async fn api_wiki_create_generated_document(
+pub(super) async fn api_import_my_document(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<GeneratedDocumentBody>,
+    Json(body): Json<MyDocumentBody>,
 ) -> Response {
     let file_name = body.file_name.as_deref().unwrap_or("document.md");
     let result = if let Some(data_url) = body.data_url.as_deref() {
         match data_url_to_buffer(data_url) {
-            Ok(data) => wiki::import_generated_document(
+            Ok(data) => crate::my_document::import_my_document(
                 &state.paths,
                 file_name,
                 body.title.as_deref(),
@@ -85,7 +85,7 @@ pub(super) async fn api_wiki_create_generated_document(
             Err(error) => return json_error(StatusCode::BAD_REQUEST, error.message()),
         }
     } else {
-        wiki::create_generated_document(
+        crate::my_document::create_my_document(
             &state.paths,
             file_name,
             body.title.as_deref(),
@@ -97,25 +97,25 @@ pub(super) async fn api_wiki_create_generated_document(
     };
     match result {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
     }
 }
 
-pub(super) async fn api_wiki_read_generated_document(
+pub(super) async fn api_read_my_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<String>,
 ) -> Response {
-    match wiki::read_generated_document(&state.paths, &document_id) {
+    match crate::my_document::read_my_document(&state.paths, &document_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
     }
 }
 
-pub(super) async fn api_wiki_generated_document_original(
+pub(super) async fn api_my_document_original(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<String>,
 ) -> Response {
-    match wiki::generated_import_original(&state.paths, &document_id) {
+    match crate::my_document::my_document_import_original(&state.paths, &document_id) {
         Ok(original) => {
             let bytes = match fs::read(&original.file_path) {
                 Ok(bytes) => bytes,
@@ -142,34 +142,34 @@ pub(super) async fn api_wiki_generated_document_original(
             }
             response
         }
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
     }
 }
 
-pub(super) async fn api_wiki_reveal_generated_document_original(
+pub(super) async fn api_reveal_my_document_original(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<String>,
 ) -> Response {
-    match wiki::reveal_generated_import_original(&state.paths, &document_id) {
+    match crate::my_document::reveal_my_document_import_original(&state.paths, &document_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
     }
 }
 
-pub(super) async fn api_wiki_update_generated_document(
+pub(super) async fn api_update_my_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<String>,
-    Json(body): Json<GeneratedDocumentBody>,
+    Json(body): Json<MyDocumentBody>,
 ) -> Response {
     let result = if let Some(content) = body.content {
-        let existing_file_name = wiki::read_generated_document(&state.paths, &document_id)
+        let existing_file_name = crate::my_document::read_my_document(&state.paths, &document_id)
             .ok()
             .and_then(|payload| {
                 payload["document"]["originalFileName"]
                     .as_str()
                     .map(str::to_owned)
             });
-        wiki::write_generated_document(
+        crate::my_document::write_my_document(
             &state.paths,
             &document_id,
             body.file_name
@@ -180,18 +180,18 @@ pub(super) async fn api_wiki_update_generated_document(
             content.as_bytes(),
         )
     } else if let Some(file_name) = body.file_name {
-        wiki::rename_generated_document_file(&state.paths, &document_id, &file_name)
+        crate::my_document::rename_my_document_file(&state.paths, &document_id, &file_name)
     } else if let Some(title) = body.title {
-        wiki::rename_generated_document(&state.paths, &document_id, &title)
+        crate::my_document::rename_my_document(&state.paths, &document_id, &title)
     } else {
         Err(CliError::with_code(
-            "invalid_generated_document",
-            "Generated document update requires content or title.",
+            "invalid_my_document",
+            "My Document update requires content or title.",
         ))
     };
     match result {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
     }
 }
 
@@ -219,42 +219,80 @@ pub(super) async fn api_wiki_rename_raw_document(
     };
     match result {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
     }
 }
 
-pub(super) async fn api_wiki_delete_generated_document(
+pub(super) async fn api_delete_my_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<String>,
 ) -> Response {
-    match wiki::delete_generated_document(&state.paths, &document_id) {
+    match crate::my_document::delete_my_document(&state.paths, &document_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
     }
 }
 
-pub(super) async fn api_wiki_publish_generated_document(
+pub(super) async fn api_publish_my_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<String>,
     Json(body): Json<WikiSpaceQuery>,
 ) -> Response {
-    match wiki::publish_generated_document(
+    match crate::my_document::publish_my_document(
         &state.paths,
         &document_id,
         body.wiki_space_id.as_deref(),
     ) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
     }
 }
 
-pub(super) async fn api_wiki_retry_generated_document(
+pub(super) async fn api_retry_my_document(
     State(state): State<Arc<AppState>>,
     Path(document_id): Path<String>,
 ) -> Response {
-    match crate::operations::retry_wiki_document(&state.paths, &document_id) {
+    match crate::operations::retry_my_document(&state.paths, &document_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MyDocumentOperationBody {
+    title: String,
+    document_format: Option<String>,
+}
+
+pub(super) async fn api_create_my_document(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MyDocumentOperationBody>,
+) -> Response {
+    match crate::operations::begin_my_document(
+        &state.paths,
+        &body.title,
+        body.document_format.as_deref().unwrap_or("markdown"),
+        None,
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => my_document_error(error),
+    }
+}
+
+pub(super) async fn api_revise_my_document(
+    State(state): State<Arc<AppState>>,
+    Path(document_id): Path<String>,
+    Json(body): Json<MyDocumentOperationBody>,
+) -> Response {
+    match crate::operations::begin_my_document(
+        &state.paths,
+        &body.title,
+        body.document_format.as_deref().unwrap_or("markdown"),
+        Some(&document_id),
+    ) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => my_document_error(error),
     }
 }
 
@@ -581,7 +619,7 @@ pub(super) async fn api_wiki_rename_page(
     };
     match wiki::rename_page(&state.paths, &wiki_space_id, &page_path, next_page_path) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => wiki_document_error(error),
+        Err(error) => my_document_error(error),
     }
 }
 

@@ -76,30 +76,6 @@ export interface RecordsDiff {
 // =============================================================================
 
 /**
- * Schema information for the store
- */
-export interface StoreSchema {
-  /** Record type versions */
-  recordVersions: {
-    [typeName: string]: number
-  }
-  /** Schema version */
-  schemaVersion: number
-}
-
-/**
- * Default schema for the canvas store
- */
-export const DEFAULT_SCHEMA: StoreSchema = {
-  schemaVersion: 1,
-  recordVersions: {
-    shape: 1,
-    asset: 1,
-    page: 1,
-  },
-}
-
-/**
  * Complete snapshot of the canvas store
  * Used for save/load, export/import
  */
@@ -107,8 +83,6 @@ export interface StoreSnapshot {
   camera?: CanvasCameraState | null
   currentPageId: PageId | null
   openedGroupId: ShapeId | null
-  /** Schema information */
-  schema: StoreSchema
   selectedShapeIds: Set<ShapeId>
   /** All records keyed by ID */
   store: { [id: string]: CanvasRecord }
@@ -120,7 +94,6 @@ export interface StoreSnapshot {
 export function createEmptySnapshot(): StoreSnapshot {
   return {
     store: {},
-    schema: DEFAULT_SCHEMA,
     camera: { x: 0, y: 0, zoom: 1 },
     selectedShapeIds: new Set<ShapeId>(),
     currentPageId: null,

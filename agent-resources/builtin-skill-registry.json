@@ -1,5 +1,4 @@
 {
-  "schemaVersion": 4,
   "systemSkills": [
     {
       "packageDir": "myopenpanels-panels",
@@ -12,335 +11,7 @@
       "loadWhen": [
         "Before reading or changing content through a MyOpenPanels Canvas, Wiki, Writing, Typesetting, or Publishing panel."
       ],
-      "tokens": "short",
-      "procedures": [
-        {
-          "key": "panel.canvas.selection.read",
-          "description": "Read the current explicit Canvas selection or its empty state.",
-          "panelKind": "canvas",
-          "references": [
-            "references/canvas-contract.md",
-            "references/canvas-selection.md"
-          ],
-          "selectionPolicy": "active-detail",
-          "commandIntents": ["panel.selection.read"]
-        },
-        {
-          "key": "panel.canvas.selection.export",
-          "description": "Export the explicit Canvas selection to a user-requested file.",
-          "panelKind": "canvas",
-          "references": [
-            "references/canvas-contract.md",
-            "references/canvas-selection-export.md"
-          ],
-          "selectionPolicy": "explicit-detail",
-          "commandIntents": ["panel.selection.read", "canvas.selection.export"]
-        },
-        {
-          "key": "panel.canvas.image.insert",
-          "description": "Insert an existing bitmap file into the Project Canvas.",
-          "panelKind": "canvas",
-          "references": [
-            "references/canvas-contract.md",
-            "references/canvas-image-insert.md"
-          ],
-          "selectionPolicy": "none",
-          "commandIntents": ["canvas.image.create"]
-        },
-        {
-          "key": "panel.canvas.image.generate",
-          "description": "Generate a new bitmap and place it into the Project Canvas.",
-          "panelKind": "canvas",
-          "references": [
-            "references/canvas-contract.md",
-            "references/canvas-image-generation.md"
-          ],
-          "selectionPolicy": "optional-detail",
-          "commandIntents": [
-            "canvas.image.generate",
-            "operation.complete",
-            "operation.fail",
-            "operation.cancel"
-          ]
-        },
-        {
-          "key": "panel.canvas.image.edit",
-          "description": "Edit, restyle, or redraw an explicitly selected Canvas image.",
-          "panelKind": "canvas",
-          "references": [
-            "references/canvas-contract.md",
-            "references/canvas-image-edit.md"
-          ],
-          "selectionPolicy": "explicit-detail",
-          "commandIntents": [
-            "panel.selection.read",
-            "canvas.image.generate",
-            "operation.complete",
-            "operation.fail",
-            "operation.cancel"
-          ]
-        },
-        {
-          "key": "panel.wiki.knowledge.query",
-          "description": "Answer from selected Wiki knowledge or selected Wiki documents.",
-          "panelKind": "wiki",
-          "references": [
-            "references/wiki-contract.md",
-            "references/wiki-knowledge-context.md"
-          ],
-          "selectionPolicy": "optional-detail",
-          "commandIntents": [
-            "panel.selection.read",
-            "wiki.space.materialize",
-            "wiki.page.search",
-            "wiki.page.list",
-            "wiki.page.read",
-            "wiki.raw.read",
-            "wiki.document.read"
-          ]
-        },
-        {
-          "key": "panel.wiki.raw.import",
-          "description": "Import a source file or Markdown text as a Wiki Raw Document.",
-          "panelKind": "wiki",
-          "references": [
-            "references/wiki-contract.md",
-            "references/wiki-import-raw-document.md"
-          ],
-          "selectionPolicy": "none",
-          "commandIntents": ["wiki.raw.create"]
-        },
-        {
-          "key": "panel.wiki.document.read",
-          "description": "Read a generated document selected or named by the user.",
-          "panelKind": "wiki",
-          "references": [
-            "references/wiki-contract.md",
-            "references/wiki-generated-document-read.md"
-          ],
-          "selectionPolicy": "optional-detail",
-          "commandIntents": [
-            "panel.selection.read",
-            "wiki.document.list",
-            "wiki.document.read"
-          ]
-        },
-        {
-          "key": "panel.wiki.document.generate",
-          "description": "Generate a new standalone Wiki document through a target-bound Operation.",
-          "panelKind": "wiki",
-          "references": [
-            "references/wiki-contract.md",
-            "references/wiki-generated-documents.md"
-          ],
-          "selectionPolicy": "optional-detail",
-          "commandIntents": [
-            "wiki.document.generate",
-            "operation.complete",
-            "operation.fail",
-            "operation.cancel"
-          ]
-        },
-        {
-          "key": "panel.wiki.document.revise",
-          "description": "Revise an existing generated Wiki document through a target-bound Operation.",
-          "panelKind": "wiki",
-          "references": [
-            "references/wiki-contract.md",
-            "references/wiki-revise-generated-document.md"
-          ],
-          "selectionPolicy": "optional-detail",
-          "commandIntents": [
-            "panel.selection.read",
-            "wiki.document.read",
-            "wiki.document.generate",
-            "operation.complete",
-            "operation.fail",
-            "operation.cancel"
-          ]
-        },
-        {
-          "key": "panel.wiki.document.publish",
-          "description": "Publish an explicitly identified generated document into Wiki raw sources.",
-          "panelKind": "wiki",
-          "references": [
-            "references/wiki-contract.md",
-            "references/wiki-publish-generated-document.md"
-          ],
-          "selectionPolicy": "optional-detail",
-          "commandIntents": [
-            "panel.selection.read",
-            "wiki.document.read",
-            "wiki.document.publish"
-          ]
-        },
-        {
-          "key": "panel.wiki.document.delete",
-          "description": "Delete an explicitly identified generated Wiki document.",
-          "panelKind": "wiki",
-          "references": [
-            "references/wiki-contract.md",
-            "references/wiki-delete-generated-document.md"
-          ],
-          "selectionPolicy": "optional-detail",
-          "commandIntents": [
-            "panel.selection.read",
-            "wiki.document.list",
-            "wiki.document.read",
-            "wiki.document.delete"
-          ]
-        },
-        {
-          "key": "panel.wiki.space.manage",
-          "description": "List, activate, or materialize a Wiki space.",
-          "panelKind": "wiki",
-          "references": [
-            "references/wiki-contract.md",
-            "references/wiki-space-management.md"
-          ],
-          "selectionPolicy": "none",
-          "commandIntents": [
-            "wiki.space.list",
-            "wiki.space.activate",
-            "wiki.space.materialize"
-          ]
-        },
-        {
-          "key": "panel.writing.context.read",
-          "description": "Read the Writing panel's selected source and Wiki context.",
-          "panelKind": "writing",
-          "references": [
-            "references/writing-contract.md",
-            "references/writing-knowledge-context.md"
-          ],
-          "selectionPolicy": "active-detail",
-          "commandIntents": [
-            "panel.selection.read",
-            "wiki.raw.read",
-            "wiki.document.read",
-            "wiki.space.materialize",
-            "wiki.page.search",
-            "wiki.page.read"
-          ]
-        },
-        {
-          "key": "panel.typesetting.title.request",
-          "description": "Create a title generation Task for an explicitly identified Typesetting publication.",
-          "panelKind": "typesetting",
-          "references": [
-            "references/typesetting-contract.md",
-            "references/typesetting-title-request.md"
-          ],
-          "selectionPolicy": "none",
-          "commandIntents": [
-            "typesetting.title.skill.list",
-            "typesetting.title.generate"
-          ]
-        }
-      ],
-      "taskHandoffs": [
-        {
-          "key": "panel.wiki.raw.convert",
-          "description": "Convert an immutable raw source into faithful Markdown inside a claimed Task.",
-          "panelKind": "wiki",
-          "reference": "references/wiki-convert-document.md",
-          "commandIntents": [
-            "wiki.raw.read",
-            "wiki.raw.update",
-            "task.heartbeat",
-            "task.complete",
-            "task.fail"
-          ]
-        },
-        {
-          "key": "panel.wiki.pages.maintain",
-          "description": "Maintain generated Wiki pages inside an exact claimed Task.",
-          "panelKind": "wiki",
-          "reference": "references/wiki-authoring-skill-routing.md",
-          "commandIntents": [
-            "agent.skill.read",
-            "wiki.space.materialize",
-            "wiki.page.search",
-            "wiki.page.list",
-            "wiki.page.read",
-            "wiki.page.create",
-            "wiki.page.update",
-            "task.heartbeat",
-            "task.complete",
-            "task.fail"
-          ]
-        },
-        {
-          "key": "panel.writing.request.execute",
-          "description": "Execute a submitted Writing request inside its claimed Task.",
-          "panelKind": "writing",
-          "reference": "references/writing-execute-request.md",
-          "commandIntents": [
-            "writing.request.read",
-            "agent.skill.read",
-            "writing.generate",
-            "operation.complete",
-            "task.complete",
-            "task.fail"
-          ]
-        },
-        {
-          "key": "panel.writing.skill.refine",
-          "description": "Refine selected examples into a reusable Writing Skill inside its claimed Task.",
-          "panelKind": "writing",
-          "reference": "references/writing-refine-skill.md",
-          "commandIntents": [
-            "writing.refinement.read",
-            "agent.skill.read",
-            "writing.skill.install",
-            "task.complete",
-            "task.fail"
-          ]
-        },
-        {
-          "key": "panel.publishing.request.execute",
-          "description": "Execute a captured Publishing release inside its exact claimed Task.",
-          "panelKind": "publishing",
-          "reference": "references/publishing-execute-request.md",
-          "commandIntents": ["publishing.checkpoint"]
-        },
-        {
-          "key": "panel.typesetting.cover.generate",
-          "description": "Generate a cover for a captured Typesetting publication inside its exact claimed Task.",
-          "panelKind": "typesetting",
-          "reference": "references/typesetting-cover-generate.md",
-          "commandIntents": [
-            "task.handoff.heartbeat",
-            "task.handoff.complete",
-            "task.handoff.fail",
-            "task.handoff.stop"
-          ]
-        },
-        {
-          "key": "panel.typesetting.title.generate",
-          "description": "Generate title candidates for a captured Typesetting publication inside its exact claimed Task.",
-          "panelKind": "typesetting",
-          "reference": "references/typesetting-title-generate.md",
-          "commandIntents": [
-            "task.handoff.heartbeat",
-            "task.handoff.complete",
-            "task.handoff.fail",
-            "task.handoff.stop"
-          ]
-        },
-        {
-          "key": "panel.typesetting.content.format",
-          "description": "Automatically format captured Typesetting content inside its exact claimed Task.",
-          "panelKind": "typesetting",
-          "reference": "references/typesetting-content-format.md",
-          "commandIntents": [
-            "task.handoff.heartbeat",
-            "task.handoff.complete",
-            "task.handoff.fail",
-            "task.handoff.stop"
-          ]
-        }
-      ]
+      "tokens": "short"
     },
     {
       "packageDir": "myopenpanels-task-queue",
@@ -359,76 +30,15 @@
         "task.handoff.complete",
         "task.handoff.fail",
         "task.handoff.stop",
-        "task.claim",
-        "task.heartbeat",
-        "task.complete",
-        "task.fail",
-        "task.events",
-        "task.attempts",
-        "workflow.run.read",
+        "task.retry",
+        "task.cancel",
+        "task.archive",
         "agent.bridge.run"
       ],
       "loadWhen": [
         "When the request handles work from the generic project Task queue."
       ],
-      "tokens": "short",
-      "procedures": [
-        {
-          "key": "task.queue.inspect",
-          "description": "Inspect queued work, Task state, attempts, events, and its persisted Workflow Run.",
-          "panelKind": null,
-          "references": ["references/inspect.md"],
-          "selectionPolicy": "none",
-          "commandIntents": [
-            "task.list",
-            "task.next",
-            "task.read",
-            "task.events",
-            "task.attempts",
-            "workflow.run.read"
-          ]
-        },
-        {
-          "key": "task.queue.retry",
-          "description": "Retry an explicitly identified failed Task.",
-          "panelKind": null,
-          "references": ["references/retry.md"],
-          "selectionPolicy": "none",
-          "commandIntents": ["task.read", "task.retry"]
-        },
-        {
-          "key": "task.queue.cancel",
-          "description": "Cancel an explicitly identified Task.",
-          "panelKind": null,
-          "references": ["references/cancel.md"],
-          "selectionPolicy": "none",
-          "commandIntents": ["task.read", "task.cancel"]
-        },
-        {
-          "key": "task.queue.archive",
-          "description": "Archive an explicitly identified terminal Task.",
-          "panelKind": null,
-          "references": ["references/archive.md"],
-          "selectionPolicy": "none",
-          "commandIntents": ["task.read", "task.archive"]
-        }
-      ],
-      "taskHandoffs": [
-        {
-          "key": "task.scope.execute",
-          "description": "Execute the exact Task scope supplied by a Studio handoff.",
-          "panelKind": null,
-          "reference": "references/execute-scope.md",
-          "commandIntents": [
-            "task.handoff.start",
-            "task.handoff.exec",
-            "task.handoff.heartbeat",
-            "task.handoff.complete",
-            "task.handoff.fail",
-            "task.handoff.stop"
-          ]
-        }
-      ]
+      "tokens": "short"
     }
   ],
   "presetSkills": [
@@ -446,12 +56,12 @@
       "tokens": "medium"
     },
     {
-      "packageDir": "writing-refinement-default",
-      "id": "writing-refinement-default",
+      "packageDir": "writing-distillation-default",
+      "id": "writing-distillation-default",
       "name": "默认提炼",
       "source": "builtin",
       "appliesTo": ["writing"],
-      "taskTypes": ["refine_writing_skill"],
+      "taskTypes": ["distill_writing_skill"],
       "requiresCommands": [],
       "loadWhen": [
         "The writing work derives a reusable Skill from selected examples."
@@ -464,29 +74,29 @@
       "name": "默认写作",
       "source": "builtin",
       "appliesTo": ["writing"],
-      "taskTypes": ["generate_document"],
+      "taskTypes": ["write_my_document"],
       "requiresCommands": [],
       "loadWhen": ["The writing request selected the default writing method."],
       "tokens": "short"
     },
     {
-      "packageDir": "typesetting-cover-default",
-      "id": "typesetting-cover-default",
+      "packageDir": "publication-cover-default",
+      "id": "publication-cover-default",
       "name": "默认封面",
       "source": "builtin",
       "appliesTo": ["typesetting"],
-      "taskTypes": ["generate_typesetting_cover"],
+      "taskTypes": ["generate_publication_cover"],
       "requiresCommands": [],
       "loadWhen": ["The Typesetting request creates an article cover."],
       "tokens": "short"
     },
     {
-      "packageDir": "typesetting-title-default",
-      "id": "typesetting-title-default",
+      "packageDir": "publication-title-default",
+      "id": "publication-title-default",
       "name": "默认标题生成",
       "source": "builtin",
       "appliesTo": ["typesetting"],
-      "taskTypes": ["generate_typesetting_titles"],
+      "taskTypes": ["generate_publication_titles"],
       "requiresCommands": [],
       "loadWhen": [
         "The Typesetting request generates publication title candidates."
@@ -494,34 +104,34 @@
       "tokens": "short"
     },
     {
-      "packageDir": "typesetting-layout-default",
-      "id": "typesetting-layout-default",
+      "packageDir": "publication-layout-default",
+      "id": "publication-layout-default",
       "name": "默认排版",
       "source": "builtin",
       "appliesTo": ["typesetting"],
-      "taskTypes": ["format_typesetting_content"],
+      "taskTypes": ["format_publication_content"],
       "requiresCommands": [],
       "loadWhen": ["The Typesetting request formats publication content."],
       "tokens": "short"
     },
     {
-      "packageDir": "publishing-xiaohongshu",
-      "id": "publishing-xiaohongshu",
+      "packageDir": "release-xiaohongshu",
+      "id": "release-xiaohongshu",
       "name": "小红书发布",
       "source": "builtin",
       "appliesTo": ["publishing"],
-      "taskTypes": ["publish_xiaohongshu_note"],
+      "taskTypes": ["release_xiaohongshu"],
       "requiresCommands": [],
       "loadWhen": ["The publishing request targets a Xiaohongshu image note."],
       "tokens": "short"
     },
     {
-      "packageDir": "publishing-wechat-official-account",
-      "id": "publishing-wechat-official-account",
+      "packageDir": "release-wechat-official-account",
+      "id": "release-wechat-official-account",
       "name": "微信公众号发布",
       "source": "builtin",
       "appliesTo": ["publishing"],
-      "taskTypes": ["publish_wechat_official_account_draft"],
+      "taskTypes": ["release_wechat_official_account"],
       "requiresCommands": [],
       "loadWhen": [
         "The publishing request targets a WeChat Official Account draft."

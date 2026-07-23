@@ -71,6 +71,33 @@
   border-radius: 0;
 }
 
+.op-typesetting-document-library > .op-typesetting-my-documents-module {
+  flex: 1 1 calc(100% / 4);
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.op-typesetting-document-library
+  > .op-typesetting-my-documents-module.op-wiki-column--collapsed {
+  flex: 0 0 auto;
+}
+
+.op-typesetting-document-library
+  > .op-typesetting-my-documents-module.op-wiki-column--collapsed
+  .op-wiki-column__header {
+  padding-bottom: 0;
+}
+
+.op-typesetting-document-library
+  > .op-typesetting-my-documents-module.op-wiki-column--collapsed
+  .op-wiki-column__content,
+.op-typesetting-document-library
+  > .op-typesetting-my-documents-module.op-wiki-column--collapsed
+  .op-wiki-drop-hint {
+  display: none;
+}
+
 .op-typesetting-document-library
   > .op-typesetting-library-module
   + .op-typesetting-library-module {
@@ -80,6 +107,17 @@
 .op-typesetting-document-library
   > .op-typesetting-library-module
   + .op-typesetting-library-module::before {
+  position: absolute;
+  top: 0;
+  right: 16px;
+  left: 16px;
+  height: 1px;
+  content: "";
+  background: var(--op-divider);
+}
+
+.op-typesetting-document-library > .op-typesetting-my-documents-module::before,
+.op-typesetting-document-library > .op-typesetting-assets-module::before {
   position: absolute;
   top: 0;
   right: 16px;
@@ -111,12 +149,21 @@
   border: 0;
 }
 
+.op-typesetting-library-module__static-title {
+  flex: 1;
+  min-width: 0;
+}
+
 .op-typesetting-library-module__title {
   margin: 0;
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1.2;
   letter-spacing: 0;
+}
+
+.op-typesetting-document-library .op-wiki-column__header h2 {
+  font-weight: 400;
 }
 
 .op-typesetting-library-module__content {
@@ -178,7 +225,7 @@
 }
 
 .op-typesetting-document:hover,
-.op-typesetting-document:has(.op-generated-document-open:focus-visible),
+.op-typesetting-document:has(.op-my-document-open:focus-visible),
 .op-typesetting-document:has(
     .op-typesetting-document__tools button:focus-visible
   ) {
@@ -206,13 +253,13 @@
   color: var(--op-text-secondary);
 }
 
-.op-typesetting-document .op-generated-document-meta {
+.op-typesetting-document .op-my-document-meta {
   display: flex;
   font-size: 10px;
   color: var(--op-text-secondary);
 }
 
-.op-typesetting-document .op-generated-document-copy {
+.op-typesetting-document .op-my-document-copy {
   position: relative;
   z-index: 1;
   min-width: 0;

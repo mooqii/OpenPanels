@@ -1,5 +1,5 @@
-import { AlertDialog, Button, Chip, Tabs, Tooltip } from "@heroui/react"
-import { ArrowDown, ArrowLeft, Copy, RefreshCw, Trash2, X } from "lucide-react"
+import { Button, Chip, Tabs, Tooltip } from "@heroui/react"
+import { Archive, ArrowDown, ArrowLeft, Copy, Trash2, X } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { appendTraceEvent, fetchTraceSnapshot } from "../../lib/api"
@@ -12,11 +12,12 @@ import type {
   TraceCategory,
   TraceEvent,
 } from "../../types"
-import { TaskDispatchControl } from "./TaskDispatchControl"
+import { TaskHandoffControl } from "./TaskHandoffControl"
+import { TaskRetryControl } from "./TaskRetryControl"
 import { TraceEventRow } from "./TraceEventRow"
 import type { TraceFilter } from "./trace-utils"
 import {
-  canDeleteTask,
+  canArchiveTask,
   compareTasksForDisplay,
   formatBlockedReason,
   formatDispatchState,
@@ -24,12 +25,10 @@ import {
   formatTaskError,
   formatTaskTime,
   formatTaskType,
-  groupWikiUpdateTasks,
   isActiveTask,
   isDoneTask,
   isPendingTask,
   pendingTaskCount,
-  taskDeleteNeedsConfirmation,
   taskMatchesFilter,
   taskStatusColor,
   traceEventMatchesFilter,
@@ -208,6 +207,7 @@ export function AgentPanel({
         {displayedTab === "tasks" ? (
           <TaskList
             apiBase={transport.apiBase}
+            buildInfo={buildInfo}
             expandedTaskId={expandedTaskId}
             filter={taskFilter}
             focusedTaskIds={focusedTaskIds}
@@ -290,6 +290,7 @@ export function AgentPanel({
 
 function TaskList({
   apiBase,
+  buildInfo,
   expandedTaskId,
   filter,
   focusedTaskIds,
@@ -304,6 +305,7 @@ function TaskList({
   workerStatus,
 }: {
   apiBase: string
+  buildInfo?: MyOpenPanelsBuildInfo
   expandedTaskId: string | null
   filter: TaskFilter
   focusedTaskIds: string[] | null
@@ -317,22 +319,15 @@ function TaskList({
   tasks: ProjectTask[]
   workerStatus?: AgentWorkerStatus
 }) {
-  const { t } = useMyOpenPanelsI18n()
-  const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null)
+  const [archiveError, setArchiveError] = useState<string | null>(null)
+  const [archivingTaskId, setArchivingTaskId] = useState<string | null>(null)
   const [hiddenTaskIds, setHiddenTaskIds] = useState<Set<string>>(
     () => new Set()
   )
-  const [pendingDeleteTask, setPendingDeleteTask] =
-    useState<ProjectTask | null>(null)
   const focusedTaskIdSet = focusedTaskIds ? new Set(focusedTaskIds) : null
   const visibleTasks = tasks.filter((task) => !hiddenTaskIds.has(task.id))
-  const groupedTasks = groupWikiUpdateTasks(visibleTasks)
-  const filteredTasks = groupWikiUpdateTasks(
-    visibleTasks.filter(
-      (task) => !focusedTaskIdSet || focusedTaskIdSet.has(task.id)
-    )
-  )
+  const filteredTasks = visibleTasks
+    .filter((task) => !focusedTaskIdSet || focusedTaskIdSet.has(task.id))
     .filter((task) =>
       focusedTaskIdSet ? true : taskMatchesFilter(task, filter)
     )
@@ -351,32 +346,32 @@ function TaskList({
     id: TaskFilter
     label: string
   }> = [
-    { id: "pending", label: "Pending", count: pendingTaskCount(groupedTasks) },
+    { id: "pending", label: "Pending", count: pendingTaskCount(visibleTasks) },
     {
       id: "active",
       label: "Active",
-      count: groupedTasks.filter(isActiveTask).length,
+      count: visibleTasks.filter(isActiveTask).length,
     },
     {
       id: "done",
       label: "Closed",
-      count: groupedTasks.filter(isDoneTask).length,
+      count: visibleTasks.filter(isDoneTask).length,
     },
-    { id: "all", label: "All", count: groupedTasks.length },
+    { id: "all", label: "All", count: visibleTasks.length },
   ]
 
-  const deleteTask = async (task: ProjectTask) => {
-    setDeletingTaskId(task.id)
-    setDeleteError(null)
+  const archiveTask = async (task: ProjectTask) => {
+    setArchivingTaskId(task.id)
+    setArchiveError(null)
     try {
       const response = await fetch(
-        `${apiBase}/api/tasks/${encodeURIComponent(task.id)}`,
-        { method: "DELETE" }
+        `${apiBase}/api/tasks/${encodeURIComponent(task.id)}/archive`,
+        { method: "POST" }
       )
       if (!response.ok) {
         const payload = await response.json().catch(() => null)
         throw new Error(
-          payload?.error || `Task deletion failed (${response.status})`
+          payload?.error || `Task archive failed (${response.status})`
         )
       }
       setHiddenTaskIds((current) => {
@@ -385,21 +380,11 @@ function TaskList({
         return next
       })
       if (expandedTaskId === task.id) onExpandTask(null)
-      setPendingDeleteTask(null)
     } catch (cause) {
-      setDeleteError(formatTaskError(cause))
+      setArchiveError(formatTaskError(cause))
     } finally {
-      setDeletingTaskId(null)
+      setArchivingTaskId(null)
     }
-  }
-
-  const requestTaskDelete = (task: ProjectTask) => {
-    setDeleteError(null)
-    if (taskDeleteNeedsConfirmation(task)) {
-      setPendingDeleteTask(task)
-      return
-    }
-    deleteTask(task).catch(() => undefined)
   }
 
   if (!visibleTasks.length) {
@@ -447,7 +432,7 @@ function TaskList({
             ) : (
               <>
                 <span>
-                  Refinement tasks <strong>{focusedTaskIds.length}</strong>
+                  Distillation tasks <strong>{focusedTaskIds.length}</strong>
                 </span>
                 <Button onPress={onClearFocusedTasks} size="sm" variant="ghost">
                   <ArrowLeft size={14} />
@@ -485,19 +470,14 @@ function TaskList({
             ))}
           </div>
         )}
-        {deleteError && !pendingDeleteTask ? (
+        {archiveError ? (
           <p className="op-agent-task-list__error" role="alert">
-            {deleteError}
+            {archiveError}
           </p>
         ) : null}
         {filteredTasks.length ? (
           filteredTasks.map((task) => {
-            const isExpanded =
-              expandedTaskId === task.id ||
-              Boolean(
-                expandedTaskId &&
-                  task.wikiUpdateGroup?.taskIds.includes(expandedTaskId)
-              )
+            const isExpanded = expandedTaskId === task.id
             const detail = JSON.stringify(task, null, 2)
             return (
               <article
@@ -510,7 +490,7 @@ function TaskList({
                 <button
                   aria-expanded={isExpanded}
                   className={
-                    canDeleteTask(task)
+                    canArchiveTask(task)
                       ? "op-agent-task__summary op-agent-task__summary--deletable"
                       : "op-agent-task__summary"
                   }
@@ -527,12 +507,6 @@ function TaskList({
                       >
                         {task.status}
                       </Chip>
-                      {task.wikiUpdateGroup ? (
-                        <Chip size="sm" variant="soft">
-                          {task.wikiUpdateGroup.tasks.filter(isDoneTask).length}
-                          /{task.wikiUpdateGroup.tasks.length} complete
-                        </Chip>
-                      ) : null}
                       {isPendingTask(task) && task.ready === false ? (
                         <Chip color="warning" size="sm" variant="soft">
                           {task.blockedReason
@@ -544,19 +518,17 @@ function TaskList({
                     <time>{formatTaskTime(task.updatedAt)}</time>
                   </span>
                   <strong>
-                    {task.wikiUpdateGroup
-                      ? `Wiki updates · ${task.wikiUpdateGroup.tasks.length} tasks`
-                      : (task.capability ?? formatTaskType(task.type))}
+                    {task.capability ?? formatTaskType(task.type)}
                   </strong>
                 </button>
-                <TaskDeleteButton
-                  isDeleting={deletingTaskId === task.id}
-                  onDelete={requestTaskDelete}
+                <TaskArchiveButton
+                  isArchiving={archivingTaskId === task.id}
+                  onArchive={(selected) =>
+                    archiveTask(selected).catch(() => undefined)
+                  }
                   task={task}
                 />
-                <TaskDispatchControl
-                  apiBase={apiBase}
-                  hasUsableAgentCli={hasUsableAgentCli}
+                <TaskHandoffControl
                   onOpenManualTask={onOpenManualTask}
                   task={task}
                 />
@@ -565,33 +537,14 @@ function TaskList({
                     <div className="op-agent-task__meta">
                       <span>{task.queue}</span>
                       <span>{task.status}</span>
-                      <span
-                        className={
-                          task.ready
-                            ? "op-agent-task__state op-agent-task__state--ready"
-                            : task.blockedReason
-                              ? "op-agent-task__state op-agent-task__state--blocked"
-                              : "op-agent-task__state"
-                        }
-                      >
-                        {task.ready
-                          ? "ready"
-                          : task.blockedReason
-                            ? formatBlockedReason(task.blockedReason)
-                            : "not ready"}
-                      </span>
                       {task.attempt ? (
                         <span>
                           attempt {task.attempt}
-                          {task.maxAttempts ? `/${task.maxAttempts}` : ""}
+                          {task.attemptLimit ? `/${task.attemptLimit}` : ""}
                         </span>
                       ) : null}
                       {task.dispatchState ? (
                         <span>{formatDispatchState(task.dispatchState)}</span>
-                      ) : null}
-                      {task.workflowRunId ? <span>Workflow Run</span> : null}
-                      {task.assignedTarget ? (
-                        <span>{task.assignedTarget.name}</span>
                       ) : null}
                       <span>{task.panelKind}</span>
                       <span>{task.targetId || task.id}</span>
@@ -613,32 +566,12 @@ function TaskList({
                         Lease until {formatTaskTime(task.lease.expiresAt)}
                       </span>
                     ) : null}
+                    <TaskRetryControl
+                      apiBase={apiBase}
+                      buildInfo={buildInfo}
+                      task={task}
+                    />
                     <code>{task.id}</code>
-                    {task.wikiUpdateGroup ? (
-                      <div className="op-agent-task__members">
-                        {task.wikiUpdateGroup.tasks.map((member) => (
-                          <div
-                            className="op-agent-task__member"
-                            key={member.id}
-                          >
-                            <span>{formatTaskType(member.type)}</span>
-                            <span>{member.status}</span>
-                            <TaskDeleteButton
-                              isDeleting={deletingTaskId === member.id}
-                              onDelete={requestTaskDelete}
-                              task={member}
-                            />
-                            <code>{member.id}</code>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    {!task.wikiUpdateGroup && task.workflowRunId ? (
-                      <div className="op-agent-task__command">
-                        <span>Workflow Run</span>
-                        <code>{task.workflowRunId}</code>
-                      </div>
-                    ) : null}
                     {task.dependencies?.length ? (
                       <div className="op-agent-task__command">
                         <span>Prerequisites</span>
@@ -652,19 +585,16 @@ function TaskList({
                         </code>
                       </div>
                     ) : null}
-                    {task.requiredProtocolVersion ? (
+                    {task.executionGeneration !== undefined ||
+                    task.compatibleTargetCount !== undefined ? (
                       <div className="op-agent-task__command">
                         <span>Execution</span>
                         <code>
-                          protocol v{task.requiredProtocolVersion} · generation{" "}
-                          {task.executionGeneration ?? 0} · compatible targets{" "}
-                          {task.compatibleTargetCount ?? 0}
+                          generation {task.executionGeneration ?? 0} ·
+                          compatible targets {task.compatibleTargetCount ?? 0}
                         </code>
                       </div>
                     ) : null}
-                    {task.wikiUpdateGroup ? null : (
-                      <TaskHistory apiBase={apiBase} task={task} />
-                    )}
                     <div className="op-agent-task__json">
                       <Button
                         aria-label="Copy task detail"
@@ -690,7 +620,7 @@ function TaskList({
       </div>
       <WorkerStatusCard
         apiBase={apiBase}
-        hasPendingTasks={pendingTaskCount(groupedTasks) > 0}
+        hasPendingTasks={pendingTaskCount(visibleTasks) > 0}
         hasUsableAgentCli={hasUsableAgentCli}
         isActive={isActive}
         onOpenManualTask={onOpenManualTask}
@@ -698,165 +628,35 @@ function TaskList({
         projectId={visibleTasks[0]?.projectId}
         workerStatus={workerStatus}
       />
-      {pendingDeleteTask ? (
-        <AlertDialog.Backdrop
-          isOpen
-          onOpenChange={(isOpen) => {
-            if (!(isOpen || deletingTaskId)) {
-              setPendingDeleteTask(null)
-              setDeleteError(null)
-            }
-          }}
-        >
-          <AlertDialog.Container placement="center">
-            <AlertDialog.Dialog>
-              <AlertDialog.Header>
-                <AlertDialog.Icon status="danger" />
-                <AlertDialog.Heading>{t`Delete task?`}</AlertDialog.Heading>
-              </AlertDialog.Header>
-              <AlertDialog.Body>
-                <p>
-                  {t`This task is waiting to run. Deleting it will cancel its related panel content and prevent it from running.`}
-                </p>
-                {deleteError ? (
-                  <p className="op-agent-task-list__error" role="alert">
-                    {deleteError}
-                  </p>
-                ) : null}
-              </AlertDialog.Body>
-              <AlertDialog.Footer>
-                <Button
-                  isDisabled={Boolean(deletingTaskId)}
-                  onPress={() => {
-                    setPendingDeleteTask(null)
-                    setDeleteError(null)
-                  }}
-                  variant="tertiary"
-                >
-                  {t`Cancel`}
-                </Button>
-                <Button
-                  isPending={deletingTaskId === pendingDeleteTask.id}
-                  onPress={() =>
-                    deleteTask(pendingDeleteTask).catch(() => undefined)
-                  }
-                  variant="danger"
-                >
-                  <Trash2 size={15} />
-                  {t`Delete`}
-                </Button>
-              </AlertDialog.Footer>
-            </AlertDialog.Dialog>
-          </AlertDialog.Container>
-        </AlertDialog.Backdrop>
-      ) : null}
     </div>
   )
 }
 
-function TaskDeleteButton({
-  isDeleting,
-  onDelete,
+function TaskArchiveButton({
+  isArchiving,
+  onArchive,
   task,
 }: {
-  isDeleting: boolean
-  onDelete: (task: ProjectTask) => void
+  isArchiving: boolean
+  onArchive: (task: ProjectTask) => void
   task: ProjectTask
 }) {
   const { t } = useMyOpenPanelsI18n()
-  if (!canDeleteTask(task)) return null
+  if (!canArchiveTask(task)) return null
   return (
     <Tooltip closeDelay={0} delay={300}>
       <Button
-        aria-label={t`Delete task`}
+        aria-label={t`Archive task`}
         className="op-agent-task__delete"
-        isDisabled={isDeleting}
+        isDisabled={isArchiving}
         isIconOnly
-        onPress={() => onDelete(task)}
+        onPress={() => onArchive(task)}
         size="sm"
         variant="ghost"
       >
-        <Trash2 size={14} />
+        <Archive size={14} />
       </Button>
-      <Tooltip.Content placement="top">{t`Delete task`}</Tooltip.Content>
+      <Tooltip.Content placement="top">{t`Archive task`}</Tooltip.Content>
     </Tooltip>
-  )
-}
-
-function TaskHistory({
-  apiBase,
-  task,
-}: {
-  apiBase: string
-  task: ProjectTask
-}) {
-  const [attempts, setAttempts] = useState<unknown[]>([])
-  const [events, setEvents] = useState<unknown[]>([])
-  const [isMutating, setIsMutating] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    Promise.all([
-      fetch(
-        `${apiBase}/api/tasks/${encodeURIComponent(task.id)}/attempts`
-      ).then((response) => response.json()),
-      fetch(`${apiBase}/api/tasks/${encodeURIComponent(task.id)}/events`).then(
-        (response) => response.json()
-      ),
-    ])
-      .then(([attemptPayload, eventPayload]) => {
-        if (cancelled) return
-        setAttempts(
-          Array.isArray(attemptPayload.attempts) ? attemptPayload.attempts : []
-        )
-        setEvents(Array.isArray(eventPayload.events) ? eventPayload.events : [])
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAttempts([])
-          setEvents([])
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [apiBase, task.id])
-
-  const retry = async () => {
-    setIsMutating(true)
-    try {
-      await fetch(`${apiBase}/api/tasks/${encodeURIComponent(task.id)}/retry`, {
-        method: "POST",
-      })
-    } finally {
-      setIsMutating(false)
-    }
-  }
-  return (
-    <>
-      <div className="op-agent-task__command">
-        <span>History</span>
-        <code>
-          {attempts.length} attempts · {events.length} events
-        </code>
-        {task.status === "failed" ? (
-          <Button
-            aria-label="Retry task"
-            isDisabled={isMutating}
-            isIconOnly
-            onPress={() => retry()}
-            size="sm"
-            variant="ghost"
-          >
-            <RefreshCw size={14} />
-          </Button>
-        ) : null}
-      </div>
-      {attempts.length || events.length ? (
-        <div className="op-agent-task__json">
-          <pre>{JSON.stringify({ attempts, events }, null, 2)}</pre>
-        </div>
-      ) : null}
-    </>
   )
 }

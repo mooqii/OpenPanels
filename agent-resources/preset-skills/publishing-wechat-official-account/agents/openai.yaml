@@ -1,4 +1,0 @@
-interface:
-  display_name: "微信公众号发布"
-  short_description: "Save prepared content to a WeChat Official Account draft."
-  default_prompt: "Use $publishing-wechat-official-account to save the prepared article to the current WeChat Official Account draft box."

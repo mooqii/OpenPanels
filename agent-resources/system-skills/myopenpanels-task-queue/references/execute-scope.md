@@ -3,8 +3,8 @@
 Use this reference only after Studio supplies an exact `task handoff start`
 command and selector.
 
-1. Run the handoff command unchanged. It registers the one-shot target, claims
-   the first execution unit, and returns ExecutionBundle v2.
+1. Run the handoff command unchanged. It starts the one-shot runner, claims
+   the first execution unit, and returns an ExecutionBundle.
 2. Follow the returned Delivery Contract, write only its declared workspace
    artifacts and `execution-result.json`, and use the bound `task handoff exec`
    runner only for allowed reads or Publishing checkpoints. The Runtime owns

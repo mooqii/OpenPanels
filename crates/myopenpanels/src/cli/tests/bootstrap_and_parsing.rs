@@ -469,10 +469,6 @@ fn project_read_commands_bootstrap_project() {
         serde_json::from_str::<Value>(&stdout).expect("json")["focus"]["panelKind"],
         "canvas"
     );
-    let legacy_skill_dir = storage_dir.join("skills/canvas-panel");
-    fs::create_dir_all(&legacy_skill_dir).expect("legacy Skill dir");
-    fs::write(legacy_skill_dir.join("SKILL.md"), "legacy").expect("legacy Skill file");
-
     let (code, stdout, stderr) = run(&[
         "agent",
         "bootstrap",
@@ -487,8 +483,8 @@ fn project_read_commands_bootstrap_project() {
     ]);
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let bootstrap = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(bootstrap["protocolVersion"], 13);
-    assert_eq!(bootstrap["commandCatalogVersion"], 6);
+    assert!(bootstrap.get("protocolVersion").is_none());
+    assert!(bootstrap.get("commandCatalogVersion").is_none());
     assert_eq!(bootstrap["panel"]["context"]["panelKind"], "canvas");
     assert_eq!(bootstrap["panel"]["selection"]["supported"], true);
     assert!(bootstrap.get("capabilities").is_none());
@@ -505,8 +501,7 @@ fn project_read_commands_bootstrap_project() {
         .expect("Canvas loader");
     assert!(canvas_loader.contains("`canvas.image.generate`"));
     assert!(!canvas_loader.contains("`wiki.page.search`"));
-    assert!(!canvas_loader.contains("`writing.generate`"));
-    assert!(!legacy_skill_dir.exists());
+    assert!(!canvas_loader.contains("`writing.write`"));
     assert!(storage_dir
         .join("skills/myopenpanels-panels/SKILL.md")
         .is_file());
@@ -586,7 +581,7 @@ fn project_read_commands_bootstrap_project() {
     assert!(bootstrap["skills"][0]["referencePaths"][0]
         .as_str()
         .unwrap()
-        .ends_with("references/typesetting-contract.md"));
+        .ends_with("references/publication-contract.md"));
 
     let (code, stdout, stderr) = run(&[
         "panel",
@@ -623,7 +618,7 @@ fn project_read_commands_bootstrap_project() {
     assert!(bootstrap["skills"][0]["referencePaths"][0]
         .as_str()
         .unwrap()
-        .ends_with("references/publishing-contract.md"));
+        .ends_with("references/release-contract.md"));
 }
 
 #[test]
@@ -772,10 +767,11 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert_eq!(envelope["intent"], "agent.bootstrap.read");
     let payload = &envelope["data"];
     let actions = &envelope["actions"];
-    assert_eq!(payload["protocolVersion"], 13);
+    assert!(payload.get("protocolVersion").is_none());
     assert!(payload.get("supportedProtocolVersions").is_none());
-    assert_eq!(payload["cliVersion"], VERSION);
-    assert_eq!(payload["commandCatalogVersion"], 6);
+    assert!(payload.get("cliVersion").is_none());
+    assert_eq!(envelope["meta"]["cliVersion"], VERSION);
+    assert!(payload.get("commandCatalogVersion").is_none());
     assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
     assert!(payload.get("entrySkill").is_none());
     assert!(payload.get("entrySkillUpdate").is_none());
@@ -807,7 +803,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
         .expect("Wiki loader");
     assert!(wiki_loader.contains("`wiki.page.search`"));
     assert!(!wiki_loader.contains("`canvas.image.generate`"));
-    assert!(!wiki_loader.contains("`writing.generate`"));
+    assert!(!wiki_loader.contains("`writing.write`"));
     assert!(payload["discovery"].get("capabilityIndexAction").is_none());
     assert!(payload["discovery"].get("capabilityListActions").is_none());
     assert!(payload["discovery"].get("guideListAction").is_none());
@@ -831,7 +827,7 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     let (code, stdout, stderr) = run(&["agent", "catalog", "--format", "json"]);
     assert_eq!(code, 0, "{stderr}{stdout}");
     let index = serde_json::from_str::<Value>(&stdout).expect("catalog index");
-    assert_eq!(index["catalogVersion"], 6);
+    assert!(index.get("catalogVersion").is_none());
     assert!(index["domains"]
         .as_array()
         .unwrap()
@@ -882,7 +878,7 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
         "agent",
         "bootstrap",
         "--procedure",
-        "panel.canvas.image.insert",
+        "canvas.image.insert",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",
@@ -897,9 +893,9 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
     assert!(stdout.len() <= crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES);
     let envelope = serde_json::from_str::<Value>(&stdout).expect("procedure bootstrap");
     let payload = &envelope["data"];
-    assert_eq!(payload["protocolVersion"], 13);
-    assert_eq!(payload["procedureCatalogVersion"], 3);
-    assert_eq!(payload["agentProcedure"]["key"], "panel.canvas.image.insert");
+    assert!(payload.get("protocolVersion").is_none());
+    assert!(payload.get("procedureCatalogVersion").is_none());
+    assert_eq!(payload["agentProcedure"]["key"], "canvas.image.insert");
     assert!(payload["agentProcedure"].get("executionMode").is_none());
     assert!(payload.get("workflowCatalogVersion").is_none());
     assert!(payload.get("agentWorkflow").is_none());
@@ -951,19 +947,19 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
     for procedure in [
         "panel.canvas.selection.read",
         "panel.canvas.selection.export",
-        "panel.canvas.image.insert",
-        "panel.canvas.image.generate",
-        "panel.canvas.image.edit",
-        "panel.wiki.knowledge.query",
-        "panel.wiki.raw.import",
-        "panel.wiki.document.read",
-        "panel.wiki.document.generate",
-        "panel.wiki.document.revise",
-        "panel.wiki.document.publish",
-        "panel.wiki.document.delete",
-        "panel.wiki.space.manage",
-        "panel.writing.context.read",
-        "panel.typesetting.title.request",
+        "canvas.image.insert",
+        "canvas.image.generate",
+        "canvas.image.edit",
+        "wiki-space.query",
+        "wiki-source.import",
+        "my-document.read",
+        "my-document.create",
+        "my-document.revise",
+        "wiki-source.create-from-my-document",
+        "my-document.delete",
+        "wiki-space.manage",
+        "writing.context.read",
+        "publication.title.request",
         "task.queue.inspect",
         "task.queue.retry",
         "task.queue.cancel",
@@ -998,29 +994,34 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
             envelope["data"]["agentProcedure"]["referencePath"],
             reference_paths.last().unwrap().clone()
         );
-        if procedure.starts_with("panel.") {
-            assert_eq!(envelope["data"]["agentProcedure"]["skillId"], "myopenpanels-panels");
-            assert_eq!(reference_paths.len(), 2);
-        } else {
+        if procedure.starts_with("task.queue.") {
             assert_eq!(
                 envelope["data"]["agentProcedure"]["skillId"],
                 "myopenpanels-task-queue"
             );
             assert_eq!(reference_paths.len(), 1);
+        } else {
+            assert_eq!(
+                envelope["data"]["agentProcedure"]["skillId"],
+                "myopenpanels-panels"
+            );
+            assert!(!reference_paths.is_empty());
         }
-        if procedure == "panel.wiki.knowledge.query" {
-            let selected_skill = envelope["data"]["skills"]
+        if procedure == "wiki-space.query" {
+            assert_eq!(
+                envelope["data"]["agentProcedure"]["localSkill"]["mode"],
+                "none"
+            );
+            assert!(envelope["data"]["skills"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|skill| skill["role"] == "selected-portable")
-                .expect("selected portable Skill");
-            assert_eq!(selected_skill["id"], "wiki-default");
+                .all(|skill| skill["role"] != "selected-portable"));
             assert!(envelope["actions"]["required"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|action| action["id"] == "skill.wiki-default.body"));
+                .all(|action| action["id"] != "skill.wiki-default.body"));
         }
         assert!(envelope["actions"]["suggested"]
             .as_array()

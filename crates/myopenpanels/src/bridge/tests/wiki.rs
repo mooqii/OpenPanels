@@ -15,9 +15,10 @@
             crate::control::BootstrapRequest::new(),
         )
         .expect("bootstrap");
+        let wiki_space_id = active_wiki_space_id(&paths);
         crate::wiki::write_page(
             &paths,
-            "wiki:default",
+            &wiki_space_id,
             "custom/home.md",
             "# Home\n",
             None,
@@ -30,7 +31,7 @@
             Some("Source"),
             Some("text/markdown"),
             "user",
-            Some("wiki:default"),
+            Some(&wiki_space_id),
             b"# Source material\n\nUseful facts.\n",
         )
         .expect("raw document");
@@ -56,7 +57,7 @@
             "--project-dir {}",
             shell_quote_prompt_arg(&paths.project_dir.display().to_string())
         )));
-        assert!(prompt.contains("--space-id wiki:default"));
+        assert!(prompt.contains(&format!("--space-id {wiki_space_id}")));
         assert!(prompt.contains(task["id"].as_str().unwrap()));
         assert!(!prompt.contains("Task JSON"));
         assert!(!prompt.contains("workflowRunId"));
@@ -88,6 +89,7 @@
             crate::control::BootstrapRequest::new(),
         )
         .expect("bootstrap");
+        let wiki_space_id = active_wiki_space_id(&paths);
         let source = format!(
             "# Large\n\n{}END-MARKER",
             "x".repeat(MAX_AGENT_PROMPT_BYTES)
@@ -98,7 +100,7 @@
             Some("Large"),
             Some("text/markdown"),
             "user",
-            Some("wiki:default"),
+            Some(&wiki_space_id),
             source.as_bytes(),
         )
         .expect("raw document");
@@ -139,6 +141,7 @@
             crate::control::BootstrapRequest::new(),
         )
         .expect("bootstrap");
+        let wiki_space_id = active_wiki_space_id(&paths);
         let task = json!({
             "id": "task:maintain",
             "projectId": bootstrap.project.id,
@@ -149,11 +152,11 @@
             "mutationSequence": 42,
             "executionGeneration": 7,
             "source": {
-                "wikiSpaceId": "wiki:default",
-                "agentSkillId": "karpathy-llm-wiki"
+                "wikiSpaceId": wiki_space_id,
+                "agentSkillId": "wiki-default"
             },
             "input": {
-                "wikiSpaceId": "wiki:default",
+                "wikiSpaceId": wiki_space_id,
                 "changeEvents": [{
                     "kind": "wiki_page_renamed",
                     "fromPath": "old/place.md",
@@ -174,7 +177,6 @@
         assert!(!prompt.contains("mutationSequence"));
         assert!(!prompt.contains("executionGeneration"));
         assert!(workspace.join("skills/wiki-default/SKILL.md").is_file());
-        assert!(!workspace.join("skills/karpathy-llm-wiki").exists());
 
         let invalid = json!({
             "id": "task:missing-events",
@@ -182,134 +184,16 @@
             "queue": "wiki",
             "type": "maintain_wiki",
             "source": {
-                "wikiSpaceId": "wiki:default",
+                "wikiSpaceId": wiki_space_id,
                 "agentSkillId": "wiki-default"
             },
-            "input": { "wikiSpaceId": "wiki:default" }
+            "input": { "wikiSpaceId": wiki_space_id }
         });
         let invalid_workspace = temp.path().join("invalid-execution");
         fs::create_dir_all(&invalid_workspace).expect("workspace");
         let error = wiki_authoring_task_prompt(&paths, &invalid, &invalid_workspace)
             .expect_err("missing change events must fail");
         assert_eq!(error.code(), Some("invalid_task_input"));
-    }
-
-    #[test]
-    fn wiki_update_claims_are_batched_and_complete_all_members() {
-        let _env_lock = crate::TASK_BROKER_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let temp = tempfile::tempdir().expect("temp");
-        let project = temp.path().join("project");
-        let storage = temp.path().join("storage");
-        fs::create_dir_all(&project).expect("project");
-        let paths = crate::paths::resolve_myopenpanels_paths(
-            Some(project.to_str().unwrap()),
-            Some(storage.to_str().unwrap()),
-            Some("bridge-wiki-batch-test"),
-        )
-        .expect("paths");
-        let bootstrap = crate::control::ensure_project_bootstrap(
-            &paths,
-            crate::control::BootstrapRequest::new(),
-        )
-        .expect("bootstrap");
-        for (name, content) in [
-            ("one.md", b"# One\n\nFirst source.\n".as_slice()),
-            ("two.md", b"# Two\n\nSecond source.\n".as_slice()),
-        ] {
-            crate::wiki::add_raw_document(
-                &paths,
-                name,
-                Some(name),
-                Some("text/markdown"),
-                "user",
-                Some("wiki:default"),
-                content,
-            )
-            .expect("raw document");
-        }
-        let tasks = crate::storage::Storage::open(&paths)
-            .expect("storage")
-            .list_tasks(&bootstrap.project.id)
-            .expect("tasks");
-        let first_task = tasks
-            .iter()
-            .filter(|task| task["type"] == "ingest_markdown_into_wiki")
-            .min_by_key(|task| task["mutationSequence"].as_i64().unwrap_or(i64::MAX))
-            .expect("wiki task");
-        let first_task_id = first_task["id"].as_str().expect("task id");
-        let mutation_key = first_task["mutationKey"].as_str().expect("mutation key");
-        let dispatch = crate::tasks::set_wiki_update_group_dispatch(
-            &paths,
-            &mutation_key,
-            "auto",
-            None,
-        )
-        .expect("group dispatch");
-        assert_eq!(dispatch["updatedTaskCount"], 2);
-        let target = crate::tasks::register_target(
-            &paths,
-            crate::tasks::TargetRegistration {
-                name: "wiki-batch-target",
-                host: Some("test"),
-                project_id: None,
-                capabilities: vec!["*".to_owned()],
-                priority: 0,
-                protocol_version: 3,
-                max_concurrency: 1,
-                model_gateway_connection_id: None,
-            },
-        )
-        .expect("target");
-        let _broker = crate::content::enable_test_task_broker();
-        let claim = crate::tasks::claim_task(
-            &paths,
-            first_task_id,
-            target["target"]["id"].as_str().expect("target id"),
-        )
-        .expect("claim");
-
-        assert_eq!(claim["batch"]["kind"], "wiki_update");
-        assert_eq!(claim["batch"]["taskCount"], 2);
-        assert_eq!(claim["task"]["batch"]["taskCount"], 2);
-        let workspace = temp.path().join("batch-execution");
-        fs::create_dir_all(&workspace).expect("workspace");
-        let prompt = wiki_authoring_task_prompt(&paths, &claim["task"], &workspace)
-            .expect("batch prompt");
-        assert!(prompt.contains("Wiki update batch"));
-        assert!(prompt.contains("First source."));
-        assert!(prompt.contains("Second source."));
-        assert_eq!(
-            fs::read_dir(workspace.join("inputs"))
-                .expect("inputs")
-                .count(),
-            2
-        );
-
-        crate::tasks::complete_task(
-            &paths,
-            claim["task"]["id"].as_str().expect("task id"),
-            claim["leaseToken"].as_str().expect("lease token"),
-            Some(json!({
-                "schemaVersion": 1,
-                "outcome": "no_change",
-                "summary": "The two sources require no page changes.",
-                "changedPaths": [],
-                "bridgeValidated": true,
-            })),
-        )
-        .expect("complete batch");
-        let tasks = crate::storage::Storage::open(&paths)
-            .expect("storage")
-            .list_tasks(&bootstrap.project.id)
-            .expect("tasks")
-            .into_iter()
-            .filter(|task| task["type"] == "ingest_markdown_into_wiki")
-            .collect::<Vec<_>>();
-        assert_eq!(tasks.len(), 2);
-        assert!(tasks.iter().all(|task| task["status"] == "succeeded"));
-        assert!(tasks.iter().any(|task| task["result"]["outcome"] == "batched"));
     }
 
     #[test]
@@ -326,9 +210,14 @@
         .expect("paths");
         crate::control::ensure_project_bootstrap(&paths, crate::control::BootstrapRequest::new())
             .expect("bootstrap");
+        let wiki_space_id = active_wiki_space_id(&paths);
         let workspace = temp.path().join("execution");
         fs::create_dir_all(&workspace).expect("workspace");
-        let task = json!({ "id": "task:result", "queue": "wiki" });
+        let task = json!({
+            "id": "task:result",
+            "queue": "wiki",
+            "source": { "wikiSpaceId": wiki_space_id }
+        });
 
         let missing = validate_wiki_execution_result(&paths, &task, &workspace)
             .expect_err("missing result must fail");
@@ -337,7 +226,6 @@
         fs::write(
             workspace.join(EXECUTION_RESULT_FILE),
             serde_json::to_vec(&json!({
-                "schemaVersion": 1,
                 "outcome": "no_change",
                 "summary": "The Skill requires no update.",
                 "changedPaths": [],
@@ -352,7 +240,6 @@
         fs::write(
             workspace.join(EXECUTION_RESULT_FILE),
             serde_json::to_vec(&json!({
-                "schemaVersion": 1,
                 "outcome": "changed",
                 "summary": "Updated a page.",
                 "changedPaths": ["invented/page.md"],
@@ -363,4 +250,61 @@
         let mismatch = validate_wiki_execution_result(&paths, &task, &workspace)
             .expect_err("unstaged paths must fail");
         assert_eq!(mismatch.code(), Some("invalid_output"));
+    }
+
+    #[test]
+    fn wiki_ingestion_result_accepts_filtered_and_rejects_missing_dispositions() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().join("project");
+        let storage = temp.path().join("storage");
+        fs::create_dir_all(&project).expect("project");
+        let paths = crate::paths::resolve_myopenpanels_paths(
+            Some(project.to_str().unwrap()),
+            Some(storage.to_str().unwrap()),
+            Some("bridge-filtered-result-test"),
+        )
+        .expect("paths");
+        crate::control::ensure_project_bootstrap(&paths, crate::control::BootstrapRequest::new())
+            .expect("bootstrap");
+        let wiki_space_id = active_wiki_space_id(&paths);
+        let workspace = temp.path().join("execution");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let task = json!({
+            "id": "task:filtered",
+            "queue": "wiki",
+            "type": "ingest_markdown_into_wiki",
+            "source": { "wikiSpaceId": wiki_space_id }
+        });
+
+        fs::write(
+            workspace.join(EXECUTION_RESULT_FILE),
+            serde_json::to_vec(&json!({
+                "outcome": "no_change",
+                "disposition": "excluded",
+                "reasonCode": "not_relevant",
+                "summary": "Filtered by the selected Wiki Skill.",
+                "changedPaths": [],
+                "artifacts": [],
+            }))
+            .expect("serialize"),
+        )
+        .expect("write result");
+        let filtered =
+            validate_wiki_execution_result(&paths, &task, &workspace).expect("filtered result");
+        assert_eq!(filtered["disposition"], "excluded");
+
+        fs::write(
+            workspace.join(EXECUTION_RESULT_FILE),
+            serde_json::to_vec(&json!({
+                "outcome": "no_change",
+                "summary": "No update.",
+                "changedPaths": [],
+                "artifacts": [],
+            }))
+            .expect("serialize"),
+        )
+        .expect("write invalid result");
+        let missing = validate_wiki_execution_result(&paths, &task, &workspace)
+            .expect_err("ingestion disposition is required");
+        assert_eq!(missing.code(), Some("invalid_output"));
     }

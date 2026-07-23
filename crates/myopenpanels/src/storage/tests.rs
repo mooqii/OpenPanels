@@ -4,8 +4,29 @@ mod tests {
     use crate::paths::MyOpenPanelsPaths;
     use crate::types::{Panel, PanelKind, Project};
     use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
+
+    const TABLES: [&str; 16] = [
+        "assets",
+        "canvas_documents",
+        "change_scopes",
+        "documents",
+        "panel_selections",
+        "panels",
+        "projects",
+        "publications",
+        "releases",
+        "resources",
+        "settings",
+        "storage_meta",
+        "task_resources",
+        "tasks",
+        "wiki_source_ingestions",
+        "wiki_spaces",
+    ];
 
     fn paths_for(storage_dir: PathBuf) -> MyOpenPanelsPaths {
         let studio_dir = storage_dir.join("studio");
@@ -20,267 +41,213 @@ mod tests {
         }
     }
 
-    #[test]
-    fn storage_writes_advance_change_seq() {
-        let temp = tempdir().expect("tempdir");
-        let paths = paths_for(temp.path().join(".myopenpanels"));
-        let storage = Storage::open(&paths).expect("storage");
-
-        assert_eq!(storage.read_change_seq().expect("initial seq"), 0);
-
-        let session = Project {
-            id: "session:test".to_owned(),
+    fn project_and_panel(storage: &Storage, kind: PanelKind) -> (Project, Panel) {
+        let project = Project {
+            id: "project:test".to_owned(),
             title: "Test".to_owned(),
             created_at: "2026-01-01T00:00:00.000Z".to_owned(),
             updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
-            panel_ids: vec!["panel:canvas".to_owned()],
+            panel_ids: vec![format!("panel:{}", kind.as_str())],
         };
-        storage.write_project(&session).expect("write session");
-        let after_session = storage.read_change_seq().expect("session seq");
-        assert!(after_session > 0);
-
+        storage.write_project(&project).expect("project");
         let panel = Panel {
-            id: "panel:canvas".to_owned(),
-            project_id: session.id.clone(),
-            kind: PanelKind::Canvas,
-            title: "Canvas".to_owned(),
-            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
-            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            id: format!("panel:{}", kind.as_str()),
+            project_id: project.id.clone(),
+            kind,
+            title: "Panel".to_owned(),
+            created_at: project.created_at.clone(),
+            updated_at: project.updated_at.clone(),
             state_ref: None,
         };
-        storage.write_panel(&panel).expect("write panel");
-        let after_panel = storage.read_change_seq().expect("panel seq");
-        assert!(after_panel > after_session);
+        storage.write_panel(&panel).expect("panel");
+        (project, panel)
+    }
 
-        storage
-            .write_panel_state(
-                &session.id,
-                &panel.id,
-                &json!({ "schema": { "schemaVersion": 1 }, "store": {} }),
+    #[test]
+    fn fresh_storage_contains_only_the_current_tables() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        let mut tables = storage
+            .connection()
+            .prepare(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
             )
-            .expect("write state");
-        let after_state = storage.read_change_seq().expect("state seq");
-        assert!(after_state > after_panel);
-        storage
-            .write_panel_state(
-                &session.id,
-                &panel.id,
-                &json!({ "schema": { "schemaVersion": 1 }, "store": {} }),
-            )
-            .expect("repeat identical state");
+            .expect("table query")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("table rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("table names");
+        tables.sort();
+        assert_eq!(tables, TABLES);
         assert_eq!(
-            storage.read_change_seq().expect("unchanged seq"),
-            after_state
+            schema_version(storage.connection()).expect("version"),
+            CURRENT_SCHEMA_VERSION
+        );
+        let database_id: String = storage
+            .connection()
+            .query_row("SELECT database_id FROM storage_meta WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("database identity");
+        assert_eq!(database_id.len(), 32);
+        let schema_fingerprint: String = storage
+            .connection()
+            .query_row(
+                "SELECT schema_fingerprint FROM storage_meta WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("schema fingerprint");
+        assert_eq!(schema_fingerprint, current_schema_fingerprint());
+        assert_eq!(
+            storage
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('panels') WHERE name = 'state_json'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("panel columns"),
+            0
         );
         assert_eq!(
             storage
-                .read_panel_state_revision(&session.id, &panel.id)
-                .expect("state revision"),
-            after_state
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('panels') WHERE name = 'ui_state_json'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("panel UI state column"),
+            1
         );
+        assert_eq!(
+            storage
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('panels') WHERE name = 'position'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("panel position"),
+            1
+        );
+        assert_eq!(
+            storage
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('panels') WHERE name = 'title'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("panel title column"),
+            0
+        );
+        assert_eq!(
+            storage
+                .connection()
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get::<_, i64>(0))
+                .expect("foreign keys"),
+            0
+        );
+    }
 
-        let stale_write = storage
-            .write_panel_state_if_current(
-                &session.id,
+    #[test]
+    fn retry_limit_is_code_policy_not_database_schema() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        let schema: String = storage
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'tasks'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("tasks schema");
+        assert!(!schema.contains("max_attempt"));
+        assert!(!schema.contains("attempt_count BETWEEN"));
+        assert!(!schema.contains("dispatch_mode"));
+        assert!(!schema.contains("preferred_runner_key"));
+        assert_eq!(crate::tasks::TASK_EXECUTION_LIMIT, 3);
+
+        let (project, panel) = project_and_panel(&storage, PanelKind::Wiki);
+        let task = storage
+            .insert_task(
+                &project.id,
                 &panel.id,
-                &json!({ "schema": { "schemaVersion": 1 }, "store": { "stale": true } }),
-                Some(after_panel),
-            )
-            .expect("stale write");
-        assert_eq!(
-            stale_write,
-            Err(PanelStateWriteConflict {
-                base_revision: after_panel,
-                current_revision: after_state,
-            })
-        );
-
-        storage
-            .write_panel_selection(&session.id, &panel.id, &json!({ "selectedShapeIds": [] }))
-            .expect("write selection");
-        let after_selection = storage.read_change_seq().expect("selection seq");
-        assert!(after_selection > after_state);
-        storage
-            .write_panel_selection(&session.id, &panel.id, &json!({ "selectedShapeIds": [] }))
-            .expect("repeat identical selection");
-        assert_eq!(
-            storage.read_change_seq().expect("unchanged selection seq"),
-            after_selection
-        );
-        let selection_scope_count: i64 = storage
-            .connection
-            .query_row(
-                "SELECT COUNT(*) FROM change_scopes WHERE kind = 'panel_selection' AND project_id = ? AND panel_id = ?",
-                params![session.id, panel.id],
-                |row| row.get(0),
-            )
-            .expect("selection scope count");
-        assert_eq!(selection_scope_count, 1);
-
-        let schema_version: i64 = storage
-            .connection
-            .query_row(
-                "SELECT schema_version FROM panel_states WHERE project_id = ? AND panel_id = ?",
-                params![session.id, panel.id],
-                |row| row.get(0),
-            )
-            .expect("schema version");
-        assert_eq!(schema_version, 1);
-    }
-
-    #[test]
-    fn task_execution_method_records_the_actual_executor() {
-        assert_eq!(
-            task_execution_method(
-                Some("local-cli:codex"),
-                Some("generated target name"),
-                Some("codex")
-            ),
-            json!({
-                "kind": "localCli",
-                "connectionId": "local-cli:codex",
-                "providerId": "codex",
-            })
-        );
-        assert_eq!(
-            task_execution_method(None, Some("manual-task-handoff:1"), Some("agent-message")),
-            json!({ "kind": "manualInstruction" })
-        );
-        assert_eq!(task_execution_method(None, None, None), Value::Null);
-    }
-
-    #[test]
-    fn project_tasks_include_the_latest_recorded_executor() {
-        let temp = tempdir().expect("tempdir");
-        let paths = paths_for(temp.path().join(".myopenpanels"));
-        let storage = Storage::open(&paths).expect("storage");
-        let project = Project {
-            id: "project:executor".to_owned(),
-            title: "Executor".to_owned(),
-            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
-            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
-            panel_ids: vec!["panel:wiki".to_owned()],
-        };
-        storage.write_project(&project).expect("write project");
-        storage
-            .write_panel(&Panel {
-                id: "panel:wiki".to_owned(),
-                project_id: project.id.clone(),
-                kind: PanelKind::Wiki,
-                title: "Wiki".to_owned(),
-                created_at: "2026-01-01T00:00:00.000Z".to_owned(),
-                updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
-                state_ref: None,
-            })
-            .expect("write panel");
-        storage
-            .upsert_tasks(
-                &project.id,
-                "panel:wiki",
                 "wiki",
-                &[
-                    json!({
-                        "id": "task:manual-executor",
-                        "status": "succeeded",
-                        "targetId": "wiki:default",
-                        "type": "maintain_wiki",
-                    }),
-                    json!({
-                        "id": "task:batched-follower",
-                        "status": "succeeded",
-                        "targetId": "wiki:default",
-                        "type": "maintain_wiki",
-                    }),
-                ],
+                "maintain_wiki",
+                "wiki.maintain",
+                "wiki:default",
+                &json!({}),
+                &json!({ "agentSkillId": "wiki-default" }),
             )
-            .expect("write task");
-        storage
-            .connection
-            .execute(
-                r#"INSERT INTO task_attempts (
-                    id, task_id, attempt_number, execution_generation, status, started_at,
-                    executor_snapshot_json
-                ) VALUES (?, ?, 1, 1, 'succeeded', ?, ?)"#,
-                params![
-                    "attempt:manual",
-                    "task:manual-executor",
-                    "2026-01-01T00:00:00.000Z",
-                    json!({
-                        "host": "agent-message",
-                        "targetName": "manual-task-handoff:1",
-                    })
-                    .to_string(),
-                ],
-            )
-            .expect("write task attempt");
-        storage
-            .connection
-            .execute(
-                "UPDATE tasks SET result_json = ? WHERE id = 'task:batched-follower'",
-                [json!({ "leaderTaskId": "task:manual-executor" }).to_string()],
-            )
-            .expect("link batched follower");
-
-        let tasks = storage.list_tasks(&project.id).expect("project tasks");
-        for task in tasks {
-            assert_eq!(
-                task["executionMethod"],
-                json!({ "kind": "manualInstruction" })
-            );
-        }
+            .expect("task");
+        assert_eq!(task["attemptLimit"], 3);
+        assert!(task.get("maxAttempts").is_none());
     }
 
     #[test]
-    fn concurrent_panel_state_cas_allows_exactly_one_writer() {
+    fn selection_revision_is_independent_from_panel_state() {
         let temp = tempdir().expect("tempdir");
         let paths = paths_for(temp.path().join(".myopenpanels"));
         let storage = Storage::open(&paths).expect("storage");
-        let project = Project {
-            id: "project:cas".to_owned(),
-            title: "CAS".to_owned(),
-            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
-            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
-            panel_ids: vec!["panel:canvas".to_owned()],
-        };
-        storage.write_project(&project).expect("project");
+        let (project, panel) = project_and_panel(&storage, PanelKind::Canvas);
+        let state_revision = storage
+            .write_panel_state(&project.id, &panel.id, &json!({ "store": {} }))
+            .expect("state");
         storage
-            .write_panel(&Panel {
-                id: "panel:canvas".to_owned(),
-                project_id: project.id.clone(),
-                kind: PanelKind::Canvas,
-                title: "Canvas".to_owned(),
-                created_at: project.created_at.clone(),
-                updated_at: project.updated_at.clone(),
-                state_ref: None,
-            })
-            .expect("panel");
-        let base_revision = storage
-            .write_panel_state(
+            .write_panel_selection(
                 &project.id,
-                "panel:canvas",
-                &json!({ "schema": { "schemaVersion": 1 }, "store": { "value": 0 } }),
+                &panel.id,
+                &json!({ "selectedShapeIds": ["shape:1"] }),
             )
-            .expect("initial state");
-        drop(storage);
+            .expect("selection");
+        assert_eq!(
+            storage
+                .read_panel_state_revision(&project.id, &panel.id)
+                .expect("state revision"),
+            state_revision
+        );
+        let kinds = storage
+            .read_changes_after(state_revision, Some(&project.id))
+            .expect("changes")
+            .1
+            .into_iter()
+            .map(|change| change.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["panel_selection"]);
+    }
 
+    #[test]
+    fn panel_state_compare_and_swap_allows_one_writer() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        let (project, panel) = project_and_panel(&storage, PanelKind::Canvas);
+        let base = storage
+            .write_panel_state(&project.id, &panel.id, &json!({ "store": {} }))
+            .expect("base state");
+        drop(storage);
         let barrier = Arc::new(Barrier::new(2));
         let handles = [1, 2].map(|value| {
             let paths = paths.clone();
             let barrier = Arc::clone(&barrier);
+            let project_id = project.id.clone();
+            let panel_id = panel.id.clone();
             std::thread::spawn(move || {
-                let storage = Storage::open(&paths).expect("concurrent storage");
+                let storage = Storage::open(&paths).expect("storage");
                 barrier.wait();
                 storage
                     .write_panel_state_if_current(
-                        "project:cas",
-                        "panel:canvas",
-                        &json!({
-                            "schema": { "schemaVersion": 1 },
-                            "store": { "value": value }
-                        }),
-                        Some(base_revision),
+                        &project_id,
+                        &panel_id,
+                        &json!({ "store": { "value": value } }),
+                        Some(base),
                     )
-                    .expect("CAS write")
+                    .expect("write")
             })
         });
         let results = handles.map(|handle| handle.join().expect("writer"));
@@ -289,296 +256,128 @@ mod tests {
     }
 
     #[test]
-    fn fresh_storage_has_one_complete_baseline() {
+    fn wiki_resources_are_relational_and_deletion_keeps_revision_monotonic() {
         let temp = tempdir().expect("tempdir");
         let paths = paths_for(temp.path().join(".myopenpanels"));
         let storage = Storage::open(&paths).expect("storage");
-
-        let table_count: i64 = storage
-            .connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("table count");
-        assert_eq!(table_count, 28);
-
-        let migrations: Vec<String> = storage
-            .connection
-            .prepare("SELECT id FROM schema_migrations ORDER BY id")
-            .expect("migration query")
-            .query_map([], |row| row.get(0))
-            .expect("migration rows")
-            .collect::<Result<_, _>>()
-            .expect("migrations");
-        assert_eq!(migrations, ["0001_initial"]);
-
-        for removed in [
-            "task_deliveries",
-            "task_delivery_attempts",
-            "dispatch_outbox",
-            "content_migration_state",
-        ] {
-            let exists: bool = storage
-                .connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?)",
-                    [removed],
-                    |row| row.get(0),
-                )
-                .expect("removed table check");
-            assert!(!exists, "{removed} must not exist");
-        }
-
-        let trigger_count: i64 = storage
-            .connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("trigger count");
-        assert_eq!(trigger_count, 6);
-
-        let non_command_target = storage.connection.execute(
-            r#"INSERT INTO agent_targets (
-                 id, project_id, name, host, transport, capabilities_json, priority,
-                 status, token_hash, last_heartbeat_at, created_at, updated_at
-               ) VALUES (
-                 'agent-target:legacy', 'project:test', 'legacy', 'legacy', 'poll',
-                 '["*"]', 0, 'online', 'legacy', '2026-01-01T00:00:00Z',
-                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
-               )"#,
-            [],
-        );
-        let error = non_command_target.expect_err("non-command target must be rejected");
-        assert!(error
-            .to_string()
-            .contains("agent target transport must be command"));
-
-        let removed_column_count: i64 = storage
-            .connection
-            .query_row(
-                r#"
-                SELECT
-                  (SELECT COUNT(*) FROM pragma_table_info('storage_meta') WHERE name = 'layout_version') +
-                  (SELECT COUNT(*) FROM pragma_table_info('agent_targets') WHERE name = 'endpoint')
-                "#,
-                [],
-                |row| row.get(0),
-            )
-            .expect("removed column count");
-        assert_eq!(removed_column_count, 0);
-
-        let task_schema: String = storage
-            .connection
-            .query_row(
-                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'tasks'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("task schema");
-        assert!(task_schema.contains("max_attempts INTEGER NOT NULL DEFAULT 8"));
-        assert!(task_schema.contains("required_protocol_version = 3"));
-        assert!(task_schema.contains("dispatch_mode IN ('auto', 'prefer', 'manual')"));
-        assert!(!task_schema.contains("dispatch_mode_v2"));
-
-        let foreign_key_errors: i64 = storage
-            .connection
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                row.get(0)
-            })
-            .expect("foreign key check");
-        assert_eq!(foreign_key_errors, 0);
-    }
-
-    #[test]
-    fn reopening_current_baseline_is_idempotent() {
-        let temp = tempdir().expect("tempdir");
-        let paths = paths_for(temp.path().join(".myopenpanels"));
-        let storage = Storage::open(&paths).expect("first open");
-        let initial_revision = storage.read_change_seq().expect("initial revision");
-        let applied_at: String = storage
-            .connection
-            .query_row(
-                "SELECT applied_at FROM schema_migrations WHERE id = '0001_initial'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("applied at");
-        drop(storage);
-
-        let reopened = Storage::open(&paths).expect("second open");
-        assert_eq!(
-            reopened.read_change_seq().expect("reopened revision"),
-            initial_revision
-        );
-        let reopened_applied_at: String = reopened
-            .connection
-            .query_row(
-                "SELECT applied_at FROM schema_migrations WHERE id = '0001_initial'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("reopened applied at");
-        assert_eq!(reopened_applied_at, applied_at);
-    }
-
-    #[test]
-    fn old_migration_history_is_rejected_without_modification() {
-        let temp = tempdir().expect("tempdir");
-        let paths = paths_for(temp.path().join(".myopenpanels"));
-        fs::create_dir_all(&paths.storage_dir).expect("storage dir");
-        let database_path = paths.storage_dir.join(DATABASE_FILE_NAME);
-        let connection = Connection::open(&database_path).expect("legacy database");
-        connection
-            .execute_batch(
-                r#"
-                CREATE TABLE schema_migrations (
-                  id TEXT PRIMARY KEY NOT NULL,
-                  description TEXT NOT NULL,
-                  checksum TEXT NOT NULL,
-                  applied_at TEXT NOT NULL
-                );
-                CREATE TABLE projects (id TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL);
-                INSERT INTO schema_migrations VALUES ('0018_wiki_mutation_lanes', 'old', 'old', 'old');
-                INSERT INTO projects VALUES ('project:legacy', 'keep me');
-                "#,
-            )
-            .expect("legacy fixture");
-        drop(connection);
-        let before = fs::read(&database_path).expect("database before");
-
-        let error = Storage::open(&paths).expect_err("old baseline must be rejected");
-        assert_eq!(error.code(), Some("incompatible_storage_baseline"));
-        assert_eq!(fs::read(&database_path).expect("database after"), before);
-    }
-
-    #[test]
-    fn unversioned_business_schema_is_rejected_without_modification() {
-        let temp = tempdir().expect("tempdir");
-        let paths = paths_for(temp.path().join(".myopenpanels"));
-        fs::create_dir_all(&paths.storage_dir).expect("storage dir");
-        let database_path = paths.storage_dir.join(DATABASE_FILE_NAME);
-        let connection = Connection::open(&database_path).expect("legacy database");
-        connection
-            .execute_batch(
-                "CREATE TABLE projects (id TEXT PRIMARY KEY NOT NULL); INSERT INTO projects VALUES ('project:legacy');",
-            )
-            .expect("legacy fixture");
-        drop(connection);
-        let before = fs::read(&database_path).expect("database before");
-
-        let error = Storage::open(&paths).expect_err("unversioned schema must be rejected");
-        assert_eq!(error.code(), Some("incompatible_storage_baseline"));
-        assert_eq!(fs::read(&database_path).expect("database after"), before);
-    }
-
-    #[test]
-    fn baseline_checksum_mismatch_is_incompatible() {
-        let temp = tempdir().expect("tempdir");
-        let paths = paths_for(temp.path().join(".myopenpanels"));
-        let storage = Storage::open(&paths).expect("storage");
-        storage
-            .connection
-            .execute(
-                "UPDATE schema_migrations SET checksum = 'different' WHERE id = '0001_initial'",
-                [],
-            )
-            .expect("checksum fixture");
-        drop(storage);
-
-        let error = Storage::open(&paths).expect_err("checksum mismatch");
-        assert_eq!(error.code(), Some("incompatible_storage_baseline"));
-    }
-
-    #[test]
-    fn project_task_sync_preserves_existing_times_when_task_omits_them() {
-        let temp = tempdir().expect("tempdir");
-        let paths = paths_for(temp.path().join(".myopenpanels"));
-        let storage = Storage::open(&paths).expect("storage");
-        let session = Project {
-            id: "session:test".to_owned(),
-            title: "Test".to_owned(),
-            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
-            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
-            panel_ids: vec!["panel:wiki".to_owned()],
-        };
-        storage.write_project(&session).expect("write session");
-        let panel = Panel {
-            id: "panel:wiki".to_owned(),
-            project_id: session.id.clone(),
-            kind: PanelKind::Wiki,
-            title: "Wiki".to_owned(),
-            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
-            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
-            state_ref: None,
-        };
-        storage.write_panel(&panel).expect("write panel");
+        let (project, panel) = project_and_panel(&storage, PanelKind::Wiki);
         let state = json!({
-            "tasks": [{
-                "id": "task:missing-times",
-                "type": "demo",
-                "status": "queued",
-                "targetId": "target",
+            "rawDocuments": [{
+                "id": "raw:1",
+                "title": "Source",
+                "originalFileName": "source.md",
+                "mimeType": "text/markdown",
+                "source": "user",
+                "markdownRef": "raw/raw:1/source.md",
+                "markdownVersion": 1,
+                "createdAt": "2026-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z"
             }],
+            "myDocuments": [],
+            "wikiSpaces": [{
+                "id": "wiki:default",
+                "title": "Wiki",
+                "rootRef": "wikis/wiki:default",
+                "pageIndex": [],
+                "createdAt": "2026-01-01T00:00:00.000Z",
+                "updatedAt": "2026-01-01T00:00:00.000Z"
+            }],
+            "activeRawDocumentId": "raw:1",
+            "activeWikiSpaceId": "wiki:default"
         });
-
-        storage
-            .upsert_tasks(
-                &session.id,
-                &panel.id,
-                "wiki",
-                state["tasks"].as_array().unwrap(),
-            )
-            .expect("initial sync");
-        storage
-            .connection
-            .execute(
-                r#"
-                UPDATE tasks
-                SET
-                  created_at = 'created:stable',
-                  updated_at = 'updated:stable',
-                  attempts = 2,
-                  max_attempts = 5,
-                  lease_owner = 'agent:test',
-                  lease_expires_at = 'expires:stable',
-                  last_heartbeat_at = 'heartbeat:stable',
-                  retry_after = 'retry:stable'
-                WHERE id = 'task:missing-times'
-                "#,
-                [],
-            )
-            .expect("seed stable times");
-        storage
-            .upsert_tasks(
-                &session.id,
-                &panel.id,
-                "wiki",
-                state["tasks"].as_array().unwrap(),
-            )
-            .expect("repeat sync");
-
-        let tasks = storage.list_tasks(&session.id).expect("project tasks");
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0]["createdAt"], json!("created:stable"));
-        assert_eq!(tasks[0]["updatedAt"], json!("updated:stable"));
-        assert_eq!(tasks[0]["attempt"], json!(2));
-        assert_eq!(tasks[0]["maxAttempts"], json!(5));
-        assert_eq!(tasks[0]["lease"]["owner"], json!("agent:test"));
-        assert_eq!(tasks[0]["lease"]["expiresAt"], json!("expires:stable"));
-        assert_eq!(tasks[0]["lease"]["heartbeatAt"], json!("heartbeat:stable"));
-        assert_eq!(tasks[0]["retryAfter"], json!("retry:stable"));
-        let created_event_count: i64 = storage
-            .connection
+        let created_revision = storage
+            .write_panel_state(&project.id, &panel.id, &state)
+            .expect("state");
+        let ui: Value = storage
+            .connection()
             .query_row(
-                "SELECT COUNT(*) FROM task_events WHERE task_id = 'task:missing-times' AND event_type = 'created'",
-                [],
-                |row| row.get(0),
+                "SELECT ui_state_json FROM panels WHERE id = ?",
+                [&panel.id],
+                |row| row.get::<_, String>(0),
             )
-            .expect("created event count");
-        assert_eq!(created_event_count, 1);
+            .map(|raw| serde_json::from_str(&raw).expect("UI JSON"))
+            .expect("UI state");
+        assert!(ui.get("rawDocuments").is_none());
+        assert_eq!(
+            storage
+                .connection()
+                .query_row(
+                    "SELECT document_kind FROM documents WHERE resource_id = 'raw:1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("document"),
+            "wiki_source"
+        );
+
+        let mut deleted = state;
+        deleted["rawDocuments"] = json!([]);
+        deleted["activeRawDocumentId"] = Value::Null;
+        let deleted_revision = storage
+            .write_panel_state(&project.id, &panel.id, &deleted)
+            .expect("delete");
+        assert!(deleted_revision > created_revision);
+        assert_eq!(
+            storage
+                .read_panel_state_revision(&project.id, &panel.id)
+                .expect("revision"),
+            deleted_revision
+        );
+        assert!(storage
+            .connection()
+            .query_row(
+                "SELECT deleted_at FROM resources WHERE id = 'raw:1'",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .expect("deleted resource")
+            .is_some());
     }
+
+    #[test]
+    fn schema_fingerprint_mismatch_is_rejected_without_changes() {
+        let temp = tempdir().expect("tempdir");
+        let storage_dir = temp.path().join(".myopenpanels");
+        let paths = paths_for(storage_dir.clone());
+        let storage = Storage::open(&paths).expect("storage");
+        storage
+            .write_setting("fixture", "value", r#""keep me""#)
+            .expect("setting");
+        storage
+            .connection()
+            .execute(
+                "UPDATE storage_meta SET schema_fingerprint = 'old-schema' WHERE id = 1",
+                [],
+            )
+            .expect("old fingerprint");
+        fs::write(storage_dir.join("content-marker.txt"), "keep me").expect("content marker");
+        drop(storage);
+
+        let error = Storage::open(&paths).expect_err("schema mismatch");
+        assert_eq!(error.code(), Some("storage_schema_mismatch"));
+        assert_eq!(
+            fs::read_to_string(storage_dir.join("content-marker.txt")).expect("preserved content"),
+            "keep me"
+        );
+    }
+
+    #[test]
+    fn newer_database_is_refused_without_changes() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        storage
+            .connection()
+            .pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION + 1)
+            .expect("future version");
+        drop(storage);
+        let before = fs::read(paths.storage_dir.join(DATABASE_FILE_NAME)).expect("before");
+        let error = Storage::open(&paths).expect_err("newer database");
+        assert_eq!(error.code(), Some("storage_version_mismatch"));
+        assert_eq!(
+            fs::read(paths.storage_dir.join(DATABASE_FILE_NAME)).expect("after"),
+            before
+        );
+    }
+
 }

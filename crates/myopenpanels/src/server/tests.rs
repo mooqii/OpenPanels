@@ -29,7 +29,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removed_routes_return_not_found_and_workflow_run_route_is_available() {
+    async fn removed_lifecycle_and_agent_routes_return_not_found() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -59,8 +59,18 @@ mod tests {
             (Method::POST, "/api/tasks/legacy/complete"),
             (Method::POST, "/api/tasks/legacy/fail"),
             (Method::POST, "/api/tasks/legacy/release"),
+            (Method::PUT, "/api/tasks/task:legacy/dispatch"),
             (Method::GET, "/api/workflows"),
             (Method::GET, "/api/workflows/workflow:legacy"),
+            (Method::GET, "/api/wiki/generated-documents"),
+            (Method::POST, "/api/wiki/generated-documents"),
+            (Method::POST, "/api/my-documents/my-document:legacy/publish"),
+            (
+                Method::POST,
+                "/api/projects/project:legacy/panels/panel:legacy/assets",
+            ),
+            (Method::GET, "/api/typesetting/title-skills"),
+            (Method::GET, "/api/publishing/releases"),
         ] {
             let response = router
                 .clone()
@@ -76,29 +86,25 @@ mod tests {
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
         }
 
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/agent/targets")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/workflow-runs")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(response.status(), StatusCode::OK);
+        for uri in [
+            "/api/agent/targets",
+            "/api/agent/routes",
+            "/api/workflow-runs",
+            "/api/tasks/task:legacy/events",
+            "/api/tasks/task:legacy/attempts",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
 
         let response = router
             .clone()
@@ -254,7 +260,7 @@ mod tests {
             .expect("recommended response body");
         let payload =
             serde_json::from_slice::<Value>(&body).expect("recommended json response");
-        assert_eq!(payload["schemaVersion"], 1);
+        assert!(payload.get("schemaVersion").is_none());
         assert_eq!(payload["skills"], json!([]));
 
         let response = api_install_recommended_skill(
@@ -275,11 +281,11 @@ mod tests {
             json!([
                 "wiki-update",
                 "writing",
-                "writing-refinement",
-                "typesetting-cover",
-                "typesetting-title",
-                "typesetting-layout",
-                "publishing"
+                "writing-distillation",
+                "publication-cover",
+                "publication-title",
+                "publication-layout",
+                "release"
             ])
         );
 

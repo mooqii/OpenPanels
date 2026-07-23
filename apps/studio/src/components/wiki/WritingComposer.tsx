@@ -26,7 +26,7 @@ import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiJson } from "../../lib/api"
 import {
   activeWritingSkillIds,
-  refinementTaskGroups,
+  distillationTaskGroups,
   selectSingleSkill,
   toggleWritingSkillSelection,
   writingReferenceSelectionError,
@@ -34,16 +34,16 @@ import {
 } from "../../lib/writing"
 import type {
   AgentSkillListing,
+  MyDocument,
   MyOpenPanelsTransport,
   ProjectTask,
-  WikiGeneratedDocument,
   WritingState,
 } from "../../types"
 import { ConfirmDialog, SkillFilesDialog, type SkillTextFile } from "./Dialogs"
 
 interface WikiAgentSelection {
   isWikiSelected: boolean
-  selectedGeneratedDocumentIds: string[]
+  selectedMyDocumentIds: string[]
 }
 
 export function WritingComposer({
@@ -59,7 +59,7 @@ export function WritingComposer({
   tasks,
   transport,
 }: {
-  documents: WikiGeneratedDocument[]
+  documents: MyDocument[]
   isSelectionBusy: boolean
   onOpenAgentTasks: (
     filter: "active" | "pending" | "all",
@@ -82,17 +82,20 @@ export function WritingComposer({
     state.revisionDraft ?? (state.mode === "revise" ? state.draft : "")
   )
   const [mode, setMode] = useState<WritingState["mode"]>(state.mode)
-  const [refinementName, setRefinementName] = useState(state.refinementName)
+  const [distillationName, setDistillationName] = useState(
+    state.distillationName
+  )
   const [targetId, setTargetId] = useState<string | null>(
-    state.targetGeneratedDocumentId
+    state.targetMyDocumentId
   )
   const [selectedCreateWritingSkillIds, setSelectedCreateWritingSkillIds] =
     useState(state.selectedCreateWritingSkillIds)
   const [selectedRevisionWritingSkillId, setSelectedRevisionWritingSkillId] =
     useState<string | null>(state.selectedRevisionWritingSkillId)
-  const [selectedRefinementSkillId, setSelectedRefinementSkillId] = useState(
-    state.selectedRefinementSkillId || "writing-refinement-default"
-  )
+  const [selectedDistillationSkillId, setSelectedDistillationSkillId] =
+    useState(
+      state.selectedDistillationSkillId || "writing-distillation-default"
+    )
   const selectedWritingSkillIds = activeWritingSkillIds(
     mode,
     selectedCreateWritingSkillIds,
@@ -100,9 +103,9 @@ export function WritingComposer({
   )
   const draft = mode === "revise" ? revisionDraft : createDraft
   const [writingSkills, setWritingSkills] = useState<AgentSkillListing[]>([])
-  const [refinementSkills, setRefinementSkills] = useState<AgentSkillListing[]>(
-    []
-  )
+  const [distillationSkills, setDistillationSkills] = useState<
+    AgentSkillListing[]
+  >([])
   const [skillFilesDialog, setSkillFilesDialog] = useState<{
     files: SkillTextFile[]
     skill: AgentSkillListing
@@ -112,13 +115,16 @@ export function WritingComposer({
   const [isDeletingSkill, setIsDeletingSkill] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const refinementGroups = useMemo(() => refinementTaskGroups(tasks), [tasks])
-  const refinementTaskVersion = useMemo(
+  const distillationGroups = useMemo(
+    () => distillationTaskGroups(tasks),
+    [tasks]
+  )
+  const distillationTaskVersion = useMemo(
     () =>
       tasks
         .filter(
           (task) =>
-            task.queue === "writing" && task.type === "refine_writing_skill"
+            task.queue === "writing" && task.type === "distill_writing_skill"
         )
         .map((task) => `${task.id}:${task.status}:${task.updatedAt}`)
         .join("|"),
@@ -134,16 +140,16 @@ export function WritingComposer({
   useEffect(() => {
     let isCancelled = false
     apiJson<{
-      refinementSkills?: AgentSkillListing[]
+      distillationSkills?: AgentSkillListing[]
       skills?: AgentSkillListing[]
     }>(
       transport.apiBase,
-      `/api/writing/skills?taskVersion=${encodeURIComponent(refinementTaskVersion)}&skillsRevision=${skillsRevision}`
+      `/api/writing/skills?taskVersion=${encodeURIComponent(distillationTaskVersion)}&skillsRevision=${skillsRevision}`
     )
       .then((data) => {
         if (!isCancelled) {
           setWritingSkills(data.skills ?? [])
-          setRefinementSkills(data.refinementSkills ?? [])
+          setDistillationSkills(data.distillationSkills ?? [])
         }
       })
       .catch((skillError) => {
@@ -154,7 +160,7 @@ export function WritingComposer({
     return () => {
       isCancelled = true
     }
-  }, [refinementTaskVersion, skillsRevision, transport.apiBase])
+  }, [distillationTaskVersion, skillsRevision, transport.apiBase])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -165,12 +171,12 @@ export function WritingComposer({
           draft,
           createDraft,
           mode,
-          refinementName,
+          distillationName,
           revisionDraft,
           selectedCreateWritingSkillIds,
-          selectedRefinementSkillId,
+          selectedDistillationSkillId,
           selectedRevisionWritingSkillId,
-          targetGeneratedDocumentId: mode === "revise" ? targetId : null,
+          targetMyDocumentId: mode === "revise" ? targetId : null,
         }),
       }).catch((saveError) => {
         console.error("Failed to save Writing draft", saveError)
@@ -181,10 +187,10 @@ export function WritingComposer({
     draft,
     createDraft,
     mode,
-    refinementName,
+    distillationName,
     revisionDraft,
     selectedCreateWritingSkillIds,
-    selectedRefinementSkillId,
+    selectedDistillationSkillId,
     selectedRevisionWritingSkillId,
     targetId,
     transport.apiBase,
@@ -195,15 +201,15 @@ export function WritingComposer({
     selectedWritingSkillIds
   )
   const hasValidSkillSelection = skillSelectionError === null
-  const selectedGeneratedDocuments = documents.filter((document) =>
-    selection.selectedGeneratedDocumentIds.includes(document.id)
+  const selectedMyDocuments = documents.filter((document) =>
+    selection.selectedMyDocumentIds.includes(document.id)
   )
-  const unreadySourceCount = selectedGeneratedDocuments.filter(
+  const unreadySourceCount = selectedMyDocuments.filter(
     (document) =>
-      document.generation !== undefined &&
-      document.generation.status !== "completed"
+      document.writeOperation !== undefined &&
+      document.writeOperation.status !== "completed"
   ).length
-  const selectedSourceCount = selectedGeneratedDocuments.length
+  const selectedSourceCount = selectedMyDocuments.length
   const selectedReferenceCount =
     selectedSourceCount + Number(selection.isWikiSelected)
   const referenceSelectionError = writingReferenceSelectionError(
@@ -212,8 +218,8 @@ export function WritingComposer({
     unreadySourceCount
   )
   const hasValidReferenceSelection = referenceSelectionError === null
-  const hasValidRefinementSkillSelection = refinementSkills.some(
-    (item) => item.skill.id === selectedRefinementSkillId
+  const hasValidDistillationSkillSelection = distillationSkills.some(
+    (item) => item.skill.id === selectedDistillationSkillId
   )
 
   const submit = useCallback(async () => {
@@ -236,7 +242,7 @@ export function WritingComposer({
         body: JSON.stringify({
           instruction: draft,
           mode,
-          targetGeneratedDocumentId: mode === "revise" ? targetId : null,
+          targetMyDocumentId: mode === "revise" ? targetId : null,
           writingSkillIds: selectedWritingSkillIds,
         }),
       })
@@ -265,43 +271,43 @@ export function WritingComposer({
     transport.apiBase,
   ])
 
-  const submitRefinement = useCallback(async () => {
+  const submitDistillation = useCallback(async () => {
     if (
-      !refinementName.trim() ||
-      refinementName.trim().length > 80 ||
+      !distillationName.trim() ||
+      distillationName.trim().length > 80 ||
       selectedSourceCount === 0 ||
       unreadySourceCount > 0 ||
-      !hasValidRefinementSkillSelection
+      !hasValidDistillationSkillSelection
     ) {
       return
     }
     setIsSubmitting(true)
     setError(null)
     try {
-      await apiJson(transport.apiBase, "/api/writing/refinement-requests", {
+      await apiJson(transport.apiBase, "/api/writing/distillation-requests", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          name: refinementName,
-          refinerSkillId: selectedRefinementSkillId,
+          name: distillationName,
+          distillerSkillId: selectedDistillationSkillId,
         }),
       })
-      setRefinementName("")
+      setDistillationName("")
       await onReload()
     } catch (submitError) {
       setError(
         submitError instanceof Error
           ? submitError.message
-          : t`Failed to submit refinement request`
+          : t`Failed to submit distillation request`
       )
     } finally {
       setIsSubmitting(false)
     }
   }, [
     onReload,
-    hasValidRefinementSkillSelection,
-    refinementName,
-    selectedRefinementSkillId,
+    hasValidDistillationSkillSelection,
+    distillationName,
+    selectedDistillationSkillId,
     selectedSourceCount,
     t,
     transport.apiBase,
@@ -373,12 +379,12 @@ export function WritingComposer({
       setWritingSkills((current) =>
         current.filter((item) => item.skill.id !== deletedId)
       )
-      setRefinementSkills((current) =>
+      setDistillationSkills((current) =>
         current.filter((item) => item.skill.id !== deletedId)
       )
-      if (selectedRefinementSkillId === deletedId) {
-        setSelectedRefinementSkillId(
-          refinementSkills.find((item) => item.skill.id !== deletedId)?.skill
+      if (selectedDistillationSkillId === deletedId) {
+        setSelectedDistillationSkillId(
+          distillationSkills.find((item) => item.skill.id !== deletedId)?.skill
             .id ?? ""
         )
       }
@@ -394,8 +400,8 @@ export function WritingComposer({
     }
   }, [
     pendingDeleteSkill,
-    refinementSkills,
-    selectedRefinementSkillId,
+    distillationSkills,
+    selectedDistillationSkillId,
     transport.apiBase,
   ])
 
@@ -407,18 +413,18 @@ export function WritingComposer({
     const count =
       selectedSourceCount + Number(includeWiki && selection.isWikiSelected)
     return (
-      <div className="op-writing-refinement__sources">
+      <div className="op-writing-distillation__sources">
         <strong className="op-writing-section-title">
           {title}: {count}
         </strong>
         {count === 0 && emptyMessage ? (
           <Alert
-            className="op-writing-refinement__warning op-writing-refinement__warning--empty"
+            className="op-writing-distillation__warning op-writing-distillation__warning--empty"
             status="warning"
           >
             <Alert.Indicator />
             <Alert.Content>
-              <Alert.Title className="op-writing-refinement__warning-text">
+              <Alert.Title className="op-writing-distillation__warning-text">
                 {emptyMessage}
               </Alert.Title>
             </Alert.Content>
@@ -429,7 +435,7 @@ export function WritingComposer({
           </div>
         ) : (
           <>
-            <ul className="op-writing-refinement__source-list">
+            <ul className="op-writing-distillation__source-list">
               {includeWiki && selection.isWikiSelected ? (
                 <li>
                   <BookOpen aria-hidden size={14} />
@@ -437,7 +443,7 @@ export function WritingComposer({
                   <small>{t`Wiki`}</small>
                 </li>
               ) : null}
-              {selectedGeneratedDocuments.map((document) => (
+              {selectedMyDocuments.map((document) => (
                 <li key={document.id}>
                   <FileOutput aria-hidden size={14} />
                   <span title={document.title}>{document.title}</span>
@@ -447,12 +453,12 @@ export function WritingComposer({
             </ul>
             {unreadySourceCount > 0 ? (
               <Alert
-                className="op-writing-refinement__warning"
+                className="op-writing-distillation__warning"
                 status="warning"
               >
                 <Alert.Indicator />
                 <Alert.Content>
-                  <Alert.Title className="op-writing-refinement__warning-text">
+                  <Alert.Title className="op-writing-distillation__warning-text">
                     {t`Some selected documents are not ready. Wait for processing or deselect them.`}
                   </Alert.Title>
                 </Alert.Content>
@@ -566,19 +572,23 @@ export function WritingComposer({
           </Button>
           <h2>{t`Writing`}</h2>
         </div>
-        <div className="op-writing-refinement-statuses">
+        <div className="op-writing-distillation-statuses">
           {(
             [
-              ["active", t`refinement in progress`, t`refinements in progress`],
-              ["waiting", t`refinement waiting`, t`refinements waiting`],
-              ["error", t`refinement error`, t`refinement errors`],
+              [
+                "active",
+                t`distillation in progress`,
+                t`distillations in progress`,
+              ],
+              ["waiting", t`distillation waiting`, t`distillations waiting`],
+              ["error", t`distillation error`, t`distillation errors`],
             ] as const
           ).map(([group, singularLabel, pluralLabel]) => {
-            const groupTasks = refinementGroups[group]
+            const groupTasks = distillationGroups[group]
             if (!groupTasks.length) return null
             return (
               <Button
-                className={`op-writing-refinement-status op-writing-refinement-status--${group}`}
+                className={`op-writing-distillation-status op-writing-distillation-status--${group}`}
                 key={group}
                 onPress={() =>
                   onOpenAgentTasks(
@@ -607,24 +617,24 @@ export function WritingComposer({
           <Tabs.ListContainer>
             <Tabs.List aria-label={t`Writing mode`}>
               <Tabs.Tab id="create">
-                {t`New document`}
+                {t`Create`}
                 <Tabs.Indicator />
               </Tabs.Tab>
               <Tabs.Tab id="revise">
                 {t`Revise`}
                 <Tabs.Indicator />
               </Tabs.Tab>
-              <Tabs.Tab id="refine">
-                {t`Refine`}
+              <Tabs.Tab id="distill">
+                {t`Distill`}
                 <Tabs.Indicator />
               </Tabs.Tab>
             </Tabs.List>
           </Tabs.ListContainer>
         </Tabs>
 
-        {mode === "refine" ? (
-          <div className="op-writing-refinement">
-            <div className="op-writing-refinement__intro">
+        {mode === "distill" ? (
+          <div className="op-writing-distillation">
+            <div className="op-writing-distillation__intro">
               <Sparkles aria-hidden size={18} />
               <div>
                 <strong>{t`Turn selected articles into a Writing Skill`}</strong>
@@ -641,7 +651,7 @@ export function WritingComposer({
             <div className="op-writing-skills">
               <div className="op-writing-skills__header">
                 <strong className="op-writing-section-title">
-                  {t`Refinement Skill`}
+                  {t`Distillation Skill`}
                 </strong>
                 <div className="op-writing-skills__header-actions">
                   <span>{t`Select one`}</span>
@@ -656,20 +666,20 @@ export function WritingComposer({
                 </div>
               </div>
               {renderSkillList(
-                refinementSkills,
-                [selectedRefinementSkillId],
+                distillationSkills,
+                [selectedDistillationSkillId],
                 (skillId, isSelected) => {
-                  setSelectedRefinementSkillId(
+                  setSelectedDistillationSkillId(
                     (current) =>
                       selectSingleSkill(current, skillId, isSelected) ?? ""
                   )
                 },
-                "refinement-skill",
-                t`No Refinement Skills available`
+                "distillation-skill",
+                t`No Distillation Skills available`
               )}
-              {hasValidRefinementSkillSelection ? null : (
+              {hasValidDistillationSkillSelection ? null : (
                 <div className="op-writing-error">
-                  {t`Select a Refinement Skill`}
+                  {t`Select a Distillation Skill`}
                 </div>
               )}
             </div>
@@ -681,9 +691,9 @@ export function WritingComposer({
                 aria-label={t`Writing Skill name`}
                 fullWidth
                 maxLength={80}
-                onChange={(event) => setRefinementName(event.target.value)}
+                onChange={(event) => setDistillationName(event.target.value)}
                 placeholder={t`Name this reusable writing method`}
-                value={refinementName}
+                value={distillationName}
               />
             </div>
             {error ? <div className="op-writing-error">{error}</div> : null}
@@ -798,23 +808,23 @@ export function WritingComposer({
         )}
       </div>
       <div className="op-writing-submit-dock">
-        {mode === "refine" ? (
+        {mode === "distill" ? (
           <Button
             className="op-writing-submit"
             isDisabled={
               isSubmitting ||
               isSelectionBusy ||
-              !refinementName.trim() ||
-              refinementName.trim().length > 80 ||
+              !distillationName.trim() ||
+              distillationName.trim().length > 80 ||
               selectedSourceCount === 0 ||
               unreadySourceCount > 0 ||
-              !hasValidRefinementSkillSelection
+              !hasValidDistillationSkillSelection
             }
-            onPress={() => submitRefinement()}
+            onPress={() => submitDistillation()}
             variant="primary"
           >
             <Sparkles size={15} />
-            <span>{isSubmitting ? t`Submitting` : t`Start refinement`}</span>
+            <span>{isSubmitting ? t`Submitting` : t`Start distillation`}</span>
           </Button>
         ) : (
           <Button

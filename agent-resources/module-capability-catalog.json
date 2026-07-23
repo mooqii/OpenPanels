@@ -1,0 +1,658 @@
+{
+  "capabilities": [
+    {
+      "key": "panel.canvas.selection.read",
+      "description": "Read the current explicit Canvas selection or its empty state.",
+      "panelKind": "canvas",
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/canvas-contract.md",
+          "references/canvas-selection.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "active-detail",
+        "commandIntents": ["panel.selection.read"]
+      }
+    },
+    {
+      "key": "panel.canvas.selection.export",
+      "description": "Export the explicit Canvas selection to a user-requested file.",
+      "panelKind": "canvas",
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/canvas-contract.md",
+          "references/canvas-selection-export.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "explicit-detail",
+        "commandIntents": ["panel.selection.read", "canvas.selection.export"]
+      }
+    },
+    {
+      "key": "canvas.image.insert",
+      "description": "Insert an existing bitmap file into the Project Canvas.",
+      "panelKind": "canvas",
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/canvas-contract.md",
+          "references/canvas-image-insert.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "none",
+        "commandIntents": ["canvas.image.create"]
+      }
+    },
+    {
+      "key": "canvas.image.generate",
+      "description": "Generate a new bitmap and place it into the Project Canvas.",
+      "panelKind": "canvas",
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/canvas-contract.md",
+          "references/canvas-image-generation.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "optional-detail",
+        "commandIntents": [
+          "canvas.image.generate",
+          "operation.complete",
+          "operation.fail",
+          "operation.cancel"
+        ]
+      }
+    },
+    {
+      "key": "canvas.image.edit",
+      "description": "Edit, restyle, or redraw an explicitly selected Canvas image.",
+      "panelKind": "canvas",
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/canvas-contract.md",
+          "references/canvas-image-edit.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "explicit-detail",
+        "commandIntents": [
+          "panel.selection.read",
+          "canvas.image.generate",
+          "operation.complete",
+          "operation.fail",
+          "operation.cancel"
+        ]
+      }
+    },
+    {
+      "key": "wiki-space.query",
+      "description": "Answer from selected Wiki knowledge or selected Wiki documents.",
+      "panelKind": "wiki",
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/wiki-contract.md",
+          "references/wiki-knowledge-context.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "optional-detail",
+        "commandIntents": [
+          "panel.selection.read",
+          "wiki.space.materialize",
+          "wiki.page.search",
+          "wiki.page.list",
+          "wiki.page.read",
+          "wiki.raw.read",
+          "my-document.read"
+        ]
+      }
+    },
+    {
+      "key": "wiki-source.import",
+      "description": "Import a source file or Markdown text as a Wiki Raw Document.",
+      "panelKind": "wiki",
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/wiki-contract.md",
+          "references/wiki-import-raw-document.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "none",
+        "commandIntents": ["wiki.raw.create"]
+      }
+    },
+    {
+      "key": "my-document.read",
+      "description": "Read a My Document selected or named by the user.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": ["references/my-document-read.md"]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "optional-detail",
+        "commandIntents": [
+          "panel.selection.read",
+          "my-document.list",
+          "my-document.read"
+        ]
+      }
+    },
+    {
+      "key": "my-document.create",
+      "description": "Create a new My Document through a target-bound Operation.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": ["references/my-documents.md"]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "optional-detail",
+        "commandIntents": [
+          "my-document.create",
+          "operation.complete",
+          "operation.fail",
+          "operation.cancel"
+        ]
+      }
+    },
+    {
+      "key": "my-document.revise",
+      "description": "Revise an existing My Document through a target-bound Operation.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": ["references/my-document-revise.md"]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "optional-detail",
+        "commandIntents": [
+          "panel.selection.read",
+          "my-document.read",
+          "my-document.revise",
+          "operation.complete",
+          "operation.fail",
+          "operation.cancel"
+        ]
+      }
+    },
+    {
+      "key": "wiki-source.create-from-my-document",
+      "description": "Create a Wiki Source from an explicitly identified My Document.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": ["references/wiki-source-create-from-my-document.md"]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "optional-detail",
+        "commandIntents": [
+          "panel.selection.read",
+          "my-document.read",
+          "wiki-source.create-from-my-document"
+        ]
+      }
+    },
+    {
+      "key": "my-document.delete",
+      "description": "Delete an explicitly identified My Document.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": ["references/my-document-delete.md"]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "optional-detail",
+        "commandIntents": [
+          "panel.selection.read",
+          "my-document.list",
+          "my-document.read",
+          "my-document.delete"
+        ]
+      }
+    },
+    {
+      "key": "wiki-space.manage",
+      "description": "List, activate, or materialize a Wiki space.",
+      "panelKind": "wiki",
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/wiki-contract.md",
+          "references/wiki-space-management.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "none",
+        "commandIntents": [
+          "wiki.space.list",
+          "wiki.space.activate",
+          "wiki.space.materialize"
+        ]
+      }
+    },
+    {
+      "key": "writing.context.read",
+      "description": "Read the Writing panel's selected source and Wiki context.",
+      "panelKind": "writing",
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/writing-contract.md",
+          "references/writing-knowledge-context.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "active-detail",
+        "commandIntents": [
+          "panel.selection.read",
+          "wiki.raw.read",
+          "my-document.read",
+          "wiki.space.materialize",
+          "wiki.page.search",
+          "wiki.page.read"
+        ]
+      }
+    },
+    {
+      "key": "publication.title.request",
+      "description": "Create a title generation Task for an explicitly identified Typesetting publication.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/publication-contract.md",
+          "references/publication-title-request.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "none",
+        "commandIntents": [
+          "publication.title.skill.list",
+          "publication.title.generate"
+        ]
+      }
+    },
+    {
+      "key": "task.queue.inspect",
+      "description": "Inspect queued work, Task state, and its recent execution summaries.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-task-queue",
+        "references": ["references/inspect.md"]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "none",
+        "commandIntents": ["task.list", "task.next", "task.read"]
+      }
+    },
+    {
+      "key": "task.queue.retry",
+      "description": "Retry an explicitly identified failed Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-task-queue",
+        "references": ["references/retry.md"]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "none",
+        "commandIntents": ["task.read", "task.retry"]
+      }
+    },
+    {
+      "key": "task.queue.cancel",
+      "description": "Cancel an explicitly identified Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-task-queue",
+        "references": ["references/cancel.md"]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "none",
+        "commandIntents": ["task.read", "task.cancel"]
+      }
+    },
+    {
+      "key": "task.queue.archive",
+      "description": "Archive an explicitly identified terminal Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-task-queue",
+        "references": ["references/archive.md"]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "procedure",
+        "selectionPolicy": "none",
+        "commandIntents": ["task.read", "task.archive"]
+      }
+    },
+    {
+      "key": "wiki-source.convert",
+      "description": "Convert an immutable raw source into faithful Markdown inside a claimed Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/wiki-contract.md",
+          "references/wiki-convert-document.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "task",
+        "routes": [
+          {
+            "queue": "wiki",
+            "taskType": "convert_document_to_markdown",
+            "capability": "wiki.convertDocument",
+            "handlerKey": "handler.wiki.document-conversion"
+          }
+        ]
+      }
+    },
+    {
+      "key": "wiki-space.maintain",
+      "description": "Maintain generated Wiki pages inside an exact claimed Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/wiki-contract.md",
+          "references/wiki-authoring-skill-routing.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "required",
+        "taskPointer": "/source/agentSkillId"
+      },
+      "invocation": {
+        "kind": "task",
+        "routes": [
+          {
+            "queue": "wiki",
+            "taskType": "ingest_markdown_into_wiki",
+            "capability": "wiki.ingestMarkdown",
+            "handlerKey": "handler.wiki.markdown-ingestion"
+          },
+          {
+            "queue": "wiki",
+            "taskType": "maintain_wiki",
+            "capability": "wiki.maintain",
+            "handlerKey": "handler.wiki.maintenance"
+          }
+        ]
+      }
+    },
+    {
+      "key": "writing.execute",
+      "description": "Execute a submitted Writing request inside its claimed Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/writing-contract.md",
+          "references/writing-execute-request.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "required",
+        "taskPointer": "/input/writingSkillSnapshot"
+      },
+      "invocation": {
+        "kind": "task",
+        "routes": [
+          {
+            "queue": "writing",
+            "taskType": "write_my_document",
+            "capability": "writing.writeMyDocument",
+            "handlerKey": "handler.writing.my-document-write"
+          }
+        ]
+      }
+    },
+    {
+      "key": "skill.writing.distill",
+      "description": "Distill selected examples into a reusable Writing Skill inside its claimed Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/writing-contract.md",
+          "references/writing-distill-skill.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "required",
+        "taskPointer": "/input/distillerSkillSnapshot"
+      },
+      "invocation": {
+        "kind": "task",
+        "routes": [
+          {
+            "queue": "writing",
+            "taskType": "distill_writing_skill",
+            "capability": "writing.distillSkill",
+            "handlerKey": "handler.writing.skill-distillation"
+          }
+        ]
+      }
+    },
+    {
+      "key": "release.execute",
+      "description": "Execute a captured Publishing release inside its exact claimed Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/release-contract.md",
+          "references/release-execute-request.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "required",
+        "taskPointer": "/input/publishingSkillSnapshot"
+      },
+      "invocation": {
+        "kind": "task",
+        "routes": [
+          {
+            "queue": "release",
+            "taskType": "release_xiaohongshu",
+            "capability": "release.xiaohongshu",
+            "handlerKey": "handler.release.xiaohongshu"
+          },
+          {
+            "queue": "release",
+            "taskType": "release_wechat_official_account",
+            "capability": "release.wechat_official_account",
+            "handlerKey": "handler.release.wechat-official-account"
+          }
+        ]
+      }
+    },
+    {
+      "key": "publication.cover.generate",
+      "description": "Generate a cover for a captured Typesetting publication inside its exact claimed Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/publication-contract.md",
+          "references/publication-cover-generate.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "required",
+        "taskPointer": "/input/coverSkillSnapshot"
+      },
+      "invocation": {
+        "kind": "task",
+        "routes": [
+          {
+            "queue": "publication",
+            "taskType": "generate_publication_cover",
+            "capability": "publication.cover.generate",
+            "handlerKey": "handler.publication.cover-generation"
+          }
+        ]
+      }
+    },
+    {
+      "key": "publication.title.generate",
+      "description": "Generate title candidates for a captured Typesetting publication inside its exact claimed Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/publication-contract.md",
+          "references/publication-title-generate.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "required",
+        "taskPointer": "/input/titleSkillSnapshot"
+      },
+      "invocation": {
+        "kind": "task",
+        "routes": [
+          {
+            "queue": "publication",
+            "taskType": "generate_publication_titles",
+            "capability": "publication.title.generate",
+            "handlerKey": "handler.publication.title-generation"
+          }
+        ]
+      }
+    },
+    {
+      "key": "publication.content.format",
+      "description": "Automatically format captured Typesetting content inside its exact claimed Task.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-panels",
+        "references": [
+          "references/publication-contract.md",
+          "references/publication-content-format.md"
+        ]
+      },
+      "localSkill": {
+        "mode": "required",
+        "taskPointer": "/input/layoutSkillSnapshot"
+      },
+      "invocation": {
+        "kind": "task",
+        "routes": [
+          {
+            "queue": "publication",
+            "taskType": "format_publication_content",
+            "capability": "publication.content.format",
+            "handlerKey": "handler.publication.content-layout"
+          }
+        ]
+      }
+    },
+    {
+      "key": "task.scope.execute",
+      "description": "Execute the exact Task scope supplied by a Studio handoff.",
+      "panelKind": null,
+      "platformContract": {
+        "systemSkillId": "myopenpanels-task-queue",
+        "references": ["references/execute-scope.md"]
+      },
+      "localSkill": {
+        "mode": "none"
+      },
+      "invocation": {
+        "kind": "task-scope",
+        "scopeKinds": ["exact-task", "project-drain", "wiki-mutation-drain"]
+      }
+    }
+  ]
+}

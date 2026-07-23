@@ -11,18 +11,18 @@ import { useMyOpenPanelsI18n } from "../../canvas"
 import {
   apiFetch,
   apiJson,
+  myDocumentOriginalUrl,
   originalPreviewKind,
   titleFromFileName,
   tryOpenBrowserWindow,
-  wikiGeneratedOriginalUrl,
   wikiRawOriginalUrl,
 } from "../../lib/api"
-import { sortGeneratedDocumentsByActivity } from "../../lib/writing"
+import { sortMyDocumentsByActivity } from "../../lib/writing"
 import type {
   AgentSkillListing,
+  MyDocument,
   MyOpenPanelsTransport,
   ProjectTask,
-  WikiGeneratedDocument,
   WikiOriginalPreviewDocument,
   WikiRawDocument,
   WikiState,
@@ -30,7 +30,7 @@ import type {
 } from "../../types"
 import { nextCollapsedModules, type WikiModule } from "./module-collapse"
 import { buildWikiPageTree, type WikiPageTreeNode } from "./page-tree"
-import { useGeneratedDocumentDrop } from "./useGeneratedDocumentDrop"
+import { useMyDocumentDrop } from "./useMyDocumentDrop"
 import { useRawDocumentDrop } from "./useRawDocumentDrop"
 import { WikiPageMeta } from "./WikiPageMeta"
 import {
@@ -92,13 +92,13 @@ export function useWikiPanelController({
     useState<WikiRawDocument | null>(null)
   const [pendingRenameRawDocument, setPendingRenameRawDocument] =
     useState<WikiRawDocument | null>(null)
-  const [pendingDeleteGeneratedDocument, setPendingDeleteGeneratedDocument] =
-    useState<WikiGeneratedDocument | null>(null)
-  const [pendingRenameGeneratedDocument, setPendingRenameGeneratedDocument] =
-    useState<WikiGeneratedDocument | null>(null)
-  const [generatedDocumentDialog, setGeneratedDocumentDialog] = useState<{
+  const [pendingDeleteMyDocument, setPendingDeleteMyDocument] =
+    useState<MyDocument | null>(null)
+  const [pendingRenameMyDocument, setPendingRenameMyDocument] =
+    useState<MyDocument | null>(null)
+  const [myDocumentDialog, setMyDocumentDialog] = useState<{
     content: string
-    document: WikiGeneratedDocument
+    document: MyDocument
     originalContent: string
   } | null>(null)
   const [originalPreview, setOriginalPreview] = useState<{
@@ -106,14 +106,16 @@ export function useWikiPanelController({
     previewUrl: string
   } | null>(null)
   const [isBusy, setIsBusy] = useState(false)
-  const [retryingGeneratedDocumentId, setRetryingGeneratedDocumentId] =
-    useState<string | null>(null)
-  const [generatedDocumentRetryError, setGeneratedDocumentRetryError] =
-    useState<string | null>(null)
+  const [retryingMyDocumentId, setRetryingMyDocumentId] = useState<
+    string | null
+  >(null)
+  const [myDocumentRetryError, setMyDocumentRetryError] = useState<
+    string | null
+  >(null)
   const [isSelectionBusy, setIsSelectionBusy] = useState(true)
   const [agentSelection, setAgentSelection] = useState<WikiAgentSelection>({
     isWikiSelected: false,
-    selectedGeneratedDocumentIds: [],
+    selectedMyDocumentIds: [],
   })
   const [isDocumentLibraryOpen, setIsDocumentLibraryOpen] = useState(false)
   const [collapsedWikiFolders, setCollapsedWikiFolders] = useState<Set<string>>(
@@ -128,19 +130,18 @@ export function useWikiPanelController({
   const markdownDialogDocumentId = markdownDialog?.document.id
   const pageDialogPath = pageDialog?.pagePath
   const pageDialogTitle = pageDialog?.title
-  const generatedDialogDocumentId = generatedDocumentDialog?.document.id
-  const generatedDialogFileName =
-    generatedDocumentDialog?.document.originalFileName
-  const generatedDialogMimeType = generatedDocumentDialog?.document.mimeType
+  const myDocumentDialogDocumentId = myDocumentDialog?.document.id
+  const myDocumentDialogFileName = myDocumentDialog?.document.originalFileName
+  const myDocumentDialogMimeType = myDocumentDialog?.document.mimeType
   const {
-    addGeneratedFiles,
-    generatedFileInputRef,
-    handleGeneratedDragEnter,
-    handleGeneratedDragLeave,
-    handleGeneratedDragOver,
-    handleGeneratedDrop,
-    isGeneratedDragActive,
-  } = useGeneratedDocumentDrop({
+    addMyDocumentFiles,
+    myDocumentFileInputRef,
+    handleMyDocumentDragEnter,
+    handleMyDocumentDragLeave,
+    handleMyDocumentDragOver,
+    handleMyDocumentDrop,
+    isMyDocumentDragActive,
+  } = useMyDocumentDrop({
     apiBase: transport.apiBase,
     onReload,
     setIsBusy,
@@ -258,11 +259,13 @@ export function useWikiPanelController({
               <strong className="op-wiki-list-item__title">
                 {node.fileName}
               </strong>
-              <WikiPageMeta
-                apiBase={transport.apiBase}
-                page={node.page}
-                wikiSpaceId={activeSpace?.id ?? "wiki:default"}
-              />
+              {activeSpaceId ? (
+                <WikiPageMeta
+                  apiBase={transport.apiBase}
+                  page={node.page}
+                  wikiSpaceId={activeSpaceId}
+                />
+              ) : null}
             </span>
           </button>
         )
@@ -530,19 +533,19 @@ export function useWikiPanelController({
     [openOriginalInNewWindow, transport.apiBase]
   )
 
-  const revealGeneratedOriginal = useCallback(
-    async (document: WikiGeneratedDocument) => {
+  const revealMyDocumentOriginal = useCallback(
+    async (document: MyDocument) => {
       await apiFetch(
         transport.apiBase,
-        `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/reveal`,
+        `/api/my-documents/${encodeURIComponent(document.id)}/reveal`,
         { method: "POST" }
       )
     },
     [transport.apiBase]
   )
 
-  const openGeneratedOriginal = useCallback(
-    (document: WikiGeneratedDocument) => {
+  const openMyDocumentOriginal = useCallback(
+    (document: MyDocument) => {
       if (!document.importSource) return
       const previewDocument: WikiOriginalPreviewDocument = {
         id: document.id,
@@ -551,17 +554,17 @@ export function useWikiPanelController({
         sizeBytes: document.importSource.sizeBytes,
         title: document.title,
       }
-      const previewUrl = wikiGeneratedOriginalUrl(transport.apiBase, document)
+      const previewUrl = myDocumentOriginalUrl(transport.apiBase, document)
       if (originalPreviewKind(previewDocument)) {
         setOriginalPreview({ document: previewDocument, previewUrl })
         return
       }
       if (tryOpenBrowserWindow(previewUrl)) return
-      revealGeneratedOriginal(document).catch((error) => {
-        console.error("Failed to reveal imported generated document", error)
+      revealMyDocumentOriginal(document).catch((error) => {
+        console.error("Failed to reveal imported My Document", error)
       })
     },
-    [revealGeneratedOriginal, transport.apiBase]
+    [revealMyDocumentOriginal, transport.apiBase]
   )
 
   const createRawMarkdownDocument = useCallback(async () => {
@@ -596,9 +599,10 @@ export function useWikiPanelController({
 
   const openWikiPage = useCallback(
     async (pagePath: string) => {
+      if (!activeSpaceId) return
       const response = await apiFetch(
         transport.apiBase,
-        `/api/wiki/spaces/${encodeURIComponent(activeSpace?.id ?? "wiki:default")}/pages/${pagePath
+        `/api/wiki/spaces/${encodeURIComponent(activeSpaceId)}/pages/${pagePath
           .split("/")
           .map(encodeURIComponent)
           .join("/")}`
@@ -611,7 +615,7 @@ export function useWikiPanelController({
         originalContent: data.markdown ?? "",
       })
     },
-    [activeSpace?.id, transport]
+    [activeSpaceId, transport]
   )
 
   const saveWikiPage = useCallback(
@@ -694,14 +698,14 @@ export function useWikiPanelController({
     [onReload, transport.apiBase]
   )
 
-  const openGeneratedDocument = useCallback(
-    async (document: WikiGeneratedDocument) => {
+  const openMyDocument = useCallback(
+    async (document: MyDocument) => {
       const response = await apiFetch(
         transport.apiBase,
-        `/api/wiki/generated-documents/${encodeURIComponent(document.id)}`
+        `/api/my-documents/${encodeURIComponent(document.id)}`
       )
       const data = (await response.json()) as { content?: string }
-      setGeneratedDocumentDialog({
+      setMyDocumentDialog({
         content: data.content ?? "",
         document,
         originalContent: data.content ?? "",
@@ -710,12 +714,12 @@ export function useWikiPanelController({
     [transport.apiBase]
   )
 
-  const createGeneratedMarkdownDocument = useCallback(async () => {
+  const createMyDocumentMarkdownDocument = useCallback(async () => {
     setIsBusy(true)
     try {
-      const data = await apiJson<{ document: WikiGeneratedDocument }>(
+      const data = await apiJson<{ document: MyDocument }>(
         transport.apiBase,
-        "/api/wiki/generated-documents",
+        "/api/my-documents",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -728,7 +732,7 @@ export function useWikiPanelController({
         }
       )
       await onReload()
-      setGeneratedDocumentDialog({
+      setMyDocumentDialog({
         content: "",
         document: data.document,
         originalContent: "",
@@ -738,30 +742,30 @@ export function useWikiPanelController({
     }
   }, [onReload, t, transport.apiBase])
 
-  const saveGeneratedMarkdown = useCallback(
+  const saveMyDocumentMarkdown = useCallback(
     async (content: string) => {
       if (
         !(
-          generatedDialogDocumentId &&
-          generatedDialogFileName &&
-          generatedDialogMimeType
+          myDocumentDialogDocumentId &&
+          myDocumentDialogFileName &&
+          myDocumentDialogMimeType
         )
       )
         return
-      const data = await apiJson<{ document: WikiGeneratedDocument }>(
+      const data = await apiJson<{ document: MyDocument }>(
         transport.apiBase,
-        `/api/wiki/generated-documents/${encodeURIComponent(generatedDialogDocumentId)}`,
+        `/api/my-documents/${encodeURIComponent(myDocumentDialogDocumentId)}`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             content,
-            fileName: generatedDialogFileName,
-            mimeType: generatedDialogMimeType,
+            fileName: myDocumentDialogFileName,
+            mimeType: myDocumentDialogMimeType,
           }),
         }
       )
-      setGeneratedDocumentDialog((current) =>
+      setMyDocumentDialog((current) =>
         current
           ? { ...current, document: data.document, originalContent: content }
           : current
@@ -769,41 +773,41 @@ export function useWikiPanelController({
       await onReload()
     },
     [
-      generatedDialogDocumentId,
-      generatedDialogFileName,
-      generatedDialogMimeType,
+      myDocumentDialogDocumentId,
+      myDocumentDialogFileName,
+      myDocumentDialogMimeType,
       onReload,
       transport.apiBase,
     ]
   )
 
-  const renameGeneratedDocumentFile = useCallback(
+  const renameMyDocumentFile = useCallback(
     async (fileName: string) => {
-      if (!generatedDialogDocumentId) return
-      const data = await apiJson<{ document: WikiGeneratedDocument }>(
+      if (!myDocumentDialogDocumentId) return
+      const data = await apiJson<{ document: MyDocument }>(
         transport.apiBase,
-        `/api/wiki/generated-documents/${encodeURIComponent(generatedDialogDocumentId)}`,
+        `/api/my-documents/${encodeURIComponent(myDocumentDialogDocumentId)}`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ fileName }),
         }
       )
-      setGeneratedDocumentDialog((current) =>
+      setMyDocumentDialog((current) =>
         current ? { ...current, document: data.document } : current
       )
       await onReload()
     },
-    [generatedDialogDocumentId, onReload, transport.apiBase]
+    [myDocumentDialogDocumentId, onReload, transport.apiBase]
   )
 
-  const publishGeneratedDocument = useCallback(
-    async (document: WikiGeneratedDocument) => {
+  const publishMyDocument = useCallback(
+    async (document: MyDocument) => {
       setIsBusy(true)
       try {
         await apiFetch(
           transport.apiBase,
-          `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/publish`,
+          `/api/wiki-sources/from-my-document/${encodeURIComponent(document.id)}`,
           {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -818,20 +822,20 @@ export function useWikiPanelController({
     [activeSpace?.id, onReload, transport.apiBase]
   )
 
-  const renameGeneratedDocument = useCallback(
-    async (document: WikiGeneratedDocument, title: string) => {
+  const renameMyDocument = useCallback(
+    async (document: MyDocument, title: string) => {
       setIsBusy(true)
       try {
         await apiFetch(
           transport.apiBase,
-          `/api/wiki/generated-documents/${encodeURIComponent(document.id)}`,
+          `/api/my-documents/${encodeURIComponent(document.id)}`,
           {
             method: "PUT",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ title }),
           }
         )
-        setPendingRenameGeneratedDocument(null)
+        setPendingRenameMyDocument(null)
         await onReload()
       } finally {
         setIsBusy(false)
@@ -840,16 +844,16 @@ export function useWikiPanelController({
     [onReload, transport.apiBase]
   )
 
-  const deleteGeneratedDocument = useCallback(
-    async (document: WikiGeneratedDocument) => {
+  const deleteMyDocument = useCallback(
+    async (document: MyDocument) => {
       setIsBusy(true)
       try {
         await apiFetch(
           transport.apiBase,
-          `/api/wiki/generated-documents/${encodeURIComponent(document.id)}`,
+          `/api/my-documents/${encodeURIComponent(document.id)}`,
           { method: "DELETE" }
         )
-        setPendingDeleteGeneratedDocument(null)
+        setPendingDeleteMyDocument(null)
         await onReload()
       } finally {
         setIsBusy(false)
@@ -858,13 +862,10 @@ export function useWikiPanelController({
     [onReload, transport.apiBase]
   )
 
-  const retryGeneratedDocument = useCallback(
-    async (
-      document: WikiGeneratedDocument,
-      writingTask?: ProjectTask | null
-    ) => {
-      setRetryingGeneratedDocumentId(document.id)
-      setGeneratedDocumentRetryError(null)
+  const retryMyDocument = useCallback(
+    async (document: MyDocument, writingTask?: ProjectTask | null) => {
+      setRetryingMyDocumentId(document.id)
+      setMyDocumentRetryError(null)
       try {
         const path =
           writingTask?.status === "failed"
@@ -872,22 +873,22 @@ export function useWikiPanelController({
             : document.conversion?.status === "failed" &&
                 document.conversion.taskId
               ? `/api/tasks/${encodeURIComponent(document.conversion.taskId)}/retry`
-              : `/api/wiki/generated-documents/${encodeURIComponent(document.id)}/retry`
+              : `/api/my-documents/${encodeURIComponent(document.id)}/retry`
         await apiJson(transport.apiBase, path, { method: "POST" })
         await onReload()
       } catch (error) {
-        console.error("Failed to retry generated document", error)
-        setGeneratedDocumentRetryError(document.id)
+        console.error("Failed to retry My Document", error)
+        setMyDocumentRetryError(document.id)
       } finally {
-        setRetryingGeneratedDocumentId(null)
+        setRetryingMyDocumentId(null)
       }
     },
     [onReload, transport.apiBase]
   )
 
-  const displayedGeneratedDocuments = writing
-    ? sortGeneratedDocumentsByActivity(state.generatedDocuments, writing.tasks)
-    : state.generatedDocuments
+  const displayedMyDocuments = writing
+    ? sortMyDocumentsByActivity(state.myDocuments, writing.tasks)
+    : state.myDocuments
 
   return {
     t,
@@ -904,26 +905,27 @@ export function useWikiPanelController({
     setPendingDeleteDocument,
     pendingRenameRawDocument,
     setPendingRenameRawDocument,
-    pendingDeleteGeneratedDocument,
-    setPendingDeleteGeneratedDocument,
-    pendingRenameGeneratedDocument,
-    setPendingRenameGeneratedDocument,
-    generatedDocumentDialog,
-    setGeneratedDocumentDialog,
+    pendingDeleteMyDocument,
+    setPendingDeleteMyDocument,
+    pendingRenameMyDocument,
+    setPendingRenameMyDocument,
+    myDocumentDialog,
+    setMyDocumentDialog,
     originalPreview,
     setOriginalPreview,
     isBusy,
-    retryingGeneratedDocumentId,
-    generatedDocumentRetryError,
+    retryingMyDocumentId,
+    myDocumentRetryError,
     isSelectionBusy,
     agentSelection,
     isRawDragActive,
-    isGeneratedDragActive,
+    isMyDocumentDragActive,
     isDocumentLibraryOpen,
     setIsDocumentLibraryOpen,
     collapsedModules,
+    toggleModule,
     fileInputRef,
-    generatedFileInputRef,
+    myDocumentFileInputRef,
     wikiPageTree,
     moduleHeaderToggle,
     moduleInfo,
@@ -948,21 +950,21 @@ export function useWikiPanelController({
     saveWikiPage,
     renameWikiPageFile,
     updateWikiAgentSkill,
-    openGeneratedDocument,
-    openGeneratedOriginal,
-    createGeneratedMarkdownDocument,
-    addGeneratedFiles,
-    handleGeneratedDragEnter,
-    handleGeneratedDragOver,
-    handleGeneratedDragLeave,
-    handleGeneratedDrop,
-    saveGeneratedMarkdown,
-    renameGeneratedDocumentFile,
-    publishGeneratedDocument,
-    renameGeneratedDocument,
-    deleteGeneratedDocument,
-    retryGeneratedDocument,
-    displayedGeneratedDocuments,
+    openMyDocument,
+    openMyDocumentOriginal,
+    createMyDocumentMarkdownDocument,
+    addMyDocumentFiles,
+    handleMyDocumentDragEnter,
+    handleMyDocumentDragOver,
+    handleMyDocumentDragLeave,
+    handleMyDocumentDrop,
+    saveMyDocumentMarkdown,
+    renameMyDocumentFile,
+    publishMyDocument,
+    renameMyDocument,
+    deleteMyDocument,
+    retryMyDocument,
+    displayedMyDocuments,
   }
 }
 

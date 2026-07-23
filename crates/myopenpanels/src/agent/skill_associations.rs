@@ -1,12 +1,11 @@
-const MANAGED_CUSTOM_MODULES: [&str; 8] = [
+const MANAGED_CUSTOM_MODULES: [&str; 7] = [
     "wiki-update",
     "writing",
-    "writing-refinement",
-    "publishing",
-    "publishing-xiaohongshu",
-    "typesetting-cover",
-    "typesetting-title",
-    "typesetting-layout",
+    "writing-distillation",
+    "release",
+    "publication-cover",
+    "publication-title",
+    "publication-layout",
 ];
 
 pub fn install_device_skill(
@@ -16,7 +15,7 @@ pub fn install_device_skill(
 ) -> Result<Value, CliError> {
     validate_custom_module(module_kind)?;
     sync_builtin_agent_skills(paths)?;
-    migrate_legacy_custom_agent_skills(paths)?;
+    sync_task_created_agent_skills(paths)?;
     let (source_dir, discovered) = validated_device_skill(paths, location_path)?;
     let name_key = normalized_device_skill_name(&discovered.name);
     if let Some(listing) = find_installed_skill_by_identity(paths, &name_key)? {
@@ -164,8 +163,8 @@ fn custom_skill_modules(listing: &AgentSkillListing) -> Result<Vec<String>, CliE
             .iter()
             .filter_map(Value::as_str)
             .map(|module| match module {
-                "publishing-xiaohongshu" => "publishing".to_owned(),
-                value => value.to_owned(),
+                "writing-refinement" => "writing-distillation".to_owned(),
+                _ => module.to_owned(),
             })
             .collect());
     }
@@ -185,7 +184,6 @@ fn update_custom_skill_modules(
 fn write_custom_manifest(listing: &AgentSkillListing, modules: Vec<String>) -> Result<(), CliError> {
     let path = PathBuf::from(&listing.local_dir).join("manifest.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&path).map_err(to_cli_error)?).map_err(to_cli_error)?;
-    manifest["schemaVersion"] = json!(MANAGED_SKILL_SCHEMA_VERSION);
     manifest["binding"] = json!({ "moduleKinds": modules });
     fs::write(path, format!("{}\n", serde_json::to_string_pretty(&manifest).map_err(to_cli_error)?)).map_err(to_cli_error)
 }
@@ -197,7 +195,6 @@ fn custom_manifest(
     source_dir: &Path,
 ) -> Result<Value, CliError> {
     let manifest = json!({
-        "schemaVersion": MANAGED_SKILL_SCHEMA_VERSION,
         "source": "custom",
         "skillId": skill_id,
         "name": name,
@@ -244,10 +241,10 @@ fn clear_removed_skill_module_selections(paths: &MyOpenPanelsPaths, skill_id: &s
     match module_kind {
         "wiki-update" => clear_wiki_skill_selections(paths, skill_id)?,
         "writing" => clear_writing_skill_module_selections(paths, skill_id, true, false)?,
-        "writing-refinement" => {
+        "writing-distillation" => {
             clear_writing_skill_module_selections(paths, skill_id, false, true)?;
         }
-        "publishing" | "publishing-xiaohongshu" => clear_publishing_skill_selections(paths, skill_id)?,
+        "publishing" => clear_publishing_skill_selections(paths, skill_id)?,
         _ => {}
     }
     Ok(())
@@ -276,9 +273,9 @@ fn clear_publishing_skill_selections(
             {
                 continue;
             }
-            let mut next = crate::publishing::normalize_state(state);
+            let mut next = crate::release::normalize_state(state);
             next["selectedSkillIds"]["xiaohongshu"] =
-                json!(crate::publishing::DEFAULT_XIAOHONGSHU_SKILL_ID);
+                json!(crate::release::DEFAULT_XIAOHONGSHU_SKILL_ID);
             storage.write_panel_state(&project.id, panel_id, &next)?;
         }
     }

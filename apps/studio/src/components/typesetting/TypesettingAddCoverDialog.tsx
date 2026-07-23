@@ -65,9 +65,7 @@ export function TypesettingAddCoverDialog({
     setSelectedAssetIds(new Set())
     setError(null)
     setIsLoading(true)
-    const url = new URL(
-      apiUrl(transport.apiBase, "/api/typesetting/canvas-assets")
-    )
+    const url = new URL(apiUrl(transport.apiBase, "/api/assets/canvas"))
     url.searchParams.set("projectId", projectId)
     url.searchParams.set("scope", "all")
     apiJson<{ assets?: TypesettingCanvasAsset[] }>(transport.apiBase, url)
@@ -206,19 +204,19 @@ export function TypesettingAddCoverDialog({
                   </Tabs.List>
                 </Tabs.ListContainer>
                 <Tabs.Panel id="canvas">
-                  <div className="op-typesetting-cover-picker">
+                  <div className="op-publication-cover-picker">
                     {isLoading ? (
-                      <div className="op-typesetting-cover-picker__empty">
+                      <div className="op-publication-cover-picker__empty">
                         <Spinner size="sm" />
                         <span>{t`Loading assets`}</span>
                       </div>
                     ) : groups.length ? (
                       groups.map((group) => (
                         <section
-                          className="op-typesetting-cover-picker__group"
+                          className="op-publication-cover-picker__group"
                           key={group.projectId}
                         >
-                          <div className="op-typesetting-cover-picker__group-title">
+                          <div className="op-publication-cover-picker__group-title">
                             <strong>{group.projectTitle}</strong>
                             {group.projectId === projectId ? (
                               <Chip color="accent" size="sm" variant="soft">
@@ -226,7 +224,7 @@ export function TypesettingAddCoverDialog({
                               </Chip>
                             ) : null}
                           </div>
-                          <div className="op-typesetting-cover-picker__grid">
+                          <div className="op-publication-cover-picker__grid">
                             {group.assets.map((asset) => {
                               const selected = selectedAssetIds.has(asset.id)
                               return (
@@ -235,8 +233,8 @@ export function TypesettingAddCoverDialog({
                                   aria-pressed={selected}
                                   className={
                                     selected
-                                      ? "is-selected op-typesetting-cover-picker__asset"
-                                      : "op-typesetting-cover-picker__asset"
+                                      ? "is-selected op-publication-cover-picker__asset"
+                                      : "op-publication-cover-picker__asset"
                                   }
                                   key={asset.id}
                                   onClick={() => {
@@ -258,7 +256,7 @@ export function TypesettingAddCoverDialog({
                                       asset.src
                                     ).toString()}
                                   />
-                                  <span className="op-typesetting-cover-picker__check">
+                                  <span className="op-publication-cover-picker__check">
                                     <Check size={14} />
                                   </span>
                                 </button>
@@ -268,7 +266,7 @@ export function TypesettingAddCoverDialog({
                         </section>
                       ))
                     ) : (
-                      <div className="op-typesetting-cover-picker__empty">
+                      <div className="op-publication-cover-picker__empty">
                         {error ?? t`No Canvas images yet`}
                       </div>
                     )}
@@ -291,8 +289,8 @@ export function TypesettingAddCoverDialog({
                   <div
                     className={
                       isDropActive
-                        ? "is-active op-typesetting-cover-upload"
-                        : "op-typesetting-cover-upload"
+                        ? "is-active op-publication-cover-upload"
+                        : "op-publication-cover-upload"
                     }
                     onDragLeave={() => setIsDropActive(false)}
                     onDragOver={(event: DragEvent<HTMLDivElement>) => {
@@ -315,7 +313,7 @@ export function TypesettingAddCoverDialog({
                       </>
                     ) : (
                       <>
-                        <span className="op-typesetting-cover-upload__icon">
+                        <span className="op-publication-cover-upload__icon">
                           <Upload size={22} />
                         </span>
                         <strong>{t`Drag or paste images here`}</strong>
@@ -335,7 +333,7 @@ export function TypesettingAddCoverDialog({
               </Tabs>
             </div>
             {error && (tab === "upload" || groups.length) ? (
-              <div className="op-typesetting-cover-picker__error" role="alert">
+              <div className="op-publication-cover-picker__error" role="alert">
                 {error}
               </div>
             ) : null}

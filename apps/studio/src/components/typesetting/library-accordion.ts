@@ -1,8 +1,8 @@
-export type TypesettingLibraryModule = "publications" | "generated" | "assets"
+export type TypesettingLibraryModule = "publications" | "myDocuments" | "assets"
 
 const ALL_LIBRARY_MODULES: readonly TypesettingLibraryModule[] = [
   "publications",
-  "generated",
+  "myDocuments",
   "assets",
 ]
 

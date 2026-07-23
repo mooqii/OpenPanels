@@ -1,0 +1,54 @@
+{
+  "modules": [
+    {
+      "key": "my-document",
+      "resourceKinds": ["document:my_document"],
+      "panelKinds": ["wiki", "writing", "typesetting"]
+    },
+    {
+      "key": "wiki-source",
+      "resourceKinds": ["document:wiki_source"],
+      "panelKinds": ["wiki", "writing"]
+    },
+    {
+      "key": "wiki-space",
+      "resourceKinds": ["wiki_space"],
+      "panelKinds": ["wiki", "writing"]
+    },
+    {
+      "key": "canvas-document",
+      "resourceKinds": ["canvas"],
+      "panelKinds": ["canvas"]
+    },
+    {
+      "key": "asset",
+      "resourceKinds": ["asset"],
+      "panelKinds": ["canvas", "typesetting", "publishing"]
+    },
+    {
+      "key": "publication",
+      "resourceKinds": ["publication"],
+      "panelKinds": ["typesetting", "publishing"]
+    },
+    {
+      "key": "release",
+      "resourceKinds": ["release"],
+      "panelKinds": ["publishing"]
+    },
+    {
+      "key": "writing",
+      "resourceKinds": [],
+      "panelKinds": ["writing"]
+    },
+    {
+      "key": "skill",
+      "resourceKinds": [],
+      "panelKinds": ["writing", "typesetting", "publishing"]
+    },
+    {
+      "key": "task",
+      "resourceKinds": [],
+      "panelKinds": ["wiki", "writing", "canvas", "typesetting", "publishing"]
+    }
+  ]
+}

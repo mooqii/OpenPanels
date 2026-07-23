@@ -1,5 +1,12 @@
 import { Button, Chip, Tooltip } from "@heroui/react"
-import { Ban, CheckCircle2, CircleAlert, Clock3, RefreshCw } from "lucide-react"
+import {
+  Ban,
+  CheckCircle2,
+  CircleAlert,
+  Clock3,
+  RefreshCw,
+  Sparkles,
+} from "lucide-react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import type { WikiRawDocument } from "../../types"
 
@@ -18,25 +25,33 @@ export function indexStatusTaskFilter(status: {
   taskId?: string | null
 }): WikiTaskListFilter {
   if (status.kind === "running") return "active"
-  return status.kind === "cancelled" || status.kind === "done"
+  return ["cancelled", "covered", "done", "filtered", "unrecorded"].includes(
+    status.kind
+  )
     ? "done"
     : "pending"
 }
 
 export type WikiTaskStatusKind =
   | "cancelled"
+  | "covered"
   | "done"
   | "failed"
+  | "filtered"
   | "pending"
   | "running"
+  | "unrecorded"
+  | "unscheduled"
 
 export function WikiTaskStatusIcon({
+  doneIcon = "check",
   kind,
   filter,
   label,
   onOpenTasks,
   taskId,
 }: {
+  doneIcon?: "check" | "sparkles"
   kind: WikiTaskStatusKind
   filter: WikiTaskListFilter
   label: string
@@ -47,7 +62,11 @@ export function WikiTaskStatusIcon({
   if (!taskId) return null
   const icon =
     kind === "done" ? (
-      <CheckCircle2 size={12} />
+      doneIcon === "sparkles" ? (
+        <Sparkles size={12} />
+      ) : (
+        <CheckCircle2 size={12} />
+      )
     ) : kind === "failed" ? (
       <CircleAlert size={12} />
     ) : kind === "cancelled" ? (
@@ -84,13 +103,25 @@ function WikiTaskStatusLabel({
   onOpenTasks,
   taskId,
 }: {
-  color: "accent" | "danger" | "success" | "warning"
+  color?: "accent" | "danger" | "success" | "warning"
   filter: WikiTaskListFilter
   label: string
   onOpenTasks: (filter: WikiTaskListFilter, taskIds?: string[]) => void
   taskId: string | null | undefined
 }) {
   const { t } = useMyOpenPanelsI18n()
+  if (!taskId) {
+    return (
+      <Chip
+        className="op-wiki-task-status-label__chip"
+        color={color}
+        size="sm"
+        variant="soft"
+      >
+        {label}
+      </Chip>
+    )
+  }
   return (
     <button
       aria-label={`${label}. ${t`View related tasks`}`}
@@ -179,7 +210,11 @@ export function WikiIndexStatus({
         ? "danger"
         : status.kind === "running"
           ? "accent"
-          : "warning"
+          : status.kind === "pending" ||
+              status.kind === "unrecorded" ||
+              status.kind === "unscheduled"
+            ? "warning"
+            : undefined
   return (
     <WikiTaskStatusLabel
       color={color}
@@ -257,7 +292,16 @@ export function documentIndexStatus(
   document: WikiRawDocument,
   wikiSpaceId: string | null | undefined
 ): {
-  kind: "cancelled" | "done" | "failed" | "pending" | "running"
+  kind:
+    | "cancelled"
+    | "covered"
+    | "done"
+    | "failed"
+    | "filtered"
+    | "pending"
+    | "running"
+    | "unrecorded"
+    | "unscheduled"
   label: string
   taskId: string | null
 } {
@@ -267,22 +311,42 @@ export function documentIndexStatus(
   if (ingestion?.status === "ingested") {
     return { kind: "done", label: "Indexed", taskId: ingestion.taskId }
   }
+  if (ingestion?.status === "covered") {
+    return { kind: "covered", label: "Covered", taskId: ingestion.taskId }
+  }
+  if (ingestion?.status === "filtered") {
+    return { kind: "filtered", label: "Filtered", taskId: ingestion.taskId }
+  }
   if (ingestion?.status === "failed") {
-    return { kind: "failed", label: "Index failed", taskId: ingestion.taskId }
+    return { kind: "failed", label: "Failed", taskId: ingestion.taskId }
   }
   if (ingestion?.status === "cancelled") {
     return {
       kind: "cancelled",
-      label: "Index cancelled",
+      label: "Cancelled",
       taskId: ingestion.taskId,
     }
   }
   if (ingestion?.status === "ingesting") {
     return { kind: "running", label: "Indexing", taskId: ingestion.taskId }
   }
+  if (ingestion?.status === "unrecorded") {
+    return {
+      kind: "unrecorded",
+      label: "Unrecorded",
+      taskId: ingestion.taskId,
+    }
+  }
+  if (!ingestion || ingestion.status === "unscheduled") {
+    return {
+      kind: "unscheduled",
+      label: "Unscheduled",
+      taskId: ingestion?.taskId ?? null,
+    }
+  }
   return {
     kind: "pending",
-    label: "Pending index",
+    label: "Pending",
     taskId: ingestion?.taskId ?? null,
   }
 }

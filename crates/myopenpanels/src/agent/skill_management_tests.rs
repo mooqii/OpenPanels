@@ -32,13 +32,11 @@ mod skill_management_tests {
         fs::write(
             directory.join("manifest.json"),
             serde_json::to_vec_pretty(&json!({
-                "schemaVersion": 2,
                 "source": "custom",
                 "skillId": skill_id,
                 "name": name,
                 "binding": {
-                    "appliesTo": ["writing"],
-                    "taskTypes": ["generate_document"],
+                    "moduleKinds": ["writing"],
                 },
             }))
             .expect("manifest"),
@@ -75,12 +73,12 @@ mod skill_management_tests {
                     .any(|skill| skill["id"] == "wiki-default")
         }));
         assert!(modules.iter().any(|module| {
-            module["kind"] == "writing-refinement"
+            module["kind"] == "writing-distillation"
                 && module["skills"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|skill| skill["id"] == "writing-refinement-default")
+                    .any(|skill| skill["id"] == "writing-distillation-default")
         }));
         assert!(modules.iter().any(|module| {
             module["kind"] == "writing"
@@ -91,25 +89,25 @@ mod skill_management_tests {
                     .any(|skill| skill["id"] == "writing-default")
         }));
         assert!(modules.iter().any(|module| {
-            module["kind"] == "typesetting-title"
+            module["kind"] == "publication-title"
                 && module["skills"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|skill| skill["id"] == "typesetting-title-default")
+                    .any(|skill| skill["id"] == "publication-title-default")
         }));
         assert!(modules.iter().any(|module| {
-            module["kind"] == "publishing"
+            module["kind"] == "release"
                 && module["skills"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|skill| skill["id"] == "publishing-xiaohongshu")
+                    .any(|skill| skill["id"] == "release-xiaohongshu")
         }));
         assert!(modules.iter().any(|module| {
-            module["kind"] == "publishing"
+            module["kind"] == "release"
                 && module["skills"].as_array().unwrap().iter().any(|skill| {
-                    skill["id"] == "publishing-wechat-official-account"
+                    skill["id"] == "release-wechat-official-account"
                 })
         }));
         let all = payload["modules"]
@@ -134,56 +132,6 @@ mod skill_management_tests {
         let error = write_managed_skill_file(&paths, "writing-default", "SKILL.md", "not allowed")
             .expect_err("preset is read only");
         assert_eq!(error.code(), Some("skill_read_only"));
-    }
-
-    #[test]
-    fn retired_builtin_writing_skills_are_removed_from_local_storage() {
-        let (_temp, paths) = test_paths();
-        for skill_id in ["writing-long-article", "writing-xiaohongshu-note"] {
-            let directory = paths.storage_dir.join("skills").join(skill_id);
-            fs::create_dir_all(&directory).expect("retired Skill dir");
-            fs::write(directory.join("SKILL.md"), "retired").expect("retired Skill");
-        }
-
-        sync_builtin_agent_skills(&paths).expect("sync built-in Skills");
-
-        for skill_id in ["writing-long-article", "writing-xiaohongshu-note"] {
-            assert!(!paths.storage_dir.join("skills").join(skill_id).exists());
-        }
-    }
-
-    #[test]
-    fn legacy_custom_skill_moves_into_the_global_skills_directory() {
-        let (_temp, paths) = test_paths();
-        let legacy = paths.storage_dir.join("writing-skills/legacy-global");
-        fs::create_dir_all(&legacy).expect("legacy dir");
-        fs::write(
-            legacy.join("SKILL.md"),
-            "---\nname: legacy-global\ndescription: Legacy global Skill.\n---\n\nWrite clearly.\n",
-        )
-        .expect("legacy skill");
-        fs::write(
-            legacy.join("manifest.json"),
-            serde_json::to_vec_pretty(&json!({
-                "schemaVersion": 2,
-                "source": "custom",
-                "skillId": "legacy-global",
-                "name": "Legacy Global",
-                "binding": {
-                    "appliesTo": ["writing"],
-                    "taskTypes": ["generate_document"],
-                },
-            }))
-            .unwrap(),
-        )
-        .expect("legacy manifest");
-
-        migrate_legacy_custom_agent_skills(&paths).expect("migration");
-        assert!(paths
-            .storage_dir
-            .join("skills/legacy-global/SKILL.md")
-            .is_file());
-        assert!(!legacy.exists());
     }
 
     #[test]
@@ -286,19 +234,20 @@ mod skill_management_tests {
         )
         .expect("device skill");
 
-        install_device_skill(&paths, device_dir.to_str().unwrap(), "writing").expect("install");
+        install_device_skill(&paths, device_dir.to_str().unwrap(), "writing")
+            .expect("install");
         let listing = find_installed_skill_by_identity(&paths, "shared style")
             .expect("identity lookup")
             .expect("installed listing");
         let skill_id = listing.skill.id.clone();
         assert_eq!(managed_skill_module_kinds(&listing), ["writing"]);
 
-        install_device_skill(&paths, device_dir.to_str().unwrap(), "writing-refinement")
-            .expect("associate refinement");
+        install_device_skill(&paths, device_dir.to_str().unwrap(), "writing-distillation")
+            .expect("associate distillation");
         let listing = managed_skill_listing(&paths, &skill_id).expect("listing");
         assert_eq!(
             managed_skill_module_kinds(&listing),
-            ["writing", "writing-refinement"]
+            ["writing", "writing-distillation"]
         );
 
         fs::write(device_dir.join("notes.txt"), "device revision").expect("device revision");
@@ -350,7 +299,7 @@ mod skill_management_tests {
 
         remove_skill_module(&paths, &skill_id, "writing").expect("remove writing");
         assert!(Path::new(&listing.local_dir).is_dir());
-        remove_skill_module(&paths, &skill_id, "writing-refinement")
+        remove_skill_module(&paths, &skill_id, "writing-distillation")
             .expect("remove final association");
         assert!(!Path::new(&listing.local_dir).exists());
     }
@@ -366,14 +315,13 @@ mod skill_management_tests {
         )
         .expect("device skill");
 
-        install_device_skill(&paths, device_dir.to_str().unwrap(), "writing")
-            .expect("install");
+        install_device_skill(&paths, device_dir.to_str().unwrap(), "writing").expect("install");
         let listing = find_installed_skill_by_identity(&paths, "update-style")
             .expect("identity lookup")
             .expect("installed listing");
         let skill_id = listing.skill.id.clone();
         let manifest = read_skill_manifest(&listing).expect("manifest");
-        assert_eq!(manifest["schemaVersion"], MANAGED_SKILL_SCHEMA_VERSION);
+        assert!(manifest.get("schemaVersion").is_none());
         assert_eq!(manifest["provenance"]["sourceType"], "device");
         assert_eq!(
             manifest["provenance"]["sourceLocator"],
@@ -482,61 +430,6 @@ mod skill_management_tests {
     }
 
     #[test]
-    fn legacy_remote_origin_is_safely_migrated_without_fetching() {
-        let (_temp, paths) = test_paths();
-        write_custom_skill(&paths, "legacy-remote", "Legacy Remote");
-        let listing = managed_skill_listing(&paths, "legacy-remote").expect("listing");
-        let mut manifest = read_skill_manifest(&listing).expect("manifest");
-        manifest["origin"] = json!("https://github.com/example/skills/tree/main/legacy-remote");
-        write_skill_manifest(&listing, &manifest).expect("legacy manifest");
-
-        let payload = managed_skills(&paths).expect("managed Skills");
-        let migrated = read_skill_manifest(&listing).expect("migrated manifest");
-        assert_eq!(migrated["schemaVersion"], MANAGED_SKILL_SCHEMA_VERSION);
-        assert_eq!(migrated["provenance"]["sourceType"], "github");
-        assert_eq!(migrated["provenance"]["revision"], "main");
-        assert_eq!(migrated["provenance"]["subpath"], "legacy-remote");
-        assert!(payload["modules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|module| module["skills"].as_array().unwrap())
-            .any(|skill| skill["id"] == "legacy-remote" && skill["canCheckUpdates"] == true));
-    }
-
-    #[test]
-    fn legacy_publishing_associations_are_exposed_as_content_publishing() {
-        let (_temp, paths) = test_paths();
-        let skill_id = "legacy-publishing-skill";
-        let directory = paths.storage_dir.join("skills").join(skill_id);
-        fs::create_dir_all(&directory).expect("skill dir");
-        fs::write(
-            directory.join("SKILL.md"),
-            "---\nname: legacy-publishing-skill\ndescription: Publish a note.\n---\n\nPublish the supplied content.\n",
-        )
-        .expect("SKILL.md");
-        fs::write(
-            directory.join("manifest.json"),
-            serde_json::to_vec_pretty(&json!({
-                "schemaVersion": 3,
-                "source": "custom",
-                "skillId": skill_id,
-                "name": "Legacy Publishing Skill",
-                "binding": { "moduleKinds": ["publishing-xiaohongshu"] },
-            }))
-            .expect("manifest"),
-        )
-        .expect("manifest file");
-
-        let listing = managed_skill_listing(&paths, skill_id).expect("listing");
-        assert_eq!(managed_skill_module_kinds(&listing), ["publishing"]);
-        assert_eq!(custom_skill_modules(&listing).unwrap(), ["publishing"]);
-
-        remove_skill_module(&paths, skill_id, "publishing").expect("remove association");
-        assert!(!directory.exists());
-    }
-
-    #[test]
     fn local_skill_import_validates_conflicts_and_replaces_custom_skills() {
         use base64::Engine;
         let (_temp, paths) = test_paths();
@@ -557,13 +450,13 @@ mod skill_management_tests {
             &managed_skill_listing(&paths, &skill_id).expect("initial listing"),
         )
         .expect("initial manifest");
-        assert_eq!(initial_manifest["schemaVersion"], MANAGED_SKILL_SCHEMA_VERSION);
+        assert!(initial_manifest.get("schemaVersion").is_none());
         assert!(initial_manifest.get("provenance").is_none());
 
         let conflict = import_skill_from_files(
             &paths,
             &[source("Lead with the conclusion.")],
-            "writing-refinement",
+            "writing-distillation",
             false,
         )
         .expect("conflict response");
@@ -581,7 +474,7 @@ mod skill_management_tests {
         let replaced = import_skill_from_files(
             &paths,
             &[source("Lead with the conclusion.")],
-            "writing-refinement",
+            "writing-distillation",
             true,
         )
         .expect("replacement import");
@@ -589,7 +482,7 @@ mod skill_management_tests {
         assert_eq!(replaced["replaced"], true);
         assert_eq!(
             replaced["skill"]["moduleKinds"],
-            json!(["writing", "writing-refinement"])
+            json!(["writing", "writing-distillation"])
         );
         let after = fs::read_to_string(
             paths
@@ -690,6 +583,57 @@ mod skill_management_tests {
                 .collect::<Vec<_>>(),
             ["alpha", "beta"]
         );
+    }
+
+    #[test]
+    fn remote_archive_symlinks_outside_the_skill_do_not_block_discovery() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default();
+        writer
+            .add_symlink("repository-main/CLAUDE.md", "AGENTS.md", options)
+            .expect("repository symlink");
+        writer
+            .start_file(
+                "repository-main/plugins/publisher/skills/publisher/SKILL.md",
+                options,
+            )
+            .expect("Skill file");
+        writer
+            .write_all(
+                b"---\nname: publisher\ndescription: Publish content.\n---\n\nPublish carefully.\n",
+            )
+            .expect("Skill source");
+        let archive = writer.finish().expect("archive").into_inner();
+
+        let strict_target = tempfile::tempdir().expect("strict target");
+        let strict_error = extract_skill_zip(
+            &archive,
+            strict_target.path(),
+            SkillZipSymlinkPolicy::Reject,
+        )
+        .expect_err("uploaded archives still reject symlinks");
+        assert_eq!(strict_error.code(), Some("invalid_skill_package"));
+
+        let remote_target = tempfile::tempdir().expect("remote target");
+        extract_skill_zip(
+            &archive,
+            remote_target.path(),
+            SkillZipSymlinkPolicy::Ignore,
+        )
+        .expect("remote archive");
+        let archive_root = resolve_import_archive_root(remote_target.path()).expect("archive root");
+        let search_root =
+            resolve_import_subpath(&archive_root, Some("plugins/publisher/skills/publisher"))
+                .expect("Skill subpath");
+        let candidates = discover_remote_skill_candidates(&archive_root, &search_root, None)
+            .expect("discover Skill");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "publisher");
+        assert_eq!(candidates[0].subpath, "plugins/publisher/skills/publisher");
     }
 
     #[test]

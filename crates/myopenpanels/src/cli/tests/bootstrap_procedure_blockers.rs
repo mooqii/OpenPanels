@@ -20,7 +20,7 @@ fn procedure_bootstrap_reports_selection_blockers_and_structured_fallbacks() {
         "agent",
         "bootstrap",
         "--procedure",
-        "panel.canvas.image.edit",
+        "canvas.image.edit",
     ];
     edit.extend(base);
     let (code, stdout, stderr) = run(&edit);
@@ -82,7 +82,7 @@ fn procedure_bootstrap_reports_selection_blockers_and_structured_fallbacks() {
         "agent",
         "bootstrap",
         "--workflow",
-        "panel.canvas.image.edit",
+        "canvas.image.edit",
     ];
     removed_flag.extend(base);
     let (code, stdout, stderr) = run_raw(&removed_flag);
@@ -126,7 +126,7 @@ fn procedure_bootstrap_blocks_when_its_target_panel_is_missing() {
         "agent",
         "bootstrap",
         "--procedure",
-        "panel.canvas.image.insert",
+        "canvas.image.insert",
         "--project-dir",
         project_dir.to_str().unwrap(),
         "--storage-dir",

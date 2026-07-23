@@ -1,6 +1,6 @@
 ---
 name: myopenpanels-task-queue
-description: Use when listing, claiming, executing, or completing work from the MyOpenPanels project Task queue.
+description: Use when inspecting or managing work in the MyOpenPanels project Task queue, or executing a Studio-provided Task Handoff.
 ---
 
 Use the generic Task commands returned by command catalog discovery. The `tasks`
@@ -9,7 +9,7 @@ HTTP endpoints or mutate panel state to change a Task lifecycle.
 
 Intent routing:
 
-- For read-only Task state, events, attempts, or Workflow Run inspection, read
+- For read-only Task state and its embedded execution summaries, read
   `references/inspect.md`.
 - To retry a failed Task, read `references/retry.md`.
 - To cancel a Task, read `references/cancel.md`.
@@ -22,7 +22,7 @@ Intent routing:
    loading Catalogs, Panel Skills, or portable Skills.
 3. Write only the declared workspace artifacts and `execution-result.json`.
    Use `task handoff exec` only for commands explicitly allowed by the Bundle;
-   it injects the private protocol-v3 Broker and fencing context.
+   it injects the private Broker and fencing context.
 4. Heartbeat long work through `task handoff heartbeat`. Stop immediately when
    heartbeat or a work command returns `execution_fenced`.
 5. Finish through `task handoff complete` or `task handoff fail`. The Runtime
@@ -33,16 +33,16 @@ Intent routing:
    commands for a handoff.
 
 Use `task next` only for read-only discovery. A runnable Task has `ready: true`;
-a Task can be blocked by a live lease, a future retry time, exhausted attempts,
-or the lack of a matching command target. Persistent queue execution is owned by
+a Task can be blocked by a live lease, a future retry time, exhausted executions,
+or the lack of an available Agent CLI. Persistent queue execution is owned by
 the Studio Worker. Manual Agents process only the supplied execution scope.
-`exact-task` never includes dependencies or Wiki batch members. `project-drain`
+`exact-task` selects only the named Task. `project-drain`
 continues independent runnable Tasks before reporting blockers.
-`wiki-mutation-drain` processes required prerequisites and then compatible Wiki
-update windows in mutation order until the mutation queue is empty.
+`wiki-mutation-drain` processes one prerequisite or mutation Task at a time in
+mutation order until the mutation queue is empty.
 
 Never treat process exit zero as proof of success. `task handoff complete`
 performs the Handler's domain validation. A rejected completion is a failed
-Attempt; stop task-bound writes as soon as the execution is fenced. Use
-`task events`, `task attempts`, and `workflow run read` when diagnosing
+execution; stop task-bound writes as soon as the execution is fenced. Use
+`task read` when diagnosing
 prerequisite propagation or retries.

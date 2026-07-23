@@ -19,95 +19,6 @@ const WIKI_UPDATE_TASK_TYPES = new Set([
   "maintain_wiki",
 ])
 
-export function groupWikiUpdateTasks(tasks: ProjectTask[]): ProjectTask[] {
-  const grouped = new Map<string, ProjectTask[]>()
-  const output: ProjectTask[] = []
-  for (const task of tasks) {
-    if (
-      task.queue !== "wiki" ||
-      !task.mutationKey ||
-      !WIKI_UPDATE_TASK_TYPES.has(task.type)
-    ) {
-      output.push(task)
-      continue
-    }
-    const group = grouped.get(task.mutationKey) ?? []
-    group.push(task)
-    grouped.set(task.mutationKey, group)
-  }
-  for (const [mutationKey, groupTasks] of grouped) {
-    groupTasks.sort(
-      (left, right) =>
-        (left.mutationSequence ?? Number.MAX_SAFE_INTEGER) -
-        (right.mutationSequence ?? Number.MAX_SAFE_INTEGER)
-    )
-    const representative =
-      groupTasks.find(isActiveTask) ??
-      groupTasks.find((task) => taskMatchesFilter(task, "pending")) ??
-      groupTasks.at(-1)!
-    const active = groupTasks.some(isActiveTask)
-    const pending = groupTasks.some((task) =>
-      ["waiting", "queued", "failed"].includes(task.status)
-    )
-    const failed = groupTasks.some((task) => task.status === "failed")
-    const completed = groupTasks.filter(isDoneTask).length
-    const statuses = new Set(groupTasks.map((task) => task.status))
-    const requestedConnections = new Set(
-      groupTasks.map((task) => task.requestedGatewayConnectionId ?? null)
-    )
-    const dispatchModes = new Set(
-      groupTasks.map((task) => task.dispatchMode ?? "auto")
-    )
-    output.push({
-      ...representative,
-      blockedReason: active ? null : representative.blockedReason,
-      capability: "wiki.updateBatch",
-      dispatchMode:
-        dispatchModes.size === 1 ? representative.dispatchMode : "auto",
-      id: `wiki-update-group:${mutationKey}`,
-      ready: active ? false : groupTasks.some((task) => task.ready),
-      requestedGatewayConnectionId:
-        requestedConnections.size === 1
-          ? representative.requestedGatewayConnectionId
-          : null,
-      result: {
-        completedTaskCount: completed,
-        taskCount: groupTasks.length,
-      },
-      status: active
-        ? "running"
-        : pending
-          ? failed
-            ? "failed"
-            : "queued"
-          : statuses.size === 1
-            ? representative.status
-            : "succeeded",
-      targetId:
-        typeof representative.source === "object" && representative.source
-          ? String(
-              (representative.source as Record<string, unknown>).wikiSpaceId ??
-                representative.targetId
-            )
-          : representative.targetId,
-      type: "wiki_update_batch",
-      updatedAt: groupTasks.reduce(
-        (latest, task) =>
-          Date.parse(task.updatedAt) > Date.parse(latest)
-            ? task.updatedAt
-            : latest,
-        groupTasks[0].updatedAt
-      ),
-      wikiUpdateGroup: {
-        mutationKey,
-        taskIds: groupTasks.map((task) => task.id),
-        tasks: groupTasks,
-      },
-    })
-  }
-  return output
-}
-
 export function traceEventMatchesFilter(
   event: TraceEvent,
   filter: TraceFilter
@@ -131,13 +42,6 @@ function isActiveProjectHeartbeat(event: TraceEvent): boolean {
 }
 
 export function taskExecutionScope(task: ProjectTask): TaskExecutionScope {
-  if (task.wikiUpdateGroup) {
-    return {
-      kind: "wiki-mutation-drain",
-      mutationKey: task.wikiUpdateGroup.mutationKey,
-      projectId: task.projectId,
-    }
-  }
   return { kind: "exact-task", taskId: task.id }
 }
 
@@ -247,6 +151,23 @@ export function manualTaskInstruction(
   return `Use MyOpenPanels to process only Task ${scope.taskId}. ${cliBoundary} Run the Task Handoff command below and follow its ExecutionBundle and Delivery Contract for this Task. Stop after it completes. Do not claim or process another Task:\n\n${command}`
 }
 
+export function retryTaskAgentMessage(
+  taskId: string,
+  locale: MyOpenPanelsLocale,
+  runtime: AgentRuntimeIdentity
+): string {
+  const cli = agentCliExecutable(runtime)
+  const quotedTaskId = shellQuote(taskId)
+  const readCommand = `${cli} task read --task-id ${quotedTaskId} --format json`
+  const retryCommand = `${cli} task retry --task-id ${quotedTaskId} --format json`
+  const cliBoundary = agentCliBoundaryInstruction(runtime, locale)
+
+  if (locale === "zh-CN") {
+    return `请通过 MyOpenPanels 重试失败任务 ${taskId}。${cliBoundary}先运行下面的读取命令，确认该任务仍处于可重试的终态；确认后只运行一次重试命令。报告新任务的 id、status 和 ready，不要领取或执行新任务：\n\n${readCommand}\n\n${retryCommand}`
+  }
+  return `Use MyOpenPanels to retry failed Task ${taskId}. ${cliBoundary} First run the read command below and confirm the Task is still in a retryable terminal state. Then run the retry command exactly once. Report the new Task id, status, and readiness; do not claim or execute the new Task:\n\n${readCommand}\n\n${retryCommand}`
+}
+
 export function compareTasksForDisplay(
   left: ProjectTask,
   right: ProjectTask
@@ -279,6 +200,7 @@ export function formatBlockedReason(reason: string): string {
 
 export function formatTaskError(error: unknown): string {
   if (typeof error === "string") return error
+  if (error instanceof Error) return error.message
   try {
     return JSON.stringify(error)
   } catch {
@@ -297,7 +219,7 @@ export function taskMatchesFilter(
 ): boolean {
   switch (filter) {
     case "pending":
-      return ["waiting", "queued", "failed"].includes(task.status)
+      return task.status === "queued"
     case "active":
       return isActiveTask(task)
     case "done":
@@ -310,54 +232,29 @@ export function taskMatchesFilter(
 }
 
 export function isActiveTask(task: ProjectTask): boolean {
-  return [
-    "reserved",
-    "running",
-    "claimed",
-    "converting",
-    "indexing",
-    "cancel_requested",
-  ].includes(task.status)
+  return task.status === "running"
 }
 
 export function isDoneTask(task: ProjectTask): boolean {
-  return ["succeeded", "cancelled", "stale", "superseded"].includes(task.status)
-}
-
-export function canDeleteTask(task: ProjectTask): boolean {
-  return (
-    !task.wikiUpdateGroup &&
-    [
-      "waiting",
-      "queued",
-      "failed",
-      "succeeded",
-      "cancelled",
-      "stale",
-      "superseded",
-    ].includes(task.status)
+  return ["succeeded", "failed", "cancelled", "superseded"].includes(
+    task.status
   )
 }
 
-export function taskDeleteNeedsConfirmation(task: ProjectTask): boolean {
-  return task.status === "waiting" || task.status === "queued"
+export function canArchiveTask(task: ProjectTask): boolean {
+  return isDoneTask(task)
 }
 
 export function isPendingTask(task: ProjectTask): boolean {
-  return ["waiting", "queued", "failed"].includes(task.status)
+  return task.status === "queued"
 }
 
 function isTaskReadyForManualAgent(task: ProjectTask): boolean {
-  return (
-    Boolean(task.ready) &&
-    (task.status === "queued" || task.status === "failed")
-  )
+  return Boolean(task.ready) && task.status === "queued"
 }
 
 export function pendingTaskCount(tasks: ProjectTask[]): number {
-  return tasks.filter(
-    (task) => task.status === "queued" || task.status === "failed"
-  ).length
+  return tasks.filter(isPendingTask).length
 }
 
 export function formatTaskCount(count: number): string {

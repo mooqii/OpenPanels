@@ -13,10 +13,10 @@ fn normalize_settings(
             "Model gateway mode must be localCli or byok.",
         ));
     }
-    if !(1..=5).contains(&settings.max_concurrency) {
+    if !(1..=4).contains(&settings.max_concurrency) {
         return Err(CliError::with_code(
             "invalid_model_gateway_settings",
-            "Task concurrency must be between 1 and 5.",
+            "Task concurrency must be between 1 and 4.",
         ));
     }
     settings.local_cli.provider_id = clean_owned(settings.local_cli.provider_id);

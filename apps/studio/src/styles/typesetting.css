@@ -6,7 +6,6 @@
   border: 0;
   border-radius: 8px;
 }
-
 .op-typesetting-list-view,
 .op-typesetting-detail-view {
   display: flex;
@@ -15,7 +14,6 @@
   height: 100%;
   min-height: 0;
 }
-
 .op-typesetting-view-header {
   display: flex;
   flex: 0 0 auto;
@@ -24,12 +22,10 @@
   min-height: 74px;
   padding: 12px 16px;
 }
-
 .op-typesetting-view-header > div:first-of-type {
   min-width: 0;
   margin-right: auto;
 }
-
 .op-typesetting-view-header h1 {
   margin: 0;
   font-size: 18px;
@@ -37,13 +33,11 @@
   line-height: 1.2;
   letter-spacing: 0;
 }
-
 .op-typesetting-view-header p {
   margin: 3px 0 0;
   font-size: 12px;
   color: var(--op-text-secondary);
 }
-
 .op-typesetting-save {
   display: inline-flex;
   flex: 0 0 auto;
@@ -318,7 +312,7 @@ button.op-typesetting-detail-header__save-state.is-failed {
   margin: 0 auto 24px;
 }
 
-.op-typesetting-content-section {
+.op-publication-content-section {
   display: flex;
   flex: 1 0 auto;
   flex-direction: column;
@@ -334,27 +328,34 @@ button.op-typesetting-detail-header__save-state.is-failed {
   color: var(--op-text-secondary);
 }
 
-.op-typesetting-title-field__heading {
+.op-publication-title-field__heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 7px;
 }
 
-.op-typesetting-title-field__heading > label {
+.op-publication-title-field__heading > label {
   font-size: 12px;
   font-weight: 700;
   color: var(--op-text-secondary);
 }
 
-.op-typesetting-title-field__control {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px;
-  gap: 6px;
+.op-publication-title-field__actions {
+  display: flex;
+  gap: 8px;
   align-items: center;
 }
 
-.op-typesetting-title-field__list {
+.op-publication-title-field__control {
+  width: 100%;
+}
+
+.op-publication-title-field__suffix {
+  padding-right: 4px;
+}
+
+.op-publication-title-field__list {
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -365,7 +366,7 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 6px;
 }
 
-.op-typesetting-title-field__row {
+.op-publication-title-field__row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
   align-items: center;
@@ -373,25 +374,24 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 6px;
 }
 
-.op-typesetting-title-field__row[data-selected="true"] {
+.op-publication-title-field__row[data-selected="true"] {
   background: color-mix(in oklab, var(--accent) 7%, var(--op-bg-base));
 }
 
-.op-typesetting-title-field__expand-button,
-.op-typesetting-title-field__row > .button:last-child {
+.op-publication-title-field__expand-button,
+.op-publication-title-field__row > .button:last-child {
   width: 30px;
   min-width: 30px;
   height: 30px;
   min-height: 30px;
 }
 
-.op-typesetting-title-status {
+.op-publication-title-status {
   display: flex;
   gap: 6px;
   align-items: center;
   min-height: 28px;
   padding: 4px 6px;
-  margin-top: 6px;
   font-size: 11px;
   color: var(--op-text-secondary);
   background: transparent;
@@ -399,42 +399,42 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 5px;
 }
 
-.op-typesetting-title-status:hover {
+.op-publication-title-status:hover {
   color: var(--op-text-primary);
   background: var(--op-bg-muted);
 }
 
-.op-typesetting-title-status.is-failed {
+.op-publication-title-status.is-failed {
   color: var(--danger-soft-foreground);
 }
 
-.op-typesetting-title-field__chevron {
+.op-publication-title-field__chevron {
   transition: transform 160ms ease;
 }
 
-.op-typesetting-title-field__chevron[data-expanded="true"] {
+.op-publication-title-field__chevron[data-expanded="true"] {
   transform: rotate(180deg);
 }
 
-.op-typesetting-title-field__option,
-.op-typesetting-title-field__add-option {
+.op-publication-title-field__option,
+.op-publication-title-field__add-option {
   justify-content: flex-start;
   width: 100%;
   min-width: 0;
   overflow: hidden;
 }
 
-.op-typesetting-title-field__option {
+.op-publication-title-field__option {
   min-height: 36px;
 }
 
-.op-typesetting-title-field__option-label {
+.op-publication-title-field__option-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.op-typesetting-title-field__add-option {
+.op-publication-title-field__add-option {
   color: var(--op-text-secondary);
 }
 
@@ -488,7 +488,7 @@ button.op-typesetting-detail-header__save-state.is-failed {
   align-items: center;
 }
 
-.op-typesetting-layout-status {
+.op-publication-layout-status {
   display: inline-flex;
   gap: 5px;
   align-items: center;
@@ -502,20 +502,20 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 5px;
 }
 
-.op-typesetting-layout-status:hover {
+.op-publication-layout-status:hover {
   color: var(--op-text-primary);
   background: var(--op-bg-muted);
 }
 
-.op-typesetting-layout-status.is-failed {
+.op-publication-layout-status.is-failed {
   color: var(--danger-soft-foreground);
 }
 
-.op-typesetting-layout-status.is-completed {
+.op-publication-layout-status.is-completed {
   color: var(--success-soft-foreground);
 }
 
-.op-typesetting-cover-zone {
+.op-publication-cover-zone {
   min-height: 118px;
   padding: 10px;
   background: color-mix(in oklab, var(--op-bg-base) 70%, transparent);
@@ -523,18 +523,18 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 7px;
 }
 
-.op-typesetting-cover-zone.is-active {
+.op-publication-cover-zone.is-active {
   background: var(--accent-soft);
   border-color: var(--accent);
 }
 
-.op-typesetting-covers {
+.op-publication-covers {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
   gap: 10px;
 }
 
-.op-typesetting-cover {
+.op-publication-cover {
   position: relative;
   min-width: 0;
   aspect-ratio: 4 / 3;
@@ -545,14 +545,14 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 6px;
 }
 
-.op-typesetting-cover > img {
+.op-publication-cover > img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.op-typesetting-cover__grip {
+.op-publication-cover__grip {
   position: absolute;
   top: 5px;
   left: 5px;
@@ -565,7 +565,7 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 5px;
 }
 
-.op-typesetting-cover__actions {
+.op-publication-cover__actions {
   position: absolute;
   right: 5px;
   bottom: 5px;
@@ -577,13 +577,13 @@ button.op-typesetting-detail-header__save-state.is-failed {
   box-shadow: 0 4px 14px color-mix(in oklab, var(--black) 24%, transparent);
 }
 
-.op-typesetting-cover__actions button {
+.op-publication-cover__actions button {
   width: 26px;
   min-width: 26px;
   height: 26px;
 }
 
-.op-typesetting-cover-task {
+.op-publication-cover-task {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -599,12 +599,12 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 6px;
 }
 
-.op-typesetting-cover-task:hover {
+.op-publication-cover-task:hover {
   background: var(--op-bg-elevated);
   border-color: var(--accent);
 }
 
-.op-typesetting-cover-task.is-failed {
+.op-publication-cover-task.is-failed {
   color: var(--danger-soft-foreground);
   background: var(--danger-soft);
   border-color: color-mix(
@@ -614,12 +614,12 @@ button.op-typesetting-detail-header__save-state.is-failed {
   );
 }
 
-.op-typesetting-cover-task strong {
+.op-publication-cover-task strong {
   font-size: 11px;
   line-height: 1.35;
 }
 
-.op-typesetting-cover-task__icon {
+.op-publication-cover-task__icon {
   display: grid;
   place-items: center;
   width: 30px;
@@ -627,7 +627,7 @@ button.op-typesetting-detail-header__save-state.is-failed {
   color: var(--op-text-tertiary);
 }
 
-.op-typesetting-cover-dialog {
+.op-publication-cover-dialog {
   width: min(520px, calc(100vw - 24px));
 }
 
@@ -635,7 +635,7 @@ button.op-typesetting-detail-header__save-state.is-failed {
   width: min(760px, calc(100vw - 24px));
 }
 
-.op-typesetting-cover-dialog .modal__header,
+.op-publication-cover-dialog .modal__header,
 .op-typesetting-add-cover-dialog .modal__header {
   flex-direction: row;
   gap: 10px;
@@ -654,18 +654,18 @@ button.op-typesetting-detail-header__save-state.is-failed {
   padding-top: 14px;
 }
 
-.op-typesetting-cover-picker {
+.op-publication-cover-picker {
   min-height: 320px;
   max-height: min(52vh, 520px);
   padding-right: 4px;
   overflow-y: auto;
 }
 
-.op-typesetting-cover-picker__group + .op-typesetting-cover-picker__group {
+.op-publication-cover-picker__group + .op-publication-cover-picker__group {
   margin-top: 22px;
 }
 
-.op-typesetting-cover-picker__group-title {
+.op-publication-cover-picker__group-title {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -673,7 +673,7 @@ button.op-typesetting-detail-header__save-state.is-failed {
   margin-bottom: 8px;
 }
 
-.op-typesetting-cover-picker__group-title strong {
+.op-publication-cover-picker__group-title strong {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 12px;
@@ -681,13 +681,13 @@ button.op-typesetting-detail-header__save-state.is-failed {
   white-space: nowrap;
 }
 
-.op-typesetting-cover-picker__grid {
+.op-publication-cover-picker__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
   gap: 9px;
 }
 
-.op-typesetting-cover-picker__asset {
+.op-publication-cover-picker__asset {
   position: relative;
   min-width: 0;
   aspect-ratio: 4 / 3;
@@ -699,23 +699,23 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 6px;
 }
 
-.op-typesetting-cover-picker__asset:hover {
+.op-publication-cover-picker__asset:hover {
   border-color: var(--op-border-strong);
 }
 
-.op-typesetting-cover-picker__asset.is-selected {
+.op-publication-cover-picker__asset.is-selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 24%, transparent);
 }
 
-.op-typesetting-cover-picker__asset img {
+.op-publication-cover-picker__asset img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.op-typesetting-cover-picker__check {
+.op-publication-cover-picker__check {
   position: absolute;
   top: 6px;
   right: 6px;
@@ -729,12 +729,12 @@ button.op-typesetting-detail-header__save-state.is-failed {
   box-shadow: 0 2px 7px color-mix(in oklab, var(--black) 24%, transparent);
 }
 
-.op-typesetting-cover-picker__asset.is-selected
-  .op-typesetting-cover-picker__check {
+.op-publication-cover-picker__asset.is-selected
+  .op-publication-cover-picker__check {
   display: grid;
 }
 
-.op-typesetting-cover-picker__empty {
+.op-publication-cover-picker__empty {
   display: flex;
   gap: 9px;
   align-items: center;
@@ -745,7 +745,7 @@ button.op-typesetting-detail-header__save-state.is-failed {
   text-align: center;
 }
 
-.op-typesetting-cover-upload {
+.op-publication-cover-upload {
   display: flex;
   flex-direction: column;
   gap: 9px;
@@ -760,21 +760,21 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 7px;
 }
 
-.op-typesetting-cover-upload.is-active {
+.op-publication-cover-upload.is-active {
   background: var(--accent-soft);
   border-color: var(--accent);
 }
 
-.op-typesetting-cover-upload > strong {
+.op-publication-cover-upload > strong {
   font-size: 13px;
 }
 
-.op-typesetting-cover-upload > span:not(.op-typesetting-cover-upload__icon) {
+.op-publication-cover-upload > span:not(.op-publication-cover-upload__icon) {
   font-size: 11px;
   color: var(--op-text-tertiary);
 }
 
-.op-typesetting-cover-upload__icon {
+.op-publication-cover-upload__icon {
   display: grid;
   place-items: center;
   width: 42px;
@@ -784,29 +784,29 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 7px;
 }
 
-.op-typesetting-cover-picker__error {
+.op-publication-cover-picker__error {
   margin-top: 12px;
   font-size: 12px;
   color: var(--danger-soft-foreground);
 }
 
-.op-typesetting-cover-dialog__field {
+.op-publication-cover-dialog__field {
   display: grid;
   gap: 7px;
 }
 
-.op-typesetting-cover-dialog__field + .op-typesetting-cover-dialog__field {
+.op-publication-cover-dialog__field + .op-publication-cover-dialog__field {
   margin-top: 18px;
 }
 
-.op-typesetting-cover-dialog__field > label {
+.op-publication-cover-dialog__field > label {
   font-size: 12px;
   font-weight: 700;
   color: var(--op-text-secondary);
 }
 
-.op-typesetting-cover-dialog__loading,
-.op-typesetting-cover-dialog__empty {
+.op-publication-cover-dialog__loading,
+.op-publication-cover-dialog__empty {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -814,20 +814,20 @@ button.op-typesetting-detail-header__save-state.is-failed {
   color: var(--op-text-tertiary);
 }
 
-.op-typesetting-cover-dialog__skill {
+.op-publication-cover-dialog__skill {
   display: grid;
   gap: 2px;
   min-width: 0;
 }
 
-.op-typesetting-cover-dialog__skill-name,
-.op-typesetting-cover-dialog__skill-description {
+.op-publication-cover-dialog__skill-name,
+.op-publication-cover-dialog__skill-description {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.op-typesetting-cover-dialog__skill-description {
+.op-publication-cover-dialog__skill-description {
   font-size: 11px;
   color: var(--op-text-tertiary);
 }
@@ -956,9 +956,36 @@ button.op-typesetting-detail-header__save-state.is-failed {
   font-size: 18px;
 }
 
+.op-typesetting-editor__content p {
+  margin-block: 0.75em;
+}
+
+.op-typesetting-editor__content ul,
+.op-typesetting-editor__content ol {
+  padding-left: 1.75em;
+  margin-block: 0.8em;
+}
+
+.op-typesetting-editor__content ul {
+  list-style: disc;
+}
+
+.op-typesetting-editor__content ol {
+  list-style: decimal;
+}
+
+.op-typesetting-editor__content li {
+  padding-left: 0.25em;
+  margin-block: 0.25em;
+}
+
+.op-typesetting-editor__content li > p {
+  margin-block: 0;
+}
+
 .op-typesetting-editor__content blockquote {
-  padding-left: 14px;
-  margin-left: 0;
+  padding: 2px 0 2px 14px;
+  margin: 0.9em 0;
   color: var(--op-text-secondary);
   border-left: 3px solid var(--accent);
 }
@@ -1301,31 +1328,31 @@ button.op-typesetting-detail-header__save-state.is-failed {
     padding: 18px 14px 42px;
   }
 
-  .op-typesetting-content-section .op-typesetting-section__heading {
+  .op-publication-content-section .op-typesetting-section__heading {
     gap: 8px;
     align-items: center;
   }
 
-  .op-typesetting-content-section .op-typesetting-section__actions {
+  .op-publication-content-section .op-typesetting-section__actions {
     flex-wrap: wrap;
     justify-content: flex-end;
   }
 
-  .op-typesetting-layout-status {
+  .op-publication-layout-status {
     max-width: 132px;
   }
 
-  .op-typesetting-layout-status span {
+  .op-publication-layout-status span {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .op-typesetting-covers {
+  .op-publication-covers {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .op-typesetting-cover-picker__grid {
+  .op-publication-cover-picker__grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

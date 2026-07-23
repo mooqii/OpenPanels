@@ -101,7 +101,7 @@ async fn api_save_panel_state(
         })?;
         if panel.kind == PanelKind::Typesetting {
             validate_typesetting_state(&panel_state)?;
-            crate::typesetting::validate_content_write(
+            crate::publication::validate_content_write(
                 &state.paths,
                 &project_id,
                 &panel_id,
@@ -109,8 +109,8 @@ async fn api_save_panel_state(
             )?;
         }
         if panel.kind == PanelKind::Publishing {
-            panel_state = crate::publishing::normalize_state(panel_state.clone());
-            if !crate::publishing::validate_state(&panel_state) {
+            panel_state = crate::release::normalize_state(panel_state.clone());
+            if !crate::release::validate_state(&panel_state) {
                 return Err(CliError::with_code(
                     "invalid_target",
                     "Publishing state is malformed.",

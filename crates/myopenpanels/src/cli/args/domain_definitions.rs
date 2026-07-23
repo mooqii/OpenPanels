@@ -7,8 +7,8 @@ struct WritingArgs {
 #[derive(Debug, Subcommand)]
 enum WritingCommand {
     Request(WritingRequestArgs),
-    Refinement(WritingRefinementArgs),
-    Generate {
+    Distillation(WritingDistillationArgs),
+    Write {
         #[arg(long)]
         task_id: String,
         #[arg(long)]
@@ -34,13 +34,13 @@ enum WritingRequestCommand {
 }
 
 #[derive(Debug, Args)]
-struct WritingRefinementArgs {
+struct WritingDistillationArgs {
     #[command(subcommand)]
-    command: WritingRefinementCommand,
+    command: WritingDistillationCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum WritingRefinementCommand {
+enum WritingDistillationCommand {
     Read {
         #[arg(long)]
         task_id: String,
@@ -64,56 +64,58 @@ enum WritingSkillCommand {
 }
 
 #[derive(Debug, Args)]
-struct TypesettingArgs {
+struct PublicationArgs {
     #[command(subcommand)]
-    command: TypesettingCommand,
+    command: PublicationCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum TypesettingCommand {
-    Title(TypesettingTitleArgs),
+enum PublicationCommand {
+    List,
+    Title(PublicationTitleArgs),
 }
 
 #[derive(Debug, Args)]
-struct TypesettingTitleArgs {
+struct PublicationTitleArgs {
     #[command(subcommand)]
-    command: TypesettingTitleCommand,
+    command: PublicationTitleCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum TypesettingTitleCommand {
+enum PublicationTitleCommand {
     Generate {
         #[arg(long)]
         publication_id: String,
-        #[arg(long, default_value = "typesetting-title-default")]
+        #[arg(long, default_value = "publication-title-default")]
         skill_id: String,
         #[arg(long)]
         instruction: Option<String>,
         #[arg(long)]
         request_id: Option<String>,
     },
-    Skill(TypesettingTitleSkillArgs),
+    Skill(PublicationTitleSkillArgs),
 }
 
 #[derive(Debug, Args)]
-struct TypesettingTitleSkillArgs {
+struct PublicationTitleSkillArgs {
     #[command(subcommand)]
-    command: TypesettingTitleSkillCommand,
+    command: PublicationTitleSkillCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum TypesettingTitleSkillCommand {
+enum PublicationTitleSkillCommand {
     List,
 }
 
 #[derive(Debug, Args)]
-struct PublishingArgs {
+struct ReleaseArgs {
     #[command(subcommand)]
-    command: PublishingCommand,
+    command: ReleaseCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum PublishingCommand {
+enum ReleaseCommand {
+    List,
     Checkpoint {
         #[arg(long)]
         task_id: String,
@@ -134,35 +136,9 @@ enum TaskCommand {
     Next(TaskFilterArgs),
     Read(TaskIdArgs),
     Handoff(TaskHandoffArgs),
-    Claim {
-        #[command(flatten)]
-        task: TaskIdArgs,
-        #[arg(long)]
-        target_id: String,
-    },
-    Heartbeat(TaskLeaseArgs),
-    Complete {
-        #[command(flatten)]
-        lease: TaskLeaseArgs,
-        #[arg(long)]
-        result_file: Option<String>,
-    },
-    Fail {
-        #[command(flatten)]
-        lease: TaskLeaseArgs,
-        #[arg(long)]
-        message: String,
-        #[arg(long)]
-        retry_after: Option<String>,
-        #[arg(long)]
-        failure_class: Option<String>,
-    },
-    Release(TaskLeaseArgs),
     Retry(TaskIdArgs),
     Cancel(TaskIdArgs),
     Archive(TaskIdArgs),
-    Events(TaskIdArgs),
-    Attempts(TaskIdArgs),
 }
 
 #[derive(Debug, Args)]
@@ -215,32 +191,6 @@ struct TaskScopeSelectorArgs {
 }
 
 #[derive(Debug, Args)]
-struct WorkflowArgs {
-    #[command(subcommand)]
-    command: WorkflowCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum WorkflowCommand {
-    Run(WorkflowRunArgs),
-}
-
-#[derive(Debug, Args)]
-struct WorkflowRunArgs {
-    #[command(subcommand)]
-    command: WorkflowRunCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum WorkflowRunCommand {
-    List,
-    Read {
-        #[arg(long)]
-        workflow_run_id: String,
-    },
-}
-
-#[derive(Debug, Args)]
 struct TaskFilterArgs {
     #[arg(long)]
     pending: bool,
@@ -254,14 +204,6 @@ struct TaskFilterArgs {
 struct TaskIdArgs {
     #[arg(long)]
     task_id: String,
-}
-
-#[derive(Debug, Args)]
-struct TaskLeaseArgs {
-    #[arg(long)]
-    task_id: String,
-    #[arg(long)]
-    lease_token: String,
 }
 
 #[derive(Debug, Args)]
@@ -319,29 +261,6 @@ enum AgentCommand {
     EntrySkill(AgentEntrySkillArgs),
     Skill(AgentSkillArgs),
     Bridge(AgentBridgeArgs),
-    Target(AgentTargetArgs),
-    Route(AgentRouteArgs),
-}
-
-#[derive(Debug, Args)]
-struct AgentRouteArgs {
-    #[command(subcommand)]
-    command: AgentRouteCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum AgentRouteCommand {
-    List,
-    Set {
-        #[arg(long)]
-        capability: String,
-        #[arg(long = "target-id")]
-        target_ids: Vec<String>,
-    },
-    Remove {
-        #[arg(long)]
-        capability: String,
-    },
 }
 
 #[derive(Debug, Args)]
@@ -412,37 +331,6 @@ struct AgentBridgeRunArgs {
     queue: Option<String>,
     #[arg(long)]
     timeout_ms: Option<u64>,
-}
-
-#[derive(Debug, Args)]
-struct AgentTargetArgs {
-    #[command(subcommand)]
-    command: AgentTargetCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum AgentTargetCommand {
-    List,
-    Register {
-        #[arg(long)]
-        name: String,
-        #[arg(long)]
-        host: Option<String>,
-        #[arg(long)]
-        project_id: Option<String>,
-        #[arg(long)]
-        capability: Vec<String>,
-        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
-        priority: i64,
-        #[arg(long, default_value_t = 3)]
-        protocol_version: i64,
-        #[arg(long, default_value_t = 1)]
-        max_concurrency: i64,
-    },
-    Remove {
-        #[arg(long)]
-        target_id: String,
-    },
 }
 
 pub(super) fn parse(argv: &[String]) -> ParseOutcome {

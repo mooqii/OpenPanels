@@ -3,17 +3,22 @@ use crate::error::CliError;
 use crate::paths::{sanitize_path_part, MyOpenPanelsPaths};
 use crate::storage::{Storage, TaskInsert};
 use crate::types::{PanelKind, ProjectBootstrap, ProjectPanelSnapshot};
-use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-pub const WRITING_CAPABILITY: &str = "writing.generateDocument";
-pub const WRITING_REFINEMENT_CAPABILITY: &str = "writing.refineSkill";
-pub const DEFAULT_WRITING_REFINEMENT_SKILL_ID: &str = "writing-refinement-default";
-pub(crate) const LEGACY_WRITING_SKILL_REFINER_ID: &str = "writing-skill-refiner";
+const WRITING_TASK_CAPABILITY_KEY: &str = "writing.execute";
+const WRITING_DISTILLATION_TASK_CAPABILITY_KEY: &str = "skill.writing.distill";
+
+#[cfg(test)]
+fn writing_task_capability(capability_key: &str, task_type: &str) -> &'static str {
+    &crate::capabilities::task_route_for_capability(capability_key, task_type)
+        .expect("Writing Task route")
+        .capability
+}
+pub const DEFAULT_WRITING_DISTILLATION_SKILL_ID: &str = "writing-distillation-default";
 
 fn active_writing_selection(paths: &MyOpenPanelsPaths) -> Result<ProjectBootstrap, CliError> {
     let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
@@ -53,11 +58,11 @@ fn writing_selection_value(
         .read_panel_selection(&bootstrap.project.id, &bootstrap.panel.id)?
         .unwrap_or_else(|| json!({}));
     let wiki = wiki_snapshot(bootstrap)?;
-    let generated_ids = known_selected_ids(
+    let my_document_ids = known_selected_ids(
         &stored,
-        "selectedGeneratedDocumentIds",
+        "selectedMyDocumentIds",
         &wiki.state,
-        "generatedDocuments",
+        "myDocuments",
     );
     let is_wiki_selected = stored
         .get("isWikiSelected")
@@ -67,7 +72,7 @@ fn writing_selection_value(
         paths,
         &bootstrap.project.id,
         &wiki.panel.id,
-        &generated_ids,
+        &my_document_ids,
         is_wiki_selected,
     )?;
     Ok(json!({
@@ -75,8 +80,8 @@ fn writing_selection_value(
         "projectId": bootstrap.project.id,
         "panelId": bootstrap.panel.id,
         "isWikiSelected": is_wiki_selected,
-        "selectedGeneratedDocumentIds": generated_ids,
-        "selectedGeneratedDocuments": agent_context["selectedGeneratedDocuments"],
+        "selectedMyDocumentIds": my_document_ids,
+        "selectedMyDocuments": agent_context["selectedMyDocuments"],
         "wiki": agent_context["wiki"],
         "updatedAt": stored.get("updatedAt").cloned().unwrap_or(Value::Null),
     }))
@@ -115,12 +120,12 @@ pub fn read_selection(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
 pub fn write_selection(
     paths: &MyOpenPanelsPaths,
     is_wiki_selected: bool,
-    selected_generated_document_ids: &[String],
+    selected_my_document_ids: &[String],
 ) -> Result<Value, CliError> {
     let bootstrap = writing_panel(paths)?;
     let requested = json!({
         "isWikiSelected": is_wiki_selected,
-        "selectedGeneratedDocumentIds": selected_generated_document_ids,
+        "selectedMyDocumentIds": selected_my_document_ids,
     });
     let wiki = wiki_snapshot(&bootstrap)?;
     let selection = json!({
@@ -128,7 +133,7 @@ pub fn write_selection(
         "projectId": bootstrap.project.id,
         "panelId": bootstrap.panel.id,
         "isWikiSelected": is_wiki_selected,
-        "selectedGeneratedDocumentIds": known_selected_ids(&requested, "selectedGeneratedDocumentIds", &wiki.state, "generatedDocuments"),
+        "selectedMyDocumentIds": known_selected_ids(&requested, "selectedMyDocumentIds", &wiki.state, "myDocuments"),
         "updatedAt": now_iso(),
     });
     Storage::open(paths)?.write_panel_selection(
@@ -143,17 +148,17 @@ pub fn save_draft(
     paths: &MyOpenPanelsPaths,
     draft: &str,
     mode: &str,
-    refinement_name: &str,
-    target_generated_document_id: Option<&str>,
+    distillation_name: &str,
+    target_my_document_id: Option<&str>,
     selected_create_writing_skill_ids: &[String],
     selected_revision_writing_skill_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    save_draft_with_refinement_skill(
+    save_draft_with_distillation_skill(
         paths,
         draft,
         mode,
-        refinement_name,
-        target_generated_document_id,
+        distillation_name,
+        target_my_document_id,
         selected_create_writing_skill_ids,
         selected_revision_writing_skill_id,
         None,
@@ -162,22 +167,22 @@ pub fn save_draft(
     )
 }
 
-pub fn save_draft_with_refinement_skill(
+pub fn save_draft_with_distillation_skill(
     paths: &MyOpenPanelsPaths,
     draft: &str,
     mode: &str,
-    refinement_name: &str,
-    target_generated_document_id: Option<&str>,
+    distillation_name: &str,
+    target_my_document_id: Option<&str>,
     selected_create_writing_skill_ids: &[String],
     selected_revision_writing_skill_id: Option<&str>,
-    selected_refinement_skill_id: Option<&str>,
+    selected_distillation_skill_id: Option<&str>,
     create_draft: Option<&str>,
     revision_draft: Option<&str>,
 ) -> Result<Value, CliError> {
     let bootstrap = writing_panel(paths)?;
     validate_mode(
         mode,
-        target_generated_document_id,
+        target_my_document_id,
         wiki_snapshot(&bootstrap)?,
         false,
     )?;
@@ -186,17 +191,17 @@ pub fn save_draft_with_refinement_skill(
         .map(|id| vec![id.to_owned()])
         .unwrap_or_default();
     validate_writing_skills(paths, &revision_skill_ids, false, "revise")?;
-    let refinement_skill_id = selected_refinement_skill_id
-        .or_else(|| bootstrap.state["selectedRefinementSkillId"].as_str())
-        .unwrap_or(DEFAULT_WRITING_REFINEMENT_SKILL_ID);
-    crate::agent::writing_refinement_agent_skill(paths, refinement_skill_id)?;
+    let distillation_skill_id = selected_distillation_skill_id
+        .or_else(|| bootstrap.state["selectedDistillationSkillId"].as_str())
+        .unwrap_or(DEFAULT_WRITING_DISTILLATION_SKILL_ID);
+    crate::agent::writing_distillation_agent_skill(paths, distillation_skill_id)?;
     let create_draft = create_draft
         .map(str::to_owned)
         .unwrap_or_else(|| {
             if mode == "create" {
                 draft.to_owned()
             } else {
-                saved_mode_draft(&bootstrap.state, "createDraft", "create")
+                saved_mode_draft(&bootstrap.state, "createDraft")
             }
         });
     let revision_draft = revision_draft
@@ -205,20 +210,19 @@ pub fn save_draft_with_refinement_skill(
             if mode == "revise" {
                 draft.to_owned()
             } else {
-                saved_mode_draft(&bootstrap.state, "revisionDraft", "revise")
+                saved_mode_draft(&bootstrap.state, "revisionDraft")
             }
         });
     let state = json!({
-        "schemaVersion": 5,
         "createDraft": create_draft,
         "draft": draft,
         "mode": mode,
-        "refinementName": refinement_name,
+        "distillationName": distillation_name,
         "revisionDraft": revision_draft,
-        "targetGeneratedDocumentId": if mode == "revise" { target_generated_document_id } else { None },
+        "targetMyDocumentId": if mode == "revise" { target_my_document_id } else { None },
         "selectedCreateWritingSkillIds": selected_create_writing_skill_ids,
         "selectedRevisionWritingSkillId": selected_revision_writing_skill_id,
-        "selectedRefinementSkillId": refinement_skill_id,
+        "selectedDistillationSkillId": distillation_skill_id,
     });
     let revision = Storage::open(paths)?.write_panel_state(
         &bootstrap.project.id,
@@ -228,49 +232,38 @@ pub fn save_draft_with_refinement_skill(
     Ok(json!({ "state": state, "revision": revision }))
 }
 
-fn saved_mode_draft(state: &Value, field: &str, legacy_mode: &str) -> String {
+fn saved_mode_draft(state: &Value, field: &str) -> String {
     state
         .get(field)
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .unwrap_or_else(|| {
-            let mode = state.get("mode").and_then(Value::as_str);
-            if mode == Some(legacy_mode) || (legacy_mode == "create" && mode == Some("refine")) {
-                state
-                    .get("draft")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned()
-            } else {
-                String::new()
-            }
-        })
+        .unwrap_or_default()
 }
 
 fn validate_mode(
     mode: &str,
-    target_generated_document_id: Option<&str>,
+    target_my_document_id: Option<&str>,
     wiki: &ProjectPanelSnapshot,
     target_required: bool,
 ) -> Result<(), CliError> {
-    if !matches!(mode, "create" | "revise" | "refine") {
+    if !matches!(mode, "create" | "revise" | "distill") {
         return Err(CliError::with_code(
             "invalid_writing_mode",
-            "Writing mode must be create, revise, or refine.",
+            "Writing mode must be create, revise, or distill.",
         ));
     }
     if mode == "revise" {
-        let target = target_generated_document_id.filter(|id| !id.trim().is_empty());
+        let target = target_my_document_id.filter(|id| !id.trim().is_empty());
         if target_required && target.is_none() {
             return Err(CliError::with_code(
                 "writing_target_required",
-                "Revision mode requires a generated document target.",
+                "Revision mode requires a My Document target.",
             ));
         }
         if let Some(target) = target {
             let exists = wiki
                 .state
-                .get("generatedDocuments")
+                .get("myDocuments")
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
@@ -278,7 +271,7 @@ fn validate_mode(
             if !exists {
                 return Err(CliError::with_code(
                     "writing_target_not_found",
-                    format!("Generated document not found: {target}"),
+                    format!("My Document not found: {target}"),
                 ));
             }
         }
@@ -290,7 +283,7 @@ pub fn create_requests(
     paths: &MyOpenPanelsPaths,
     instruction: &str,
     mode: &str,
-    target_generated_document_id: Option<&str>,
+    target_my_document_id: Option<&str>,
     writing_skill_ids: &[String],
 ) -> Result<Value, CliError> {
     let instruction = instruction.trim();
@@ -308,7 +301,7 @@ pub fn create_requests(
             "Document requests must use create or revise mode.",
         ));
     }
-    validate_mode(mode, target_generated_document_id, wiki, true)?;
+    validate_mode(mode, target_my_document_id, wiki, true)?;
     crate::agent::sync_builtin_agent_skills(paths)?;
     let writing_skills = validate_writing_skills(paths, writing_skill_ids, true, mode)?;
     let selection = writing_selection_value(paths, &bootstrap)?;
@@ -316,7 +309,8 @@ pub fn create_requests(
         .state
         .get("activeWikiSpaceId")
         .and_then(Value::as_str)
-        .unwrap_or("wiki:default");
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| CliError::new("Writing request has no active Wiki Space."))?;
     let storage = Storage::open(paths)?;
     let context_snapshot = capture_writing_context_snapshot(paths, wiki, &selection)?;
     let now = now_iso();
@@ -325,16 +319,16 @@ pub fn create_requests(
     let mut targets = Vec::with_capacity(writing_skills.len());
 
     if mode == "create" {
-        if !wiki_state["generatedDocuments"].is_array() {
-            return Err(CliError::new("Wiki generatedDocuments state is invalid."));
+        if !wiki_state["myDocuments"].is_array() {
+            return Err(CliError::new("Wiki myDocuments state is invalid."));
         }
         let panel_dir = storage.panel_dir(&bootstrap.project.id, &wiki.panel.id);
         let mut placeholders = Vec::with_capacity(writing_skills.len());
         for _ in &writing_skills {
             let task_id = crate::ids::random_id("task");
-            let document_id = crate::ids::random_id("generated");
+            let document_id = crate::ids::random_id("my-document");
             let document_dir = panel_dir
-                .join("generated")
+                .join("my-documents")
                 .join(sanitize_path_part(&document_id));
             if let Err(error) = fs::create_dir_all(&document_dir)
                 .and_then(|_| fs::write(document_dir.join("content.md"), b""))
@@ -343,7 +337,7 @@ pub fn create_requests(
                 return Err(to_cli_error(error));
             }
             created_placeholder_dirs.push(document_dir);
-            let content_ref = format!("generated/{}/content.md", sanitize_path_part(&document_id));
+            let content_ref = format!("my-documents/{}/content.md", sanitize_path_part(&document_id));
             let document = json!({
                 "id": document_id,
                 "title": "",
@@ -364,17 +358,17 @@ pub fn create_requests(
             targets.push((task_id, document_id, 0_u64, document, snapshot));
         }
         let documents = wiki_state
-            .get_mut("generatedDocuments")
+            .get_mut("myDocuments")
             .and_then(Value::as_array_mut)
-            .expect("generatedDocuments was validated above");
+            .expect("myDocuments was validated above");
         for document in placeholders.into_iter().rev() {
             documents.insert(0, document);
         }
     } else {
-        let target_id = target_generated_document_id.unwrap_or_default();
+        let target_id = target_my_document_id.unwrap_or_default();
         let document = wiki
             .state
-            .get("generatedDocuments")
+            .get("myDocuments")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
@@ -383,7 +377,7 @@ pub fn create_requests(
             .ok_or_else(|| {
                 CliError::with_code(
                     "writing_target_not_found",
-                    format!("Generated document not found: {target_id}"),
+                    format!("My Document not found: {target_id}"),
                 )
             })?;
         let target_version = document["contentVersion"].as_u64().unwrap_or(0);
@@ -402,16 +396,15 @@ pub fn create_requests(
         .zip(&targets)
         .map(|(listing, (task_id, target_id, target_version, _, target_snapshot))| {
             let skill_markdown = fs::read_to_string(&listing.local_path).unwrap_or_default();
-            TaskInsert {
-                id: task_id.clone(),
-                queue: "writing".to_owned(),
-                task_type: "generate_document".to_owned(),
-                capability: WRITING_CAPABILITY.to_owned(),
-                target_ref: target_id.clone(),
-                input: json!({
+            TaskInsert::for_capability(
+                WRITING_TASK_CAPABILITY_KEY,
+                "write_my_document",
+                task_id.clone(),
+                target_id.clone(),
+                json!({
                     "instruction": instruction,
                     "mode": mode,
-                    "targetGeneratedDocumentId": target_id,
+                    "targetMyDocumentId": target_id,
                     "targetContentVersion": target_version,
                     "targetDocumentSnapshot": target_snapshot,
                     "writingSkillId": listing.skill.id.clone(),
@@ -429,10 +422,10 @@ pub fn create_requests(
                     "contextSnapshot": context_snapshot,
                     "context": {
                         "isWikiSelected": selection["isWikiSelected"],
-                        "selectedGeneratedDocumentIds": selection["selectedGeneratedDocumentIds"],
+                        "selectedMyDocumentIds": selection["selectedMyDocumentIds"],
                     },
                 }),
-                source: json!({
+                json!({
                     "writingPanelId": bootstrap.panel.id,
                     "wikiPanelId": wiki.panel.id,
                     "wikiSpaceId": wiki_space_id,
@@ -440,13 +433,9 @@ pub fn create_requests(
                     "writingSkillId": listing.skill.id.clone(),
                     "writingSkillSource": listing.source.clone(),
                 }),
-                max_attempts: 8,
-                dispatch_mode: "auto".to_owned(),
-                idempotency_key: None,
-                exclusive_non_terminal: false,
-            }
+            )
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, CliError>>()?;
     let mut selected_create_writing_skill_ids = bootstrap.state["selectedCreateWritingSkillIds"]
         .as_array()
         .cloned()
@@ -466,24 +455,23 @@ pub fn create_requests(
     let create_draft = if mode == "create" {
         String::new()
     } else {
-        saved_mode_draft(&bootstrap.state, "createDraft", "create")
+        saved_mode_draft(&bootstrap.state, "createDraft")
     };
     let revision_draft = if mode == "revise" {
         String::new()
     } else {
-        saved_mode_draft(&bootstrap.state, "revisionDraft", "revise")
+        saved_mode_draft(&bootstrap.state, "revisionDraft")
     };
     let state = json!({
-        "schemaVersion": 5,
         "createDraft": create_draft,
         "draft": "",
         "mode": mode,
-        "refinementName": bootstrap.state.get("refinementName").and_then(Value::as_str).unwrap_or(""),
+        "distillationName": bootstrap.state.get("distillationName").and_then(Value::as_str).unwrap_or(""),
         "revisionDraft": revision_draft,
-        "targetGeneratedDocumentId": null,
+        "targetMyDocumentId": null,
         "selectedCreateWritingSkillIds": selected_create_writing_skill_ids,
         "selectedRevisionWritingSkillId": selected_revision_writing_skill_id,
-        "selectedRefinementSkillId": bootstrap.state.get("selectedRefinementSkillId").cloned().unwrap_or_else(|| json!(DEFAULT_WRITING_REFINEMENT_SKILL_ID)),
+        "selectedDistillationSkillId": bootstrap.state.get("selectedDistillationSkillId").cloned().unwrap_or_else(|| json!(DEFAULT_WRITING_DISTILLATION_SKILL_ID)),
     });
     let mut panel_states = vec![(bootstrap.panel.id.as_str(), &state)];
     if mode == "create" {
@@ -528,15 +516,15 @@ fn capture_writing_context_snapshot(
     let storage = Storage::open(paths)?;
     let panel_dir = storage.panel_dir(&wiki.panel.project_id, &wiki.panel.id);
     let selected = selection
-        .get("selectedGeneratedDocumentIds")
+        .get("selectedMyDocumentIds")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
         .collect::<BTreeSet<_>>();
-    let generated_documents = wiki
+    let my_documents = wiki
         .state
-        .get("generatedDocuments")
+        .get("myDocuments")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
@@ -552,22 +540,25 @@ fn capture_writing_context_snapshot(
         .state
         .get("activeWikiSpaceId")
         .and_then(Value::as_str)
-        .unwrap_or("wiki:default");
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| CliError::new("Writing context has no active Wiki Space."))?;
     let wiki_selected = selection
         .get("isWikiSelected")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let wiki_content_revision_id = if wiki_selected {
-        storage
-            .connection()
-            .query_row(
-                "SELECT active_revision_id FROM content_resources WHERE project_id = ? AND resource_kind = 'wiki_space' AND resource_key = ? AND archived_at IS NULL",
-                rusqlite::params![wiki.panel.project_id, wiki_space_id],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()
-            .map_err(to_cli_error)?
-            .flatten()
+        crate::content::active_resource_descriptor(
+            paths,
+            &wiki.panel.project_id,
+            crate::content::ResourceKind::WikiSpace,
+            wiki_space_id,
+        )?
+        .and_then(|descriptor| {
+            descriptor
+                .get("revisionId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
     } else {
         None
     };
@@ -579,7 +570,7 @@ fn capture_writing_context_snapshot(
             "wikiSpaceId": wiki_space_id,
             "contentRevisionId": wiki_content_revision_id,
         },
-        "generatedDocuments": generated_documents,
+        "myDocuments": my_documents,
     }))
 }
 
@@ -595,52 +586,52 @@ fn snapshot_writing_document(panel_dir: &Path, document: &Value, reference_key: 
     snapshot
 }
 
-pub fn create_refinement_request(
+pub fn create_distillation_request(
     paths: &MyOpenPanelsPaths,
     requested_name: &str,
 ) -> Result<Value, CliError> {
-    create_refinement_request_with_skill(paths, requested_name, None)
+    create_distillation_request_with_skill(paths, requested_name, None)
 }
 
-pub fn create_refinement_request_with_skill(
+pub fn create_distillation_request_with_skill(
     paths: &MyOpenPanelsPaths,
     requested_name: &str,
-    requested_refiner_skill_id: Option<&str>,
+    requested_distiller_skill_id: Option<&str>,
 ) -> Result<Value, CliError> {
     let name = normalize_skill_name(requested_name)?;
     let bootstrap = writing_panel(paths)?;
     let wiki = wiki_snapshot(&bootstrap)?;
     let selection = writing_selection_value(paths, &bootstrap)?;
-    let generated_ids = selection["selectedGeneratedDocumentIds"]
+    let my_document_ids = selection["selectedMyDocumentIds"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    if generated_ids.is_empty() {
+    if my_document_ids.is_empty() {
         return Err(CliError::with_code(
-            "writing_refinement_source_required",
-            "Select at least one generated document to refine.",
+            "writing_distillation_source_required",
+            "Select at least one My Document to distill.",
         ));
     }
-    validate_refinement_sources(wiki, &generated_ids)?;
+    validate_distillation_sources(wiki, &my_document_ids)?;
     validate_available_skill_name(paths, &bootstrap.project.id, &name, None)?;
 
     let captured = capture_writing_context_snapshot(paths, wiki, &selection)?;
     let context_snapshot = json!({
-        "generatedDocuments": captured["generatedDocuments"],
+        "myDocuments": captured["myDocuments"],
     });
     crate::agent::sync_builtin_agent_skills(paths)?;
-    let refiner_skill_id = requested_refiner_skill_id
-        .or_else(|| bootstrap.state["selectedRefinementSkillId"].as_str())
-        .unwrap_or(DEFAULT_WRITING_REFINEMENT_SKILL_ID);
-    let refiner = crate::agent::writing_refinement_agent_skill(paths, refiner_skill_id)?;
-    let refiner_markdown = fs::read_to_string(PathBuf::from(&refiner.local_dir).join("SKILL.md"))
+    let distiller_skill_id = requested_distiller_skill_id
+        .or_else(|| bootstrap.state["selectedDistillationSkillId"].as_str())
+        .unwrap_or(DEFAULT_WRITING_DISTILLATION_SKILL_ID);
+    let distiller = crate::agent::writing_distillation_agent_skill(paths, distiller_skill_id)?;
+    let distiller_markdown = fs::read_to_string(PathBuf::from(&distiller.local_dir).join("SKILL.md"))
     .map_err(|error| {
         CliError::with_code(
             "invalid_skill_package",
-            format!("Could not capture the Writing Skill refiner: {error}"),
+            format!("Could not capture the Writing Skill distiller: {error}"),
         )
     })?;
-    let refiner_content_hash = format!("{:x}", Sha256::digest(refiner_markdown.as_bytes()));
+    let distiller_content_hash = format!("{:x}", Sha256::digest(distiller_markdown.as_bytes()));
 
     let suffix = crate::ids::random_base64url_96()
         .to_ascii_lowercase()
@@ -649,16 +640,16 @@ pub fn create_refinement_request_with_skill(
     let input = json!({
         "name": name,
         "skillId": skill_id,
-        "refinerSkillId": refiner_skill_id,
-        "refinerSkillSnapshot": {
-            "id": refiner_skill_id,
-            "name": refiner.skill.name,
-            "source": refiner.source,
-            "markdown": refiner_markdown,
-            "contentHash": refiner_content_hash,
+        "distillerSkillId": distiller_skill_id,
+        "distillerSkillSnapshot": {
+            "id": distiller_skill_id,
+            "name": distiller.skill.name,
+            "source": distiller.source,
+            "markdown": distiller_markdown,
+            "contentHash": distiller_content_hash,
         },
         "context": {
-            "selectedGeneratedDocumentIds": generated_ids,
+            "selectedMyDocumentIds": my_document_ids,
         },
         "contextSnapshot": context_snapshot,
     });
@@ -666,29 +657,27 @@ pub fn create_refinement_request_with_skill(
         "writingPanelId": bootstrap.panel.id,
         "wikiPanelId": wiki.panel.id,
         "panelSkillId": crate::agent::PANELS_SKILL_ID,
-        "refinerSkillId": refiner_skill_id,
+        "distillerSkillId": distiller_skill_id,
     });
-    let task = Storage::open(paths)?.insert_task(
+    let task = Storage::open(paths)?.insert_capability_task(
         &bootstrap.project.id,
         &bootstrap.panel.id,
-        "writing",
-        "refine_writing_skill",
-        WRITING_REFINEMENT_CAPABILITY,
+        WRITING_DISTILLATION_TASK_CAPABILITY_KEY,
+        "distill_writing_skill",
         &skill_id,
         &input,
         &source,
     )?;
     let state = json!({
-        "schemaVersion": 5,
-        "createDraft": saved_mode_draft(&bootstrap.state, "createDraft", "create"),
+        "createDraft": saved_mode_draft(&bootstrap.state, "createDraft"),
         "draft": bootstrap.state.get("draft").and_then(Value::as_str).unwrap_or(""),
-        "mode": "refine",
-        "refinementName": "",
-        "revisionDraft": saved_mode_draft(&bootstrap.state, "revisionDraft", "revise"),
-        "targetGeneratedDocumentId": bootstrap.state.get("targetGeneratedDocumentId").cloned().unwrap_or(Value::Null),
+        "mode": "distill",
+        "distillationName": "",
+        "revisionDraft": saved_mode_draft(&bootstrap.state, "revisionDraft"),
+        "targetMyDocumentId": bootstrap.state.get("targetMyDocumentId").cloned().unwrap_or(Value::Null),
         "selectedCreateWritingSkillIds": bootstrap.state.get("selectedCreateWritingSkillIds").cloned().unwrap_or_else(|| json!([])),
         "selectedRevisionWritingSkillId": bootstrap.state.get("selectedRevisionWritingSkillId").cloned().unwrap_or(Value::Null),
-        "selectedRefinementSkillId": refiner_skill_id,
+        "selectedDistillationSkillId": distiller_skill_id,
     });
     let revision = Storage::open(paths)?.write_panel_state(
         &bootstrap.project.id,

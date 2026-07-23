@@ -46,46 +46,56 @@ fn normalize_command(
         RootCommand::Panel(args) => normalize_panel(args.command, flags),
         RootCommand::Canvas(args) => normalize_canvas(args.command, flags),
         RootCommand::Wiki(args) => normalize_wiki(args.command, flags),
-        RootCommand::Writing(args) => normalize_writing(args.command, flags),
-        RootCommand::Typesetting(args) => normalize_typesetting(args.command, flags),
-        RootCommand::Publishing(args) => match args.command {
-            PublishingCommand::Checkpoint { task_id, phase } => {
-                put(flags, "task-id", Some(task_id));
-                put(flags, "phase", Some(phase));
+        RootCommand::WikiSource(args) => match args.command {
+            WikiSourceCommand::CreateFromMyDocument {
+                document_id,
+                space_id,
+            } => {
+                put(flags, "document-id", Some(document_id));
+                put(flags, "space-id", Some(space_id));
                 (
-                    vec!["publishing".into(), "checkpoint".into()],
-                    "publishing.checkpoint",
+                    vec![
+                        "wiki-source".into(),
+                        "create-from-my-document".into(),
+                    ],
+                    "wiki-source.create-from-my-document",
                 )
             }
         },
-        RootCommand::Task(args) => normalize_task(args.command, flags),
-        RootCommand::Workflow(args) => match args.command {
-            WorkflowCommand::Run(args) => match args.command {
-                WorkflowRunCommand::List => (
-                    vec!["workflow".into(), "run".into(), "list".into()],
-                    "workflow.run.list",
-                ),
-                WorkflowRunCommand::Read { workflow_run_id } => {
-                    put(flags, "workflow-run-id", Some(workflow_run_id));
-                    (
-                        vec!["workflow".into(), "run".into(), "read".into()],
-                        "workflow.run.read",
-                    )
-                }
-            },
+        RootCommand::MyDocument(args) => normalize_my_document(args.command, flags),
+        RootCommand::Writing(args) => normalize_writing(args.command, flags),
+        RootCommand::Publication(args) => normalize_typesetting(args.command, flags),
+        RootCommand::Release(args) => match args.command {
+            ReleaseCommand::List => (vec!["release".into(), "list".into()], "release.list"),
+            ReleaseCommand::Checkpoint { task_id, phase } => {
+                put(flags, "task-id", Some(task_id));
+                put(flags, "phase", Some(phase));
+                (
+                    vec!["release".into(), "checkpoint".into()],
+                    "release.checkpoint",
+                )
+            }
         },
+        RootCommand::Asset(args) => match args.command {
+            AssetCommand::List => (vec!["asset".into(), "list".into()], "asset.list"),
+        },
+        RootCommand::Task(args) => normalize_task(args.command, flags),
         RootCommand::Operation(args) => normalize_operation(args.command, flags),
         RootCommand::Agent(args) => normalize_agent(args.command, flags),
     }
 }
 
 fn normalize_typesetting(
-    command: TypesettingCommand,
+    command: PublicationCommand,
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
     match command {
-        TypesettingCommand::Title(args) => match args.command {
-            TypesettingTitleCommand::Generate {
+        PublicationCommand::List => (
+            vec!["publication".into(), "list".into()],
+            "publication.list",
+        ),
+        PublicationCommand::Title(args) => match args.command {
+            PublicationTitleCommand::Generate {
                 publication_id,
                 skill_id,
                 instruction,
@@ -96,19 +106,19 @@ fn normalize_typesetting(
                 put(flags, "instruction", instruction);
                 put(flags, "request-id", request_id);
                 (
-                    vec!["typesetting".into(), "title".into(), "generate".into()],
-                    "typesetting.title.generate",
+                    vec!["publication".into(), "title".into(), "generate".into()],
+                    "publication.title.generate",
                 )
             }
-            TypesettingTitleCommand::Skill(args) => match args.command {
-                TypesettingTitleSkillCommand::List => (
+            PublicationTitleCommand::Skill(args) => match args.command {
+                PublicationTitleSkillCommand::List => (
                     vec![
-                        "typesetting".into(),
+                        "publication".into(),
                         "title".into(),
                         "skill".into(),
                         "list".into(),
                     ],
-                    "typesetting.title.skill.list",
+                    "publication.title.skill.list",
                 ),
             },
         },
@@ -129,16 +139,16 @@ fn normalize_writing(
                 )
             }
         },
-        WritingCommand::Refinement(args) => match args.command {
-            WritingRefinementCommand::Read { task_id } => {
+        WritingCommand::Distillation(args) => match args.command {
+            WritingDistillationCommand::Read { task_id } => {
                 put(flags, "task-id", Some(task_id));
                 (
-                    vec!["writing".into(), "refinement".into(), "read".into()],
-                    "writing.refinement.read",
+                    vec!["writing".into(), "distillation".into(), "read".into()],
+                    "writing.distillation.read",
                 )
             }
         },
-        WritingCommand::Generate {
+        WritingCommand::Write {
             task_id,
             title,
             document_format,
@@ -147,8 +157,8 @@ fn normalize_writing(
             put(flags, "title", Some(title));
             put(flags, "document-format", Some(document_format));
             (
-                vec!["writing".into(), "generate".into()],
-                "writing.generate",
+                vec!["writing".into(), "write".into()],
+                "writing.write",
             )
         }
         WritingCommand::Skill(args) => match args.command {

@@ -14,7 +14,7 @@ import { apiJson } from "../../lib/api"
 import { randomId } from "../../lib/id"
 import {
   isTypesettingDocumentEmpty,
-  typesettingTitleRequestPayload,
+  publicationTitleRequestPayload,
 } from "../../lib/typesetting"
 import type {
   AgentSkillListing,
@@ -23,7 +23,7 @@ import type {
   TypesettingPublication,
 } from "../../types"
 
-export function TypesettingTitleTaskDialog({
+export function PublicationTitleTaskDialog({
   isOpen,
   onFlushSave,
   onOpenChange,
@@ -53,7 +53,7 @@ export function TypesettingTitleTaskDialog({
     setIsLoading(true)
     apiJson<{ skills?: AgentSkillListing[] }>(
       transport.apiBase,
-      "/api/typesetting/title-skills"
+      "/api/publications/title-skills"
     )
       .then((response) => {
         if (cancelled) return
@@ -63,7 +63,7 @@ export function TypesettingTitleTaskDialog({
           nextSkills.some((item) => item.skill.id === current)
             ? current
             : (nextSkills.find(
-                (item) => item.skill.id === "typesetting-title-default"
+                (item) => item.skill.id === "publication-title-default"
               )?.skill.id ??
               nextSkills[0]?.skill.id ??
               "")
@@ -90,12 +90,12 @@ export function TypesettingTitleTaskDialog({
       await onFlushSave()
       const response = await apiJson<{ task: ProjectTask }>(
         transport.apiBase,
-        "/api/typesetting/title-requests",
+        "/api/publications/title-requests",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(
-            typesettingTitleRequestPayload({
+            publicationTitleRequestPayload({
               instruction,
               publicationId: publication.id,
               requestId: randomId("title-request"),
@@ -123,7 +123,7 @@ export function TypesettingTitleTaskDialog({
       }}
     >
       <Modal.Container placement="center" size="md">
-        <Modal.Dialog className="op-typesetting-cover-dialog">
+        <Modal.Dialog className="op-publication-cover-dialog">
           <Modal.CloseTrigger aria-label={t`Close`} />
           <Modal.Header>
             <Modal.Icon>
@@ -132,10 +132,10 @@ export function TypesettingTitleTaskDialog({
             <Modal.Heading>{t`Generate titles`}</Modal.Heading>
           </Modal.Header>
           <Modal.Body>
-            <div className="op-typesetting-cover-dialog__field">
+            <div className="op-publication-cover-dialog__field">
               <Label>{t`Title Skill`}</Label>
               {isLoading ? (
-                <div className="op-typesetting-cover-dialog__loading">
+                <div className="op-publication-cover-dialog__loading">
                   <Spinner size="sm" />
                   <span>{t`Loading Title Skills`}</span>
                 </div>
@@ -157,11 +157,11 @@ export function TypesettingTitleTaskDialog({
                           key={item.skill.id}
                           textValue={item.skill.name}
                         >
-                          <div className="op-typesetting-cover-dialog__skill">
-                            <strong className="op-typesetting-cover-dialog__skill-name">
+                          <div className="op-publication-cover-dialog__skill">
+                            <strong className="op-publication-cover-dialog__skill-name">
                               {item.skill.name}
                             </strong>
-                            <span className="op-typesetting-cover-dialog__skill-description">
+                            <span className="op-publication-cover-dialog__skill-description">
                               {item.skill.description}
                             </span>
                           </div>
@@ -171,12 +171,12 @@ export function TypesettingTitleTaskDialog({
                   </Select.Popover>
                 </Select>
               ) : (
-                <span className="op-typesetting-cover-dialog__empty">
+                <span className="op-publication-cover-dialog__empty">
                   {t`No Title Skills available`}
                 </span>
               )}
             </div>
-            <div className="op-typesetting-cover-dialog__field">
+            <div className="op-publication-cover-dialog__field">
               <Label>{t`Title requirements`}</Label>
               <TextArea
                 aria-label={t`Title requirements`}

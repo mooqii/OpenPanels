@@ -32,6 +32,16 @@ impl PanelKind {
             _ => None,
         }
     }
+
+    pub fn default_title(self) -> &'static str {
+        match self {
+            Self::Wiki => "文档库",
+            Self::Writing => "写作",
+            Self::Canvas => "Design canvas",
+            Self::Typesetting => "排版",
+            Self::Publishing => "发布",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

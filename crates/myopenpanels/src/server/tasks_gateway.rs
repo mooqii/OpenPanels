@@ -65,13 +65,6 @@ async fn api_model_gateway_test_local_cli(
     }
 }
 
-async fn api_agent_targets(State(state): State<Arc<AppState>>) -> Response {
-    match tasks::list_targets(&state.paths) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
 async fn api_task_retry(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<String>,
@@ -79,52 +72,6 @@ async fn api_task_retry(
     match tasks::retry_task(&state.paths, &task_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TaskDispatchBody {
-    mode: String,
-    model_gateway_connection_id: Option<String>,
-}
-
-async fn api_task_dispatch(
-    State(state): State<Arc<AppState>>,
-    Path(task_id): Path<String>,
-    Json(body): Json<TaskDispatchBody>,
-) -> Response {
-    match tasks::set_task_dispatch(
-        &state.paths,
-        &task_id,
-        &body.mode,
-        body.model_gateway_connection_id.as_deref(),
-    ) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_cli_error(&error),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WikiUpdateGroupDispatchBody {
-    mutation_key: String,
-    mode: String,
-    model_gateway_connection_id: Option<String>,
-}
-
-async fn api_wiki_update_group_dispatch(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<WikiUpdateGroupDispatchBody>,
-) -> Response {
-    match tasks::set_wiki_update_group_dispatch(
-        &state.paths,
-        &body.mutation_key,
-        &body.mode,
-        body.model_gateway_connection_id.as_deref(),
-    ) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_cli_error(&error),
     }
 }
 
@@ -143,87 +90,6 @@ async fn api_task_archive(
     Path(task_id): Path<String>,
 ) -> Response {
     match tasks::archive_task(&state.paths, &task_id) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-async fn api_task_delete(
-    State(state): State<Arc<AppState>>,
-    Path(task_id): Path<String>,
-) -> Response {
-    match tasks::delete_task(&state.paths, &task_id) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-async fn api_task_events(
-    State(state): State<Arc<AppState>>,
-    Path(task_id): Path<String>,
-) -> Response {
-    match tasks::list_task_events(&state.paths, &task_id) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-async fn api_task_attempts(
-    State(state): State<Arc<AppState>>,
-    Path(task_id): Path<String>,
-) -> Response {
-    match tasks::list_task_attempts(&state.paths, &task_id) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-async fn api_workflow_runs(State(state): State<Arc<AppState>>) -> Response {
-    match tasks::list_workflow_runs(&state.paths) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-async fn api_workflow_run(
-    State(state): State<Arc<AppState>>,
-    Path(workflow_run_id): Path<String>,
-) -> Response {
-    match tasks::read_workflow_run(&state.paths, &workflow_run_id) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentRouteBody {
-    capability: String,
-    target_ids: Vec<String>,
-}
-
-async fn api_agent_routes(State(state): State<Arc<AppState>>) -> Response {
-    match tasks::list_agent_routes(&state.paths) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-async fn api_set_agent_route(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<AgentRouteBody>,
-) -> Response {
-    match tasks::set_agent_route(&state.paths, &body.capability, &body.target_ids) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-async fn api_remove_agent_route(
-    State(state): State<Arc<AppState>>,
-    Path(capability): Path<String>,
-) -> Response {
-    match tasks::remove_agent_route(&state.paths, &capability) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_error(status_for_cli_error(&error), error.message()),
     }

@@ -14,7 +14,7 @@ import { apiJson } from "../../lib/api"
 import { randomId } from "../../lib/id"
 import {
   isTypesettingDocumentEmpty,
-  typesettingCoverRequestPayload,
+  publicationCoverRequestPayload,
 } from "../../lib/typesetting"
 import type {
   AgentSkillListing,
@@ -53,7 +53,7 @@ export function TypesettingCoverTaskDialog({
     setIsLoading(true)
     apiJson<{ skills?: AgentSkillListing[] }>(
       transport.apiBase,
-      "/api/typesetting/cover-skills"
+      "/api/publications/cover-skills"
     )
       .then((response) => {
         if (cancelled) return
@@ -63,7 +63,7 @@ export function TypesettingCoverTaskDialog({
           nextSkills.some((item) => item.skill.id === current)
             ? current
             : (nextSkills.find(
-                (item) => item.skill.id === "typesetting-cover-default"
+                (item) => item.skill.id === "publication-cover-default"
               )?.skill.id ??
               nextSkills[0]?.skill.id ??
               "")
@@ -90,12 +90,12 @@ export function TypesettingCoverTaskDialog({
       await onFlushSave()
       const response = await apiJson<{ task: ProjectTask }>(
         transport.apiBase,
-        "/api/typesetting/cover-requests",
+        "/api/publications/cover-requests",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(
-            typesettingCoverRequestPayload({
+            publicationCoverRequestPayload({
               instruction,
               publicationId: publication.id,
               requestId: randomId("cover-request"),
@@ -123,7 +123,7 @@ export function TypesettingCoverTaskDialog({
       }}
     >
       <Modal.Container placement="center" size="md">
-        <Modal.Dialog className="op-typesetting-cover-dialog">
+        <Modal.Dialog className="op-publication-cover-dialog">
           <Modal.CloseTrigger aria-label={t`Close`} />
           <Modal.Header>
             <Modal.Icon>
@@ -132,10 +132,10 @@ export function TypesettingCoverTaskDialog({
             <Modal.Heading>{t`Create cover`}</Modal.Heading>
           </Modal.Header>
           <Modal.Body>
-            <div className="op-typesetting-cover-dialog__field">
+            <div className="op-publication-cover-dialog__field">
               <Label>{t`Cover Skill`}</Label>
               {isLoading ? (
-                <div className="op-typesetting-cover-dialog__loading">
+                <div className="op-publication-cover-dialog__loading">
                   <Spinner size="sm" />
                   <span>{t`Loading Cover Skills`}</span>
                 </div>
@@ -157,11 +157,11 @@ export function TypesettingCoverTaskDialog({
                           key={item.skill.id}
                           textValue={item.skill.name}
                         >
-                          <div className="op-typesetting-cover-dialog__skill">
-                            <strong className="op-typesetting-cover-dialog__skill-name">
+                          <div className="op-publication-cover-dialog__skill">
+                            <strong className="op-publication-cover-dialog__skill-name">
                               {item.skill.name}
                             </strong>
-                            <span className="op-typesetting-cover-dialog__skill-description">
+                            <span className="op-publication-cover-dialog__skill-description">
                               {item.skill.description}
                             </span>
                           </div>
@@ -171,12 +171,12 @@ export function TypesettingCoverTaskDialog({
                   </Select.Popover>
                 </Select>
               ) : (
-                <span className="op-typesetting-cover-dialog__empty">
+                <span className="op-publication-cover-dialog__empty">
                   {t`No Cover Skills available`}
                 </span>
               )}
             </div>
-            <div className="op-typesetting-cover-dialog__field">
+            <div className="op-publication-cover-dialog__field">
               <Label>{t`Additional requirements`}</Label>
               <TextArea
                 aria-label={t`Additional requirements`}

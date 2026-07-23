@@ -265,9 +265,9 @@ fn materialize_task_inputs(
                 .pointer("/input/documentKind")
                 .or_else(|| task.get("documentKind"))
                 .and_then(Value::as_str)
-                == Some("generated")
+                == Some("my_document")
             {
-                crate::wiki::generated_import_original_for_target(
+                crate::wiki::my_document_import_original_for_target(
                     paths,
                     task.get("projectId").and_then(Value::as_str).unwrap_or_default(),
                     task.get("panelId").and_then(Value::as_str).unwrap_or_default(),
@@ -297,23 +297,23 @@ fn materialize_task_inputs(
     if task
         .get("type")
         .and_then(Value::as_str)
-        .is_some_and(crate::publishing::is_publishing_task_type)
+        .is_some_and(crate::release::is_publishing_task_type)
     {
         materialize_publishing_inputs(paths, task, workspace, &mut materialized)?;
     }
-    if task.get("type").and_then(Value::as_str) == Some(crate::typesetting::COVER_TASK_TYPE) {
-        materialize_typesetting_cover_inputs(paths, task, workspace, &mut materialized)?;
+    if task.get("type").and_then(Value::as_str) == Some(crate::publication::COVER_TASK_TYPE) {
+        materialize_publication_cover_inputs(paths, task, workspace, &mut materialized)?;
     }
-    if task.get("type").and_then(Value::as_str) == Some(crate::typesetting::TITLE_TASK_TYPE) {
-        materialize_typesetting_title_inputs(paths, task, workspace, &mut materialized)?;
+    if task.get("type").and_then(Value::as_str) == Some(crate::publication::TITLE_TASK_TYPE) {
+        materialize_publication_title_inputs(paths, task, workspace, &mut materialized)?;
     }
-    if task.get("type").and_then(Value::as_str) == Some(crate::typesetting::LAYOUT_TASK_TYPE) {
-        materialize_typesetting_layout_inputs(paths, task, workspace, &mut materialized)?;
+    if task.get("type").and_then(Value::as_str) == Some(crate::publication::LAYOUT_TASK_TYPE) {
+        materialize_publication_layout_inputs(paths, task, workspace, &mut materialized)?;
     }
     Ok(materialized)
 }
 
-fn materialize_typesetting_cover_inputs(
+fn materialize_publication_cover_inputs(
     paths: &MyOpenPanelsPaths,
     task: &Value,
     workspace: &Path,
@@ -342,7 +342,7 @@ fn materialize_typesetting_cover_inputs(
     )
     .map_err(to_cli_error)?;
 
-    let (skill_files, skill_file_path) = materialize_typesetting_skill(
+    let (skill_files, skill_file_path) = materialize_publication_skill(
         &storage,
         task,
         "/input/coverSkillSnapshot",
@@ -350,7 +350,7 @@ fn materialize_typesetting_cover_inputs(
         "Cover",
         &skill_dir,
     )?;
-    materialized["executionInputs"]["typesettingCover"] = json!({
+    materialized["executionInputs"]["publicationCover"] = json!({
         "titleFilePath": title_path,
         "bodyFilePath": body_path,
         "skillFilePath": skill_file_path,
@@ -360,7 +360,7 @@ fn materialize_typesetting_cover_inputs(
     Ok(())
 }
 
-fn materialize_typesetting_title_inputs(
+fn materialize_publication_title_inputs(
     paths: &MyOpenPanelsPaths,
     task: &Value,
     workspace: &Path,
@@ -398,7 +398,7 @@ fn materialize_typesetting_title_inputs(
         serde_json::to_vec_pretty(&existing_titles).map_err(to_cli_error)?,
     )
     .map_err(to_cli_error)?;
-    let (skill_files, skill_file_path) = materialize_typesetting_skill(
+    let (skill_files, skill_file_path) = materialize_publication_skill(
         &storage,
         task,
         "/input/titleSkillSnapshot",
@@ -406,7 +406,7 @@ fn materialize_typesetting_title_inputs(
         "Title",
         &skill_dir,
     )?;
-    materialized["executionInputs"]["typesettingTitle"] = json!({
+    materialized["executionInputs"]["publicationTitle"] = json!({
         "titleFilePath": title_path,
         "bodyFilePath": body_path,
         "existingTitlesFilePath": existing_titles_path,
@@ -417,7 +417,7 @@ fn materialize_typesetting_title_inputs(
     Ok(())
 }
 
-fn materialize_typesetting_layout_inputs(
+fn materialize_publication_layout_inputs(
     paths: &MyOpenPanelsPaths,
     task: &Value,
     workspace: &Path,
@@ -446,7 +446,7 @@ fn materialize_typesetting_layout_inputs(
         .map_err(to_cli_error)?,
     )
     .map_err(to_cli_error)?;
-    let (skill_files, skill_file_path) = materialize_typesetting_skill(
+    let (skill_files, skill_file_path) = materialize_publication_skill(
         &storage,
         task,
         "/input/layoutSkillSnapshot",
@@ -454,7 +454,7 @@ fn materialize_typesetting_layout_inputs(
         "Layout",
         &skill_dir,
     )?;
-    materialized["executionInputs"]["typesettingLayout"] = json!({
+    materialized["executionInputs"]["publicationLayout"] = json!({
         "titleFilePath": title_path,
         "contentFilePath": content_path,
         "skillFilePath": skill_file_path,
@@ -464,7 +464,7 @@ fn materialize_typesetting_layout_inputs(
     Ok(())
 }
 
-fn materialize_typesetting_skill(
+fn materialize_publication_skill(
     storage: &crate::storage::Storage,
     task: &Value,
     snapshot_pointer: &str,
@@ -695,7 +695,7 @@ fn materialize_publishing_inputs(
         ));
     }
 
-    materialized["executionInputs"]["publishing"] = json!({
+    materialized["executionInputs"]["release"] = json!({
         "titleFilePath": title_path,
         "bodyFilePath": body_path,
         "tagsFilePath": tags_path,

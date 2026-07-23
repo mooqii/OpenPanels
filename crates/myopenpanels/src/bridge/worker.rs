@@ -75,7 +75,6 @@ pub fn run_bridge(
                 options.capabilities.clone()
             },
             priority: options.priority,
-            protocol_version: 3,
             max_concurrency: 1,
             model_gateway_connection_id: None,
         },
@@ -308,7 +307,6 @@ fn run_model_gateway_loop(paths: MyOpenPanelsPaths, shutdown: Arc<AtomicBool>) {
                     project_id: None,
                     capabilities: task_handler_capabilities(),
                     priority: 1000 - position as i64,
-                    protocol_version: 3,
                     max_concurrency: max_concurrency as i64,
                     model_gateway_connection_id: (spec.connection_id != "custom")
                         .then_some(spec.connection_id.as_str()),

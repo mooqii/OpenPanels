@@ -32,11 +32,13 @@ enum RootCommand {
     Panel(PanelArgs),
     Canvas(CanvasArgs),
     Wiki(WikiArgs),
+    WikiSource(WikiSourceArgs),
+    MyDocument(MyDocumentArgs),
     Writing(WritingArgs),
-    Typesetting(TypesettingArgs),
-    Publishing(PublishingArgs),
+    Publication(PublicationArgs),
+    Release(ReleaseArgs),
+    Asset(AssetArgs),
     Task(TaskArgs),
-    Workflow(WorkflowArgs),
     Operation(OperationArgs),
     Agent(AgentArgs),
     Version,
@@ -179,6 +181,17 @@ enum CanvasCommand {
 }
 
 #[derive(Debug, Args)]
+struct AssetArgs {
+    #[command(subcommand)]
+    command: AssetCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AssetCommand {
+    List,
+}
+
+#[derive(Debug, Args)]
 struct CanvasSelectionArgs {
     #[command(subcommand)]
     command: CanvasSelectionCommand,
@@ -245,7 +258,6 @@ struct WikiArgs {
 #[derive(Debug, Subcommand)]
 enum WikiCommand {
     Raw(WikiRawArgs),
-    Document(WikiDocumentArgs),
     Space(WikiSpaceArgs),
     Page(WikiPageArgs),
 }
@@ -287,15 +299,15 @@ enum WikiRawCommand {
     },
 }
 #[derive(Debug, Args)]
-struct WikiDocumentArgs {
+struct MyDocumentArgs {
     #[command(subcommand)]
-    command: WikiDocumentCommand,
+    command: MyDocumentCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum WikiDocumentCommand {
+enum MyDocumentCommand {
     List,
-    Create {
+    Import {
         #[arg(long)]
         content_file: String,
         #[arg(long)]
@@ -325,19 +337,35 @@ enum WikiDocumentCommand {
         #[arg(long)]
         document_id: String,
     },
-    Publish {
-        #[arg(long)]
-        document_id: String,
-        #[arg(long)]
-        space_id: String,
-    },
-    Generate {
+    Create {
         #[arg(long)]
         title: String,
         #[arg(long, default_value = "markdown")]
         document_format: String,
+    },
+    Revise {
         #[arg(long)]
-        document_id: Option<String>,
+        document_id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long, default_value = "markdown")]
+        document_format: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct WikiSourceArgs {
+    #[command(subcommand)]
+    command: WikiSourceCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WikiSourceCommand {
+    CreateFromMyDocument {
+        #[arg(long)]
+        document_id: String,
+        #[arg(long)]
+        space_id: String,
     },
 }
 

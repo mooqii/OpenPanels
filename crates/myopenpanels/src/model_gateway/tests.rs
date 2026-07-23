@@ -266,7 +266,7 @@ deepseek/model-b
     }
 
     #[test]
-    fn settings_are_persisted_in_normalized_gateway_tables() {
+    fn settings_are_persisted_as_one_generic_setting() {
         let temp = tempfile::tempdir().expect("temp");
         let project = temp.path().join("project");
         let storage_dir = temp.path().join("storage");
@@ -335,19 +335,20 @@ deepseek/model-b
             Some("/opt/tools/hermes")
         );
         let storage = Storage::open(&paths).expect("storage");
-        let active_connection: Option<String> = storage
-            .connection()
-            .query_row(
-                "SELECT active_local_connection_id FROM model_gateway_config WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .expect("active connection");
-        assert_eq!(active_connection.as_deref(), Some("local-cli:hermes"));
-        assert!(storage
+        let stored = storage
             .read_setting("model_gateway", "settings")
-            .expect("legacy setting")
-            .is_none());
+            .expect("generic setting")
+            .expect("settings row");
+        assert_eq!(
+            serde_json::from_str::<Value>(&stored).expect("stored settings"),
+            serde_json::to_value(persisted).expect("settings json")
+        );
+        let table_count: i64 = storage.connection().query_row(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name LIKE 'model_gateway_%'",
+            [],
+            |row| row.get(0),
+        ).expect("gateway tables");
+        assert_eq!(table_count, 0);
     }
 
     #[test]
@@ -421,108 +422,9 @@ deepseek/model-b
         assert_eq!(reordered[1].connection_id, "local-cli:codex");
     }
 
-    #[test]
-    fn runtime_registry_upserts_new_cli_adapters_without_schema_changes() {
-        let temp = tempfile::tempdir().expect("temp");
-        let project = temp.path().join("project");
-        let storage_dir = temp.path().join("storage");
-        fs::create_dir_all(&project).expect("project");
-        let paths = crate::paths::resolve_myopenpanels_paths(
-            Some(project.to_str().unwrap()),
-            Some(storage_dir.to_str().unwrap()),
-            Some("model-gateway-registry-test"),
-        )
-        .expect("paths");
-        let mut storage = Storage::open(&paths).expect("storage");
-        let example = LocalCliDefinition {
-            id: "example-agent",
-            name: "Example Agent",
-            bin: "example-agent",
-            fallback_bins: &[],
-            adapter_version: 1,
-            version_args: &["--version"],
-            auth_args: &[],
-            fallback_models: DEFAULT_MODELS,
-            reasoning_options: &[],
-            probe_models: probe_codex_models,
-            smoke_invocation: codex_smoke_invocation,
-            task_command: codex_task_command,
-        };
-        sync_builtin_local_cli_connections(&mut storage, &[example]).expect("initial sync");
-        storage
-            .connection()
-            .execute(
-                r#"
-                UPDATE model_gateway_connections
-                SET executable_path = '/opt/example-agent',
-                    config_json = json_set(config_json, '$.userOption', 'preserved')
-                WHERE id = 'local-cli:example-agent'
-                "#,
-                [],
-            )
-            .expect("customize connection");
-
-        let upgraded = LocalCliDefinition {
-            adapter_version: 2,
-            ..example
-        };
-        sync_builtin_local_cli_connections(&mut storage, &[upgraded]).expect("upgrade sync");
-        let connection: (String, i64, String, String, i64) = storage
-            .connection()
-            .query_row(
-                r#"
-                SELECT executable_path,
-                       json_extract(config_json, '$.adapterVersion'),
-                       json_extract(config_json, '$.binaryName'),
-                       json_extract(config_json, '$.userOption'),
-                       enabled
-                FROM model_gateway_connections
-                WHERE id = 'local-cli:example-agent'
-                "#,
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .expect("connection");
-        assert_eq!(
-            connection,
-            (
-                "/opt/example-agent".to_owned(),
-                2,
-                "example-agent".to_owned(),
-                "preserved".to_owned(),
-                0
-            )
-        );
-        let revision_before = storage.read_change_seq().expect("revision before");
-        sync_builtin_local_cli_connections(&mut storage, &[upgraded]).expect("steady sync");
-        assert_eq!(
-            storage.read_change_seq().expect("revision after"),
-            revision_before
-        );
-
-        sync_builtin_local_cli_connections(&mut storage, LOCAL_CLI_DEFINITIONS)
-            .expect("remove stale adapter");
-        let enabled: i64 = storage
-            .connection()
-            .query_row(
-                "SELECT enabled FROM model_gateway_connections WHERE id = 'local-cli:example-agent'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("enabled");
-        assert_eq!(enabled, 0);
-    }
 
     #[test]
-    fn custom_api_profiles_use_generic_connections_and_credential_references() {
+    fn unavailable_byok_profile_is_not_persisted() {
         let temp = tempfile::tempdir().expect("temp");
         let project = temp.path().join("project");
         let storage_dir = temp.path().join("storage");
@@ -533,74 +435,18 @@ deepseek/model-b
             Some("model-gateway-byok-storage-test"),
         )
         .expect("paths");
+        let mut requested = ModelGatewaySettings::default();
+        requested.mode = "byok".to_owned();
+        requested.byok.provider_id = Some("openai-compatible".to_owned());
+        requested.byok.base_url = Some("https://models.example.test/v1".to_owned());
+        requested.byok.model = Some("gpt-5.4".to_owned());
+        let error = write_settings(&paths, requested).expect_err("BYOK unavailable");
+        assert_eq!(error.code(), Some("byok_not_available"));
         let storage = Storage::open(&paths).expect("storage");
-        let now = crate::control::now_iso();
-        for (id, base_url, credential_ref) in [
-            (
-                "byok:openai-compatible:primary",
-                "https://models.example.test/v1",
-                "keychain:model-gateway/primary",
-            ),
-            (
-                "byok:openai-compatible:backup",
-                "https://backup.example.test/v1",
-                "keychain:model-gateway/backup",
-            ),
-        ] {
-            storage
-                .connection()
-                .execute(
-                    r#"
-                    INSERT INTO model_gateway_connections (
-                      id, transport, provider_id, display_name, base_url,
-                      credential_ref, model, config_json, enabled,
-                      created_at, updated_at
-                    )
-                    VALUES (?, 'byok', 'openai-compatible', ?, ?, ?,
-                            'gpt-5.4', '{"requestTimeoutMs":120000}', 1, ?, ?)
-                    "#,
-                    params![id, id, base_url, credential_ref, now, now],
-                )
-                .expect("BYOK connection");
-        }
-        storage
-            .connection()
-            .execute(
-                "UPDATE model_gateway_config SET mode = 'byok', active_byok_connection_id = 'byok:openai-compatible:primary', updated_at = ? WHERE id = 1",
-                [now],
-            )
-            .expect("activate BYOK");
-        drop(storage);
-
-        let settings = read_settings(&paths).expect("read settings");
-        assert_eq!(settings.mode, "byok");
-        assert_eq!(
-            settings.byok.provider_id.as_deref(),
-            Some("openai-compatible")
-        );
-        assert_eq!(
-            settings.byok.base_url.as_deref(),
-            Some("https://models.example.test/v1")
-        );
-        let storage = Storage::open(&paths).expect("storage");
-        let profile_count: i64 = storage
-            .connection()
-            .query_row(
-                "SELECT COUNT(*) FROM model_gateway_connections WHERE transport = 'byok' AND provider_id = 'openai-compatible'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("profile count");
-        assert_eq!(profile_count, 2);
-        let credential_ref: String = storage
-            .connection()
-            .query_row(
-                "SELECT credential_ref FROM model_gateway_connections WHERE id = 'byok:openai-compatible:primary'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("credential ref");
-        assert_eq!(credential_ref, "keychain:model-gateway/primary");
+        assert!(storage
+            .read_setting("model_gateway", "settings")
+            .expect("generic setting")
+            .is_none());
     }
 
     #[test]

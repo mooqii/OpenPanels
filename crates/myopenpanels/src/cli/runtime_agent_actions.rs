@@ -3,15 +3,12 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
     match subcommand {
         Some("bootstrap") => {
             let paths = parsed_bootstrap_paths(parsed)?;
-            let payload = agent_bootstrap(&paths, VERSION, string_flag(parsed, "procedure"))?;
+            let payload = agent_bootstrap(&paths, string_flag(parsed, "procedure"))?;
             write_result(
                 parsed,
                 stdout,
                 &payload,
-                &format!(
-                    "MyOpenPanels agent protocol v{} bootstrap",
-                    crate::agent::AGENT_GUIDANCE_PROTOCOL_VERSION
-                ),
+                "MyOpenPanels agent bootstrap",
             )
         }
         Some("entry-skill") => match parsed.positionals.get(2).map(String::as_str) {
@@ -87,87 +84,6 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             };
             write_result(parsed, stdout, &result, text)
         }
-        Some("target") => {
-            let paths = parsed_current_paths(parsed)?;
-            match parsed.positionals.get(2).map(String::as_str) {
-                Some("list") => {
-                    let result = tasks::list_targets(&paths)?;
-                    let count = result["targets"].as_array().map(Vec::len).unwrap_or(0);
-                    write_result(parsed, stdout, &result, &format!("{count} target(s)"))
-                }
-                Some("register") => {
-                    let priority = string_flag(parsed, "priority")
-                        .map(|value| {
-                            value.parse::<i64>().map_err(|_| {
-                                CliError::new("Expected --priority to be an integer.")
-                            })
-                        })
-                        .transpose()?
-                        .unwrap_or(0);
-                    let protocol_version = string_flag(parsed, "protocol-version")
-                        .map(|value| value.parse::<i64>().map_err(|_| CliError::new("Expected --protocol-version to be an integer.")))
-                        .transpose()?
-                        .unwrap_or(crate::content::EXECUTION_PROTOCOL_VERSION);
-                    let max_concurrency = string_flag(parsed, "max-concurrency")
-                        .map(|value| value.parse::<i64>().map_err(|_| CliError::new("Expected --max-concurrency to be an integer.")))
-                        .transpose()?
-                        .unwrap_or(1);
-                    let result = tasks::register_target(
-                        &paths,
-                        tasks::TargetRegistration {
-                            name: required_flag(parsed, "name")?,
-                            host: string_flag(parsed, "host"),
-                            project_id: string_flag(parsed, "project-id"),
-                            capabilities: string_list_flag(parsed, "capability"),
-                            priority,
-                            protocol_version,
-                            max_concurrency,
-                            model_gateway_connection_id: None,
-                        },
-                    )?;
-                    write_result(
-                        parsed,
-                        stdout,
-                        &result,
-                        result["target"]["id"].as_str().unwrap_or("Registered target"),
-                    )
-                }
-                Some("remove") => {
-                    let target_id = required_flag(parsed, "target-id")?;
-                    let result = tasks::remove_target(&paths, target_id)?;
-                    write_result(parsed, stdout, &result, &format!("Removed {target_id}"))
-                }
-                _ => Err(CliError::new(
-                    "Expected agent target subcommand: list, register, or remove.",
-                )),
-            }
-        }
-        Some("route") => {
-            let paths = parsed_current_paths(parsed)?;
-            match parsed.positionals.get(2).map(String::as_str) {
-                Some("list") => {
-                    let result = tasks::list_agent_routes(&paths)?;
-                    let count = result["routes"].as_array().map(Vec::len).unwrap_or(0);
-                    write_result(parsed, stdout, &result, &format!("{count} route(s)"))
-                }
-                Some("set") => {
-                    let result = tasks::set_agent_route(
-                        &paths,
-                        required_flag(parsed, "capability")?,
-                        &string_list_flag(parsed, "target-id"),
-                    )?;
-                    write_result(parsed, stdout, &result, "Agent route updated")
-                }
-                Some("remove") => {
-                    let result = tasks::remove_agent_route(
-                        &paths,
-                        required_flag(parsed, "capability")?,
-                    )?;
-                    write_result(parsed, stdout, &result, "Agent route removed")
-                }
-                _ => Err(CliError::new("Expected agent route subcommand: list, set, or remove.")),
-            }
-        }
         Some("skill") if parsed.positionals.get(2).map(String::as_str) == Some("list") => {
             let skills = list_agent_skill_summaries(
                 &parsed_current_paths(parsed)?,
@@ -195,7 +111,7 @@ fn run_agent_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(),
             write_result(parsed, stdout, &payload, &markdown)
         }
         _ => Err(CliError::new(
-            "Expected agent subcommand: bootstrap, catalog, entry-skill, bridge, skill, target, or route.",
+            "Expected agent subcommand: bootstrap, catalog, entry-skill, bridge, or skill.",
         )),
     }
 }
@@ -275,18 +191,17 @@ fn with_task_actions(mut payload: Value, list_mode: bool) -> Value {
             ));
         }
         let status = task.get("status").and_then(Value::as_str);
-        let lifecycle = match status {
-            Some("queued") => &["task.claim", "task.cancel"][..],
-            Some("failed") => &["task.claim", "task.retry", "task.cancel"][..],
-            Some("reserved" | "running" | "claimed" | "converting" | "indexing") => &[
-                "task.heartbeat",
-                "task.complete",
-                "task.fail",
-                "task.release",
-            ][..],
-            _ => &[][..],
-        };
-        if !lifecycle.is_empty() {
+        if matches!(
+            status,
+            Some(
+                "queued"
+                    | "running"
+                    | "succeeded"
+                    | "failed"
+                    | "cancelled"
+                    | "superseded"
+            )
+        ) {
             actions.push(catalog_domain_action(
                 "task",
                 "The Task lifecycle requires a task command.",

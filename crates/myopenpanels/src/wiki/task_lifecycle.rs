@@ -1,6 +1,20 @@
-fn is_generated_conversion_task(task: &Value) -> bool {
+fn is_my_document_conversion_task(task: &Value) -> bool {
     task.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown")
-        && task.get("documentKind").and_then(Value::as_str) == Some("generated")
+        && task.get("documentKind").and_then(Value::as_str) == Some("my_document")
+}
+
+fn task_wiki_space_id(task: &Value) -> Result<&str, CliError> {
+    task.get("wikiSpaceId")
+        .and_then(Value::as_str)
+        .or_else(|| task.pointer("/source/wikiSpaceId").and_then(Value::as_str))
+        .or_else(|| task.pointer("/input/wikiSpaceId").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            CliError::with_code(
+                "invalid_task_input",
+                "Wiki Task has no target Wiki Space.",
+            )
+        })
 }
 
 pub fn claim_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
@@ -22,8 +36,8 @@ pub fn claim_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
     });
     task["error"] = Value::Null;
     task["attempt"] = json!(task.get("attempt").and_then(Value::as_i64).unwrap_or(0) + 1);
-    if task.get("maxAttempts").and_then(Value::as_i64).is_none() {
-        task["maxAttempts"] = json!(8);
+    if task.get("attemptLimit").and_then(Value::as_i64).is_none() {
+        task["attemptLimit"] = json!(crate::tasks::TASK_EXECUTION_LIMIT);
     }
     task["leaseOwner"] = Value::Null;
     task["leaseExpiresAt"] = json!(lease_expires_at(15));
@@ -33,8 +47,8 @@ pub fn claim_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
     let task_snapshot = task.clone();
     if task_snapshot.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown") {
         if let Some(document_id) = task_snapshot.get("documentId").and_then(Value::as_str) {
-            let document = if is_generated_conversion_task(&task_snapshot) {
-                find_generated_document_mut(&mut wiki.state, document_id)?
+            let document = if is_my_document_conversion_task(&task_snapshot) {
+                find_my_document_mut(&mut wiki.state, document_id)?
             } else {
                 find_document_mut(&mut wiki.state, document_id)?
             };
@@ -45,11 +59,7 @@ pub fn claim_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
     }
     if task_snapshot.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki") {
         if let Some(document_id) = task_snapshot.get("documentId").and_then(Value::as_str) {
-            let wiki_space_id = task_snapshot
-                .get("wikiSpaceId")
-                .and_then(Value::as_str)
-                .unwrap_or("wiki:default")
-                .to_owned();
+            let wiki_space_id = task_wiki_space_id(&task_snapshot)?.to_owned();
             let task_id = task_snapshot
                 .get("id")
                 .and_then(Value::as_str)
@@ -138,6 +148,62 @@ fn complete_task_internal(
     let mut wiki = get_wiki_task_target(paths, task_id)?;
     let now = now_iso();
     let current_task = task_value(&wiki.tasks, task_id)?.clone();
+    let ingestion_result = if current_task.get("type").and_then(Value::as_str)
+        == Some("ingest_markdown_into_wiki")
+    {
+        let result = result.as_ref().ok_or_else(|| {
+            CliError::with_code(
+                "invalid_output",
+                "Wiki ingestion completed without a result.",
+            )
+        })?;
+        let disposition = result
+            .get("disposition")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "invalid_output",
+                    "Wiki ingestion completed without a disposition.",
+                )
+            })?;
+        let outcome = result.get("outcome").and_then(Value::as_str).unwrap_or("");
+        let reason_code = result.get("reasonCode").cloned().unwrap_or(Value::Null);
+        let status = match disposition {
+            "included" if outcome == "changed" && reason_code.is_null() => "ingested",
+            "already_covered" if outcome == "no_change" && reason_code.is_null() => "covered",
+            "excluded"
+                if outcome == "no_change"
+                    && matches!(
+                        reason_code.as_str(),
+                        Some(
+                            "not_relevant"
+                                | "insufficient_content"
+                                | "unsupported_by_wiki_skill"
+                                | "policy_excluded"
+                        )
+                    ) =>
+            {
+                "filtered"
+            }
+            _ => {
+                return Err(CliError::with_code(
+                    "invalid_output",
+                    "Wiki ingestion outcome, disposition, or reasonCode is invalid.",
+                ))
+            }
+        };
+        Some((
+            status,
+            reason_code,
+            result
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+        ))
+    } else {
+        None
+    };
     let staged_markdown = crate::content::staged_files_for_task(
         paths,
         task_id,
@@ -164,16 +230,16 @@ fn complete_task_internal(
         document["wordCount"] = json!(character_count(markdown));
         document["updatedAt"] = json!(now);
     }
-    let staged_generated = crate::content::staged_files_for_task(
+    let staged_my_documents = crate::content::staged_files_for_task(
         paths,
         task_id,
-        crate::content::ResourceKind::GeneratedDocument,
+        crate::content::ResourceKind::MyDocument,
     )?;
-    if is_generated_conversion_task(&current_task) {
-        let (document_id, logical_path, bytes, _) = staged_generated.first().ok_or_else(|| {
+    if is_my_document_conversion_task(&current_task) {
+        let (document_id, logical_path, bytes, _) = staged_my_documents.first().ok_or_else(|| {
             CliError::with_code(
                 "invalid_output",
-                "Conversion completed without a generated Markdown artifact.",
+                "Conversion completed without a My Document Markdown artifact.",
             )
         })?;
         if logical_path != "content.md" {
@@ -191,13 +257,13 @@ fn complete_task_internal(
                 "Converted Markdown cannot be empty.",
             ));
         }
-        let document = find_generated_document_mut(&mut wiki.state, document_id)?;
+        let document = find_my_document_mut(&mut wiki.state, document_id)?;
         let version = document
             .get("contentVersion")
             .and_then(Value::as_i64)
             .unwrap_or(0)
             + 1;
-        document["contentRef"] = json!(wiki_ref(&["generated", document_id, "content.md"]));
+        document["contentRef"] = json!(wiki_ref(&["my-documents", document_id, "content.md"]));
         document["contentVersion"] = json!(version);
         document["format"] = json!("markdown");
         document["mimeType"] = json!("text/markdown");
@@ -236,8 +302,8 @@ fn complete_task_internal(
             .ok_or_else(|| {
                 CliError::with_code("invalid_output", "Conversion Task has no source document.")
             })?;
-        if is_generated_conversion_task(&current_task) {
-            let document = find_generated_document(&wiki.state, document_id)?;
+        if is_my_document_conversion_task(&current_task) {
+            let document = find_my_document(&wiki.state, document_id)?;
             if document
                 .get("contentVersion")
                 .and_then(Value::as_i64)
@@ -246,7 +312,7 @@ fn complete_task_internal(
                     .get("markdownVersion")
                     .and_then(Value::as_i64)
                     .unwrap_or(0)
-                || staged_generated.is_empty()
+                || staged_my_documents.is_empty()
             {
                 return Err(CliError::with_code(
                     "invalid_output",
@@ -302,101 +368,130 @@ fn complete_task_internal(
     let mut follow_up_task_ids = Vec::new();
     if task_snapshot.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown") {
         if let Some(document_id) = task_snapshot.get("documentId").and_then(Value::as_str) {
-            if is_generated_conversion_task(&task_snapshot) {
-                let document = find_generated_document_mut(&mut wiki.state, document_id)?;
+            if is_my_document_conversion_task(&task_snapshot) {
+                let document = find_my_document_mut(&mut wiki.state, document_id)?;
                 document["conversion"]["status"] = json!("ready");
                 document["conversion"]["error"] = Value::Null;
                 document["conversion"]["updatedAt"] = json!(now);
                 document["updatedAt"] = json!(now);
             } else {
-            let markdown_version = {
+                let markdown_version = {
+                    let document = find_document_mut(&mut wiki.state, document_id)?;
+                    document["conversion"]["status"] = json!("ready");
+                    document["conversion"]["error"] = Value::Null;
+                    document["conversion"]["updatedAt"] = json!(now);
+                    document["updatedAt"] = json!(now);
+                    document
+                        .get("markdownVersion")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0)
+                };
+                let existing_index = wiki.tasks.iter().position(|candidate| {
+                    candidate.get("type").and_then(Value::as_str)
+                        == Some("ingest_markdown_into_wiki")
+                        && candidate.get("documentId").and_then(Value::as_str)
+                            == Some(document_id)
+                        && matches!(
+                            candidate.get("status").and_then(Value::as_str),
+                            Some("waiting" | "queued")
+                        )
+                        && (candidate.get("dependsOnTaskId").and_then(Value::as_str)
+                            == Some(task_id)
+                            || candidate
+                                .get("dependsOnTaskIds")
+                                .and_then(Value::as_array)
+                                .is_some_and(|ids| {
+                                    ids.iter().any(|id| id.as_str() == Some(task_id))
+                                }))
+                });
+                let ingest_task = if let Some(index) = existing_index {
+                    wiki.tasks[index]["status"] = json!("queued");
+                    wiki.tasks[index]["markdownVersion"] = json!(markdown_version);
+                    wiki.tasks[index]["updatedAt"] = json!(now);
+                    wiki.tasks[index].clone()
+                } else {
+                    let wiki_space_id = task_wiki_space_id(&task_snapshot)?;
+                    let mutation_key =
+                        wiki_mutation_key(&wiki.project.id, &wiki.panel.id, wiki_space_id);
+                    create_wiki_task(
+                        &wiki.state,
+                        &mut wiki.tasks,
+                        "ingest_markdown_into_wiki",
+                        document_id,
+                        Some(document_id),
+                        Some(markdown_version),
+                        Some(wiki_space_id),
+                        Some(&mutation_key),
+                    )?
+                };
+                follow_up_task_ids.push(
+                    ingest_task
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+                let wiki_space_id = task_wiki_space_id(&ingest_task)?.to_owned();
                 let document = find_document_mut(&mut wiki.state, document_id)?;
-                document["conversion"]["status"] = json!("ready");
-                document["conversion"]["error"] = Value::Null;
-                document["conversion"]["updatedAt"] = json!(now);
+                let ingestion = document
+                    .as_object_mut()
+                    .ok_or_else(|| CliError::new("Wiki raw document is invalid."))?
+                    .entry("ingestionByWikiSpace")
+                    .or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .ok_or_else(|| {
+                        CliError::new("Wiki raw document ingestion state is invalid.")
+                    })?;
+                ingestion.insert(
+                    wiki_space_id,
+                    create_ingestion_state(&ingest_task, markdown_version),
+                );
                 document["updatedAt"] = json!(now);
-                document
-                    .get("markdownVersion")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0)
-            };
-            let existing_index = wiki.tasks.iter().position(|candidate| {
-                candidate.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki")
-                    && candidate.get("documentId").and_then(Value::as_str) == Some(document_id)
-                    && candidate.get("status").and_then(Value::as_str) == Some("waiting")
-                    && candidate
-                        .get("dependsOnTaskIds")
-                        .and_then(Value::as_array)
-                        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(task_id)))
-            });
-            let ingest_task = if let Some(index) = existing_index {
-                wiki.tasks[index]["status"] = json!("queued");
-                wiki.tasks[index]["markdownVersion"] = json!(markdown_version);
-                wiki.tasks[index]["updatedAt"] = json!(now);
-                wiki.tasks[index].clone()
-            } else {
-                let wiki_space_id = task_snapshot
-                    .get("wikiSpaceId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("wiki:default");
-                let mutation_key =
-                    wiki_mutation_key(&wiki.project.id, &wiki.panel.id, wiki_space_id);
-                create_wiki_task(
-                    &wiki.state,
-                    &mut wiki.tasks,
-                    "ingest_markdown_into_wiki",
-                    document_id,
-                    Some(document_id),
-                    Some(markdown_version),
-                    Some(wiki_space_id),
-                    Some(&mutation_key),
-                )?
-            };
-            follow_up_task_ids.push(
-                ingest_task
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-            );
-            let wiki_space_id = ingest_task
-                .get("wikiSpaceId")
-                .and_then(Value::as_str)
-                .unwrap_or("wiki:default")
-                .to_owned();
+            }
+        }
+    }
+    if task_snapshot.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki") {
+        if let Some(document_id) = task_snapshot.get("documentId").and_then(Value::as_str) {
+            let wiki_space_id = task_wiki_space_id(&task_snapshot)?.to_owned();
+            let markdown_version = task_snapshot
+                .get("markdownVersion")
+                .and_then(Value::as_i64)
+                .unwrap_or_else(|| {
+                    find_document(&wiki.state, document_id)
+                        .ok()
+                        .and_then(|document| {
+                            document.get("markdownVersion").and_then(Value::as_i64)
+                        })
+                        .unwrap_or(0)
+                });
+            let (status, reason_code, summary) = ingestion_result
+                .as_ref()
+                .ok_or_else(|| {
+                    CliError::with_code(
+                        "invalid_output",
+                        "Wiki ingestion result was not prepared.",
+                    )
+                })?;
             let document = find_document_mut(&mut wiki.state, document_id)?;
-            let ingestion = document
+            let ingestions = document
                 .as_object_mut()
                 .ok_or_else(|| CliError::new("Wiki raw document is invalid."))?
                 .entry("ingestionByWikiSpace")
                 .or_insert_with(|| json!({}))
                 .as_object_mut()
                 .ok_or_else(|| CliError::new("Wiki raw document ingestion state is invalid."))?;
-            ingestion.insert(
+            ingestions.insert(
                 wiki_space_id,
-                create_ingestion_state(&ingest_task, markdown_version),
+                json!({
+                    "status": status,
+                    "taskId": task_id,
+                    "markdownVersion": markdown_version,
+                    "error": null,
+                    "reasonCode": reason_code,
+                    "summary": summary,
+                    "updatedAt": now,
+                }),
             );
-            document["updatedAt"] = json!(now);
-            }
-        }
-    }
-    if task_snapshot.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki") {
-        if let Some(document_id) = task_snapshot.get("documentId").and_then(Value::as_str) {
-            let wiki_space_id = task_snapshot
-                .get("wikiSpaceId")
-                .and_then(Value::as_str)
-                .unwrap_or("wiki:default")
-                .to_owned();
-            let document = find_document_mut(&mut wiki.state, document_id)?;
-            let ingestion = document
-                .get_mut("ingestionByWikiSpace")
-                .and_then(Value::as_object_mut)
-                .and_then(|ingestion| ingestion.get_mut(&wiki_space_id));
-            if let Some(ingestion) = ingestion {
-                ingestion["status"] = json!("ingested");
-                ingestion["error"] = Value::Null;
-                ingestion["updatedAt"] = json!(now);
-            }
             document["updatedAt"] = json!(now);
         }
     }
@@ -457,8 +552,8 @@ pub fn fail_task_with_retry(
     };
     if task_snapshot.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown") {
         if let Some(document_id) = task_snapshot.get("documentId").and_then(Value::as_str) {
-            let document = if is_generated_conversion_task(&task_snapshot) {
-                find_generated_document_mut(&mut wiki.state, document_id)?
+            let document = if is_my_document_conversion_task(&task_snapshot) {
+                find_my_document_mut(&mut wiki.state, document_id)?
             } else {
                 find_document_mut(&mut wiki.state, document_id)?
             };
@@ -470,11 +565,7 @@ pub fn fail_task_with_retry(
     }
     if task_snapshot.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki") {
         if let Some(document_id) = task_snapshot.get("documentId").and_then(Value::as_str) {
-            let wiki_space_id = task_snapshot
-                .get("wikiSpaceId")
-                .and_then(Value::as_str)
-                .unwrap_or("wiki:default")
-                .to_owned();
+            let wiki_space_id = task_wiki_space_id(&task_snapshot)?.to_owned();
             let document = find_document_mut(&mut wiki.state, document_id)?;
             let ingestion = document
                 .as_object_mut()
@@ -613,8 +704,8 @@ fn reset_document_task_state(
         return Ok(());
     };
     if task.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown") {
-        let document = if is_generated_conversion_task(task) {
-            find_generated_document_mut(state, document_id)?
+        let document = if is_my_document_conversion_task(task) {
+            find_my_document_mut(state, document_id)?
         } else {
             find_document_mut(state, document_id)?
         };
@@ -623,11 +714,7 @@ fn reset_document_task_state(
         document["conversion"]["updatedAt"] = json!(now);
         document["updatedAt"] = json!(now);
     } else if task.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki") {
-        let wiki_space_id = task
-            .get("wikiSpaceId")
-            .and_then(Value::as_str)
-            .unwrap_or("wiki:default")
-            .to_owned();
+        let wiki_space_id = task_wiki_space_id(task)?.to_owned();
         let document = find_document_mut(state, document_id)?;
         if let Some(ingestion) = document
             .get_mut("ingestionByWikiSpace")

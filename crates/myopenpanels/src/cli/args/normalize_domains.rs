@@ -4,7 +4,6 @@ fn normalize_wiki(
 ) -> (Vec<String>, &'static str) {
     match command {
         WikiCommand::Raw(args) => normalize_wiki_raw(args.command, flags),
-        WikiCommand::Document(args) => normalize_wiki_document(args.command, flags),
         WikiCommand::Space(args) => match args.command {
             WikiSpaceCommand::List => (
                 vec!["wiki".into(), "space".into(), "list".into()],
@@ -80,14 +79,14 @@ fn normalize_wiki_raw(
     }
 }
 
-fn normalize_wiki_document(
-    command: WikiDocumentCommand,
+fn normalize_my_document(
+    command: MyDocumentCommand,
     flags: &mut BTreeMap<String, FlagValue>,
 ) -> (Vec<String>, &'static str) {
-    let base = vec!["wiki".to_owned(), "document".to_owned()];
+    let base = vec!["my-document".to_owned()];
     match command {
-        WikiDocumentCommand::List => (with_action(&base, "list"), "wiki.document.list"),
-        WikiDocumentCommand::Create {
+        MyDocumentCommand::List => (with_action(&base, "list"), "my-document.list"),
+        MyDocumentCommand::Import {
             content_file,
             mime_type,
             task_id,
@@ -99,13 +98,13 @@ fn normalize_wiki_document(
             put(flags, "task-id", task_id);
             put(flags, "thread-id", thread_id);
             put(flags, "title", title);
-            (with_action(&base, "create"), "wiki.document.create")
+            (with_action(&base, "import"), "my-document.import")
         }
-        WikiDocumentCommand::Read { document_id } => {
+        MyDocumentCommand::Read { document_id } => {
             put(flags, "document-id", Some(document_id));
-            (with_action(&base, "read"), "wiki.document.read")
+            (with_action(&base, "read"), "my-document.read")
         }
-        WikiDocumentCommand::Update {
+        MyDocumentCommand::Update {
             document_id,
             content_file,
             mime_type,
@@ -115,29 +114,29 @@ fn normalize_wiki_document(
             put(flags, "content-file", content_file);
             put(flags, "mime-type", mime_type);
             put(flags, "title", title);
-            (with_action(&base, "update"), "wiki.document.update")
+            (with_action(&base, "update"), "my-document.update")
         }
-        WikiDocumentCommand::Delete { document_id } => {
+        MyDocumentCommand::Delete { document_id } => {
             put(flags, "document-id", Some(document_id));
-            (with_action(&base, "delete"), "wiki.document.delete")
+            (with_action(&base, "delete"), "my-document.delete")
         }
-        WikiDocumentCommand::Publish {
-            document_id,
-            space_id,
-        } => {
-            put(flags, "document-id", Some(document_id));
-            put(flags, "space-id", Some(space_id));
-            (with_action(&base, "publish"), "wiki.document.publish")
-        }
-        WikiDocumentCommand::Generate {
+        MyDocumentCommand::Create {
             title,
             document_format,
-            document_id,
         } => {
             put(flags, "title", Some(title));
             put(flags, "document-format", Some(document_format));
-            put(flags, "document-id", document_id);
-            (with_action(&base, "generate"), "wiki.document.generate")
+            (with_action(&base, "create"), "my-document.create")
+        }
+        MyDocumentCommand::Revise {
+            document_id,
+            title,
+            document_format,
+        } => {
+            put(flags, "document-id", Some(document_id));
+            put(flags, "title", Some(title));
+            put(flags, "document-format", Some(document_format));
+            (with_action(&base, "revise"), "my-document.revise")
         }
     }
 }
@@ -255,36 +254,6 @@ fn normalize_task(
                 ("handoff-stop", "task.handoff.stop")
             }
         },
-        TaskCommand::Claim { task, target_id } => {
-            task_id(flags, task);
-            put(flags, "target-id", Some(target_id));
-            ("claim", "task.claim")
-        }
-        TaskCommand::Heartbeat(args) => {
-            task_lease(flags, args);
-            ("heartbeat", "task.heartbeat")
-        }
-        TaskCommand::Complete { lease, result_file } => {
-            task_lease(flags, lease);
-            put(flags, "result-file", result_file);
-            ("complete", "task.complete")
-        }
-        TaskCommand::Fail {
-            lease,
-            message,
-            retry_after,
-            failure_class,
-        } => {
-            task_lease(flags, lease);
-            put(flags, "message", Some(message));
-            put(flags, "retry-after", retry_after);
-            put(flags, "failure-class", failure_class);
-            ("fail", "task.fail")
-        }
-        TaskCommand::Release(args) => {
-            task_lease(flags, args);
-            ("release", "task.release")
-        }
         TaskCommand::Retry(args) => {
             task_id(flags, args);
             ("retry", "task.retry")
@@ -296,14 +265,6 @@ fn normalize_task(
         TaskCommand::Archive(args) => {
             task_id(flags, args);
             ("archive", "task.archive")
-        }
-        TaskCommand::Events(args) => {
-            task_id(flags, args);
-            ("events", "task.events")
-        }
-        TaskCommand::Attempts(args) => {
-            task_id(flags, args);
-            ("attempts", "task.attempts")
         }
     };
     (vec!["task".into(), action.into()], intent)
@@ -422,64 +383,6 @@ fn normalize_agent(
                 )
             }
         },
-        AgentCommand::Target(args) => match args.command {
-            AgentTargetCommand::List => (
-                vec!["agent".into(), "target".into(), "list".into()],
-                "agent.target.list",
-            ),
-            AgentTargetCommand::Register {
-                name,
-                host,
-                project_id,
-                capability,
-                priority,
-                protocol_version,
-                max_concurrency,
-            } => {
-                put(flags, "name", Some(name));
-                put(flags, "host", host);
-                put(flags, "project-id", project_id);
-                put_many(flags, "capability", capability);
-                put_num(flags, "priority", Some(priority));
-                put_num(flags, "protocol-version", Some(protocol_version));
-                put_num(flags, "max-concurrency", Some(max_concurrency));
-                (
-                    vec!["agent".into(), "target".into(), "register".into()],
-                    "agent.target.register",
-                )
-            }
-            AgentTargetCommand::Remove { target_id } => {
-                put(flags, "target-id", Some(target_id));
-                (
-                    vec!["agent".into(), "target".into(), "remove".into()],
-                    "agent.target.remove",
-                )
-            }
-        },
-        AgentCommand::Route(args) => match args.command {
-            AgentRouteCommand::List => (
-                vec!["agent".into(), "route".into(), "list".into()],
-                "agent.route.list",
-            ),
-            AgentRouteCommand::Set {
-                capability,
-                target_ids,
-            } => {
-                put(flags, "capability", Some(capability));
-                put_many(flags, "target-id", target_ids);
-                (
-                    vec!["agent".into(), "route".into(), "set".into()],
-                    "agent.route.set",
-                )
-            }
-            AgentRouteCommand::Remove { capability } => {
-                put(flags, "capability", Some(capability));
-                (
-                    vec!["agent".into(), "route".into(), "remove".into()],
-                    "agent.route.remove",
-                )
-            }
-        },
     }
 }
 
@@ -501,10 +404,6 @@ fn task_scope_selector(
 
 fn task_id(flags: &mut BTreeMap<String, FlagValue>, args: TaskIdArgs) {
     put(flags, "task-id", Some(args.task_id));
-}
-fn task_lease(flags: &mut BTreeMap<String, FlagValue>, args: TaskLeaseArgs) {
-    put(flags, "task-id", Some(args.task_id));
-    put(flags, "lease-token", Some(args.lease_token));
 }
 fn operation_id(flags: &mut BTreeMap<String, FlagValue>, args: OperationIdArgs) {
     put(flags, "operation-id", Some(args.operation_id));

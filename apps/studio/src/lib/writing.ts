@@ -1,8 +1,8 @@
-import type { ProjectTask, WikiGeneratedDocument, WritingState } from "../types"
+import type { MyDocument, ProjectTask, WritingState } from "../types"
 
 export type WritingSkillSelectionError = "required" | "revision_limit" | null
 export type WritingReferenceSelectionError = "required" | "unready" | null
-export type RefinementTaskGroup = "active" | "waiting" | "error"
+export type DistillationTaskGroup = "active" | "waiting" | "error"
 export type WritingDocumentStatus =
   | "pending_create"
   | "pending_revise"
@@ -19,16 +19,16 @@ const ACTIVE_TASK_STATUSES = new Set([
 ])
 const WAITING_TASK_STATUSES = new Set(["waiting", "queued"])
 
-export function refinementTaskGroups(
+export function distillationTaskGroups(
   tasks: ProjectTask[]
-): Record<RefinementTaskGroup, ProjectTask[]> {
-  const groups: Record<RefinementTaskGroup, ProjectTask[]> = {
+): Record<DistillationTaskGroup, ProjectTask[]> {
+  const groups: Record<DistillationTaskGroup, ProjectTask[]> = {
     active: [],
     waiting: [],
     error: [],
   }
   for (const task of tasks) {
-    if (!(task.queue === "writing" && task.type === "refine_writing_skill")) {
+    if (!(task.queue === "writing" && task.type === "distill_writing_skill")) {
       continue
     }
     if (WAITING_TASK_STATUSES.has(task.status)) groups.waiting.push(task)
@@ -43,21 +43,21 @@ export function refinementTaskGroups(
 
 export function writingTaskTargetId(task: ProjectTask): string | null {
   if (!task.input || typeof task.input !== "object") return null
-  const value = (task.input as { targetGeneratedDocumentId?: unknown })
-    .targetGeneratedDocumentId
+  const value = (task.input as { targetMyDocumentId?: unknown })
+    .targetMyDocumentId
   return typeof value === "string" ? value : null
 }
 
 export function latestWritingTaskForDocument(
   tasks: ProjectTask[],
-  document: Pick<WikiGeneratedDocument, "id" | "taskId">
+  document: Pick<MyDocument, "id" | "taskId">
 ): ProjectTask | null {
   return (
     tasks
       .filter(
         (task) =>
           task.queue === "writing" &&
-          task.type === "generate_document" &&
+          task.type === "write_my_document" &&
           (writingTaskTargetId(task) === document.id ||
             task.id === document.taskId)
       )
@@ -83,10 +83,10 @@ export function writingDocumentStatus(
   return null
 }
 
-export function sortGeneratedDocumentsByActivity(
-  documents: WikiGeneratedDocument[],
+export function sortMyDocumentsByActivity(
+  documents: MyDocument[],
   tasks: ProjectTask[]
-): WikiGeneratedDocument[] {
+): MyDocument[] {
   return documents
     .map((document, index) => {
       const task = latestWritingTaskForDocument(tasks, document)
@@ -120,7 +120,7 @@ export function writingSkillSelectionError(
   mode: WritingState["mode"],
   selectedIds: string[]
 ): WritingSkillSelectionError {
-  if (mode === "refine") return null
+  if (mode === "distill") return null
   if (selectedIds.length === 0) return "required"
   if (mode === "revise" && selectedIds.length > 1) return "revision_limit"
   return null
@@ -147,7 +147,7 @@ export function toggleWritingSkillSelection(
     if (isSelected || current.length > 1) return [skillId]
     return []
   }
-  if (mode === "refine") return current
+  if (mode === "distill") return current
   return isSelected
     ? [...current.filter((id) => id !== skillId), skillId]
     : current.filter((id) => id !== skillId)

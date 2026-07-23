@@ -22,7 +22,7 @@ const attempt: PublishingAttempt = {
   remoteUrl: null,
   requestId: "request:1",
   skillHash: "sha256:test",
-  skillId: "publishing-xiaohongshu",
+  skillId: "release-xiaohongshu",
   skillName: "Xiaohongshu",
   summary: null,
   taskId: "task:1",
@@ -48,10 +48,10 @@ function task(status: string): ProjectTask {
     panelId: "panel:publishing",
     panelKind: "publishing",
     projectId: "project:1",
-    queue: "publishing",
+    queue: "release",
     status,
     targetId: "release:1",
-    type: "publish_xiaohongshu_note",
+    type: "release_xiaohongshu",
     updatedAt: "2026-07-20T00:00:00Z",
   }
 }

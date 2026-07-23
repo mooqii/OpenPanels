@@ -8,10 +8,10 @@ Use this contract for every Procedure that targets a Writing panel.
   paths only for oversized content or file-oriented tools.
 - A selected Wiki is optional background knowledge. Search it narrowly rather
   than reading the entire Wiki.
-- Submitted generation and refinement requests execute only through their
-  claimed Task Handoffs. Generated documents and refined Skills remain staged
+- Submitted My Document writing and distillation requests execute only through their
+  claimed Task Handoffs. My Documents and distilled Skills remain staged
   until Task completion.
-- Never replace a newer generated-document revision after `content_conflict`.
+- Never replace a newer my-document revision after `content_conflict`.
 - A Writing result remains bound to the Wiki panel captured by the request even
   when the visible panel changes.
 

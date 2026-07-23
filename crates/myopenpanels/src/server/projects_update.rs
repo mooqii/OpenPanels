@@ -128,7 +128,6 @@ struct OpenPanelBody {
     initial_state: Option<Value>,
     kind: String,
     project_id: String,
-    title: Option<String>,
 }
 
 async fn api_open_panel(
@@ -145,7 +144,6 @@ async fn api_open_panel(
         &state.paths,
         &body.project_id,
         kind,
-        body.title.as_deref(),
         body.initial_state,
     ) {
         Ok(panel) => json_response(StatusCode::OK, &panel),

@@ -36,13 +36,11 @@ mod tests {
         fs::write(
             directory.join("manifest.json"),
             serde_json::to_vec_pretty(&json!({
-                "schemaVersion": 2,
                 "source": "custom",
                 "skillId": skill_id,
                 "name": "Test Style",
                 "binding": {
-                    "appliesTo": ["writing"],
-                    "taskTypes": ["generate_document"],
+                    "moduleKinds": ["writing"],
                 },
             }))
             .expect("custom Writing Skill manifest"),
@@ -95,7 +93,7 @@ mod tests {
         assert_eq!(created["documents"][0]["title"], json!(""));
         assert_eq!(created["documents"][0]["contentVersion"], json!(0));
         assert_eq!(
-            created["tasks"][0]["input"]["targetGeneratedDocumentId"],
+            created["tasks"][0]["input"]["targetMyDocumentId"],
             created["documents"][0]["id"]
         );
         assert_eq!(
@@ -103,7 +101,7 @@ mod tests {
             created["documents"][0]["id"]
         );
         assert_eq!(created["tasks"][0]["queue"], json!("writing"));
-        assert_eq!(created["tasks"][0]["capability"], json!(WRITING_CAPABILITY));
+        assert_eq!(created["tasks"][0]["capability"], json!(writing_task_capability(WRITING_TASK_CAPABILITY_KEY, "write_my_document")));
         assert_eq!(
             created["tasks"][0]["input"]["instruction"],
             json!("Write a concise report")
@@ -150,10 +148,10 @@ mod tests {
     }
 
     #[test]
-    fn writing_selection_exposes_materialized_generated_document_access() {
+    fn writing_selection_exposes_materialized_my_document_access() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let generated = crate::wiki::create_generated_document(
+        let my_document = crate::wiki::create_my_document(
             &paths,
             "reference.md",
             Some("Reference"),
@@ -162,7 +160,7 @@ mod tests {
             None,
             b"# Reference\n",
         )
-        .expect("generated document");
+        .expect("My Document");
         let writing = ensure_project_bootstrap(
             &paths,
             BootstrapRequest {
@@ -175,20 +173,20 @@ mod tests {
         write_selection(
             &paths,
             false,
-            &[generated["document"]["id"].as_str().unwrap().to_owned()],
+            &[my_document["document"]["id"].as_str().unwrap().to_owned()],
         )
         .expect("selection");
 
         let selection = panel_selection(&paths, &writing).expect("agent selection");
         assert_eq!(
-            selection["selectedGeneratedDocuments"][0]["title"],
+            selection["selectedMyDocuments"][0]["title"],
             "Reference"
         );
         assert_eq!(
-            selection["selectedGeneratedDocuments"][0]["contentAccess"]["status"],
+            selection["selectedMyDocuments"][0]["contentAccess"]["status"],
             "ready"
         );
-        assert!(selection["selectedGeneratedDocuments"][0]["contentFilePath"]
+        assert!(selection["selectedMyDocuments"][0]["contentFilePath"]
             .as_str()
             .is_some_and(|path| std::path::Path::new(path).is_file()));
         assert_eq!(selection["wiki"]["localAccess"]["status"], "on_demand");
@@ -198,7 +196,7 @@ mod tests {
     fn writing_skill_registry_and_submission_validation_are_authoritative() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let revision_target = crate::wiki::create_generated_document(
+        let revision_target = crate::wiki::create_my_document(
             &paths,
             "target.md",
             Some("Target"),
@@ -291,9 +289,9 @@ mod tests {
             .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
             .expect("wiki panel");
         let storage = Storage::open(&paths).expect("storage");
-        let generated_dir = storage
+        let my_documents_dir = storage
             .panel_dir(&initial.project.id, &wiki_panel.panel.id)
-            .join("generated");
+            .join("my-documents");
         storage
             .connection()
             .execute_batch(
@@ -322,13 +320,13 @@ mod tests {
             storage
                 .read_panel_state(&initial.project.id, &wiki_panel.panel.id)
                 .expect("wiki state")
-                .expect("wiki state exists")["generatedDocuments"]
+                .expect("wiki state exists")["myDocuments"]
                 .as_array()
                 .map(Vec::len),
             Some(0)
         );
         assert_eq!(
-            fs::read_dir(generated_dir)
+            fs::read_dir(my_documents_dir)
                 .map(|entries| entries.count())
                 .unwrap_or(0),
             0
@@ -336,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn revision_requires_a_known_generated_document() {
+    fn revision_requires_a_known_my_document() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
         ensure_project_bootstrap(
@@ -360,7 +358,7 @@ mod tests {
         )
         .expect("incomplete revision draft");
         assert_eq!(draft["state"]["mode"], json!("revise"));
-        assert_eq!(draft["state"]["targetGeneratedDocumentId"], Value::Null);
+        assert_eq!(draft["state"]["targetMyDocumentId"], Value::Null);
         assert_eq!(
             draft["state"]["selectedCreateWritingSkillIds"],
             json!(["writing-default"])
@@ -373,7 +371,7 @@ mod tests {
             &paths,
             "Revise it",
             "revise",
-            Some("generated:missing"),
+            Some("my-document:missing"),
             &skill_ids,
         )
         .expect_err("missing target");
@@ -447,7 +445,7 @@ mod tests {
         let task_id = created["tasks"][0]["id"].as_str().unwrap();
         let placeholder_id = created["documents"][0]["id"].as_str().unwrap().to_owned();
         assert_eq!(
-            crate::wiki::read_generated_document(&paths, &placeholder_id)
+            crate::wiki::read_my_document(&paths, &placeholder_id)
                 .expect("pending document")["document"]["title"],
             json!("")
         );
@@ -457,9 +455,8 @@ mod tests {
                 name: "writer",
                 host: None,
                 project_id: None,
-                capabilities: vec![WRITING_CAPABILITY.to_owned()],
+                capabilities: vec![writing_task_capability(WRITING_TASK_CAPABILITY_KEY, "write_my_document").to_owned()],
                 priority: 0,
-                protocol_version: 3,
                 max_concurrency: 1,
                 model_gateway_connection_id: None,
             },
@@ -505,7 +502,7 @@ mod tests {
             &paths,
             task_id,
             lease_token,
-            Some(json!({ "generatedDocumentId": placeholder_id })),
+            Some(json!({ "myDocumentId": placeholder_id })),
         )
         .expect("complete task");
         assert_eq!(task["task"]["status"], json!("succeeded"));
@@ -530,7 +527,7 @@ mod tests {
                 .expect("cancelled operation")["status"],
             json!("cancelled")
         );
-        assert!(crate::wiki::read_generated_document(
+        assert!(crate::wiki::read_my_document(
             &paths,
             cancelled["documents"][0]["id"].as_str().unwrap()
         )
@@ -550,32 +547,41 @@ mod tests {
             released_claim["leaseToken"].as_str().unwrap(),
         )
         .expect("release task");
-        assert!(crate::wiki::read_generated_document(&paths, released_document_id).is_ok());
-        crate::tasks::retry_task(&paths, released_task_id).expect("retry queued task");
-        assert!(crate::wiki::read_generated_document(&paths, released_document_id).is_ok());
+        assert!(crate::wiki::read_my_document(&paths, released_document_id).is_ok());
         let failed_claim =
             crate::tasks::claim_task(&paths, released_task_id, target_id).expect("failed claim");
         crate::operations::begin_writing(&paths, released_task_id, "Failed report", "markdown")
             .expect("failed generation");
+        let retry_now = crate::control::now_iso();
         let failed_task = crate::tasks::fail_task(
             &paths,
             released_task_id,
             failed_claim["leaseToken"].as_str().unwrap(),
             "Model failed",
-            None,
+            Some(&retry_now),
         )
         .expect("fail task");
-        assert_eq!(failed_task["task"]["status"], json!("failed"));
-        assert!(crate::wiki::read_generated_document(&paths, released_document_id).is_ok());
-        crate::tasks::retry_task(&paths, released_task_id).expect("retry failed task");
-        assert!(crate::wiki::read_generated_document(&paths, released_document_id).is_ok());
+        assert_eq!(failed_task["task"]["status"], json!("queued"));
+        assert!(crate::wiki::read_my_document(&paths, released_document_id).is_ok());
+        let final_claim =
+            crate::tasks::claim_task(&paths, released_task_id, target_id).expect("final claim");
+        let final_task = crate::tasks::fail_task(
+            &paths,
+            released_task_id,
+            final_claim["leaseToken"].as_str().unwrap(),
+            "Model failed again",
+            None,
+        )
+        .expect("final failure");
+        assert_eq!(final_task["task"]["status"], json!("failed"));
+        assert!(crate::wiki::read_my_document(&paths, released_document_id).is_ok());
     }
 
     #[test]
     fn revision_rejects_a_target_changed_after_submission() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let document = crate::wiki::create_generated_document(
+        let document = crate::wiki::create_my_document(
             &paths,
             "draft.md",
             Some("Draft"),
@@ -606,7 +612,7 @@ mod tests {
         assert_eq!(created["documents"].as_array().unwrap().len(), 1);
         assert_eq!(created["documents"][0]["id"], json!(document_id));
         assert_eq!(
-            created["tasks"][0]["input"]["targetGeneratedDocumentId"],
+            created["tasks"][0]["input"]["targetMyDocumentId"],
             created["documents"][0]["id"]
         );
         assert_eq!(
@@ -628,7 +634,7 @@ mod tests {
             },
         )
         .expect("wiki panel");
-        crate::wiki::write_generated_document(
+        crate::wiki::write_my_document(
             &paths,
             &document_id,
             "draft.md",
@@ -642,9 +648,8 @@ mod tests {
                 name: "writer",
                 host: None,
                 project_id: None,
-                capabilities: vec![WRITING_CAPABILITY.to_owned()],
+                capabilities: vec![writing_task_capability(WRITING_TASK_CAPABILITY_KEY, "write_my_document").to_owned()],
                 priority: 0,
-                protocol_version: 3,
                 max_concurrency: 1,
                 model_gateway_connection_id: None,
             },
@@ -676,10 +681,10 @@ mod tests {
     }
 
     #[test]
-    fn refinement_ignores_wiki_and_requires_ready_selected_documents() {
+    fn distillation_ignores_wiki_and_requires_ready_selected_documents() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let generated = crate::wiki::create_generated_document(
+        let my_document = crate::wiki::create_my_document(
             &paths,
             "ready.md",
             Some("Ready"),
@@ -688,8 +693,8 @@ mod tests {
             None,
             b"# Ready\n",
         )
-        .expect("ready generated document");
-        let generated_id = generated["document"]["id"].as_str().unwrap().to_owned();
+        .expect("ready My Document");
+        let my_document_id = my_document["document"]["id"].as_str().unwrap().to_owned();
         ensure_project_bootstrap(
             &paths,
             BootstrapRequest {
@@ -700,32 +705,32 @@ mod tests {
         )
         .expect("writing panel");
         write_selection(&paths, true, &[]).expect("wiki-only selection");
-        let missing = create_refinement_request(&paths, "My style").expect_err("source required");
-        assert_eq!(missing.code(), Some("writing_refinement_source_required"));
+        let missing = create_distillation_request(&paths, "My style").expect_err("source required");
+        assert_eq!(missing.code(), Some("writing_distillation_source_required"));
 
-        write_selection(&paths, true, std::slice::from_ref(&generated_id))
+        write_selection(&paths, true, std::slice::from_ref(&my_document_id))
             .expect("ready source selected");
         assert_eq!(
-            create_refinement_request(&paths, "  ")
+            create_distillation_request(&paths, "  ")
                 .expect_err("empty name")
                 .code(),
             Some("writing_skill_name_required")
         );
         assert_eq!(
-            create_refinement_request(&paths, &"x".repeat(81))
+            create_distillation_request(&paths, &"x".repeat(81))
                 .expect_err("long name")
                 .code(),
             Some("writing_skill_name_too_long")
         );
         assert_eq!(
-            create_refinement_request(&paths, "默认写作")
+            create_distillation_request(&paths, "默认写作")
                 .expect_err("built-in conflict")
                 .code(),
             Some("writing_skill_name_conflict")
         );
-        create_refinement_request(&paths, "My Style").expect("valid refinement");
+        create_distillation_request(&paths, "My Style").expect("valid distillation");
         assert_eq!(
-            create_refinement_request(&paths, " my style ")
+            create_distillation_request(&paths, " my style ")
                 .expect_err("pending conflict")
                 .code(),
             Some("writing_skill_name_conflict")
@@ -733,11 +738,11 @@ mod tests {
     }
 
     #[test]
-    fn refinement_installs_a_shared_custom_writing_skill() {
+    fn distillation_installs_a_shared_custom_writing_skill() {
         let _broker = crate::content::enable_test_task_broker();
         let (temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let generated = crate::wiki::create_generated_document(
+        let my_document = crate::wiki::create_my_document(
             &paths,
             "sample.md",
             Some("Sample"),
@@ -746,9 +751,9 @@ mod tests {
             None,
             b"# Sample\n\nShort, direct paragraphs.",
         )
-        .expect("generated document");
-        let generated_id = generated["document"]["id"].as_str().unwrap().to_owned();
-        let second_generated = crate::wiki::create_generated_document(
+        .expect("My Document");
+        let my_document_id = my_document["document"]["id"].as_str().unwrap().to_owned();
+        let second_my_document = crate::wiki::create_my_document(
             &paths,
             "second-sample.md",
             Some("Second sample"),
@@ -757,8 +762,8 @@ mod tests {
             None,
             b"# Second sample\n\nA second reusable example.",
         )
-        .expect("second generated document");
-        let second_generated_id = second_generated["document"]["id"]
+        .expect("second My Document");
+        let second_my_document_id = second_my_document["document"]["id"]
             .as_str()
             .unwrap()
             .to_owned();
@@ -774,21 +779,21 @@ mod tests {
         write_selection(
             &paths,
             true,
-            &[generated_id.clone(), second_generated_id.clone()],
+            &[my_document_id.clone(), second_my_document_id.clone()],
         )
         .expect("writing selection");
 
         let created =
-            create_refinement_request(&paths, "Concise House Style").expect("refinement request");
+            create_distillation_request(&paths, "Concise House Style").expect("distillation request");
         let task = &created["task"];
-        assert_eq!(task["type"], json!("refine_writing_skill"));
-        assert_eq!(task["capability"], json!(WRITING_REFINEMENT_CAPABILITY));
+        assert_eq!(task["type"], json!("distill_writing_skill"));
+        assert_eq!(task["capability"], json!(writing_task_capability(WRITING_DISTILLATION_TASK_CAPABILITY_KEY, "distill_writing_skill")));
         assert!(task["input"]["context"].get("isWikiSelected").is_none());
         assert_eq!(
-            task["input"]["context"]["selectedGeneratedDocumentIds"],
-            json!([generated_id, second_generated_id])
+            task["input"]["context"]["selectedMyDocumentIds"],
+            json!([my_document_id, second_my_document_id])
         );
-        assert!(task["input"]["contextSnapshot"]["generatedDocuments"]
+        assert!(task["input"]["contextSnapshot"]["myDocuments"]
             .as_array()
             .is_some_and(|documents| documents.iter().any(|document| {
                 document["snapshotContent"] == json!("# Sample\n\nShort, direct paragraphs.")
@@ -797,13 +802,13 @@ mod tests {
             .get("wikiSelection")
             .is_none());
         assert_eq!(
-            task["input"]["refinerSkillSnapshot"]["id"],
-            json!(DEFAULT_WRITING_REFINEMENT_SKILL_ID)
+            task["input"]["distillerSkillSnapshot"]["id"],
+            json!(DEFAULT_WRITING_DISTILLATION_SKILL_ID)
         );
-        assert!(task["input"]["refinerSkillSnapshot"]["markdown"]
+        assert!(task["input"]["distillerSkillSnapshot"]["markdown"]
             .as_str()
             .is_some_and(|markdown| markdown.contains("Create one reusable Writing Skill")));
-        let duplicate = create_refinement_request(&paths, " concise house style ")
+        let duplicate = create_distillation_request(&paths, " concise house style ")
             .expect_err("pending name conflict");
         assert_eq!(duplicate.code(), Some("writing_skill_name_conflict"));
 
@@ -812,12 +817,11 @@ mod tests {
         let registered = crate::tasks::register_target(
             &paths,
             crate::tasks::TargetRegistration {
-                name: "refiner",
+                name: "distiller",
                 host: None,
                 project_id: None,
-                capabilities: vec![WRITING_REFINEMENT_CAPABILITY.to_owned()],
+                capabilities: vec![writing_task_capability(WRITING_DISTILLATION_TASK_CAPABILITY_KEY, "distill_writing_skill").to_owned()],
                 priority: 0,
-                protocol_version: 3,
                 max_concurrency: 1,
                 model_gateway_connection_id: None,
             },
@@ -885,9 +889,8 @@ mod tests {
                 name: "writer",
                 host: None,
                 project_id: None,
-                capabilities: vec![WRITING_CAPABILITY.to_owned()],
+                capabilities: vec![writing_task_capability(WRITING_TASK_CAPABILITY_KEY, "write_my_document").to_owned()],
                 priority: 0,
-                protocol_version: 3,
                 max_concurrency: 1,
                 model_gateway_connection_id: None,
             },
@@ -903,11 +906,7 @@ mod tests {
             crate::agent_control::ENTRY_SKILL_VERSION,
         )
         .expect("acknowledge entry skill");
-        let agent_bootstrap = crate::agent::agent_bootstrap(
-            &paths,
-            env!("CARGO_PKG_VERSION"),
-            None,
-        )
+        let agent_bootstrap = crate::agent::agent_bootstrap(&paths, None)
             .expect("agent bootstrap");
         let bootstrap_loads_custom_skill = agent_bootstrap["skills"]
             .as_array()
@@ -963,56 +962,4 @@ mod tests {
         assert!(crate::agent::writing_agent_skill(&paths, skill_id).is_err());
     }
 
-    #[test]
-    fn saving_a_legacy_custom_skill_migrates_it_to_a_portable_package() {
-        let (_temp, paths) = test_paths();
-        let bootstrap =
-            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let skill_id = "writing-custom-legacy-style";
-        let skill_dir = crate::agent::custom_writing_skills_dir(&paths).join(skill_id);
-        fs::create_dir_all(&skill_dir).expect("legacy Skill dir");
-        let legacy = format!(
-            "---\nid: {skill_id}\ntitle: Legacy Style\ndescription: Write direct prose.\nsource: custom\nappliesTo:\n  - writing\ntaskTypes:\n  - generate_document\nrequiresCommands:\n---\n\nLead with the main point.\n"
-        );
-        fs::write(skill_dir.join("SKILL.md"), &legacy).expect("legacy Skill");
-        fs::write(
-            skill_dir.join("manifest.json"),
-            serde_json::to_vec_pretty(&json!({
-                "schemaVersion": 1,
-                "source": "custom",
-                "originProjectId": bootstrap.project.id,
-                "taskId": "task:legacy",
-                "skillId": skill_id,
-                "title": "Legacy Style",
-                "createdAt": "2026-01-01T00:00:00Z",
-            }))
-            .expect("manifest"),
-        )
-        .expect("legacy manifest");
-
-        let listing = crate::agent::writing_agent_skill(&paths, skill_id).expect("legacy listing");
-        assert_eq!(listing.skill.name, "Legacy Style");
-        let edited = legacy.replace("Legacy Style", "Updated Legacy Style");
-        let saved = write_custom_skill_file(&paths, skill_id, "SKILL.md", &edited)
-            .expect("migrate legacy Skill");
-        assert!(saved["content"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with(&format!("---\nname: {skill_id}\n")));
-        let manifest: Value = serde_json::from_slice(
-            &fs::read(skill_dir.join("manifest.json")).expect("migrated manifest"),
-        )
-        .expect("manifest JSON");
-        assert_eq!(manifest["schemaVersion"], 2);
-        assert_eq!(manifest["name"], "Updated Legacy Style");
-        assert!(manifest.get("title").is_none());
-        assert_eq!(manifest["binding"]["appliesTo"], json!(["writing"]));
-        assert_eq!(
-            crate::agent::writing_agent_skill(&paths, skill_id)
-                .expect("migrated listing")
-                .skill
-                .name,
-            "Updated Legacy Style"
-        );
-    }
 }

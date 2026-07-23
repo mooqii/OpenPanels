@@ -50,11 +50,25 @@ mod tests {
     fn recommended_domains_skip_panel_kinds_without_agent_commands() {
         assert_eq!(
             recommended_catalog_domains(PanelKind::Typesetting),
-            vec!["operation", "panel", "task", "typesetting"]
+            vec![
+                "asset",
+                "my-document",
+                "operation",
+                "panel",
+                "publication",
+                "task"
+            ]
         );
         assert_eq!(
             recommended_catalog_domains(PanelKind::Wiki),
-            vec!["operation", "panel", "task", "wiki"]
+            vec![
+                "my-document",
+                "operation",
+                "panel",
+                "task",
+                "wiki",
+                "wiki-source"
+            ]
         );
     }
 
@@ -73,39 +87,20 @@ mod tests {
     }
 
     #[test]
-    fn custom_writing_skills_read_legacy_and_portable_manifests() {
+    fn custom_skills_validate_manifest_shape() {
         let skill_id = "writing-custom-example";
-        let legacy = format!(
-            "---\nid: {skill_id}\ntitle: Example Style\ndescription: Write concise prose.\nsource: custom\nappliesTo:\n  - writing\ntaskTypes:\n  - generate_document\nrequiresCommands:\n---\n\nLead with the main point.\n"
-        );
-        let legacy_manifest = json!({
-            "schemaVersion": 1,
-            "source": "custom",
-            "skillId": skill_id,
-            "title": "Example Style",
-        });
-        let legacy_skill = custom_writing_skill_from_source(
-            &legacy,
-            "legacy/SKILL.md",
-            &legacy_manifest,
-        )
-        .expect("legacy custom Skill");
-        assert_eq!(legacy_skill.metadata.name, "Example Style");
-
         let portable = format!(
             "---\nname: {skill_id}\ndescription: Write concise prose.\n---\n\nLead with the main point.\n"
         );
         let portable_manifest = json!({
-            "schemaVersion": 2,
             "source": "custom",
             "skillId": skill_id,
             "name": "Example Style",
             "binding": {
-                "appliesTo": ["writing"],
-                "taskTypes": ["generate_document"],
+                "moduleKinds": ["writing"],
             },
         });
-        let portable_skill = custom_writing_skill_from_source(
+        let portable_skill = custom_agent_skill_from_source(
             &portable,
             "portable/SKILL.md",
             &portable_manifest,
@@ -113,22 +108,21 @@ mod tests {
         .expect("portable custom Skill");
         assert_eq!(portable_skill.metadata.name, "Example Style");
         assert_eq!(portable_skill.metadata.applies_to, ["writing"]);
-        assert_eq!(portable_skill.metadata.task_types, ["generate_document"]);
+        assert_eq!(portable_skill.metadata.task_types, ["write_my_document"]);
 
-        let incompatible_v2 = json!({
-            "schemaVersion": 2,
+        let invalid_binding = json!({
             "source": "custom",
             "skillId": skill_id,
-            "title": "Example Style",
+            "name": "Example Style",
             "binding": {
                 "appliesTo": ["writing"],
-                "taskTypes": ["generate_document"],
+                "taskTypes": ["write_my_document"],
             },
         });
-        assert!(custom_writing_skill_from_source(
+        assert!(custom_agent_skill_from_source(
             &portable,
-            "incompatible-v2/SKILL.md",
-            &incompatible_v2,
+            "retired-schema/SKILL.md",
+            &invalid_binding,
         )
         .is_err());
     }
@@ -137,7 +131,6 @@ mod tests {
     fn registered_builtin_packages_are_standard_and_presets_are_portable() {
         let registry: BuiltinSkillRegistry =
             serde_json::from_str(BUILTIN_SKILL_REGISTRY).expect("registry");
-        assert_eq!(registry.schema_version, 4);
         assert_eq!(registry.system_skills.len(), 2);
         for registration in registry.system_skills {
             let directory = SYSTEM_SKILLS
@@ -167,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn registered_agent_procedures_and_task_handoffs_are_valid_and_indexed() {
+    fn registered_agent_procedures_and_task_capabilities_are_valid_and_indexed() {
         let catalog = load_agent_procedures().expect("Agent Procedure catalog");
         let entry_skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
         assert_eq!(catalog.procedures.len(), 19);
@@ -196,7 +189,13 @@ mod tests {
             .into_iter()
             .find(|skill| skill.id == PANELS_SKILL_ID)
             .expect("Panels Skill");
-        let procedure = skill.procedures.first().expect("Procedure").clone();
+        let procedure = load_agent_procedures()
+            .expect("Agent Procedure catalog")
+            .procedures
+            .into_iter()
+            .find(|procedure| procedure.skill_id == PANELS_SKILL_ID)
+            .expect("Procedure")
+            .registration;
 
         for references in [
             Vec::new(),
@@ -209,7 +208,7 @@ mod tests {
                 validate_agent_procedure(&skill, &invalid)
                     .expect_err("invalid references")
                     .code(),
-                Some("agent_procedure_invalid")
+                Some("capability_catalog_invalid")
             );
         }
 
@@ -219,7 +218,7 @@ mod tests {
             validate_agent_procedure(&skill, &missing)
                 .expect_err("missing reference")
                 .code(),
-            Some("agent_procedure_reference_not_found")
+            Some("capability_reference_not_found")
         );
     }
 

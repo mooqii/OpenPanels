@@ -20,7 +20,6 @@ export function useRecommendedSkills({
   onError: (message: string) => void
 }) {
   const [catalog, setCatalog] = useState<RecommendedSkillsResponse>({
-    schemaVersion: 1,
     skills: [],
   })
   const [isLoading, setIsLoading] = useState(false)

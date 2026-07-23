@@ -18,16 +18,16 @@ fn normalize_skill_name(requested_name: &str) -> Result<String, CliError> {
     Ok(name)
 }
 
-fn validate_refinement_sources(
+fn validate_distillation_sources(
     wiki: &ProjectPanelSnapshot,
-    generated_ids: &[Value],
+    my_document_ids: &[Value],
 ) -> Result<(), CliError> {
-    let generated_documents = wiki.state["generatedDocuments"]
+    let my_documents = wiki.state["myDocuments"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    for id in generated_ids.iter().filter_map(Value::as_str) {
-        let ready = generated_documents.iter().any(|document| {
+    for id in my_document_ids.iter().filter_map(Value::as_str) {
+        let ready = my_documents.iter().any(|document| {
             document.get("id").and_then(Value::as_str) == Some(id)
                 && document
                     .get("contentRef")
@@ -35,15 +35,15 @@ fn validate_refinement_sources(
                     .is_some_and(|value| !value.is_empty())
                 && matches!(
                     document
-                        .pointer("/generation/status")
+                        .pointer("/writeOperation/status")
                         .and_then(Value::as_str),
                     None | Some("completed")
                 )
         });
         if !ready {
             return Err(CliError::with_code(
-                "writing_refinement_source_not_ready",
-                format!("Generated document is not ready for refinement: {id}"),
+                "writing_distillation_source_not_ready",
+                format!("My Document is not ready for distillation: {id}"),
             ));
         }
     }
@@ -85,7 +85,7 @@ fn validate_available_skill_name(
         .into_iter()
         .any(|task| {
             task.get("queue").and_then(Value::as_str) == Some("writing")
-                && task.get("type").and_then(Value::as_str) == Some("refine_writing_skill")
+                && task.get("type").and_then(Value::as_str) == Some("distill_writing_skill")
                 && matches!(
                     task.get("status").and_then(Value::as_str),
                     Some("queued" | "reserved" | "running" | "claimed" | "failed")
@@ -99,7 +99,7 @@ fn validate_available_skill_name(
     if pending_conflict {
         return Err(CliError::with_code(
             "writing_skill_name_conflict",
-            format!("A Writing Skill refinement with this name already exists: {name}"),
+            format!("A Writing Skill distillation with this name already exists: {name}"),
         ));
     }
     Ok(())
@@ -177,31 +177,31 @@ pub fn read_request(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, C
     Ok(payload)
 }
 
-pub fn read_refinement(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
+pub fn read_distillation(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     if crate::content::broker_execution_available() {
         return crate::content::broker_task_context(&crate::content::TaskContextRequest {
             task_id: task_id.to_owned(),
-            context_kind: "writing_refinement".to_owned(),
+            context_kind: "writing_distillation".to_owned(),
         });
     }
     crate::content::require_broker_for_task_execution()?;
     let mut payload = crate::tasks::inspect_task(paths, task_id)?;
     if payload["task"]["queue"].as_str() != Some("writing")
-        || payload["task"]["type"].as_str() != Some("refine_writing_skill")
+        || payload["task"]["type"].as_str() != Some("distill_writing_skill")
     {
         return Err(CliError::with_code(
             "task_kind_mismatch",
-            format!("Task is not a Writing Skill refinement: {task_id}"),
+            format!("Task is not a Writing Skill distillation: {task_id}"),
         ));
     }
-    let refiner_skill_id = payload["task"]["input"]["refinerSkillId"]
+    let distiller_skill_id = payload["task"]["input"]["distillerSkillId"]
         .as_str()
-        .unwrap_or(DEFAULT_WRITING_REFINEMENT_SKILL_ID);
+        .unwrap_or(DEFAULT_WRITING_DISTILLATION_SKILL_ID);
     let skill_action = crate::cli::registry::command_action(
         crate::cli::registry::CommandId::registered("agent.skill.read"),
         vec![
             "--skill-id".to_owned(),
-            refiner_skill_id.to_owned(),
+            distiller_skill_id.to_owned(),
             "--task-id".to_owned(),
             task_id.to_owned(),
             "--format".to_owned(),
@@ -230,13 +230,11 @@ pub fn install_project_skill(
             skill_id: skill.metadata.id.clone(),
             source,
             manifest: json!({
-                "schemaVersion": 2,
                 "source": "custom",
                 "taskId": task_id,
                 "skillId": skill.metadata.id,
                 "binding": {
-                    "appliesTo": ["writing"],
-                    "taskTypes": ["generate_document"],
+                    "moduleKinds": ["writing"],
                 },
                 "createdAt": now_iso(),
             }),
@@ -244,7 +242,7 @@ pub fn install_project_skill(
     }
     crate::content::require_broker_for_task_execution()?;
     crate::tasks::verify_task_write_access(paths, task_id)?;
-    let payload = read_refinement(paths, task_id)?;
+    let payload = read_distillation(paths, task_id)?;
     let task = &payload["task"];
     if !matches!(
         task.get("status").and_then(Value::as_str),
@@ -252,7 +250,7 @@ pub fn install_project_skill(
     ) {
         return Err(CliError::with_code(
             "task_not_claimed",
-            "Claim the refinement task before installing its Writing Skill.",
+            "Claim the distillation task before installing its Writing Skill.",
         ));
     }
     let project_id = task["projectId"].as_str().unwrap_or_default();
@@ -260,8 +258,8 @@ pub fn install_project_skill(
     let name = task["input"]["name"].as_str().unwrap_or_default();
     if project_id.is_empty() || skill_id.is_empty() || name.is_empty() {
         return Err(CliError::with_code(
-            "writing_refinement_invalid",
-            "The refinement task is missing its project, Skill id, or name.",
+            "writing_distillation_invalid",
+            "The distillation task is missing its project, Skill id, or name.",
         ));
     }
     let source = fs::read_to_string(skill_file).map_err(|error| {
@@ -273,19 +271,17 @@ pub fn install_project_skill(
     crate::agent::validate_portable_writing_skill(&source, skill_file, skill_id)?;
     validate_available_skill_name(paths, project_id, name, Some(skill_id))?;
 
-    let skills_dir = crate::agent::custom_writing_skills_dir(paths);
+    let skills_dir = crate::agent::custom_agent_skills_dir(paths);
     fs::create_dir_all(&skills_dir).map_err(to_cli_error)?;
     let final_dir = skills_dir.join(crate::paths::sanitize_path_part(skill_id));
     let manifest = json!({
-        "schemaVersion": 2,
         "source": "custom",
         "originProjectId": project_id,
         "taskId": task_id,
         "skillId": skill_id,
         "name": name,
         "binding": {
-            "appliesTo": ["writing"],
-            "taskTypes": ["generate_document"],
+            "moduleKinds": ["writing"],
         },
         "createdAt": now_iso(),
     });
@@ -294,7 +290,7 @@ pub fn install_project_skill(
         let existing_source =
             fs::read_to_string(final_dir.join("SKILL.md")).map_err(to_cli_error)?;
         if existing_manifest["taskId"].as_str() == Some(task_id) && existing_source == source {
-            let stored = crate::agent::custom_writing_skill_from_source(
+            let stored = crate::agent::custom_agent_skill_from_source(
                 &source,
                 skill_file,
                 &manifest,
@@ -333,7 +329,7 @@ pub fn install_project_skill(
     }
     install_result?;
     let stored =
-        crate::agent::custom_writing_skill_from_source(&source, skill_file, &manifest)?;
+        crate::agent::custom_agent_skill_from_source(&source, skill_file, &manifest)?;
     let listing = crate::agent::project_agent_skill_listing(paths, project_id, stored.metadata);
     Ok(json!({ "skill": listing }))
 }
@@ -418,29 +414,19 @@ pub fn write_custom_skill_file(
         ));
     }
     if relative == Path::new("SKILL.md") {
-        let parsed = crate::agent::parse_skill(content, "SKILL.md")?;
+        let parsed = crate::agent::parse_portable_skill(content, "SKILL.md")?;
         if parsed.metadata.id != skill_id {
             return Err(CliError::with_code(
                 "writing_skill_file_invalid",
                 "Writing Skill name does not match its registered id.",
             ));
         }
-        let was_legacy = parsed.metadata.source == "custom";
-        let portable_content = if was_legacy {
-            crate::agent::render_portable_skill(&parsed)
-        } else {
-            content.to_owned()
-        };
         crate::agent::validate_portable_writing_skill(
-            &portable_content,
+            content,
             "SKILL.md",
             skill_id,
         )?;
-        let name = if was_legacy {
-            parsed.metadata.name.as_str()
-        } else {
-            listing.skill.name.as_str()
-        };
+        let name = listing.skill.name.as_str();
         let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
         validate_available_skill_name(
             paths,
@@ -449,14 +435,9 @@ pub fn write_custom_skill_file(
             Some(skill_id),
         )?;
         let mut manifest = read_skill_manifest(Path::new(&listing.local_dir))?;
-        manifest["schemaVersion"] = json!(2);
         manifest["name"] = json!(name);
-        if let Some(object) = manifest.as_object_mut() {
-            object.remove("title");
-        }
         manifest["binding"] = json!({
-            "appliesTo": ["writing"],
-            "taskTypes": ["generate_document"],
+            "moduleKinds": ["writing"],
         });
         let manifest_content = format!(
             "{}\n",
@@ -467,8 +448,8 @@ pub fn write_custom_skill_file(
             manifest_content,
         )
         .map_err(to_cli_error)?;
-        fs::write(&target, portable_content.as_bytes()).map_err(to_cli_error)?;
-        return Ok(json!({ "path": relative_path, "content": portable_content }));
+        fs::write(&target, content.as_bytes()).map_err(to_cli_error)?;
+        return Ok(json!({ "path": relative_path, "content": content }));
     }
     fs::write(&target, content.as_bytes()).map_err(to_cli_error)?;
     Ok(json!({ "path": relative_path, "content": content }))
@@ -508,7 +489,7 @@ fn installed_project_skill_for_task(
     if skill_id.is_empty() {
         return Ok(false);
     }
-    let skill_dir = crate::agent::custom_writing_skills_dir(paths)
+    let skill_dir = crate::agent::custom_agent_skills_dir(paths)
         .join(crate::paths::sanitize_path_part(skill_id));
     if !skill_dir.join("SKILL.md").is_file() || !skill_dir.join("manifest.json").is_file() {
         return Ok(false);
@@ -520,8 +501,8 @@ fn installed_project_skill_for_task(
 fn read_writing_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     let payload = crate::tasks::inspect_task(paths, task_id)?;
     match payload["task"]["type"].as_str() {
-        Some("generate_document") => read_request(paths, task_id),
-        Some("refine_writing_skill") => read_refinement(paths, task_id),
+        Some("write_my_document") => read_request(paths, task_id),
+        Some("distill_writing_skill") => read_distillation(paths, task_id),
         _ => Err(CliError::with_code(
             "task_kind_mismatch",
             format!("Unsupported writing task: {task_id}"),

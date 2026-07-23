@@ -212,12 +212,12 @@
   font-size: 13px;
 }
 
-.op-writing-refinement {
+.op-writing-distillation {
   display: grid;
   gap: 12px;
 }
 
-.op-writing-refinement__intro {
+.op-writing-distillation__intro {
   display: flex;
   gap: 10px;
   align-items: flex-start;
@@ -227,56 +227,56 @@
   border-radius: 8px;
 }
 
-.op-writing-refinement__intro > svg {
+.op-writing-distillation__intro > svg {
   flex: none;
   margin-top: 1px;
   color: var(--accent);
 }
 
-.op-writing-refinement__intro div {
+.op-writing-distillation__intro div {
   display: grid;
   gap: 5px;
   min-width: 0;
 }
 
-.op-writing-refinement__intro strong {
+.op-writing-distillation__intro strong {
   font-size: 13px;
 }
 
-.op-writing-refinement__intro p {
+.op-writing-distillation__intro p {
   margin: 0;
   font-size: 11px;
   line-height: 1.5;
   color: var(--op-text-secondary);
 }
 
-.op-writing-refinement__sources {
+.op-writing-distillation__sources {
   display: grid;
   gap: 8px;
   padding-top: 6px;
 }
 
-.op-writing-refinement__warning {
+.op-writing-distillation__warning {
   padding: 8px 10px;
   border-radius: 6px;
 }
 
-.op-writing-refinement__warning--empty {
+.op-writing-distillation__warning--empty {
   gap: 4px;
   align-items: center;
 }
 
-.op-writing-refinement__warning--empty .alert__indicator {
+.op-writing-distillation__warning--empty .alert__indicator {
   padding: 0;
 }
 
-.op-writing-refinement__warning-text {
+.op-writing-distillation__warning-text {
   font-size: 11px;
   line-height: 1.4;
   letter-spacing: 0;
 }
 
-.op-writing-refinement__source-list {
+.op-writing-distillation__source-list {
   display: grid;
   gap: 0;
   padding: 0;
@@ -286,7 +286,7 @@
   border-radius: 6px;
 }
 
-.op-writing-refinement__source-list li {
+.op-writing-distillation__source-list li {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 7px;
@@ -295,15 +295,15 @@
   padding: 7px 8px;
 }
 
-.op-writing-refinement__source-list li + li {
+.op-writing-distillation__source-list li + li {
   border-top: 1px solid var(--op-border-subtle);
 }
 
-.op-writing-refinement__source-list svg {
+.op-writing-distillation__source-list svg {
   color: var(--op-text-tertiary);
 }
 
-.op-writing-refinement__source-list span {
+.op-writing-distillation__source-list span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -312,7 +312,7 @@
   white-space: nowrap;
 }
 
-.op-writing-refinement__source-list small {
+.op-writing-distillation__source-list small {
   font-size: 10px;
   color: var(--op-text-tertiary);
 }
@@ -501,7 +501,7 @@
   color: var(--danger);
 }
 
-.op-writing-refinement-statuses {
+.op-writing-distillation-statuses {
   display: flex;
   gap: 4px;
   justify-content: flex-end;
@@ -510,7 +510,7 @@
   scrollbar-width: none;
 }
 
-.op-writing-refinement-status {
+.op-writing-distillation-status {
   flex: 0 0 auto;
   min-width: 0;
   min-height: 24px;
@@ -519,17 +519,17 @@
   letter-spacing: 0;
 }
 
-.op-writing-refinement-status--active {
+.op-writing-distillation-status--active {
   color: var(--accent-soft-foreground);
   background: var(--accent-soft);
 }
 
-.op-writing-refinement-status--waiting {
+.op-writing-distillation-status--waiting {
   color: var(--warning-foreground);
   background: color-mix(in oklab, var(--warning) 22%, transparent);
 }
 
-.op-generated-document-task-status {
+.op-my-document-task-status {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 94px;
@@ -539,7 +539,7 @@
   white-space: nowrap;
 }
 
-.op-generated-document-status {
+.op-my-document-status {
   display: inline-flex;
   gap: 4px;
   align-items: center;
@@ -548,11 +548,11 @@
   white-space: nowrap;
 }
 
-.op-generated-document-status--published {
+.op-my-document-status--published {
   color: var(--accent-soft-foreground);
 }
 
-.op-generated-document-retry {
+.op-my-document-retry {
   --button-bg: var(--warning);
   --button-bg-hover: var(--warning-hover);
   --button-bg-pressed: var(--warning-hover);

@@ -1,11 +1,10 @@
 # CLI Error Contract
 
-All structured CLI failures use Envelope v3:
+All structured CLI failures use the CLI-owned envelope:
 
 ```json
 {
   "ok": false,
-  "schemaVersion": 3,
   "intent": "wiki.page.read",
   "error": {
     "type": "not_found",

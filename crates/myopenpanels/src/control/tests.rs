@@ -29,7 +29,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["wiki", "writing", "canvas", "typesetting", "publishing"]
         );
-        assert_eq!(bootstrap.state["schemaVersion"], json!(4));
+        assert!(bootstrap.state.get("schemaVersion").is_none());
         assert_eq!(bootstrap.state["wikiSpaces"][0]["title"], json!("Wiki"));
         assert_eq!(bootstrap.state["activeWikiPagePath"], Value::Null);
         let writing = bootstrap
@@ -37,7 +37,7 @@ mod tests {
             .iter()
             .find(|snapshot| snapshot.panel.kind == PanelKind::Writing)
             .expect("writing panel");
-        assert_eq!(writing.state["schemaVersion"], json!(5));
+        assert!(writing.state.get("schemaVersion").is_none());
         assert_eq!(
             writing.state["selectedCreateWritingSkillIds"],
             json!(["writing-default"])
@@ -54,7 +54,7 @@ mod tests {
         assert_eq!(typesetting.panel.title, "排版");
         assert_eq!(
             typesetting.state,
-            json!({ "schemaVersion": 2, "publications": [] })
+            json!({ "publications": [] })
         );
         let publishing = bootstrap
             .panels
@@ -62,12 +62,72 @@ mod tests {
             .find(|snapshot| snapshot.panel.kind == PanelKind::Publishing)
             .expect("publishing panel");
         assert_eq!(publishing.panel.title, "发布");
-        assert_eq!(publishing.state, crate::publishing::empty_state());
+        assert_eq!(publishing.state, crate::release::empty_state());
         assert!(paths.focus_dir.join("active-project.json").exists());
         assert!(paths.focus_dir.join("active-panel.json").exists());
         assert!(storage_dir
             .join(crate::storage::DATABASE_FILE_NAME)
             .exists());
+    }
+
+    #[test]
+    fn new_projects_receive_distinct_wiki_space_identities() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("ctx"),
+        )
+        .expect("paths");
+        let storage = Storage::open(&paths).expect("storage");
+        let first_project =
+            create_project_record(&storage, "First".to_owned()).expect("first project");
+        let first_project =
+            ensure_panel_for_project(&storage, &first_project, PanelKind::Wiki)
+                .expect("first Wiki panel");
+        let second_project =
+            create_project_record(&storage, "Second".to_owned()).expect("second project");
+        let second_project =
+            ensure_panel_for_project(&storage, &second_project, PanelKind::Wiki)
+                .expect("second Wiki panel");
+        let first_panel_id = first_project.panel_ids.first().expect("first panel");
+        let second_panel_id = second_project.panel_ids.first().expect("second panel");
+        let first = storage
+            .read_panel_state(&first_project.id, first_panel_id)
+            .expect("first state")
+            .expect("first Wiki");
+        let second = storage
+            .read_panel_state(&second_project.id, second_panel_id)
+            .expect("second state")
+            .expect("second Wiki");
+        let first_id = first["activeWikiSpaceId"]
+            .as_str()
+            .expect("first Wiki Space");
+        let second_id = second["activeWikiSpaceId"]
+            .as_str()
+            .expect("second Wiki Space");
+
+        assert_ne!(first_id, second_id);
+        assert!(first_id.starts_with("wiki:"));
+        assert_eq!(first["wikiSpaces"][0]["id"], first_id);
+        assert_eq!(
+            first["wikiSpaces"][0]["rootRef"],
+            format!("wikis/{first_id}")
+        );
+        assert_eq!(
+            storage
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM resources WHERE kind = 'wiki_space'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("Wiki Space resources"),
+            2
+        );
     }
 
     #[test]
@@ -119,29 +179,17 @@ mod tests {
     }
 
     #[test]
-    fn publishing_state_rejects_future_schema_versions() {
-        let future = match resolve_publishing_state(Some(json!({
-            "schemaVersion": 2
-        }))) {
-            Ok(_) => panic!("future state"),
+    fn publishing_state_rejects_malformed_values() {
+        let malformed = match resolve_publishing_state(Some(json!([]))) {
+            Ok(_) => panic!("malformed state"),
             Err(error) => error,
         };
-        assert!(future.message().contains("Unsupported future publishing"));
+        assert!(malformed.message().contains("Malformed publishing"));
     }
 
     #[test]
-    fn typesetting_state_rejects_future_and_malformed_documents() {
-        let future = match resolve_typesetting_state(Some(json!({
-            "schemaVersion": 3,
-            "publications": []
-        }))) {
-            Ok(_) => panic!("future state"),
-            Err(error) => error,
-        };
-        assert!(future.message().contains("Unsupported future typesetting"));
-
+    fn typesetting_state_rejects_malformed_documents() {
         let malformed = match resolve_typesetting_state(Some(json!({
-            "schemaVersion": 2,
             "publications": [{
                 "id": "publication:1",
                 "title": "Broken",
@@ -156,8 +204,7 @@ mod tests {
         };
         assert!(malformed.message().contains("Malformed typesetting"));
 
-        let migrated = resolve_typesetting_state(Some(json!({
-            "schemaVersion": 1,
+        let retired = resolve_typesetting_state(Some(json!({
             "publications": [{
                 "id": "publication:1",
                 "title": "Existing article",
@@ -174,22 +221,10 @@ mod tests {
                 "createdAt": "2026-07-14T00:00:00Z",
                 "updatedAt": "2026-07-14T00:00:00Z"
             }]
-        })))
-        .expect("v1 state migration");
-        assert!(migrated.changed);
-        assert_eq!(migrated.state["schemaVersion"], json!(2));
-        assert_eq!(
-            migrated.state["publications"][0]["covers"][0]["source"],
-            json!({
-                "kind": "canvas",
-                "assetRef": "projects/project:1/panels/panel:canvas/assets/source.png",
-                "panelId": "panel:canvas",
-                "projectId": "project:1"
-            })
-        );
+        })));
+        assert!(retired.is_err());
 
         let uploaded = resolve_typesetting_state(Some(json!({
-            "schemaVersion": 2,
             "publications": [{
                 "id": "publication:upload",
                 "title": "Uploaded cover",
@@ -210,43 +245,48 @@ mod tests {
     }
 
     #[test]
-    fn writing_state_only_accepts_schema_v5() {
+    fn writing_state_validates_required_fields() {
         let current = empty_writing_state();
         let accepted = resolve_writing_state(Some(current.clone())).expect("current state");
         assert!(!accepted.changed);
         assert_eq!(accepted.state, current);
 
-        let migrated = resolve_writing_state(Some(json!({
-            "schemaVersion": 5,
+        let incomplete = resolve_writing_state(Some(json!({
             "draft": "Revise this paragraph",
             "mode": "revise",
-            "refinementName": "",
-            "targetGeneratedDocumentId": null,
+            "distillationName": "",
+            "targetMyDocumentId": null,
             "selectedCreateWritingSkillIds": ["writing-default"],
             "selectedRevisionWritingSkillId": "writing-default",
-            "selectedRefinementSkillId": "writing-skill-refiner"
-        })))
-        .expect("legacy draft state");
-        assert!(migrated.changed);
-        assert_eq!(migrated.state["createDraft"], json!(""));
-        assert_eq!(
-            migrated.state["revisionDraft"],
-            json!("Revise this paragraph")
-        );
-        assert_eq!(
-            migrated.state["selectedRefinementSkillId"],
-            json!(crate::writing::DEFAULT_WRITING_REFINEMENT_SKILL_ID)
-        );
+            "selectedDistillationSkillId": "writing-distillation-default"
+        })));
+        assert!(incomplete.is_err());
 
-        let error = match resolve_writing_state(Some(json!({ "schemaVersion": 4 }))) {
-            Ok(_) => panic!("old state must be rejected"),
-            Err(error) => error,
-        };
-        assert!(error.message().contains("expected schemaVersion 5"));
+        let legacy = resolve_writing_state(Some(json!({
+            "createDraft": "Create this",
+            "draft": "",
+            "mode": "refine",
+            "refinementName": "House style",
+            "revisionDraft": "Revise this",
+            "targetMyDocumentId": null,
+            "selectedCreateWritingSkillIds": ["writing-default"],
+            "selectedRevisionWritingSkillId": "writing-default",
+            "selectedRefinementSkillId": "writing-refinement-default"
+        })))
+        .expect("legacy refinement state");
+        assert!(legacy.changed);
+        assert_eq!(legacy.state["mode"], json!("distill"));
+        assert_eq!(legacy.state["distillationName"], json!("House style"));
+        assert_eq!(
+            legacy.state["selectedDistillationSkillId"],
+            json!("writing-distillation-default")
+        );
+        assert!(legacy.state.get("refinementName").is_none());
+        assert!(legacy.state.get("selectedRefinementSkillId").is_none());
     }
 
     #[test]
-    fn wiki_state_only_accepts_schema_v4() {
+    fn wiki_state_validates_required_fields() {
         let temp = tempfile::tempdir().expect("temp dir");
         let paths = resolve_myopenpanels_paths(
             Some(temp.path().to_str().unwrap()),
@@ -270,31 +310,6 @@ mod tests {
         assert!(!accepted.changed);
         assert_eq!(accepted.state, current);
 
-        let mut removed_skill_state = current;
-        removed_skill_state["wikiAgentSkillId"] = json!("karpathy-llm-wiki");
-        let migrated = resolve_wiki_state(
-            &storage,
-            &bootstrap.project,
-            &panel,
-            Some(removed_skill_state),
-        )
-        .expect("removed Skill state");
-        assert!(migrated.changed);
-        assert_eq!(
-            migrated.state["wikiAgentSkillId"],
-            json!("wiki-default")
-        );
-
-        let error = match resolve_wiki_state(
-            &storage,
-            &bootstrap.project,
-            &panel,
-            Some(json!({ "schemaVersion": 3 })),
-        ) {
-            Ok(_) => panic!("old state must be rejected"),
-            Err(error) => error,
-        };
-        assert!(error.message().contains("expected schemaVersion 4"));
     }
 
     #[test]
@@ -431,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_rejects_wiki_v1_state() {
+    fn bootstrap_rejects_retired_wiki_shape() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -457,7 +472,6 @@ mod tests {
                 &bootstrap.project.id,
                 &wiki_panel.id,
                 &json!({
-                    "schemaVersion": 1,
                     "pages": [{
                         "id": "page:notes",
                         "title": "Research Notes",
@@ -469,13 +483,13 @@ mod tests {
                     "activePageId": "page:notes"
                 }),
             )
-            .expect("write v1 state");
+            .expect("write retired state");
 
         let error = match read_project_bootstrap(&paths, BootstrapRequest::new()) {
             Ok(_) => panic!("old wiki state"),
             Err(error) => error,
         };
-        assert!(error.message().contains("expected schemaVersion 4"));
+        assert!(error.message().contains("Malformed wiki panel state"));
     }
 
     #[test]
@@ -504,7 +518,7 @@ mod tests {
             .write_panel_state(
                 &bootstrap.project.id,
                 &wiki_panel.id,
-                &json!({ "schemaVersion": 2, "rawDocuments": [] }),
+                &json!({ "rawDocuments": [] }),
             )
             .expect("write malformed state");
         drop(storage);
@@ -517,45 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_rejects_future_wiki_state_version() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let project_dir = temp.path().join("project");
-        let storage_dir = temp.path().join(".myopenpanels");
-        fs::create_dir_all(&project_dir).expect("project dir");
-        let paths = resolve_myopenpanels_paths(
-            Some(project_dir.to_str().unwrap()),
-            Some(storage_dir.to_str().unwrap()),
-            Some("ctx"),
-        )
-        .expect("paths");
-        let bootstrap =
-            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let wiki_panel = bootstrap
-            .panels
-            .iter()
-            .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
-            .expect("wiki panel")
-            .panel
-            .clone();
-        let storage = Storage::open(&paths).expect("storage");
-        storage
-            .write_panel_state(
-                &bootstrap.project.id,
-                &wiki_panel.id,
-                &json!({ "schemaVersion": 5, "rawDocuments": [] }),
-            )
-            .expect("write future wiki state");
-        drop(storage);
-
-        let error = match read_project_bootstrap(&paths, BootstrapRequest::new()) {
-            Ok(_) => panic!("future wiki"),
-            Err(error) => error,
-        };
-        assert!(error.message().contains("expected schemaVersion 4"));
-    }
-
-    #[test]
-    fn bootstrap_rejects_future_canvas_state_version() {
+    fn bootstrap_rejects_malformed_canvas_state() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
         let storage_dir = temp.path().join(".myopenpanels");
@@ -580,15 +556,15 @@ mod tests {
             .write_panel_state(
                 &bootstrap.project.id,
                 &canvas_panel.id,
-                &json!({ "schema": { "schemaVersion": 2 }, "store": {} }),
+                &json!({ "store": [] }),
             )
-            .expect("write future canvas state");
+            .expect("write malformed canvas state");
         drop(storage);
 
         let error = match read_project_bootstrap(&paths, BootstrapRequest::new()) {
-            Ok(_) => panic!("future canvas"),
+            Ok(_) => panic!("malformed canvas"),
             Err(error) => error,
         };
-        assert!(error.message().contains("Unsupported future canvas"));
+        assert!(error.message().contains("Malformed canvas panel state"));
     }
 }

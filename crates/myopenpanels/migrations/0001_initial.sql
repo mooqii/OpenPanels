@@ -1,13 +1,17 @@
 CREATE TABLE storage_meta (
   id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+  database_id TEXT NOT NULL UNIQUE,
+  schema_fingerprint TEXT NOT NULL,
   global_revision INTEGER NOT NULL DEFAULT 0 CHECK (global_revision >= 0)
 );
 
-INSERT INTO storage_meta (id, global_revision) VALUES (1, 0);
+INSERT INTO storage_meta (id, database_id, schema_fingerprint, global_revision)
+VALUES (1, lower(hex(randomblob(16))), '', 0);
 
 CREATE TABLE projects (
   id TEXT PRIMARY KEY NOT NULL,
   title TEXT NOT NULL,
+  root_path TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -15,8 +19,12 @@ CREATE TABLE projects (
 CREATE TABLE panels (
   project_id TEXT NOT NULL,
   id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('wiki', 'writing', 'canvas', 'typesetting', 'publishing')),
-  title TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (length(trim(kind)) > 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
+  ui_format_version INTEGER NOT NULL DEFAULT 1 CHECK (ui_format_version > 0),
+  ui_state_revision INTEGER NOT NULL DEFAULT 0 CHECK (ui_state_revision >= 0),
+  ui_state_hash TEXT NOT NULL DEFAULT '',
+  ui_state_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(ui_state_json)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (project_id, id),
@@ -24,22 +32,10 @@ CREATE TABLE panels (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
-CREATE TABLE panel_states (
-  project_id TEXT NOT NULL,
-  panel_id TEXT NOT NULL,
-  schema_version INTEGER NOT NULL,
-  revision INTEGER NOT NULL CHECK (revision >= 0),
-  content_hash TEXT NOT NULL,
-  state_json TEXT NOT NULL CHECK (json_valid(state_json)),
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (project_id, panel_id),
-  FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE
-);
-
 CREATE TABLE panel_selections (
   project_id TEXT NOT NULL,
   panel_id TEXT NOT NULL,
-  revision INTEGER NOT NULL CHECK (revision >= 0),
+  revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
   content_hash TEXT NOT NULL,
   selection_json TEXT NOT NULL CHECK (json_valid(selection_json)),
   updated_at TEXT NOT NULL,
@@ -47,495 +43,215 @@ CREATE TABLE panel_selections (
   FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE
 );
 
-CREATE TABLE artifacts (
-  id TEXT PRIMARY KEY NOT NULL,
-  project_id TEXT NOT NULL,
-  panel_id TEXT,
-  kind TEXT NOT NULL,
-  title TEXT,
-  payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE
-);
-
 CREATE TABLE settings (
-  namespace TEXT NOT NULL,
-  key TEXT NOT NULL,
+  key TEXT PRIMARY KEY NOT NULL,
   value_json TEXT NOT NULL CHECK (json_valid(value_json)),
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (namespace, key)
-);
-
-CREATE TABLE change_scopes (
-  scope_key TEXT PRIMARY KEY NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN (
-    'catalog', 'project', 'panel_state', 'panel_selection', 'tasks',
-    'agent_targets', 'agent_operations', 'artifacts'
-  )),
-  project_id TEXT,
-  panel_id TEXT,
-  revision INTEGER NOT NULL CHECK (revision >= 0),
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE model_gateway_connections (
+CREATE TABLE resources (
   id TEXT PRIMARY KEY NOT NULL,
-  transport TEXT NOT NULL CHECK (transport IN ('local_cli', 'byok')),
-  provider_id TEXT NOT NULL,
-  display_name TEXT NOT NULL,
-  executable_path TEXT,
-  base_url TEXT,
-  credential_ref TEXT,
-  model TEXT,
-  reasoning TEXT,
+  project_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (length(trim(kind)) > 0),
+  title TEXT NOT NULL DEFAULT '',
+  revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT,
+  UNIQUE (project_id, id),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE documents (
+  resource_id TEXT PRIMARY KEY NOT NULL,
+  document_kind TEXT NOT NULL CHECK (length(trim(document_kind)) > 0),
+  media_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  source TEXT NOT NULL DEFAULT 'user',
+  original_file_name TEXT NOT NULL DEFAULT '',
+  original_revision_id TEXT,
+  active_revision_id TEXT,
+  content_version INTEGER NOT NULL DEFAULT 0 CHECK (content_version >= 0),
+  content_hash TEXT NOT NULL DEFAULT '',
+  character_count INTEGER CHECK (character_count IS NULL OR character_count >= 0),
+  position INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+  metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+  FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE
+);
+
+CREATE TABLE wiki_spaces (
+  resource_id TEXT PRIMARY KEY NOT NULL,
+  active_revision_id TEXT,
+  content_version INTEGER NOT NULL DEFAULT 0 CHECK (content_version >= 0),
+  content_hash TEXT NOT NULL DEFAULT '',
+  selected_skill_id TEXT,
+  position INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+  metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+  FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE
+);
+
+CREATE TABLE wiki_source_ingestions (
+  project_id TEXT NOT NULL,
+  wiki_space_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  processed_document_version INTEGER NOT NULL CHECK (processed_document_version > 0),
+  wiki_version_at_processing INTEGER NOT NULL DEFAULT 0 CHECK (wiki_version_at_processing >= 0),
+  disposition TEXT NOT NULL CHECK (disposition IN ('included', 'already_covered', 'excluded')),
+  task_id TEXT NOT NULL,
+  reason_code TEXT,
+  summary TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, wiki_space_id, document_id),
+  FOREIGN KEY (wiki_space_id) REFERENCES wiki_spaces(resource_id) ON DELETE CASCADE,
+  FOREIGN KEY (document_id) REFERENCES documents(resource_id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, wiki_space_id) REFERENCES resources(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, document_id) REFERENCES resources(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id) ON DELETE RESTRICT
+);
+
+CREATE TABLE canvas_documents (
+  resource_id TEXT PRIMARY KEY NOT NULL,
+  format_version INTEGER NOT NULL DEFAULT 1 CHECK (format_version > 0),
+  state_revision INTEGER NOT NULL DEFAULT 0 CHECK (state_revision >= 0),
+  state_hash TEXT NOT NULL DEFAULT '',
+  state_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(state_json)),
+  FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE
+);
+
+CREATE TABLE assets (
+  resource_id TEXT PRIMARY KEY NOT NULL,
+  media_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  file_name TEXT NOT NULL DEFAULT '',
+  active_revision_id TEXT,
+  content_version INTEGER NOT NULL DEFAULT 0 CHECK (content_version >= 0),
+  content_hash TEXT NOT NULL DEFAULT '',
+  byte_size INTEGER CHECK (byte_size IS NULL OR byte_size >= 0),
+  width INTEGER CHECK (width IS NULL OR width > 0),
+  height INTEGER CHECK (height IS NULL OR height > 0),
+  metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+  FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE
+);
+
+CREATE TABLE publications (
+  resource_id TEXT PRIMARY KEY NOT NULL,
+  source_document_id TEXT,
+  cover_document_id TEXT,
+  active_revision_id TEXT,
+  content_version INTEGER NOT NULL DEFAULT 0 CHECK (content_version >= 0),
+  content_hash TEXT NOT NULL DEFAULT '',
+  selected_title TEXT NOT NULL DEFAULT '',
+  position INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
   config_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(config_json)),
-  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
-  priority INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_document_id) REFERENCES documents(resource_id) ON DELETE SET NULL,
+  FOREIGN KEY (cover_document_id) REFERENCES documents(resource_id) ON DELETE SET NULL
 );
 
-CREATE TABLE model_gateway_config (
-  id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
-  mode TEXT NOT NULL CHECK (mode IN ('local_cli', 'byok')),
-  active_local_connection_id TEXT,
-  active_byok_connection_id TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (active_local_connection_id) REFERENCES model_gateway_connections(id) ON DELETE SET NULL,
-  FOREIGN KEY (active_byok_connection_id) REFERENCES model_gateway_connections(id) ON DELETE SET NULL
-);
-
-INSERT INTO model_gateway_config (
-  id, mode, active_local_connection_id, active_byok_connection_id, created_at, updated_at
-) VALUES (
-  1, 'local_cli', NULL, NULL,
-  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-  strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-);
-
-CREATE TABLE agent_targets (
-  id TEXT PRIMARY KEY NOT NULL,
-  project_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  host TEXT NOT NULL,
-  transport TEXT NOT NULL DEFAULT 'command' CHECK (transport = 'command'),
-  capabilities_json TEXT NOT NULL CHECK (json_valid(capabilities_json)),
-  priority INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'online',
-  token_hash TEXT NOT NULL,
-  last_error TEXT,
-  last_heartbeat_at TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  protocol_version INTEGER NOT NULL DEFAULT 3 CHECK (protocol_version = 3),
-  max_concurrency INTEGER NOT NULL DEFAULT 1 CHECK (max_concurrency > 0),
-  model_gateway_connection_id TEXT,
-  UNIQUE (project_id, name, transport),
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (model_gateway_connection_id) REFERENCES model_gateway_connections(id) ON DELETE SET NULL
-);
-
-CREATE TABLE workflow_runs (
-  id TEXT PRIMARY KEY NOT NULL,
-  project_id TEXT NOT NULL,
-  panel_id TEXT NOT NULL,
-  definition_key TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active'
-    CHECK (status IN ('active', 'succeeded', 'failed', 'cancelled', 'archived')),
-  source_workflow_run_id TEXT,
-  source_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(source_json)),
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+CREATE TABLE releases (
+  resource_id TEXT PRIMARY KEY NOT NULL,
+  publication_id TEXT NOT NULL,
+  platform_key TEXT NOT NULL,
+  request_key TEXT,
+  published_revision_id TEXT,
+  remote_ref TEXT,
+  remote_url TEXT,
+  position INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+  release_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(release_json)),
+  result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+  published_at TEXT,
   archived_at TEXT,
-  FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (source_workflow_run_id) REFERENCES workflow_runs(id) ON DELETE SET NULL
+  FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE,
+  FOREIGN KEY (publication_id) REFERENCES publications(resource_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE tasks (
   id TEXT PRIMARY KEY NOT NULL,
   project_id TEXT NOT NULL,
-  panel_id TEXT NOT NULL,
-  queue TEXT NOT NULL,
-  type TEXT NOT NULL,
-  capability TEXT NOT NULL,
-  status TEXT NOT NULL,
-  target_ref TEXT NOT NULL,
-  input_json TEXT NOT NULL CHECK (json_valid(input_json)),
-  source_json TEXT NOT NULL CHECK (json_valid(source_json)),
-  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-  max_attempts INTEGER NOT NULL DEFAULT 8 CHECK (max_attempts > 0),
-  assigned_agent_id TEXT,
-  lease_owner TEXT,
-  lease_token_hash TEXT,
-  lease_expires_at TEXT,
-  last_heartbeat_at TEXT,
-  retry_after TEXT,
+  origin_panel_id TEXT,
+  handler_key TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN (
+    'queued', 'running', 'succeeded', 'failed', 'cancelled', 'superseded'
+  )),
+  target_ref TEXT NOT NULL DEFAULT '',
+  input_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(input_json)),
+  source_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(source_json)),
   result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
   error_json TEXT CHECK (error_json IS NULL OR json_valid(error_json)),
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  completed_at TEXT,
-  workflow_run_id TEXT NOT NULL,
-  idempotency_key TEXT,
-  execution_generation INTEGER NOT NULL DEFAULT 0 CHECK (execution_generation >= 0),
-  available_at TEXT,
-  archived_at TEXT,
-  terminal_reason_json TEXT CHECK (terminal_reason_json IS NULL OR json_valid(terminal_reason_json)),
-  required_protocol_version INTEGER NOT NULL DEFAULT 3 CHECK (required_protocol_version = 3),
-  dispatch_mode TEXT NOT NULL DEFAULT 'auto' CHECK (dispatch_mode IN ('auto', 'prefer', 'manual')),
-  requested_gateway_connection_id TEXT,
+  depends_on_task_id TEXT,
+  retry_of_task_id TEXT,
   mutation_key TEXT,
-  mutation_sequence INTEGER,
-  FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE,
-  FOREIGN KEY (assigned_agent_id) REFERENCES agent_targets(id) ON DELETE SET NULL,
-  FOREIGN KEY (requested_gateway_connection_id) REFERENCES model_gateway_connections(id) ON DELETE SET NULL
-);
-
-CREATE TABLE task_dependencies (
-  task_id TEXT NOT NULL,
-  prerequisite_task_id TEXT NOT NULL,
-  success_condition TEXT NOT NULL DEFAULT 'succeeded'
-    CHECK (success_condition IN ('succeeded', 'terminal')),
-  failure_policy TEXT NOT NULL DEFAULT 'cancel'
-    CHECK (failure_policy IN ('cancel', 'supersede', 'continue_snapshot')),
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (task_id, prerequisite_task_id),
-  CHECK (task_id <> prerequisite_task_id),
-  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-  FOREIGN KEY (prerequisite_task_id) REFERENCES tasks(id) ON DELETE RESTRICT
-);
-
-CREATE TABLE task_inputs (
-  id TEXT PRIMARY KEY NOT NULL,
-  task_id TEXT NOT NULL,
-  resource_kind TEXT NOT NULL,
-  resource_id TEXT NOT NULL,
-  resource_version TEXT,
-  content_hash TEXT,
-  snapshot_ref TEXT,
-  missing_policy TEXT NOT NULL DEFAULT 'cancel'
-    CHECK (missing_policy IN ('cancel', 'continue_snapshot')),
-  changed_policy TEXT NOT NULL DEFAULT 'supersede'
-    CHECK (changed_policy IN ('supersede', 'continue_snapshot', 'fail')),
-  created_at TEXT NOT NULL,
-  UNIQUE (task_id, resource_kind, resource_id),
-  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-);
-
-CREATE TABLE task_attempts (
-  id TEXT PRIMARY KEY NOT NULL,
-  task_id TEXT NOT NULL,
-  attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
-  execution_generation INTEGER NOT NULL CHECK (execution_generation > 0),
-  agent_target_id TEXT,
-  status TEXT NOT NULL CHECK (status IN (
-    'leased', 'succeeded', 'failed_retryable', 'failed_terminal',
-    'invalid_output', 'cancelled', 'interrupted'
-  )),
-  started_at TEXT NOT NULL,
-  heartbeat_at TEXT,
-  finished_at TEXT,
-  result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
-  error_json TEXT CHECK (error_json IS NULL OR json_valid(error_json)),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  attempt_history_json TEXT NOT NULL DEFAULT '[]' CHECK (
+    json_valid(attempt_history_json) AND json_type(attempt_history_json) = 'array'
+  ),
+  current_runner_key TEXT,
+  available_at TEXT NOT NULL,
+  execution_generation INTEGER NOT NULL DEFAULT 0 CHECK (execution_generation >= 0),
   execution_token_hash TEXT,
-  execution_token_expires_at TEXT,
-  staging_session_id TEXT,
-  model_gateway_connection_id TEXT,
-  executor_snapshot_json TEXT CHECK (executor_snapshot_json IS NULL OR json_valid(executor_snapshot_json)),
-  failure_class TEXT CHECK (failure_class IS NULL OR failure_class IN (
-    'retryable_channel', 'retryable_output', 'terminal_task', 'cancelled'
-  )),
-  UNIQUE (task_id, execution_generation),
-  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-  FOREIGN KEY (agent_target_id) REFERENCES agent_targets(id) ON DELETE SET NULL,
-  FOREIGN KEY (model_gateway_connection_id) REFERENCES model_gateway_connections(id) ON DELETE SET NULL
-);
-
-CREATE TABLE task_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_id TEXT NOT NULL,
-  workflow_run_id TEXT NOT NULL,
-  event_type TEXT NOT NULL,
-  from_status TEXT,
-  to_status TEXT,
-  reason_json TEXT CHECK (reason_json IS NULL OR json_valid(reason_json)),
-  attempt_id TEXT,
-  agent_target_id TEXT,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-  FOREIGN KEY (workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE,
-  FOREIGN KEY (attempt_id) REFERENCES task_attempts(id) ON DELETE SET NULL,
-  FOREIGN KEY (agent_target_id) REFERENCES agent_targets(id) ON DELETE SET NULL
-);
-
-CREATE TABLE agent_routes (
-  project_id TEXT NOT NULL,
-  capability TEXT NOT NULL,
-  agent_target_id TEXT NOT NULL,
-  position INTEGER NOT NULL CHECK (position >= 0),
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (project_id, capability, agent_target_id),
-  UNIQUE (project_id, capability, position),
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (agent_target_id) REFERENCES agent_targets(id) ON DELETE CASCADE
-);
-
-CREATE TABLE agent_operations (
-  id TEXT PRIMARY KEY NOT NULL,
-  owner_context_id TEXT NOT NULL,
-  intent TEXT NOT NULL,
-  status TEXT NOT NULL,
-  project_id TEXT NOT NULL,
-  panel_id TEXT NOT NULL,
-  guide_id TEXT,
-  protocol_version INTEGER NOT NULL DEFAULT 2 CHECK (protocol_version = 2),
-  target_json TEXT NOT NULL CHECK (json_valid(target_json)),
-  input_json TEXT NOT NULL CHECK (json_valid(input_json)),
-  result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
-  error_json TEXT CHECK (error_json IS NULL OR json_valid(error_json)),
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  heartbeat_at TEXT,
+  idempotency_key TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   completed_at TEXT,
-  FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE
-);
-
-CREATE TABLE content_resources (
-  id TEXT PRIMARY KEY NOT NULL,
-  project_id TEXT NOT NULL,
-  panel_id TEXT,
-  resource_kind TEXT NOT NULL CHECK (resource_kind IN (
-    'wiki_markdown', 'wiki_space', 'generated_document', 'writing_skill'
-  )),
-  resource_key TEXT NOT NULL,
-  active_revision_id TEXT,
-  content_version INTEGER NOT NULL DEFAULT 0 CHECK (content_version >= 0),
   archived_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE (project_id, resource_kind, resource_key),
+  UNIQUE (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE
+  FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
+  FOREIGN KEY (retry_of_task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+  CHECK (depends_on_task_id IS NULL OR depends_on_task_id <> id),
+  CHECK (retry_of_task_id IS NULL OR retry_of_task_id <> id)
 );
 
-CREATE TABLE content_objects (
-  hash TEXT PRIMARY KEY NOT NULL,
-  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
-  storage_ref TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE content_revisions (
-  id TEXT PRIMARY KEY NOT NULL,
-  content_resource_id TEXT NOT NULL,
-  parent_revision_id TEXT,
-  revision_number INTEGER NOT NULL CHECK (revision_number > 0),
-  manifest_json TEXT NOT NULL CHECK (json_valid(manifest_json)),
-  manifest_hash TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'prunable', 'pruned')),
-  source_task_id TEXT,
-  source_attempt_id TEXT,
-  execution_generation INTEGER,
-  created_at TEXT NOT NULL,
-  activated_at TEXT,
-  prunable_at TEXT,
-  pruned_at TEXT,
-  UNIQUE (content_resource_id, revision_number),
-  FOREIGN KEY (content_resource_id) REFERENCES content_resources(id) ON DELETE CASCADE,
-  FOREIGN KEY (parent_revision_id) REFERENCES content_revisions(id) ON DELETE SET NULL,
-  FOREIGN KEY (source_task_id) REFERENCES tasks(id) ON DELETE SET NULL,
-  FOREIGN KEY (source_attempt_id) REFERENCES task_attempts(id) ON DELETE SET NULL
-);
-
-CREATE TABLE content_revision_files (
-  revision_id TEXT NOT NULL,
-  logical_path TEXT NOT NULL,
-  object_hash TEXT NOT NULL,
-  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
-  mime_type TEXT NOT NULL,
-  PRIMARY KEY (revision_id, logical_path),
-  FOREIGN KEY (revision_id) REFERENCES content_revisions(id) ON DELETE CASCADE,
-  FOREIGN KEY (object_hash) REFERENCES content_objects(hash) ON DELETE RESTRICT
-);
-
-CREATE TABLE task_staging_sessions (
-  id TEXT PRIMARY KEY NOT NULL,
+CREATE TABLE task_resources (
   task_id TEXT NOT NULL,
-  attempt_id TEXT NOT NULL UNIQUE,
-  execution_generation INTEGER NOT NULL CHECK (execution_generation > 0),
-  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'prepared', 'committed', 'abandoned')),
-  total_bytes INTEGER NOT NULL DEFAULT 0 CHECK (total_bytes >= 0),
+  resource_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('primary', 'input', 'output', 'context')),
+  captured_version INTEGER CHECK (captured_version IS NULL OR captured_version >= 0),
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  committed_at TEXT,
-  abandoned_at TEXT,
+  PRIMARY KEY (task_id, resource_id, role),
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-  FOREIGN KEY (attempt_id) REFERENCES task_attempts(id) ON DELETE CASCADE
+  FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE
 );
 
-CREATE TABLE task_staging_resources (
-  staging_session_id TEXT NOT NULL,
-  resource_kind TEXT NOT NULL,
-  resource_key TEXT NOT NULL,
-  content_resource_id TEXT,
-  base_revision_id TEXT,
-  base_content_version INTEGER NOT NULL DEFAULT 0,
-  metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
-  PRIMARY KEY (staging_session_id, resource_kind, resource_key),
-  FOREIGN KEY (staging_session_id) REFERENCES task_staging_sessions(id) ON DELETE CASCADE,
-  FOREIGN KEY (content_resource_id) REFERENCES content_resources(id) ON DELETE SET NULL,
-  FOREIGN KEY (base_revision_id) REFERENCES content_revisions(id) ON DELETE SET NULL
-);
-
-CREATE TABLE task_staged_files (
-  staging_session_id TEXT NOT NULL,
-  resource_kind TEXT NOT NULL,
-  resource_key TEXT NOT NULL,
-  logical_path TEXT NOT NULL,
-  object_hash TEXT,
-  size_bytes INTEGER NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
-  mime_type TEXT,
-  operation TEXT NOT NULL DEFAULT 'upsert' CHECK (operation IN ('upsert', 'delete')),
-  metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
-  created_at TEXT NOT NULL,
+CREATE TABLE change_scopes (
+  scope_key TEXT PRIMARY KEY NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN (
+    'catalog', 'project', 'panel_ui', 'panel_selection', 'resource', 'tasks', 'settings'
+  )),
+  project_id TEXT,
+  panel_id TEXT,
+  resource_id TEXT,
+  revision INTEGER NOT NULL CHECK (revision >= 0),
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (staging_session_id, resource_kind, resource_key, logical_path),
-  FOREIGN KEY (staging_session_id) REFERENCES task_staging_sessions(id) ON DELETE CASCADE,
-  FOREIGN KEY (object_hash) REFERENCES content_objects(hash) ON DELETE RESTRICT
-);
-
-CREATE TABLE content_pins (
-  task_id TEXT NOT NULL,
-  revision_id TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (task_id, revision_id),
-  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-  FOREIGN KEY (revision_id) REFERENCES content_revisions(id) ON DELETE CASCADE
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE
+    DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE INDEX projects_updated_at_idx ON projects(updated_at DESC, id ASC);
 CREATE INDEX panels_project_kind_idx ON panels(project_id, kind ASC);
+CREATE UNIQUE INDEX panels_project_position_idx ON panels(project_id, position);
+CREATE INDEX resources_project_kind_idx
+  ON resources(project_id, kind, deleted_at, updated_at DESC);
+CREATE INDEX documents_kind_position_idx ON documents(document_kind, position, resource_id);
+CREATE INDEX assets_media_type_idx ON assets(media_type, resource_id);
+CREATE INDEX wiki_spaces_position_idx ON wiki_spaces(position, resource_id);
+CREATE INDEX publications_position_idx ON publications(position, resource_id);
+CREATE INDEX releases_publication_idx ON releases(publication_id, position, resource_id);
 CREATE INDEX change_scopes_project_revision_idx ON change_scopes(project_id, revision);
-CREATE UNIQUE INDEX model_gateway_local_provider_unique_idx
-  ON model_gateway_connections(provider_id) WHERE transport = 'local_cli';
-CREATE INDEX model_gateway_connections_transport_idx
-  ON model_gateway_connections(transport, enabled, updated_at DESC);
-CREATE INDEX model_gateway_connections_dispatch_idx
-  ON model_gateway_connections(transport, enabled, priority DESC, id ASC);
-CREATE INDEX agent_targets_project_status_idx
-  ON agent_targets(project_id, status, priority DESC, last_heartbeat_at DESC);
-CREATE UNIQUE INDEX agent_targets_gateway_connection_unique_idx
-  ON agent_targets(project_id, model_gateway_connection_id)
-  WHERE model_gateway_connection_id IS NOT NULL;
-CREATE INDEX workflow_runs_project_updated_idx
-  ON workflow_runs(project_id, updated_at DESC, id);
+CREATE INDEX change_scopes_resource_revision_idx ON change_scopes(resource_id, revision);
 CREATE INDEX tasks_project_status_idx ON tasks(project_id, status, updated_at DESC);
-CREATE INDEX tasks_project_capability_idx ON tasks(project_id, capability, status, retry_after);
-CREATE INDEX tasks_lease_idx ON tasks(lease_expires_at, status);
+CREATE INDEX tasks_origin_panel_idx ON tasks(project_id, origin_panel_id, created_at DESC);
+CREATE INDEX tasks_ready_idx ON tasks(status, available_at, archived_at, created_at);
+CREATE INDEX tasks_dependency_idx ON tasks(depends_on_task_id, status);
+CREATE INDEX tasks_mutation_idx ON tasks(project_id, mutation_key, status, created_at);
+CREATE INDEX tasks_lease_idx ON tasks(status, lease_expires_at);
+CREATE INDEX task_resources_resource_idx ON task_resources(resource_id, role, task_id);
 CREATE UNIQUE INDEX tasks_active_idempotency_idx
   ON tasks(project_id, idempotency_key)
   WHERE idempotency_key IS NOT NULL AND archived_at IS NULL
-    AND status IN ('waiting', 'queued', 'reserved', 'running', 'claimed', 'converting', 'indexing');
-CREATE INDEX tasks_workflow_run_idx ON tasks(workflow_run_id, created_at, id);
-CREATE INDEX tasks_ready_idx ON tasks(project_id, status, available_at, archived_at);
-CREATE INDEX tasks_requested_gateway_connection_idx
-  ON tasks(project_id, requested_gateway_connection_id, status);
-CREATE INDEX tasks_mutation_lane_idx
-  ON tasks(project_id, mutation_key, mutation_sequence, status);
-CREATE INDEX task_dependencies_prerequisite_idx
-  ON task_dependencies(prerequisite_task_id, task_id);
-CREATE INDEX task_inputs_resource_idx ON task_inputs(resource_kind, resource_id, task_id);
-CREATE INDEX task_attempts_task_started_idx ON task_attempts(task_id, started_at DESC);
-CREATE INDEX task_attempts_task_channel_idx
-  ON task_attempts(task_id, model_gateway_connection_id, attempt_number);
-CREATE INDEX task_events_task_created_idx ON task_events(task_id, id DESC);
-CREATE INDEX task_events_workflow_run_created_idx
-  ON task_events(workflow_run_id, id DESC);
-CREATE INDEX agent_routes_target_idx ON agent_routes(agent_target_id);
-CREATE INDEX agent_operations_owner_status_idx
-  ON agent_operations(owner_context_id, status, updated_at DESC);
-CREATE INDEX agent_operations_target_idx
-  ON agent_operations(project_id, panel_id, updated_at DESC);
-CREATE INDEX content_resources_panel_kind_idx
-  ON content_resources(project_id, panel_id, resource_kind, updated_at DESC);
-CREATE INDEX content_revisions_resource_idx
-  ON content_revisions(content_resource_id, revision_number DESC);
-CREATE INDEX content_revisions_prunable_idx ON content_revisions(status, prunable_at);
-CREATE INDEX content_revision_files_object_idx ON content_revision_files(object_hash);
-CREATE INDEX task_staging_sessions_cleanup_idx
-  ON task_staging_sessions(status, updated_at);
-CREATE INDEX task_staged_files_object_idx ON task_staged_files(object_hash);
-
-CREATE TRIGGER agent_targets_command_only_insert
-BEFORE INSERT ON agent_targets
-WHEN NEW.transport <> 'command'
-BEGIN
-  SELECT RAISE(ABORT, 'agent target transport must be command');
-END;
-
-CREATE TRIGGER agent_targets_command_only_update
-BEFORE UPDATE OF transport ON agent_targets
-WHEN NEW.transport <> 'command'
-BEGIN
-  SELECT RAISE(ABORT, 'agent target transport must be command');
-END;
-
-CREATE TRIGGER tasks_status_insert_guard
-BEFORE INSERT ON tasks
-WHEN NEW.status NOT IN (
-  'waiting', 'queued', 'reserved', 'running', 'claimed', 'converting', 'indexing',
-  'failed', 'succeeded', 'cancel_requested', 'cancelled', 'stale', 'superseded'
-)
-BEGIN
-  SELECT RAISE(ABORT, 'invalid task status');
-END;
-
-CREATE TRIGGER tasks_status_update_guard
-BEFORE UPDATE OF status ON tasks
-WHEN NEW.status NOT IN (
-  'waiting', 'queued', 'reserved', 'running', 'claimed', 'converting', 'indexing',
-  'failed', 'succeeded', 'cancel_requested', 'cancelled', 'stale', 'superseded'
-)
-BEGIN
-  SELECT RAISE(ABORT, 'invalid task status');
-END;
-
-CREATE TRIGGER tasks_status_transition_guard
-BEFORE UPDATE OF status ON tasks
-WHEN NEW.status <> OLD.status
-  AND NOT (
-    (OLD.status = 'waiting' AND NEW.status IN ('queued', 'cancelled', 'superseded')) OR
-    (OLD.status = 'queued' AND NEW.status IN ('reserved', 'failed', 'cancelled', 'stale', 'superseded')) OR
-    (OLD.status = 'failed' AND NEW.status IN ('queued', 'reserved', 'cancelled', 'stale', 'superseded')) OR
-    (OLD.status = 'reserved' AND NEW.status IN ('queued', 'running', 'claimed', 'converting', 'indexing', 'failed', 'cancel_requested', 'cancelled', 'superseded')) OR
-    (OLD.status IN ('running', 'claimed', 'converting', 'indexing') AND NEW.status IN ('queued', 'failed', 'succeeded', 'cancel_requested', 'cancelled', 'stale', 'superseded')) OR
-    (OLD.status = 'cancel_requested' AND NEW.status IN ('failed', 'cancelled'))
-  )
-BEGIN
-  SELECT RAISE(ABORT, 'invalid task status transition');
-END;
-
-CREATE TRIGGER task_execution_fence_content_staging
-AFTER UPDATE OF status, execution_generation ON tasks
-WHEN NEW.execution_generation <> OLD.execution_generation
-  OR NEW.status IN ('failed', 'cancelled', 'stale', 'superseded')
-BEGIN
-  UPDATE task_staging_sessions
-  SET status = 'abandoned', abandoned_at = NEW.updated_at, updated_at = NEW.updated_at
-  WHERE task_id = NEW.id AND status IN ('open', 'prepared');
-  UPDATE task_attempts
-  SET execution_token_hash = NULL, execution_token_expires_at = NULL
-  WHERE task_id = NEW.id AND status = 'leased';
-  UPDATE agent_operations
-  SET status = 'failed',
-      error_json = json_object('code', 'execution_fenced'),
-      updated_at = NEW.updated_at,
-      completed_at = NEW.updated_at
-  WHERE status IN ('active', 'prepared')
-    AND json_extract(input_json, '$.taskId') = NEW.id;
-END;
+    AND status IN ('queued', 'running');

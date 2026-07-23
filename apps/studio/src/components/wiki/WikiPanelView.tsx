@@ -11,12 +11,9 @@ import {
 import {
   ChevronDown,
   FileOutput,
-  FilePlus2,
-  FileUp,
   MoreHorizontal,
   PanelLeft,
   Pencil,
-  Plus,
   RefreshCw,
   RotateCcw,
   Trash2,
@@ -26,14 +23,14 @@ import {
   latestWritingTaskForDocument,
   writingDocumentStatus,
 } from "../../lib/writing"
-import { GeneratedDocumentsEmpty, WikiPagesEmpty } from "./DocumentModuleEmpty"
-import { GeneratedDocumentMeta } from "./GeneratedDocumentMeta"
-import { generatedDocumentConversionDisplay } from "./generated-document-display"
+import { WikiPagesEmpty } from "./DocumentModuleEmpty"
 import {
   conversionStatusTaskFilter,
   WikiTaskStatusIcon,
   type WikiTaskStatusKind,
 } from "./helpers"
+import { MyDocumentItem, MyDocumentsModule } from "./MyDocumentsModule"
+import { myDocumentConversionDisplay } from "./my-document-display"
 import { RawDocumentsModule } from "./RawDocumentsModule"
 import type {
   ReturnTypeOfWikiPanelController,
@@ -61,34 +58,35 @@ export function WikiPanelView(
     wikiAgentSkillId,
     agentSkills,
     setPendingWikiAgentSkillId,
-    setPendingDeleteGeneratedDocument,
-    setPendingRenameGeneratedDocument,
+    setPendingDeleteMyDocument,
+    setPendingRenameMyDocument,
     isBusy,
-    retryingGeneratedDocumentId,
-    generatedDocumentRetryError,
+    retryingMyDocumentId,
+    myDocumentRetryError,
     isSelectionBusy,
     agentSelection,
-    isGeneratedDragActive,
+    isMyDocumentDragActive,
     isDocumentLibraryOpen,
     setIsDocumentLibraryOpen,
     collapsedModules,
-    generatedFileInputRef,
+    toggleModule,
+    myDocumentFileInputRef,
     wikiPageTree,
     moduleHeaderToggle,
     moduleInfo,
     renderWikiPageNodes,
     updateAgentSelection,
-    openGeneratedDocument,
-    openGeneratedOriginal,
-    createGeneratedMarkdownDocument,
-    addGeneratedFiles,
-    handleGeneratedDragEnter,
-    handleGeneratedDragOver,
-    handleGeneratedDragLeave,
-    handleGeneratedDrop,
-    publishGeneratedDocument,
-    retryGeneratedDocument,
-    displayedGeneratedDocuments,
+    openMyDocument,
+    openMyDocumentOriginal,
+    createMyDocumentMarkdownDocument,
+    addMyDocumentFiles,
+    handleMyDocumentDragEnter,
+    handleMyDocumentDragOver,
+    handleMyDocumentDragLeave,
+    handleMyDocumentDrop,
+    publishMyDocument,
+    retryMyDocument,
+    displayedMyDocuments,
   } = props.controller
   return (
     <section
@@ -111,418 +109,297 @@ export function WikiPanelView(
                 state={state}
               />
             )
-            const generatedDocumentsModule = (
-              <section
-                className={
-                  writing && collapsedModules.has("generated")
-                    ? "op-wiki-column--collapsed op-wiki-column op-wiki-column--generated"
-                    : isGeneratedDragActive
-                      ? "op-wiki-column op-wiki-column--generated op-wiki-column--drop-active"
-                      : "op-wiki-column op-wiki-column--generated"
+            const myDocumentsModule = (
+              <MyDocumentsModule
+                addFiles={addMyDocumentFiles}
+                createDocument={createMyDocumentMarkdownDocument}
+                fileInputRef={myDocumentFileInputRef}
+                isBusy={isBusy}
+                isCollapsed={writing && collapsedModules.has("myDocuments")}
+                isDragActive={isMyDocumentDragActive}
+                isEmpty={displayedMyDocuments.length === 0}
+                onDragEnter={handleMyDocumentDragEnter}
+                onDragLeave={handleMyDocumentDragLeave}
+                onDragOver={handleMyDocumentDragOver}
+                onDrop={handleMyDocumentDrop}
+                onToggle={
+                  writing ? () => toggleModule("myDocuments") : undefined
                 }
-                onDragEnter={handleGeneratedDragEnter}
-                onDragLeave={handleGeneratedDragLeave}
-                onDragOver={handleGeneratedDragOver}
-                onDrop={handleGeneratedDrop}
               >
-                <div className="op-wiki-drop-hint">{t`Drop files to upload`}</div>
-                <div className="op-wiki-column__header">
-                  {writing
-                    ? moduleHeaderToggle("generated", t`My Documents`)
-                    : null}
-                  <div className="op-wiki-column__title">
-                    <h2>{t`My Documents`}</h2>
-                    {moduleInfo(
-                      t`My Documents`,
-                      t`Documents you add or create with agents live here. Imported files are converted when needed without changing the Wiki. Selecting a document lets the agent discover it and load its latest content.`
-                    )}
-                  </div>
-                  <div className="op-wiki-actions">
-                    <Dropdown>
-                      <Button
-                        aria-label={t`Add document`}
-                        className="op-wiki-add-button"
-                        isDisabled={isBusy}
-                        isIconOnly
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <Plus size={16} />
-                      </Button>
-                      <Dropdown.Popover placement="bottom end">
-                        <Dropdown.Menu
-                          aria-label={t`Add document`}
-                          onAction={(key) => {
-                            if (key === "add-file") {
-                              generatedFileInputRef.current?.click()
-                              return
-                            }
-                            if (key === "new-document") {
-                              createGeneratedMarkdownDocument().catch(
-                                (error) => {
-                                  console.error(
-                                    "Failed to create generated Markdown document",
-                                    error
-                                  )
-                                }
-                              )
-                            }
-                          }}
-                        >
-                          <Dropdown.Item id="add-file" textValue={t`Add file`}>
-                            <FileUp size={15} />
-                            <Label>{t`Add file`}</Label>
-                          </Dropdown.Item>
-                          <Dropdown.Item
-                            id="new-document"
-                            textValue={t`New document`}
-                          >
-                            <FilePlus2 size={15} />
-                            <Label>{t`New document`}</Label>
-                          </Dropdown.Item>
-                        </Dropdown.Menu>
-                      </Dropdown.Popover>
-                    </Dropdown>
-                  </div>
-                  <input
-                    hidden
-                    multiple
-                    onChange={(event) => {
-                      addGeneratedFiles(event.currentTarget.files)
-                      event.currentTarget.value = ""
-                    }}
-                    ref={generatedFileInputRef}
-                    type="file"
-                  />
-                </div>
-                <div
-                  className={
-                    displayedGeneratedDocuments.length === 0
-                      ? "op-wiki-list op-wiki-column__content op-wiki-list--empty"
-                      : "op-wiki-list op-wiki-column__content"
-                  }
-                >
-                  {displayedGeneratedDocuments.length ? (
-                    displayedGeneratedDocuments.map((document) => {
-                      const writingTask = writing
-                        ? latestWritingTaskForDocument(writing.tasks, document)
-                        : null
-                      const writingStatus = writingDocumentStatus(writingTask)
-                      const isGenerating =
-                        document.generation?.status === "generating"
-                      const generationFailed =
-                        document.generation?.status === "failed"
-                      const conversion =
-                        generatedDocumentConversionDisplay(document)
-                      const conversionFailed = conversion.isFailed
-                      const isContentLocked =
-                        isGenerating || conversion.isLocked
-                      const isWritingLocked =
-                        writingStatus === "pending_create" ||
-                        writingStatus === "pending_revise" ||
-                        writingStatus === "active"
-                      const displayTitle = document.title.trim() || t`Untitled`
-                      const taskStatus: {
-                        filter: "active" | "done" | "pending"
-                        kind: WikiTaskStatusKind
-                        label: string
-                        taskId: string | null | undefined
-                      } | null = writingStatus
+                {displayedMyDocuments.map((document) => {
+                  const writingTask = writing
+                    ? latestWritingTaskForDocument(writing.tasks, document)
+                    : null
+                  const writingStatus = writingDocumentStatus(writingTask)
+                  const isWriting =
+                    document.writeOperation?.status === "writing"
+                  const writeFailed =
+                    document.writeOperation?.status === "failed"
+                  const conversion = myDocumentConversionDisplay(document)
+                  const conversionFailed = conversion.isFailed
+                  const isContentLocked = isWriting || conversion.isLocked
+                  const isWritingLocked =
+                    writingStatus === "pending_create" ||
+                    writingStatus === "pending_revise" ||
+                    writingStatus === "active"
+                  const displayTitle = document.title.trim() || t`Untitled`
+                  const taskStatus: {
+                    doneIcon?: "check" | "sparkles"
+                    filter: "active" | "done" | "pending"
+                    kind: WikiTaskStatusKind
+                    label: string
+                    taskId: string | null | undefined
+                  } | null = writingStatus
+                    ? {
+                        filter:
+                          writingStatus === "active" ? "active" : "pending",
+                        kind:
+                          writingStatus === "active"
+                            ? "running"
+                            : writingStatus === "failed"
+                              ? "failed"
+                              : "pending",
+                        label:
+                          writingStatus === "pending_create"
+                            ? t`Pending creation`
+                            : writingStatus === "pending_revise"
+                              ? t`Pending revision`
+                              : writingStatus === "active"
+                                ? t`In progress`
+                                : t`Failed`,
+                        taskId: writingTask?.id,
+                      }
+                    : document.writeOperation
+                      ? {
+                          doneIcon: "sparkles",
+                          filter:
+                            document.writeOperation.status === "writing"
+                              ? "active"
+                              : document.writeOperation.status === "failed"
+                                ? "pending"
+                                : "done",
+                          kind:
+                            document.writeOperation.status === "writing"
+                              ? "running"
+                              : document.writeOperation.status === "failed"
+                                ? "failed"
+                                : "done",
+                          label:
+                            document.writeOperation.status === "writing"
+                              ? t`Writing`
+                              : document.writeOperation.status === "failed"
+                                ? t`Failed`
+                                : t`Succeeded`,
+                          taskId: document.taskId,
+                        }
+                      : document.conversion &&
+                          !["not_required", "ready"].includes(
+                            document.conversion.status
+                          )
                         ? {
-                            filter:
-                              writingStatus === "active" ? "active" : "pending",
+                            filter: conversionStatusTaskFilter(
+                              document.conversion.status
+                            ),
                             kind:
-                              writingStatus === "active"
+                              document.conversion.status === "converting"
                                 ? "running"
-                                : writingStatus === "failed"
-                                  ? "failed"
-                                  : "pending",
-                            label:
-                              writingStatus === "pending_create"
-                                ? t`Pending creation`
-                                : writingStatus === "pending_revise"
-                                  ? t`Pending revision`
-                                  : writingStatus === "active"
-                                    ? t`In progress`
-                                    : t`Failed`,
-                            taskId: writingTask?.id,
-                          }
-                        : document.generation
-                          ? {
-                              filter:
-                                document.generation.status === "generating"
-                                  ? "active"
-                                  : document.generation.status === "failed"
-                                    ? "pending"
-                                    : "done",
-                              kind:
-                                document.generation.status === "generating"
-                                  ? "running"
-                                  : document.generation.status === "failed"
+                                : document.conversion.status === "queued"
+                                  ? "pending"
+                                  : document.conversion.status === "failed"
                                     ? "failed"
-                                    : "done",
-                              label:
-                                document.generation.status === "generating"
-                                  ? t`Generating`
-                                  : document.generation.status === "failed"
-                                    ? t`Failed`
-                                    : t`Succeeded`,
-                              taskId: document.taskId,
-                            }
-                          : document.conversion &&
-                              !["not_required", "ready"].includes(
-                                document.conversion.status
-                              )
-                            ? {
-                                filter: conversionStatusTaskFilter(
-                                  document.conversion.status
-                                ),
-                                kind:
-                                  document.conversion.status === "converting"
-                                    ? "running"
-                                    : document.conversion.status === "queued"
-                                      ? "pending"
-                                      : document.conversion.status === "failed"
-                                        ? "failed"
-                                        : document.conversion.status ===
-                                            "cancelled"
-                                          ? "cancelled"
-                                          : "done",
-                                label:
-                                  document.conversion.status === "converting"
-                                    ? t`Converting`
-                                    : document.conversion.status === "queued"
-                                      ? t`Pending conversion`
-                                      : document.conversion.status === "failed"
-                                        ? t`Conversion failed`
-                                        : document.conversion.status ===
-                                            "cancelled"
-                                          ? t`Conversion cancelled`
-                                          : t`Succeeded`,
-                                taskId: document.conversion.taskId,
-                              }
-                            : null
-                      return (
-                        <div
-                          className="op-wiki-list-item op-wiki-list-item--interactive"
-                          key={document.id}
-                        >
-                          <Checkbox
-                            aria-label={`${t`Select for agent context`}: ${displayTitle}`}
-                            className="op-wiki-selection-checkbox op-wiki-selection-checkbox--document"
-                            isDisabled={
-                              isSelectionBusy ||
-                              isWritingLocked ||
-                              isContentLocked ||
-                              conversionFailed
-                            }
-                            isSelected={agentSelection.selectedGeneratedDocumentIds.includes(
-                              document.id
-                            )}
-                            onChange={(isSelected) => {
-                              const selectedGeneratedDocumentIds = isSelected
-                                ? [
-                                    ...agentSelection.selectedGeneratedDocumentIds,
-                                    document.id,
-                                  ]
-                                : agentSelection.selectedGeneratedDocumentIds.filter(
-                                    (documentId) => documentId !== document.id
-                                  )
-                              updateAgentSelection({
-                                ...agentSelection,
-                                selectedGeneratedDocumentIds,
-                              }).catch((error) => {
-                                console.error(
-                                  "Failed to update generated document selection",
-                                  error
+                                    : document.conversion.status === "cancelled"
+                                      ? "cancelled"
+                                      : "done",
+                            label:
+                              document.conversion.status === "converting"
+                                ? t`Converting`
+                                : document.conversion.status === "queued"
+                                  ? t`Pending conversion`
+                                  : document.conversion.status === "failed"
+                                    ? t`Conversion failed`
+                                    : document.conversion.status === "cancelled"
+                                      ? t`Conversion cancelled`
+                                      : t`Succeeded`,
+                            taskId: document.conversion.taskId,
+                          }
+                        : null
+                  return (
+                    <MyDocumentItem
+                      document={document}
+                      isOpenDisabled={
+                        isContentLocked || isWritingLocked || conversionFailed
+                      }
+                      key={document.id}
+                      leading={
+                        <Checkbox
+                          aria-label={`${t`Select for agent context`}: ${displayTitle}`}
+                          className="op-wiki-selection-checkbox op-wiki-selection-checkbox--document"
+                          isDisabled={
+                            isSelectionBusy ||
+                            isWritingLocked ||
+                            isContentLocked ||
+                            conversionFailed
+                          }
+                          isSelected={agentSelection.selectedMyDocumentIds.includes(
+                            document.id
+                          )}
+                          onChange={(isSelected) => {
+                            const selectedMyDocumentIds = isSelected
+                              ? [
+                                  ...agentSelection.selectedMyDocumentIds,
+                                  document.id,
+                                ]
+                              : agentSelection.selectedMyDocumentIds.filter(
+                                  (documentId) => documentId !== document.id
                                 )
-                              })
-                            }}
+                            updateAgentSelection({
+                              ...agentSelection,
+                              selectedMyDocumentIds,
+                            }).catch((error) => {
+                              console.error(
+                                "Failed to update My Document selection",
+                                error
+                              )
+                            })
+                          }}
+                          variant="secondary"
+                        >
+                          <Checkbox.Content>
+                            <Checkbox.Control>
+                              <Checkbox.Indicator />
+                            </Checkbox.Control>
+                          </Checkbox.Content>
+                        </Checkbox>
+                      }
+                      onOpen={() => {
+                        openMyDocument(document).catch((error) => {
+                          console.error("Failed to open My Document", error)
+                        })
+                      }}
+                      onOpenOriginal={
+                        document.importSource
+                          ? () => openMyDocumentOriginal(document)
+                          : undefined
+                      }
+                      status={
+                        taskStatus ? (
+                          <WikiTaskStatusIcon
+                            doneIcon={taskStatus.doneIcon}
+                            filter={taskStatus.filter}
+                            kind={taskStatus.kind}
+                            label={taskStatus.label}
+                            onOpenTasks={onOpenAgentTasks}
+                            taskId={taskStatus.taskId}
+                          />
+                        ) : null
+                      }
+                      transport={transport}
+                    >
+                      {writingStatus === "failed" ||
+                      writeFailed ||
+                      conversionFailed ? (
+                        <Tooltip closeDelay={0} delay={0}>
+                          <Button
+                            aria-label={
+                              conversionFailed
+                                ? t`Conversion failed. Click to retry`
+                                : t`My Document write failed. Click to retry`
+                            }
+                            className="op-my-document-retry"
+                            isIconOnly
+                            onPress={() =>
+                              retryMyDocument(document, writingTask)
+                            }
+                            size="sm"
                             variant="secondary"
                           >
-                            <Checkbox.Content>
-                              <Checkbox.Control>
-                                <Checkbox.Indicator />
-                              </Checkbox.Control>
-                            </Checkbox.Content>
-                          </Checkbox>
-                          <div className="op-wiki-list-item__body">
-                            <button
-                              aria-label={displayTitle}
-                              className="op-generated-document-open"
-                              disabled={
-                                isContentLocked ||
-                                isWritingLocked ||
-                                conversionFailed
+                            {retryingMyDocumentId === document.id ? (
+                              <RefreshCw className="op-wiki-spin" size={14} />
+                            ) : (
+                              <RotateCcw size={14} />
+                            )}
+                          </Button>
+                          <Tooltip.Content placement="top" shouldFlip={false}>
+                            {myDocumentRetryError === document.id
+                              ? t`Retry failed. Ask the Agent to try again.`
+                              : conversionFailed
+                                ? t`Conversion failed. Click to retry`
+                                : t`My Document write failed. Click to retry`}
+                          </Tooltip.Content>
+                        </Tooltip>
+                      ) : null}
+                      <Dropdown>
+                        <Button
+                          aria-label={t`Document actions`}
+                          isDisabled={isBusy || isWritingLocked}
+                          isIconOnly
+                          size="sm"
+                          variant="ghost"
+                        >
+                          <MoreHorizontal size={16} />
+                        </Button>
+                        <Dropdown.Popover>
+                          <Dropdown.Menu
+                            disabledKeys={[
+                              ...(isBusy || isWritingLocked
+                                ? ["publish", "rename", "delete"]
+                                : []),
+                              ...(isContentLocked || conversionFailed
+                                ? ["publish", "rename"]
+                                : []),
+                            ]}
+                            onAction={(key) => {
+                              if (key === "publish") {
+                                publishMyDocument(document).catch((error) => {
+                                  console.error(
+                                    "Failed to publish My Document",
+                                    error
+                                  )
+                                })
+                              } else if (key === "rename") {
+                                setPendingRenameMyDocument(document)
+                              } else if (key === "delete") {
+                                setPendingDeleteMyDocument(document)
                               }
-                              onClick={() => {
-                                openGeneratedDocument(document).catch(
-                                  (error) => {
-                                    console.error(
-                                      "Failed to open generated document",
-                                      error
-                                    )
-                                  }
-                                )
-                              }}
-                              type="button"
-                            />
-                            <div className="op-generated-document-copy">
-                              <strong className="op-wiki-list-item__title">
-                                {displayTitle}
-                              </strong>
-                              <GeneratedDocumentMeta
-                                apiBase={transport.apiBase}
-                                document={document}
-                                onOpenOriginal={
-                                  document.importSource
-                                    ? () => openGeneratedOriginal(document)
-                                    : undefined
+                            }}
+                          >
+                            {writing ? null : (
+                              <Dropdown.Item
+                                id="publish"
+                                textValue={
+                                  document.publishHistory.length
+                                    ? t`Add latest version to raw documents`
+                                    : t`Add to raw documents`
                                 }
-                                status={
-                                  taskStatus ? (
-                                    <WikiTaskStatusIcon
-                                      filter={taskStatus.filter}
-                                      kind={taskStatus.kind}
-                                      label={taskStatus.label}
-                                      onOpenTasks={onOpenAgentTasks}
-                                      taskId={taskStatus.taskId}
-                                    />
-                                  ) : null
-                                }
-                              />
-                            </div>
-                          </div>
-                          <div className="op-wiki-list-item__tools">
-                            {writingStatus === "failed" ||
-                            generationFailed ||
-                            conversionFailed ? (
-                              <Tooltip closeDelay={0} delay={0}>
-                                <Button
-                                  aria-label={
-                                    conversionFailed
-                                      ? t`Conversion failed. Click to retry`
-                                      : t`Generation failed. Click to retry`
-                                  }
-                                  className="op-generated-document-retry"
-                                  isIconOnly
-                                  onPress={() =>
-                                    retryGeneratedDocument(
-                                      document,
-                                      writingTask
-                                    )
-                                  }
-                                  size="sm"
-                                  variant="secondary"
-                                >
-                                  {retryingGeneratedDocumentId ===
-                                  document.id ? (
-                                    <RefreshCw
-                                      className="op-wiki-spin"
-                                      size={14}
-                                    />
-                                  ) : (
-                                    <RotateCcw size={14} />
-                                  )}
-                                </Button>
-                                <Tooltip.Content
-                                  placement="top"
-                                  shouldFlip={false}
-                                >
-                                  {generatedDocumentRetryError === document.id
-                                    ? t`Retry failed. Ask the Agent to try again.`
-                                    : conversionFailed
-                                      ? t`Conversion failed. Click to retry`
-                                      : t`Generation failed. Click to retry`}
-                                </Tooltip.Content>
-                              </Tooltip>
-                            ) : null}
-                            <Dropdown>
-                              <Button
-                                aria-label={t`Document actions`}
-                                isDisabled={isBusy || isWritingLocked}
-                                isIconOnly
-                                size="sm"
-                                variant="ghost"
                               >
-                                <MoreHorizontal size={16} />
-                              </Button>
-                              <Dropdown.Popover>
-                                <Dropdown.Menu
-                                  disabledKeys={[
-                                    ...(isBusy || isWritingLocked
-                                      ? ["publish", "rename", "delete"]
-                                      : []),
-                                    ...(isContentLocked || conversionFailed
-                                      ? ["publish", "rename"]
-                                      : []),
-                                  ]}
-                                  onAction={(key) => {
-                                    if (key === "publish") {
-                                      publishGeneratedDocument(document).catch(
-                                        (error) => {
-                                          console.error(
-                                            "Failed to publish generated document",
-                                            error
-                                          )
-                                        }
-                                      )
-                                    } else if (key === "rename") {
-                                      setPendingRenameGeneratedDocument(
-                                        document
-                                      )
-                                    } else if (key === "delete") {
-                                      setPendingDeleteGeneratedDocument(
-                                        document
-                                      )
-                                    }
-                                  }}
-                                >
-                                  {writing ? null : (
-                                    <Dropdown.Item
-                                      id="publish"
-                                      textValue={
-                                        document.publishHistory.length
-                                          ? t`Add latest version to raw documents`
-                                          : t`Add to raw documents`
-                                      }
-                                    >
-                                      <FileOutput size={14} />
-                                      <Label>
-                                        {document.publishHistory.length
-                                          ? t`Add latest version to raw documents`
-                                          : t`Add to raw documents`}
-                                      </Label>
-                                    </Dropdown.Item>
-                                  )}
-                                  <Dropdown.Item
-                                    id="rename"
-                                    textValue={t`Rename`}
-                                  >
-                                    <Pencil size={14} />
-                                    <Label>{t`Rename`}</Label>
-                                  </Dropdown.Item>
-                                  <Separator />
-                                  <Dropdown.Item
-                                    id="delete"
-                                    textValue={t`Delete`}
-                                    variant="danger"
-                                  >
-                                    <Trash2 size={14} />
-                                    <Label>{t`Delete`}</Label>
-                                  </Dropdown.Item>
-                                </Dropdown.Menu>
-                              </Dropdown.Popover>
-                            </Dropdown>
-                          </div>
-                        </div>
-                      )
-                    })
-                  ) : (
-                    <GeneratedDocumentsEmpty />
-                  )}
-                </div>
-              </section>
+                                <FileOutput size={14} />
+                                <Label>
+                                  {document.publishHistory.length
+                                    ? t`Add latest version to raw documents`
+                                    : t`Add to raw documents`}
+                                </Label>
+                              </Dropdown.Item>
+                            )}
+                            <Dropdown.Item id="rename" textValue={t`Rename`}>
+                              <Pencil size={14} />
+                              <Label>{t`Rename`}</Label>
+                            </Dropdown.Item>
+                            <Separator />
+                            <Dropdown.Item
+                              id="delete"
+                              textValue={t`Delete`}
+                              variant="danger"
+                            >
+                              <Trash2 size={14} />
+                              <Label>{t`Delete`}</Label>
+                            </Dropdown.Item>
+                          </Dropdown.Menu>
+                        </Dropdown.Popover>
+                      </Dropdown>
+                    </MyDocumentItem>
+                  )
+                })}
+              </MyDocumentsModule>
             )
             const structuredWikiModule = (
               <section
@@ -684,7 +561,7 @@ export function WikiPanelView(
                         <X size={17} />
                       </Button>
                     </div>
-                    {generatedDocumentsModule}
+                    {myDocumentsModule}
                     {structuredWikiModule}
                   </div>
                 </>
@@ -720,7 +597,7 @@ export function WikiPanelView(
                       <X size={17} />
                     </Button>
                   </div>
-                  {generatedDocumentsModule}
+                  {myDocumentsModule}
                 </div>
                 <div className="op-wiki-knowledge-stack">
                   {structuredWikiModule}
@@ -732,7 +609,7 @@ export function WikiPanelView(
 
           {writing ? (
             <WritingComposer
-              documents={state.generatedDocuments}
+              documents={state.myDocuments}
               isSelectionBusy={isSelectionBusy}
               onManageSkills={onManageSkills}
               onOpenAgentTasks={onOpenAgentTasks}

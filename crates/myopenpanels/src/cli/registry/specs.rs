@@ -180,31 +180,52 @@ const SPECS: &[CommandDefinition] = &[
         panel = "wiki"
     ),
     spec!(
-        "publishing.checkpoint",
-        ["publishing", "checkpoint"],
-        "Checkpoint a publishing attempt",
-        "publishing",
+        "release.list",
+        ["release", "list"],
+        "List Releases",
+        "release",
+        "current-project",
+        false
+    ),
+    spec!(
+        "release.checkpoint",
+        ["release", "checkpoint"],
+        "Checkpoint a Release attempt",
+        "release",
         "task",
-        true,
-        panel = "publishing"
+        true
     ),
     spec!(
-        "typesetting.title.skill.list",
-        ["typesetting", "title", "skill", "list"],
+        "publication.list",
+        ["publication", "list"],
+        "List Publications",
+        "publication",
+        "current-project",
+        false
+    ),
+    spec!(
+        "publication.title.skill.list",
+        ["publication", "title", "skill", "list"],
         "List title generation Skills",
-        "typesetting",
-        "panel-kind",
-        false,
-        panel = "typesetting"
+        "publication",
+        "current-project",
+        false
     ),
     spec!(
-        "typesetting.title.generate",
-        ["typesetting", "title", "generate"],
+        "publication.title.generate",
+        ["publication", "title", "generate"],
         "Create a title generation Task",
-        "typesetting",
-        "panel-kind",
-        true,
-        panel = "typesetting"
+        "publication",
+        "current-project",
+        true
+    ),
+    spec!(
+        "asset.list",
+        ["asset", "list"],
+        "List Project Assets",
+        "asset",
+        "current-project",
+        false
     ),
     spec!(
         "wiki.raw.create",
@@ -234,58 +255,68 @@ const SPECS: &[CommandDefinition] = &[
         panel = "wiki"
     ),
     spec!(
-        "wiki.document.list",
-        ["wiki", "document", "list"],
-        "List Generated Documents",
-        "wiki",
-        "panel-kind",
-        false,
-        panel = "wiki"
+        "my-document.list",
+        ["my-document", "list"],
+        "List My Documents",
+        "my-document",
+        "current-project",
+        false
     ),
     spec!(
-        "wiki.document.create",
-        ["wiki", "document", "create"],
-        "Create a Generated Document",
-        "wiki",
-        "panel-kind-or-task",
-        true,
-        panel = "wiki"
+        "my-document.import",
+        ["my-document", "import"],
+        "Import a My Document",
+        "my-document",
+        "current-project",
+        true
     ),
     spec!(
-        "wiki.document.read",
-        ["wiki", "document", "read"],
-        "Read a Generated Document",
-        "wiki",
-        "panel-kind",
-        false,
-        panel = "wiki"
+        "my-document.read",
+        ["my-document", "read"],
+        "Read a My Document",
+        "my-document",
+        "current-project",
+        false
     ),
     spec!(
-        "wiki.document.update",
-        ["wiki", "document", "update"],
-        "Update a Generated Document",
-        "wiki",
-        "panel-kind",
-        true,
-        panel = "wiki"
+        "my-document.update",
+        ["my-document", "update"],
+        "Update a My Document",
+        "my-document",
+        "current-project",
+        true
     ),
     spec!(
-        "wiki.document.delete",
-        ["wiki", "document", "delete"],
-        "Delete a Generated Document",
-        "wiki",
-        "panel-kind",
-        true,
-        panel = "wiki"
+        "my-document.delete",
+        ["my-document", "delete"],
+        "Delete a My Document",
+        "my-document",
+        "current-project",
+        true
     ),
     spec!(
-        "wiki.document.publish",
-        ["wiki", "document", "publish"],
-        "Publish a Generated Document",
-        "wiki",
-        "panel-kind",
-        true,
-        panel = "wiki"
+        "wiki-source.create-from-my-document",
+        ["wiki-source", "create-from-my-document"],
+        "Create a Wiki Source from a My Document",
+        "wiki-source",
+        "current-project",
+        true
+    ),
+    spec!(
+        "my-document.create",
+        ["my-document", "create"],
+        "Begin My Document creation",
+        "my-document",
+        "current-project",
+        true
+    ),
+    spec!(
+        "my-document.revise",
+        ["my-document", "revise"],
+        "Begin My Document revision",
+        "my-document",
+        "current-project",
+        true
     ),
     spec!(
         "wiki.space.list",
@@ -360,15 +391,6 @@ const SPECS: &[CommandDefinition] = &[
         panel = "wiki"
     ),
     spec!(
-        "wiki.document.generate",
-        ["wiki", "document", "generate"],
-        "Begin Wiki document generation",
-        "wiki",
-        "panel-kind",
-        true,
-        panel = "wiki"
-    ),
-    spec!(
         "writing.request.read",
         ["writing", "request", "read"],
         "Read a submitted Writing request",
@@ -377,17 +399,17 @@ const SPECS: &[CommandDefinition] = &[
         false
     ),
     spec!(
-        "writing.generate",
-        ["writing", "generate"],
-        "Begin Writing document generation",
+        "writing.write",
+        ["writing", "write"],
+        "Begin My Document writing",
         "writing",
         "task",
         true
     ),
     spec!(
-        "writing.refinement.read",
-        ["writing", "refinement", "read"],
-        "Read a submitted Writing Skill refinement",
+        "writing.distillation.read",
+        ["writing", "distillation", "read"],
+        "Read a submitted Writing Skill distillation",
         "writing",
         "task",
         false
@@ -395,7 +417,7 @@ const SPECS: &[CommandDefinition] = &[
     spec!(
         "writing.skill.install",
         ["writing", "skill", "install"],
-        "Install a refined shared Writing Skill",
+        "Install a distilled shared Writing Skill",
         "writing",
         "task",
         true
@@ -473,46 +495,6 @@ const SPECS: &[CommandDefinition] = &[
         true
     ),
     spec!(
-        "task.claim",
-        ["task", "claim"],
-        "Claim a Task",
-        "task",
-        "task",
-        true
-    ),
-    spec!(
-        "task.heartbeat",
-        ["task", "heartbeat"],
-        "Heartbeat a Task lease",
-        "task",
-        "task",
-        true
-    ),
-    spec!(
-        "task.complete",
-        ["task", "complete"],
-        "Complete a Task",
-        "task",
-        "task",
-        true
-    ),
-    spec!(
-        "task.fail",
-        ["task", "fail"],
-        "Fail a Task",
-        "task",
-        "task",
-        true
-    ),
-    spec!(
-        "task.release",
-        ["task", "release"],
-        "Release a Task",
-        "task",
-        "task",
-        true
-    ),
-    spec!(
         "task.retry",
         ["task", "retry"],
         "Retry a Task",
@@ -535,38 +517,6 @@ const SPECS: &[CommandDefinition] = &[
         "task",
         "task",
         true
-    ),
-    spec!(
-        "task.events",
-        ["task", "events"],
-        "List Task events",
-        "task",
-        "task",
-        false
-    ),
-    spec!(
-        "task.attempts",
-        ["task", "attempts"],
-        "List Task attempts",
-        "task",
-        "task",
-        false
-    ),
-    spec!(
-        "workflow.run.list",
-        ["workflow", "run", "list"],
-        "List Workflow Runs",
-        "workflow",
-        "current-project",
-        false
-    ),
-    spec!(
-        "workflow.run.read",
-        ["workflow", "run", "read"],
-        "Read a Workflow Run DAG",
-        "workflow",
-        "current-project",
-        false
     ),
     spec!(
         "operation.list",
@@ -664,54 +614,6 @@ const SPECS: &[CommandDefinition] = &[
         "current-project",
         false
     ),
-    spec!(
-        "agent.target.list",
-        ["agent", "target", "list"],
-        "List Agent Targets",
-        "agent",
-        "current-project",
-        false
-    ),
-    spec!(
-        "agent.target.register",
-        ["agent", "target", "register"],
-        "Register an Agent Target",
-        "agent",
-        "current-project",
-        true
-    ),
-    spec!(
-        "agent.target.remove",
-        ["agent", "target", "remove"],
-        "Remove an Agent Target",
-        "agent",
-        "current-project",
-        true
-    ),
-    spec!(
-        "agent.route.list",
-        ["agent", "route", "list"],
-        "List Agent routes",
-        "agent",
-        "current-project",
-        false
-    ),
-    spec!(
-        "agent.route.set",
-        ["agent", "route", "set"],
-        "Set an Agent route",
-        "agent",
-        "current-project",
-        true
-    ),
-    spec!(
-        "agent.route.remove",
-        ["agent", "route", "remove"],
-        "Remove an Agent route",
-        "agent",
-        "current-project",
-        true
-    ),
 ];
 
 pub(crate) fn command_action(command_id: CommandId, args: Vec<String>) -> Option<Value> {
@@ -742,8 +644,6 @@ pub(crate) fn catalog(domain: Option<&str>) -> Option<Value> {
             .collect::<Vec<_>>();
         return (!commands.is_empty()).then(|| {
             json!({
-                "schemaVersion": COMMAND_CATALOG_SCHEMA_VERSION,
-                "catalogVersion": COMMAND_CATALOG_VERSION,
                 "domain": domain,
                 "commands": commands,
             })
@@ -754,8 +654,6 @@ pub(crate) fn catalog(domain: Option<&str>) -> Option<Value> {
         *counts.entry(catalog_domain(spec).unwrap()).or_default() += 1;
     }
     Some(json!({
-        "schemaVersion": COMMAND_CATALOG_SCHEMA_VERSION,
-        "catalogVersion": COMMAND_CATALOG_VERSION,
         "domains": counts.into_iter().map(|(domain, count)| json!({ "domain": domain, "count": count })).collect::<Vec<_>>(),
     }))
 }
