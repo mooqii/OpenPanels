@@ -19,7 +19,6 @@ const MATERIALIZATION_RETENTION: Duration = Duration::from_secs(30 * 60);
 #[serde(rename_all = "camelCase")]
 pub struct SelectionPayload {
     pub selection: Value,
-    pub selection_file: String,
     pub base64: Option<String>,
     pub mime_type: Option<String>,
     pub image: Option<Value>,
@@ -146,9 +145,6 @@ fn read_selection_from_connection(
 
     Ok(SelectionPayload {
         selection,
-        selection_file: panel_file(paths, project_id, panel_id, "selection.json")
-            .display()
-            .to_string(),
         base64,
         mime_type,
         image: None,
@@ -773,8 +769,27 @@ fn read_asset_base64(storage_dir: &Path, asset_ref: &str) -> Result<String, CliE
 }
 
 fn asset_path(storage_dir: &Path, asset_ref: &str) -> Result<PathBuf, CliError> {
+    let parts = asset_ref.split('/').collect::<Vec<_>>();
+    if parts.len() < 7
+        || parts[0] != "projects"
+        || parts[1].is_empty()
+        || parts[2] != "content"
+        || parts[3] != "asset"
+        || parts[4].is_empty()
+        || parts[5]
+            .parse::<u64>()
+            .ok()
+            .filter(|version| *version > 0)
+            .is_none()
+        || parts[6..].iter().any(|part| part.is_empty())
+    {
+        return Err(CliError::with_code(
+            "invalid_asset_ref",
+            "Asset reference must use projects/<project>/content/asset/<asset>/<version>/<file>.",
+        ));
+    }
     let mut path = PathBuf::from(storage_dir);
-    for part in asset_ref.split('/') {
+    for part in parts {
         path.push(sanitize_path_part(part));
     }
     if path.starts_with(storage_dir) {
@@ -782,16 +797,6 @@ fn asset_path(storage_dir: &Path, asset_ref: &str) -> Result<PathBuf, CliError> 
     } else {
         Err(CliError::new("Asset path escapes storage directory."))
     }
-}
-
-fn panel_file(paths: &MyOpenPanelsPaths, project_id: &str, panel_id: &str, name: &str) -> PathBuf {
-    paths
-        .storage_dir
-        .join("projects")
-        .join(sanitize_path_part(project_id))
-        .join("panels")
-        .join(sanitize_path_part(panel_id))
-        .join(sanitize_path_part(name))
 }
 
 fn mime_type_for_file(path: &str) -> String {

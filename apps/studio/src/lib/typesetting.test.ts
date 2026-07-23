@@ -197,7 +197,7 @@ describe("Typesetting document insertion", () => {
     expect(
       typesettingImagesToContent([
         {
-          assetRef: "projects/project:1/panels/panel:1/assets/photo.png",
+          assetRef: "projects/project:1/content/asset/asset:photo/1/photo.png",
           fileName: "photo.png",
           height: 900,
           mimeType: "image/png",
@@ -211,7 +211,7 @@ describe("Typesetting document insertion", () => {
         type: "image",
         attrs: {
           alt: "photo.png",
-          assetRef: "projects/project:1/panels/panel:1/assets/photo.png",
+          assetRef: "projects/project:1/content/asset/asset:photo/1/photo.png",
           height: 900,
           src: "/api/assets/photo.png",
           title: "photo.png",
@@ -583,7 +583,7 @@ function canvasAsset(
 ): TypesettingCanvasAsset {
   return {
     assetId,
-    assetRef: `projects/${projectId}/panels/panel:canvas/assets/${assetId}.png`,
+    assetRef: `projects/${projectId}/content/asset/${assetId}/1/${assetId}.png`,
     canvasPanelId: "panel:canvas",
     id: `${projectId}:${assetId}`,
     mimeType: "image/png",

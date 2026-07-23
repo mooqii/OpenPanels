@@ -291,12 +291,7 @@ pub fn create_release(
     }
 
     let release_id = crate::ids::random_id("release");
-    let release_dir = storage
-        .panel_dir(&bootstrap.project.id, &bootstrap.panel.id)
-        .join("assets")
-        .join("releases")
-        .join(crate::paths::sanitize_path_part(&release_id));
-    let result = (|| {
+    (|| {
         let media = snapshot_media(
             &storage,
             &bootstrap.project.id,
@@ -350,11 +345,7 @@ pub fn create_release(
             "state": state,
             "revision": revisions.first().copied().unwrap_or(bootstrap.revision),
         }))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(release_dir);
-    }
-    result
+    })()
 }
 
 pub fn create_attempt(
@@ -1048,7 +1039,7 @@ mod tests {
                     "title": "Title",
                     "bodyText": "Body",
                     "media": [{
-                        "assetRef": "projects/p/panels/x/assets/cover.png",
+                        "assetRef": "projects/p/content/asset/asset:cover/1/cover.png",
                         "contentHash": "sha256:test",
                         "fileName": "cover.png",
                         "src": "/cover.png",
@@ -1081,7 +1072,7 @@ mod tests {
             })
         };
         let image = json!([{
-            "assetRef": "projects/p/panels/x/assets/cover.png",
+            "assetRef": "projects/p/content/asset/asset:cover/1/cover.png",
             "fileName": "cover.png",
             "src": "/cover.png",
             "isPrimary": true

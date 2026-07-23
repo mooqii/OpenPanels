@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn request_transaction_failure_removes_placeholder_files_and_state() {
+    fn request_transaction_failure_leaves_no_placeholder_content_or_state() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
         let writing = ensure_project_bootstrap(
@@ -289,9 +289,7 @@ mod tests {
             .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
             .expect("wiki panel");
         let storage = Storage::open(&paths).expect("storage");
-        let my_documents_dir = storage
-            .panel_dir(&initial.project.id, &wiki_panel.panel.id)
-            .join("my-documents");
+        let panels_dir = storage.project_dir(&initial.project.id).join("panels");
         storage
             .connection()
             .execute_batch(
@@ -325,12 +323,7 @@ mod tests {
                 .map(Vec::len),
             Some(0)
         );
-        assert_eq!(
-            fs::read_dir(my_documents_dir)
-                .map(|entries| entries.count())
-                .unwrap_or(0),
-            0
-        );
+        assert!(!panels_dir.exists());
     }
 
     #[test]

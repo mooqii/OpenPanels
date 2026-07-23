@@ -268,7 +268,7 @@ mod tests {
                 "originalFileName": "source.md",
                 "mimeType": "text/markdown",
                 "source": "user",
-                "markdownRef": "raw/raw:1/source.md",
+                "markdownRef": "source.md",
                 "markdownVersion": 1,
                 "createdAt": "2026-01-01T00:00:00.000Z",
                 "updatedAt": "2026-01-01T00:00:00.000Z"
@@ -358,6 +358,48 @@ mod tests {
         assert_eq!(
             fs::read_to_string(storage_dir.join("content-marker.txt")).expect("preserved content"),
             "keep me"
+        );
+    }
+
+    #[test]
+    fn assets_are_written_only_to_project_content_storage() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        let (project, panel) = project_and_panel(&storage, PanelKind::Typesetting);
+        let written = storage
+            .write_asset_from_buffer(
+                &project.id,
+                &panel.id,
+                "cover.png",
+                b"cover image bytes",
+                false,
+            )
+            .expect("asset");
+        assert!(written.asset_ref.starts_with(&format!(
+            "projects/{}/content/asset/{}/1/",
+            project.id, written.resource_id
+        )));
+        assert!(written.file_path.is_file());
+        assert!(!storage.project_dir(&project.id).join("panels").exists());
+        assert_eq!(
+            storage
+                .asset_path(&format!(
+                    "projects/{}/panels/{}/assets/cover.png",
+                    project.id, panel.id
+                ))
+                .expect_err("legacy asset ref must be rejected")
+                .code(),
+            Some("invalid_asset_ref")
+        );
+        drop(storage);
+
+        let reopened = Storage::open(&paths).expect("reopened storage");
+        assert_eq!(
+            reopened
+                .read_asset_by_id(&project.id, &written.resource_id)
+                .expect("canonical asset"),
+            b"cover image bytes"
         );
     }
 

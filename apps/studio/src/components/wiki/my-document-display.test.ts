@@ -53,7 +53,7 @@ describe("myDocumentFormats", () => {
   const importSource = {
     fileName: "moodbook.png",
     mimeType: "image/png",
-    originalRef: "my-documents/document/original/moodbook.png",
+    originalRef: "original/moodbook.png",
     sha256: "fixture",
     sizeBytes: 42,
   }

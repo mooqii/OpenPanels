@@ -47,10 +47,9 @@ pub fn search_pages(
         return Err(CliError::new("Wiki page search query cannot be empty."));
     }
     let wiki = get_wiki_bootstrap(paths)?;
-    let storage = Storage::open(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
     let materialized = materialize_wiki_space_for(paths, &wiki, &space.id)?;
-    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
+    let materialization_dir = wiki_materialization_dir(paths, &wiki.project.id);
     let query_lower = query.to_lowercase();
     let terms = query_lower
         .split_whitespace()
@@ -64,7 +63,7 @@ pub fn search_pages(
         .flatten()
         .filter_map(|page| {
             let page_path = page.get("path").and_then(Value::as_str)?;
-            let path = wiki_page_path(&panel_dir, &space.id, page_path).ok()?;
+            let path = wiki_page_path(&materialization_dir, &space.id, page_path).ok()?;
             let markdown = crate::content::read_active_text(
                 paths,
                 &wiki.project.id,
@@ -141,11 +140,10 @@ pub fn read_page(
     }
     crate::content::require_broker_for_task_execution()?;
     let wiki = get_wiki_bootstrap(paths)?;
-    let storage = Storage::open(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
     let materialized = materialize_wiki_space_for(paths, &wiki, &space.id)?;
     let path = wiki_page_path(
-        &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
+        &wiki_materialization_dir(paths, &wiki.project.id),
         &space.id,
         page_path,
     )?;
@@ -209,21 +207,11 @@ pub fn write_page(
         Some(task_id) => get_wiki_task_target(paths, task_id)?,
         None => get_wiki_bootstrap(paths)?,
     };
-    let storage = Storage::open(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
     if task_id.is_none() {
         let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space.id);
         crate::tasks::supersede_active_wiki_mutations(paths, &wiki.project.id, &mutation_key)?;
     }
-    let path = wiki_page_path(
-        &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
-        &space.id,
-        page_path,
-    )?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(path, content).map_err(to_cli_error)?;
     if task_id.is_none() {
         crate::content::commit_immediate_text(
             paths,
@@ -236,6 +224,18 @@ pub fn write_page(
             "text/markdown",
             false,
         )?;
+        let (root_path, _, _) = wiki_local_paths(paths, &wiki.project.id, &space.id);
+        let _ = fs::remove_dir_all(root_path);
+    } else {
+        let path = wiki_page_path(
+            &wiki_materialization_dir(paths, &wiki.project.id),
+            &space.id,
+            page_path,
+        )?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(to_cli_error)?;
+        }
+        fs::write(path, content).map_err(to_cli_error)?;
     }
     let now = now_iso();
     let page_existed = space
@@ -293,37 +293,21 @@ pub fn rename_page(
     next_page_path: &str,
 ) -> Result<Value, CliError> {
     let mut wiki = get_wiki_bootstrap(paths)?;
-    let storage = Storage::open(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
     let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space.id);
     crate::tasks::supersede_active_wiki_mutations(paths, &wiki.project.id, &mutation_key)?;
-    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
-    let old_path = wiki_page_path(&panel_dir, &space.id, page_path)?;
-    let new_path = wiki_page_path(&panel_dir, &space.id, next_page_path)?;
-    if old_path != new_path {
-        if new_path.exists() {
-            return Err(CliError::new(format!(
-                "Wiki page already exists: {next_page_path}"
-            )));
-        }
-        if let Some(parent) = new_path.parent() {
-            fs::create_dir_all(parent).map_err(to_cli_error)?;
-        }
-        fs::rename(old_path, new_path).map_err(to_cli_error)?;
-        if let Err(error) = crate::content::rename_active_file(
+    if page_path != next_page_path {
+        crate::content::rename_active_file(
             paths,
             &wiki.project.id,
             crate::content::ResourceKind::WikiSpace,
             &space.id,
             page_path,
             next_page_path,
-        ) {
-            let _ = fs::rename(
-                wiki_page_path(&panel_dir, &space.id, next_page_path)?,
-                wiki_page_path(&panel_dir, &space.id, page_path)?,
-            );
-            return Err(error);
-        }
+        )?
+        .ok_or_else(|| CliError::new(format!("Wiki page not found: {page_path}")))?;
+        let (root_path, _, _) = wiki_local_paths(paths, &wiki.project.id, &space.id);
+        let _ = fs::remove_dir_all(root_path);
     }
     let now = now_iso();
     let spaces = state_array_mut(&mut wiki.state, "wikiSpaces")?;

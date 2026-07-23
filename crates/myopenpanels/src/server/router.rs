@@ -443,10 +443,6 @@ fn build_router(
             "/api/projects/{project_id}/panels/{panel_id}/selection-materializations/{request_id}",
             post(api_complete_selection_materialization),
         )
-        .route(
-            "/api/projects/{project_id}/panels/{panel_id}/assets/{*asset_name}",
-            get(api_read_panel_asset),
-        )
         .route("/", get(index))
         .route("/{*path}", get(static_asset))
         .method_not_allowed_fallback(|| async { StatusCode::NOT_FOUND })

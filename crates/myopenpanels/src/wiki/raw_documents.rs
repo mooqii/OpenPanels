@@ -8,20 +8,24 @@ pub fn add_raw_document(
     content: &[u8],
 ) -> Result<Value, CliError> {
     let mut wiki = get_wiki_bootstrap(paths)?;
-    let storage = Storage::open(paths)?;
     let now = now_iso();
     let wiki_space = resolve_wiki_space(&wiki.state, wiki_space_id)?;
     let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space.id);
     let safe_file_name = sanitize_file_name(file_name);
     let document_id = create_id("raw");
-    let original_ref = wiki_ref(&["raw", &document_id, "original", &safe_file_name]);
-    let markdown_ref = wiki_ref(&["raw", &document_id, "source.md"]);
-    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
-    let original_path = wiki_panel_path(&panel_dir, &original_ref)?;
-    if let Some(parent) = original_path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(&original_path, content).map_err(to_cli_error)?;
+    let original_ref = format!("original/{safe_file_name}");
+    let markdown_ref = "source.md".to_owned();
+    crate::content::commit_immediate_file(
+        paths,
+        &wiki.project.id,
+        Some(&wiki.panel.id),
+        crate::content::ResourceKind::WikiMarkdown,
+        &document_id,
+        &original_ref,
+        content,
+        mime_type.unwrap_or_else(|| mime_type_for_file(file_name)),
+        true,
+    )?;
 
     let is_text = is_plain_text_file(&safe_file_name, mime_type);
     let word_count = if is_text {
@@ -30,11 +34,6 @@ pub fn add_raw_document(
         None
     };
     if is_text {
-        let markdown_path = wiki_panel_path(&panel_dir, &markdown_ref)?;
-        if let Some(parent) = markdown_path.parent() {
-            fs::create_dir_all(parent).map_err(to_cli_error)?;
-        }
-        fs::write(&markdown_path, content).map_err(to_cli_error)?;
         crate::content::commit_immediate_text(
             paths,
             &wiki.project.id,
@@ -44,7 +43,7 @@ pub fn add_raw_document(
             "source.md",
             content,
             "text/markdown",
-            true,
+            false,
         )?;
     }
 
@@ -209,11 +208,14 @@ pub fn raw_document_original(
                 "Wiki raw document has no originalRef: {document_id}"
             ))
         })?;
-    let storage = Storage::open(paths)?;
-    let file_path = wiki_panel_path(
-        &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
+    let file_path = crate::content::active_file_path(
+        paths,
+        &wiki.project.id,
+        crate::content::ResourceKind::WikiMarkdown,
+        document_id,
         original_ref,
-    )?;
+    )?
+    .ok_or_else(|| CliError::new(format!("Wiki raw document original is unavailable: {document_id}")))?;
     let metadata = fs::metadata(&file_path).map_err(to_cli_error)?;
     if !metadata.is_file() {
         return Err(CliError::new(format!(
@@ -276,7 +278,6 @@ pub fn delete_raw_document(
     wiki_space_id: Option<&str>,
 ) -> Result<Value, CliError> {
     let mut wiki = get_wiki_bootstrap(paths)?;
-    let storage = Storage::open(paths)?;
     let wiki_space = resolve_wiki_space(&wiki.state, wiki_space_id)?;
     let documents = state_array_mut(&mut wiki.state, "rawDocuments")?;
     let index = documents
@@ -312,10 +313,6 @@ pub fn delete_raw_document(
             .unwrap_or(Value::Null);
         state_object_mut(&mut wiki.state)?.insert("activeRawDocumentId".to_owned(), next_id);
     }
-    let raw_dir = storage
-        .panel_dir(&wiki.project.id, &wiki.panel.id)
-        .join("raw")
-        .join(sanitize_path_part(document_id));
     save_wiki_state(paths, &wiki)?;
     crate::content::archive_resource(
         paths,
@@ -323,15 +320,6 @@ pub fn delete_raw_document(
         crate::content::ResourceKind::WikiMarkdown,
         document_id,
     )?;
-    fs::remove_dir_all(raw_dir)
-        .or_else(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Ok(())
-            } else {
-                Err(error)
-            }
-        })
-        .map_err(to_cli_error)?;
     Ok(json!({ "document": document, "task": task, "state": wiki.state }))
 }
 
@@ -345,20 +333,21 @@ pub fn rename_raw_document(
         return Err(CliError::new("Raw document file name cannot be empty."));
     }
     let mut wiki = get_wiki_bootstrap(paths)?;
-    let storage = Storage::open(paths)?;
-    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
     let existing = find_document(&wiki.state, document_id)?.clone();
     let old_ref = existing["originalRef"]
         .as_str()
         .ok_or_else(|| CliError::new("Wiki raw document originalRef is missing."))?;
-    let new_ref = wiki_ref(&["raw", document_id, "original", &safe_file_name]);
+    let new_ref = format!("original/{safe_file_name}");
     if old_ref != new_ref {
-        let old_path = wiki_panel_path(&panel_dir, old_ref)?;
-        let new_path = wiki_panel_path(&panel_dir, &new_ref)?;
-        if let Some(parent) = new_path.parent() {
-            fs::create_dir_all(parent).map_err(to_cli_error)?;
-        }
-        fs::rename(old_path, new_path).map_err(to_cli_error)?;
+        crate::content::rename_active_file(
+            paths,
+            &wiki.project.id,
+            crate::content::ResourceKind::WikiMarkdown,
+            document_id,
+            old_ref,
+            &new_ref,
+        )?
+        .ok_or_else(|| CliError::new("Wiki raw document content is unavailable."))?;
     }
     let now = now_iso();
     let document = find_document_mut(&mut wiki.state, document_id)?;

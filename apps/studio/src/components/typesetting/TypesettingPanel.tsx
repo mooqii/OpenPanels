@@ -374,6 +374,44 @@ export function TypesettingPanel({
     ]
   )
 
+  const generatePublicationFromMyDocument = useCallback(
+    async (document: MyDocument) => {
+      if (!isInsertableTypesettingDocument(document)) return
+      setInsertingDocumentId(document.id)
+      try {
+        const data = await apiJson<{ content?: string }>(
+          transport.apiBase,
+          `/api/my-documents/${encodeURIComponent(document.id)}`
+        )
+        const publication = createTypesettingPublication(
+          randomId("publication"),
+          new Date().toISOString()
+        )
+        insertDocumentRef.current = null
+        pendingInsertionRef.current = {
+          content: data.content ?? "",
+          document,
+          publicationId: publication.id,
+        }
+        replaceState(
+          {
+            ...state,
+            publications: [publication, ...state.publications],
+          },
+          publication.id
+        )
+        setActivePublicationId(publication.id)
+        setView("edit")
+        setIsLibraryOpen(false)
+      } catch (error) {
+        console.error("Failed to generate publication from My Document", error)
+      } finally {
+        setInsertingDocumentId(null)
+      }
+    },
+    [replaceState, state, transport.apiBase]
+  )
+
   const handleInsertHandlerChange = useCallback(
     (handler: InsertDocumentHandler | null) => {
       insertDocumentRef.current = handler
@@ -419,6 +457,9 @@ export function TypesettingPanel({
           myDocuments={myDocuments}
           onClose={() => setIsLibraryOpen(false)}
           onCreatePublication={createPublication}
+          onGeneratePublicationFromMyDocument={
+            generatePublicationFromMyDocument
+          }
           onInsertMyDocument={insertMyDocument}
           onOpenMyDocument={openMyDocument}
           onOpenMyDocumentOriginal={openMyDocumentOriginal}

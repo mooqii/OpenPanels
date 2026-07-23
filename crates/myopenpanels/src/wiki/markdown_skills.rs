@@ -19,8 +19,7 @@ pub fn read_markdown(paths: &MyOpenPanelsPaths, document_id: &str) -> Result<Val
     crate::content::require_broker_for_task_execution()?;
     let wiki = get_wiki_bootstrap(paths)?;
     let document = find_document(&wiki.state, document_id)?.clone();
-    let panel_dir = Storage::open(paths)?.panel_dir(&wiki.project.id, &wiki.panel.id);
-    let (original_path, original_access) = raw_original_access(&panel_dir, &document);
+    let (original_path, original_access) = raw_original_access(paths, &wiki, &document);
     let (markdown_path, markdown_access) = materialize_raw_markdown(paths, &wiki, &document);
     let markdown = markdown_path
         .as_ref()
@@ -64,7 +63,6 @@ pub fn write_markdown(
         Some(task_id) => get_wiki_task_target(paths, task_id)?,
         None => get_wiki_bootstrap(paths)?,
     };
-    let storage = Storage::open(paths)?;
     let now = now_iso();
     let parent_task = task_id
         .map(|id| task_value(&wiki.tasks, id).cloned())
@@ -81,19 +79,7 @@ pub fn write_markdown(
     )?
     .id;
     let document = find_document_mut(&mut wiki.state, document_id)?;
-    let markdown_ref = document
-        .get("markdownRef")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| wiki_ref(&["raw", document_id, "source.md"]));
-    let path = wiki_panel_path(
-        &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
-        &markdown_ref,
-    )?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(path, content).map_err(to_cli_error)?;
+    let markdown_ref = "source.md";
     if task_id.is_none() {
         crate::content::commit_immediate_text(
             paths,
@@ -104,7 +90,7 @@ pub fn write_markdown(
             "source.md",
             content.as_bytes(),
             "text/markdown",
-            true,
+            false,
         )?;
     }
     let version = document
@@ -233,16 +219,6 @@ pub fn set_agent_skill(
     let mut wiki = get_wiki_bootstrap(paths)?;
     let space = resolve_wiki_space(&wiki.state, None)?;
     let space_id = space.id.clone();
-    let storage = Storage::open(paths)?;
-    let pages_dir = storage
-        .panel_dir(&wiki.project.id, &wiki.panel.id)
-        .join("wikis")
-        .join(sanitize_path_part(&space_id))
-        .join("pages");
-    if pages_dir.exists() {
-        fs::remove_dir_all(&pages_dir).map_err(to_cli_error)?;
-    }
-    fs::create_dir_all(&pages_dir).map_err(to_cli_error)?;
     crate::content::archive_resource(
         paths,
         Some(&wiki.project.id),

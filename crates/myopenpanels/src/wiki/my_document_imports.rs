@@ -21,23 +21,22 @@ pub fn import_my_document(
     content: &[u8],
 ) -> Result<Value, CliError> {
     let mut wiki = get_wiki_bootstrap(paths)?;
-    let storage = Storage::open(paths)?;
     let now = now_iso();
     let document_id = create_id("my-document");
     let safe_source_file_name = sanitize_file_name(file_name);
     let source_mime_type = mime_type.unwrap_or_else(|| mime_type_for_file(file_name));
-    let source_ref = wiki_ref(&[
-        "my-documents",
+    let source_ref = format!("original/{safe_source_file_name}");
+    crate::content::commit_immediate_file(
+        paths,
+        &wiki.project.id,
+        Some(&wiki.panel.id),
+        crate::content::ResourceKind::MyDocument,
         &document_id,
-        "original",
-        &safe_source_file_name,
-    ]);
-    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
-    let source_path = wiki_panel_path(&panel_dir, &source_ref)?;
-    if let Some(parent) = source_path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(&source_path, content).map_err(to_cli_error)?;
+        &source_ref,
+        content,
+        source_mime_type,
+        true,
+    )?;
 
     let direct_text = if is_plain_text_file(file_name, mime_type) {
         std::str::from_utf8(content).ok()
@@ -53,31 +52,18 @@ pub fn import_my_document(
         sanitize_file_name(title_from_file_name(file_name)),
         extension
     );
-    let content_ref = wiki_ref(&[
-        "my-documents",
+    let content_ref = format!("content.{extension}");
+    crate::content::commit_immediate_text(
+        paths,
+        &wiki.project.id,
+        Some(&wiki.panel.id),
+        crate::content::ResourceKind::MyDocument,
         &document_id,
-        &format!("content.{extension}"),
-    ]);
-    let content_path = wiki_panel_path(&panel_dir, &content_ref)?;
-    if let Some(parent) = content_path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(&content_path, direct_text.map(str::as_bytes).unwrap_or_default())
-        .map_err(to_cli_error)?;
-
-    if let Some(text) = direct_text {
-        crate::content::commit_immediate_text(
-            paths,
-            &wiki.project.id,
-            Some(&wiki.panel.id),
-            crate::content::ResourceKind::MyDocument,
-            &document_id,
-            &format!("content.{extension}"),
-            text.as_bytes(),
-            normalized_mime_type,
-            true,
-        )?;
-    }
+        &content_ref,
+        direct_text.map(str::as_bytes).unwrap_or_default(),
+        normalized_mime_type,
+        false,
+    )?;
 
     let mut conversion_task = if direct_text.is_none() {
         let mut task = create_wiki_task(
@@ -184,11 +170,14 @@ fn my_document_import_original_from_wiki(
         .get("originalRef")
         .and_then(Value::as_str)
         .ok_or_else(|| CliError::new("My Document imported source is missing."))?;
-    let storage = Storage::open(paths)?;
-    let file_path = wiki_panel_path(
-        &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
+    let file_path = crate::content::active_file_path(
+        paths,
+        &wiki.project.id,
+        crate::content::ResourceKind::MyDocument,
+        document_id,
         original_ref,
-    )?;
+    )?
+    .ok_or_else(|| CliError::new("My Document imported source is unavailable."))?;
     let metadata = fs::metadata(&file_path).map_err(to_cli_error)?;
     if !metadata.is_file() {
         return Err(CliError::new("My Document imported source is unavailable."));
@@ -312,8 +301,19 @@ mod my_document_import_tests {
         );
 
         delete_my_document(&paths, document_id).expect("delete");
-        assert!(!original_path.exists());
         let bootstrap = get_wiki_bootstrap(&paths).expect("bootstrap");
+        assert!(original_path.exists());
+        assert!(crate::content::active_file_path(
+            &paths,
+            &bootstrap.project.id,
+            crate::content::ResourceKind::MyDocument,
+            document_id,
+            imported["document"]["importSource"]["originalRef"]
+                .as_str()
+                .expect("original ref"),
+        )
+        .expect("archived resource")
+        .is_none());
         let task = bootstrap
             .tasks
             .iter()

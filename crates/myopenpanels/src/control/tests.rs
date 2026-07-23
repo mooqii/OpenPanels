@@ -209,10 +209,10 @@ mod tests {
                 "id": "publication:1",
                 "title": "Existing article",
                 "covers": [{
-                    "assetRef": "projects/project:1/panels/panel:canvas/assets/cover.png",
+                    "assetRef": "projects/project:1/content/asset/asset:cover/1/cover.png",
                     "fileName": "cover.png",
                     "mimeType": "image/png",
-                    "sourceAssetRef": "projects/project:1/panels/panel:canvas/assets/source.png",
+                    "sourceAssetRef": "projects/project:1/content/asset/asset:source/1/source.png",
                     "sourceCanvasPanelId": "panel:canvas",
                     "sourceProjectId": "project:1",
                     "src": "/api/assets/cover.png"
@@ -229,7 +229,7 @@ mod tests {
                 "id": "publication:upload",
                 "title": "Uploaded cover",
                 "covers": [{
-                    "assetRef": "projects/project:1/panels/panel:typesetting/assets/cover.png",
+                    "assetRef": "projects/project:1/content/asset/asset:cover/1/cover.png",
                     "fileName": "cover.png",
                     "mimeType": "image/png",
                     "source": { "kind": "upload" },

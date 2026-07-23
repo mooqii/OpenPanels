@@ -251,11 +251,12 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
     let storage_dir = temp.path().join(".myopenpanels");
     let context_dir = storage_dir.join("contexts").join("ctx");
     let asset_dir = storage_dir
-        .join("sessions")
+        .join("projects")
         .join(crate::paths::sanitize_path_part("session:1"))
-        .join("panels")
-        .join(crate::paths::sanitize_path_part("panel:canvas"))
-        .join("assets");
+        .join("content")
+        .join("asset")
+        .join(crate::paths::sanitize_path_part("asset:fallback"))
+        .join("1");
     fs::create_dir_all(&context_dir).expect("context dir");
     fs::create_dir_all(&project_dir).expect("project dir");
     fs::create_dir_all(&asset_dir).expect("asset dir");
@@ -283,14 +284,14 @@ fn selection_fallback_is_not_explicit_and_asset_export_requires_opt_in() {
                     "type": "image",
                     "props": {
                         "name": "fallback.png",
-                        "src": "/api/panels/session:1/panel:canvas/assets/fallback.png",
+                        "src": "/api/assets/asset%3Afallback/content",
                         "w": 1,
                         "h": 1,
                         "mimeType": "image/png",
                         "isAnimated": false
                     },
                     "meta": {
-                        "assetRef": "sessions/session:1/panels/panel:canvas/assets/fallback.png"
+                        "assetRef": "projects/session:1/content/asset/asset:fallback/1/fallback.png"
                     }
                 },
                 "shape:fallback": {

@@ -1,6 +1,6 @@
 use crate::control::{now_iso, read_project_bootstrap, BootstrapRequest};
 use crate::error::CliError;
-use crate::paths::{sanitize_path_part, MyOpenPanelsPaths};
+use crate::paths::MyOpenPanelsPaths;
 use crate::storage::{Storage, TaskInsert};
 use crate::types::{PanelKind, ProjectBootstrap, ProjectPanelSnapshot};
 use serde_json::{json, Value};
@@ -315,36 +315,23 @@ pub fn create_requests(
     let context_snapshot = capture_writing_context_snapshot(paths, wiki, &selection)?;
     let now = now_iso();
     let mut wiki_state = wiki.state.clone();
-    let mut created_placeholder_dirs = Vec::new();
     let mut targets = Vec::with_capacity(writing_skills.len());
 
     if mode == "create" {
         if !wiki_state["myDocuments"].is_array() {
             return Err(CliError::new("Wiki myDocuments state is invalid."));
         }
-        let panel_dir = storage.panel_dir(&bootstrap.project.id, &wiki.panel.id);
         let mut placeholders = Vec::with_capacity(writing_skills.len());
         for _ in &writing_skills {
             let task_id = crate::ids::random_id("task");
             let document_id = crate::ids::random_id("my-document");
-            let document_dir = panel_dir
-                .join("my-documents")
-                .join(sanitize_path_part(&document_id));
-            if let Err(error) = fs::create_dir_all(&document_dir)
-                .and_then(|_| fs::write(document_dir.join("content.md"), b""))
-            {
-                cleanup_placeholder_dirs(&created_placeholder_dirs);
-                return Err(to_cli_error(error));
-            }
-            created_placeholder_dirs.push(document_dir);
-            let content_ref = format!("my-documents/{}/content.md", sanitize_path_part(&document_id));
             let document = json!({
                 "id": document_id,
                 "title": "",
                 "originalFileName": "untitled.md",
                 "format": "markdown",
                 "mimeType": "text/markdown",
-                "contentRef": content_ref,
+                "contentRef": "content.md",
                 "contentVersion": 0,
                 "taskId": task_id,
                 "threadId": null,
@@ -353,7 +340,8 @@ pub fn create_requests(
                 "createdAt": now,
                 "updatedAt": now,
             });
-            let snapshot = snapshot_writing_document(&panel_dir, &document, "contentRef");
+            let snapshot =
+                snapshot_writing_document(paths, &bootstrap.project.id, &document);
             placeholders.push(document.clone());
             targets.push((task_id, document_id, 0_u64, document, snapshot));
         }
@@ -381,8 +369,7 @@ pub fn create_requests(
                 )
             })?;
         let target_version = document["contentVersion"].as_u64().unwrap_or(0);
-        let panel_dir = storage.panel_dir(&bootstrap.project.id, &wiki.panel.id);
-        let snapshot = snapshot_writing_document(&panel_dir, &document, "contentRef");
+        let snapshot = snapshot_writing_document(paths, &bootstrap.project.id, &document);
         targets.push((
             crate::ids::random_id("task"),
             target_id.to_owned(),
@@ -483,13 +470,7 @@ pub fn create_requests(
         &task_inserts,
         &panel_states,
     );
-    let (tasks, revisions) = match inserted {
-        Ok(value) => value,
-        Err(error) => {
-            cleanup_placeholder_dirs(&created_placeholder_dirs);
-            return Err(error);
-        }
-    };
+    let (tasks, revisions) = inserted?;
     let documents = targets
         .into_iter()
         .map(|(_, _, _, document, _)| document)
@@ -502,19 +483,11 @@ pub fn create_requests(
     }))
 }
 
-fn cleanup_placeholder_dirs(paths: &[PathBuf]) {
-    for path in paths {
-        let _ = fs::remove_dir_all(path);
-    }
-}
-
 fn capture_writing_context_snapshot(
     paths: &MyOpenPanelsPaths,
     wiki: &ProjectPanelSnapshot,
     selection: &Value,
 ) -> Result<Value, CliError> {
-    let storage = Storage::open(paths)?;
-    let panel_dir = storage.panel_dir(&wiki.panel.project_id, &wiki.panel.id);
     let selected = selection
         .get("selectedMyDocumentIds")
         .and_then(Value::as_array)
@@ -534,7 +507,7 @@ fn capture_writing_context_snapshot(
                 .and_then(Value::as_str)
                 .is_some_and(|id| selected.contains(id))
         })
-        .map(|document| snapshot_writing_document(&panel_dir, document, "contentRef"))
+        .map(|document| snapshot_writing_document(paths, &wiki.panel.project_id, document))
         .collect::<Vec<_>>();
     let wiki_space_id = wiki
         .state
@@ -574,13 +547,27 @@ fn capture_writing_context_snapshot(
     }))
 }
 
-fn snapshot_writing_document(panel_dir: &Path, document: &Value, reference_key: &str) -> Value {
+fn snapshot_writing_document(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    document: &Value,
+) -> Value {
     let mut snapshot = document.clone();
-    let content = document
-        .get(reference_key)
+    let document_id = document.get("id").and_then(Value::as_str).unwrap_or_default();
+    let logical_path = document
+        .get("contentRef")
         .and_then(Value::as_str)
-        .and_then(|reference| fs::read_to_string(panel_dir.join(reference)).ok())
-        .unwrap_or_default();
+        .unwrap_or("content.md");
+    let content = crate::content::read_active_text(
+        paths,
+        project_id,
+        crate::content::ResourceKind::MyDocument,
+        document_id,
+        logical_path,
+    )
+    .ok()
+    .flatten()
+    .unwrap_or_default();
     snapshot["snapshotContent"] = json!(content);
     snapshot["snapshotHash"] = json!(format!("{:x}", Sha256::digest(content.as_bytes())));
     snapshot

@@ -225,7 +225,7 @@ fn complete_task_internal(
             .and_then(Value::as_i64)
             .unwrap_or(0)
             + 1;
-        document["markdownRef"] = json!(wiki_ref(&["raw", document_id, "source.md"]));
+        document["markdownRef"] = json!("source.md");
         document["markdownVersion"] = json!(version);
         document["wordCount"] = json!(character_count(markdown));
         document["updatedAt"] = json!(now);
@@ -263,7 +263,7 @@ fn complete_task_internal(
             .and_then(Value::as_i64)
             .unwrap_or(0)
             + 1;
-        document["contentRef"] = json!(wiki_ref(&["my-documents", document_id, "content.md"]));
+        document["contentRef"] = json!("content.md");
         document["contentVersion"] = json!(version);
         document["format"] = json!("markdown");
         document["mimeType"] = json!("text/markdown");
@@ -334,17 +334,20 @@ fn complete_task_internal(
                         "Conversion completed without a Markdown artifact.",
                     )
                 })?;
-            let storage = Storage::open(paths)?;
-            let markdown_path = wiki_panel_path(
-                &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
+            let markdown_exists = crate::content::active_file_path(
+                paths,
+                &wiki.project.id,
+                crate::content::ResourceKind::WikiMarkdown,
+                document_id,
                 markdown_ref,
-            )?;
+            )?
+            .is_some();
             if markdown_version
                 <= current_task
                     .get("markdownVersion")
                     .and_then(Value::as_i64)
                     .unwrap_or(0)
-                || (staged_markdown.is_empty() && !markdown_path.is_file())
+                || (staged_markdown.is_empty() && !markdown_exists)
             {
                 return Err(CliError::with_code(
                     "invalid_output",

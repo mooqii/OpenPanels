@@ -21,12 +21,6 @@ pub(super) fn get_wiki_bootstrap(
     let mut request = BootstrapRequest::new();
     request.requested_panel_kind = Some(PanelKind::Wiki);
     let bootstrap = read_project_bootstrap(paths, request)?;
-    ensure_default_wiki_files(
-        paths,
-        &bootstrap.project.id,
-        &bootstrap.panel.id,
-        &bootstrap.state,
-    )?;
     let state = bootstrap.state;
     let tasks = read_tasks(
         &Storage::open(paths)?,
@@ -75,7 +69,6 @@ pub(super) fn get_wiki_target(
             )
         })?;
     let tasks = read_tasks(&storage, project_id, panel_id)?;
-    ensure_default_wiki_files(paths, project_id, panel_id, &state)?;
     let wiki = WikiBootstrapValue {
         project,
         panel,
@@ -171,19 +164,11 @@ mod tests {
             ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
         let wiki = get_wiki_target(&paths, &bootstrap.project.id, &bootstrap.panel.id)
             .expect("wiki target");
-        let panel_dir = Storage::open(&paths)
+        let panels_dir = Storage::open(&paths)
             .expect("storage")
-            .panel_dir(&wiki.project.id, &wiki.panel.id);
-        let wiki_space_id = wiki.state["activeWikiSpaceId"]
-            .as_str()
-            .expect("active Wiki space");
-        let pages_dir = panel_dir
-            .join("wikis")
-            .join(sanitize_path_part(wiki_space_id))
-            .join("pages");
-
-        assert!(pages_dir.is_dir());
-        assert!(!pages_dir.join("index.md").exists());
+            .project_dir(&wiki.project.id)
+            .join("panels");
+        assert!(!panels_dir.exists());
         assert_eq!(wiki.state["activeWikiPagePath"], Value::Null);
         assert_eq!(wiki.state["wikiSpaces"][0]["pageIndex"], json!([]));
     }
@@ -251,31 +236,6 @@ mod tests {
             PanelKind::Typesetting
         );
     }
-}
-
-pub(super) fn ensure_default_wiki_files(
-    paths: &MyOpenPanelsPaths,
-    project_id: &str,
-    panel_id: &str,
-    state: &Value,
-) -> Result<(), CliError> {
-    let storage = Storage::open(paths)?;
-    let panel_dir = storage.panel_dir(project_id, panel_id);
-    for space in state
-        .get("wikiSpaces")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(space_id) = space.get("id").and_then(Value::as_str) {
-            let pages_dir = panel_dir
-                .join("wikis")
-                .join(sanitize_path_part(space_id))
-                .join("pages");
-            fs::create_dir_all(&pages_dir).map_err(to_cli_error)?;
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn create_wiki_task(
@@ -587,31 +547,12 @@ pub(super) fn state_array_mut<'a>(
         .ok_or_else(|| CliError::new(format!("Wiki state field is not an array: {key}")))
 }
 
-pub(super) fn wiki_ref(parts: &[&str]) -> String {
-    parts
-        .iter()
-        .map(|part| sanitize_path_part(part))
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-pub(super) fn wiki_panel_path(panel_dir: &Path, relative_ref: &str) -> Result<PathBuf, CliError> {
-    let mut path = panel_dir.to_path_buf();
-    for part in relative_ref.split('/') {
-        path.push(sanitize_path_part(part));
-    }
-    if !path.starts_with(panel_dir) {
-        return Err(CliError::new("Resolved wiki path escapes panel directory."));
-    }
-    Ok(path)
-}
-
 pub(super) fn wiki_page_path(
-    panel_dir: &Path,
+    materialization_dir: &Path,
     wiki_space_id: &str,
     page_path: &str,
 ) -> Result<PathBuf, CliError> {
-    let pages_dir = panel_dir
+    let pages_dir = materialization_dir
         .join("wikis")
         .join(sanitize_path_part(wiki_space_id))
         .join("pages");
@@ -621,7 +562,7 @@ pub(super) fn wiki_page_path(
     }
     if !path.starts_with(&pages_dir) {
         return Err(CliError::new(
-            "Resolved wiki page path escapes pages directory.",
+            "Resolved wiki page path escapes materialized pages directory.",
         ));
     }
     Ok(path)

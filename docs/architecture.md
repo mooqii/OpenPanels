@@ -123,6 +123,17 @@ the Task result and relevant domain resource revision. A conflict leaves the
 previous active pointer unchanged. Wiki spaces are one resource, so all files
 in a Wiki update move together.
 
+Binary assets use the same project-scoped content boundary with a compact
+versioned layout:
+
+```text
+.myopenpanels/projects/<project>/content/asset/<asset>/<version>/<file>
+```
+
+The active asset reference and metadata live in SQLite. Panel directories are
+not authoritative content storage, and new assets or documents must never be
+written below `projects/<project>/panels/<panel>/`.
+
 Startup recovery removes abandoned staging directories and may finish a
 database-committed content publication. Unreferenced prepared revisions are
 orphans and can be removed without changing active content.

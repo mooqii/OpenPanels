@@ -4,6 +4,7 @@ import {
   Image as ImageIcon,
   LoaderCircle,
   Plus,
+  Sparkles,
   X,
 } from "lucide-react"
 import {
@@ -48,6 +49,7 @@ export function TypesettingLibrary({
   onCreatePublication,
   onOpenMyDocument,
   onOpenMyDocumentOriginal,
+  onGeneratePublicationFromMyDocument,
   onInsertMyDocument,
   onOpenPublication,
   projectId,
@@ -72,6 +74,7 @@ export function TypesettingLibrary({
   onCreatePublication: () => void
   onOpenMyDocument: (document: MyDocument) => void
   onOpenMyDocumentOriginal: (document: MyDocument) => void
+  onGeneratePublicationFromMyDocument: (document: MyDocument) => void
   onInsertMyDocument: (document: MyDocument) => void
   onOpenPublication: (publication: TypesettingPublication) => void
   projectId: string
@@ -190,25 +193,37 @@ export function TypesettingLibrary({
               <span className="op-typesetting-document__tools">
                 <Tooltip closeDelay={0} delay={0}>
                   <Button
-                    aria-label={t`Insert document content into content details`}
+                    aria-label={
+                      activePublicationId
+                        ? t`Insert document content into content details`
+                        : t`Generate publication content from this document`
+                    }
                     isDisabled={
                       !isInsertableTypesettingDocument(document) ||
-                      isInsertDisabled ||
+                      (activePublicationId ? isInsertDisabled : false) ||
                       insertingDocumentId === document.id
                     }
                     isIconOnly
-                    onPress={() => onInsertMyDocument(document)}
+                    onPress={() =>
+                      activePublicationId
+                        ? onInsertMyDocument(document)
+                        : onGeneratePublicationFromMyDocument(document)
+                    }
                     size="sm"
                     variant="ghost"
                   >
                     {insertingDocumentId === document.id ? (
                       <LoaderCircle className="op-spin" size={15} />
-                    ) : (
+                    ) : activePublicationId ? (
                       <FileInput size={15} />
+                    ) : (
+                      <Sparkles size={15} />
                     )}
                   </Button>
                   <Tooltip.Content placement="right">
-                    {t`Insert document content into content details`}
+                    {activePublicationId
+                      ? t`Insert document content into content details`
+                      : t`Click to generate new publication content from this document.`}
                   </Tooltip.Content>
                 </Tooltip>
               </span>

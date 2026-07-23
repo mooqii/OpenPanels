@@ -108,10 +108,6 @@ pub fn ensure_project_bootstrap(
         context_id: paths.context_id.clone(),
         context_id_source: paths.context_id_source.clone(),
         panel: snapshot.panel.clone(),
-        panel_dir: storage
-            .panel_dir(&project.id, &snapshot.panel.id)
-            .display()
-            .to_string(),
         panels,
         pending_task_count,
         revision: snapshot.revision,
@@ -210,10 +206,6 @@ pub fn read_project_bootstrap(
         context_id: paths.context_id.clone(),
         context_id_source: paths.context_id_source.clone(),
         panel: snapshot.panel.clone(),
-        panel_dir: storage
-            .panel_dir(&project.id, &snapshot.panel.id)
-            .display()
-            .to_string(),
         panels,
         pending_task_count,
         revision: snapshot.revision,

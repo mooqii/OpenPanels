@@ -5,7 +5,7 @@ import { MyDocumentMeta } from "./MyDocumentMeta"
 
 function importedDocument(): MyDocument {
   return {
-    contentRef: "my-documents/document.md",
+    contentRef: "content.md",
     contentVersion: 1,
     conversion: {
       error: null,
@@ -19,7 +19,7 @@ function importedDocument(): MyDocument {
     importSource: {
       fileName: "reference.png",
       mimeType: "image/png",
-      originalRef: "my-documents/document/original/reference.png",
+      originalRef: "original/reference.png",
       sha256: "fixture",
       sizeBytes: 42,
     },

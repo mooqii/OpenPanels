@@ -61,7 +61,10 @@ mod tests {
                     "w": 640,
                     "h": 480
                 },
-                "meta": { "assetRef": written.asset_ref }
+                "meta": {
+                    "assetRef": written.asset_ref,
+                    "resourceId": written.resource_id,
+                }
             }),
         );
         store.insert(
@@ -700,7 +703,7 @@ mod tests {
         let result = json!({
             "runtimeFinalization": {
                 "artifacts": [{
-                    "assetRef": format!("projects/{}/panels/{typesetting_panel}/assets/cover-tasks/{task_id}/cover.png", bootstrap.project.id),
+                    "assetRef": format!("projects/{}/content/asset/asset:cover/1/cover.png", bootstrap.project.id),
                     "resourceId": "asset:cover",
                     "fileName": format!("cover-tasks/{task_id}/cover.png"),
                     "mimeType": "image/png",

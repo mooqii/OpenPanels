@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::resolve_myopenpanels_paths;
+    use crate::paths::{resolve_myopenpanels_paths, sanitize_path_part};
     use axum::http::Request;
     use tower::ServiceExt;
 
@@ -69,6 +69,10 @@ mod tests {
                 Method::POST,
                 "/api/projects/project:legacy/panels/panel:legacy/assets",
             ),
+            (
+                Method::GET,
+                "/api/projects/project:legacy/panels/panel:legacy/assets/cover.png",
+            ),
             (Method::GET, "/api/typesetting/title-skills"),
             (Method::GET, "/api/publishing/releases"),
         ] {
@@ -129,6 +133,72 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn uploaded_assets_use_only_project_content_storage() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("asset-upload-storage"),
+        )
+        .expect("paths");
+        let bootstrap =
+            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let panel_id = bootstrap
+            .panels
+            .iter()
+            .find(|snapshot| snapshot.panel.kind == PanelKind::Typesetting)
+            .expect("typesetting panel")
+            .panel
+            .id
+            .clone();
+        let router = build_router(
+            "127.0.0.1".to_owned(),
+            0,
+            paths.clone(),
+            None,
+            current_build_info(),
+        );
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/assets")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "dataUrl": "data:image/png;base64,Y292ZXI=",
+                            "fileName": "cover.png",
+                            "mimeType": "image/png",
+                            "originPanelId": panel_id,
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("asset payload");
+        let asset_ref = payload["assetRef"].as_str().expect("asset ref");
+        assert!(asset_ref.starts_with(&format!(
+            "projects/{}/content/asset/",
+            bootstrap.project.id
+        )));
+        assert!(storage_dir.join(asset_ref).is_file());
+        assert!(!storage_dir
+            .join("projects")
+            .join(sanitize_path_part(&bootstrap.project.id))
+            .join("panels")
+            .exists());
     }
 
     #[test]

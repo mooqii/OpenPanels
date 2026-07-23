@@ -83,7 +83,6 @@ pub struct ProjectBootstrap {
     pub context_id: String,
     pub context_id_source: String,
     pub panel: Panel,
-    pub panel_dir: String,
     pub panels: Vec<ProjectPanelSnapshot>,
     pub pending_task_count: usize,
     pub revision: i64,

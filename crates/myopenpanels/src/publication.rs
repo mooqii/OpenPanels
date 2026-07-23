@@ -728,13 +728,22 @@ pub fn import_canvas_asset(
         ));
     }
 
-    let source = parse_canvas_asset_ref(source_asset_ref)?;
+    let source = parse_asset_ref(source_asset_ref)?;
+    let source_asset = storage
+        .list_assets(&source.project_id)?
+        .into_iter()
+        .find(|asset| asset.get("id").and_then(Value::as_str) == Some(&source.resource_id))
+        .ok_or_else(|| CliError::with_code("target_not_found", "Canvas asset not found."))?;
+    let source_panel_id = source_asset
+        .pointer("/metadata/originPanelId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::with_code("invalid_target", "Canvas asset origin is missing."))?;
     let source_panel = storage
-        .read_panel(&source.project_id, &source.panel_id)?
+        .read_panel(&source.project_id, source_panel_id)?
         .ok_or_else(|| {
             CliError::with_code(
                 "target_not_found",
-                format!("Source Canvas panel not found: {}", source.panel_id),
+                format!("Source Canvas panel not found: {source_panel_id}"),
             )
         })?;
     if source_panel.kind != PanelKind::Canvas {
@@ -743,14 +752,7 @@ pub fn import_canvas_asset(
             "The source asset must belong to a Canvas panel.",
         ));
     }
-    let source_path = storage.asset_path(source_asset_ref)?;
-    if !source_path.is_file() {
-        return Err(CliError::with_code(
-            "target_not_found",
-            format!("Canvas asset not found: {source_asset_ref}"),
-        ));
-    }
-    let bytes = storage.read_asset(source_asset_ref)?;
+    let bytes = storage.read_asset_by_id(&source.project_id, &source.resource_id)?;
     let written = storage.write_asset_from_buffer(
         target_project_id,
         target_panel_id,
@@ -767,7 +769,7 @@ pub fn import_canvas_asset(
         "mimeType": mime_type,
         "sourceAssetRef": source_asset_ref,
         "sourceProjectId": source.project_id,
-        "sourceCanvasPanelId": source.panel_id,
+        "sourceCanvasPanelId": source_panel_id,
         "resourceId": written.resource_id,
         "src": format!("/api/assets/{}/content", written.resource_id),
     }))
@@ -816,11 +818,11 @@ fn canvas_assets_from_state(
                 .pointer("/meta/assetRef")
                 .and_then(Value::as_str)?
                 .to_owned();
-            let parsed = parse_canvas_asset_ref(&asset_ref).ok()?;
-            if parsed.project_id != project_id || parsed.panel_id != panel_id {
+            let resource_id = asset.pointer("/meta/resourceId").and_then(Value::as_str)?;
+            let parsed = parse_asset_ref(&asset_ref).ok()?;
+            if parsed.project_id != project_id || parsed.resource_id != resource_id {
                 return None;
             }
-            let resource_id = asset.pointer("/meta/resourceId").and_then(Value::as_str);
             Some(CanvasAssetListing {
                 id: format!("{project_id}:{panel_id}:{asset_id}"),
                 project_id: project_id.to_owned(),
@@ -828,14 +830,7 @@ fn canvas_assets_from_state(
                 canvas_panel_id: panel_id.to_owned(),
                 asset_id: asset_id.to_owned(),
                 asset_ref,
-                src: resource_id
-                    .map(|id| format!("/api/assets/{id}/content"))
-                    .unwrap_or_else(|| {
-                        format!(
-                            "/api/projects/{project_id}/panels/{panel_id}/assets/{}",
-                            parsed.file_name
-                        )
-                    }),
+                src: format!("/api/assets/{resource_id}/content"),
                 name: asset
                     .pointer("/props/name")
                     .and_then(Value::as_str)
@@ -853,36 +848,37 @@ fn canvas_assets_from_state(
         .collect()
 }
 
-struct ParsedCanvasAssetRef {
+struct ParsedAssetRef {
     project_id: String,
-    panel_id: String,
+    resource_id: String,
     file_name: String,
 }
 
-fn parse_canvas_asset_ref(asset_ref: &str) -> Result<ParsedCanvasAssetRef, CliError> {
+fn parse_asset_ref(asset_ref: &str) -> Result<ParsedAssetRef, CliError> {
     let parts = asset_ref.split('/').collect::<Vec<_>>();
-    if parts.len() < 6
+    if parts.len() < 7
         || parts[0] != "projects"
-        || parts[2] != "panels"
-        || parts[4] != "assets"
+        || parts[2] != "content"
+        || parts[3] != "asset"
         || parts[1].is_empty()
-        || parts[3].is_empty()
+        || parts[4].is_empty()
+        || parts[5].parse::<i64>().is_err()
     {
         return Err(CliError::with_code(
             "invalid_target",
-            "Expected a Project Canvas asset reference.",
+            "Expected a Project Asset content reference.",
         ));
     }
-    let file_name = parts[5..].join("/");
+    let file_name = parts[6..].join("/");
     if file_name.is_empty() {
         return Err(CliError::with_code(
             "invalid_target",
-            "Canvas asset reference is missing a file name.",
+            "Asset content reference is missing a file name.",
         ));
     }
-    Ok(ParsedCanvasAssetRef {
+    Ok(ParsedAssetRef {
         project_id: parts[1].to_owned(),
-        panel_id: parts[3].to_owned(),
+        resource_id: parts[4].to_owned(),
         file_name,
     })
 }

@@ -137,34 +137,14 @@ impl Storage {
         bytes: &[u8],
         overwrite: bool,
     ) -> Result<WrittenAsset, CliError> {
-        let assets_dir = self.panel_dir(project_id, panel_id).join("assets");
-        fs::create_dir_all(&assets_dir).map_err(to_cli_error)?;
-        let file_name = if overwrite {
-            sanitize_asset_path(requested_name)
+        let file_name = sanitize_asset_path(requested_name);
+        let asset_id = if overwrite {
+            let stable_key =
+                format!("projects/{project_id}/content/asset/{panel_id}/{file_name}");
+            format!("asset:{}", &hash_text(&stable_key)[..32])
         } else {
-            unique_file_name(&assets_dir, requested_name)
+            crate::ids::random_id("asset")
         };
-        let file_path = assets_dir.join(&file_name);
-        if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent).map_err(to_cli_error)?;
-        }
-        if !file_path.starts_with(&self.root_dir) {
-            return Err(CliError::new(
-                "Resolved asset path escapes storage directory.",
-            ));
-        }
-        fs::write(&file_path, bytes).map_err(to_cli_error)?;
-        let asset_ref = format!(
-            "projects/{}/panels/{}/assets/{}",
-            project_id,
-            panel_id,
-            file_name
-                .split('/')
-                .map(sanitize_path_part)
-                .collect::<Vec<_>>()
-                .join("/")
-        );
-        let asset_id = format!("asset:{}", &hash_text(&asset_ref)[..32]);
         let current_version = self
             .connection
             .query_row(
@@ -240,9 +220,9 @@ impl Storage {
         tx.commit().map_err(to_cli_error)?;
         Ok(WrittenAsset {
             resource_id: asset_id,
-            asset_ref,
+            asset_ref: canonical_ref,
             file_name,
-            file_path,
+            file_path: canonical_path,
         })
     }
 
@@ -310,8 +290,23 @@ impl Storage {
     }
 
     pub fn asset_path(&self, asset_ref: &str) -> Result<PathBuf, CliError> {
+        let parts = asset_ref.split('/').collect::<Vec<_>>();
+        if parts.len() < 7
+            || parts[0] != "projects"
+            || parts[1].is_empty()
+            || parts[2] != "content"
+            || parts[3] != "asset"
+            || parts[4].is_empty()
+            || parts[5].parse::<u64>().ok().filter(|version| *version > 0).is_none()
+            || parts[6..].iter().any(|part| part.is_empty())
+        {
+            return Err(CliError::with_code(
+                "invalid_asset_ref",
+                "Asset reference must use projects/<project>/content/asset/<asset>/<version>/<file>.",
+            ));
+        }
         let mut path = self.root_dir.clone();
-        for part in asset_ref.split('/') {
+        for part in parts {
             path.push(sanitize_path_part(part));
         }
         if !path.starts_with(&self.root_dir) {
@@ -320,12 +315,6 @@ impl Storage {
             ));
         }
         Ok(path)
-    }
-
-    pub fn panel_dir(&self, project_id: &str, panel_id: &str) -> PathBuf {
-        self.project_dir(project_id)
-            .join("panels")
-            .join(sanitize_path_part(panel_id))
     }
 
     pub fn project_dir(&self, project_id: &str) -> PathBuf {

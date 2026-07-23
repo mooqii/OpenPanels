@@ -431,7 +431,7 @@ pub fn prepare_operation(
             logical_path: logical_path.to_owned(),
             content_base64: request.content_base64.clone(),
             mime_type: mime_for_path(Path::new(logical_path)),
-            metadata: json!({ "operationId": request.operation_id }),
+            metadata: json!({ "operationId": request.operation_id, "replaceAll": true }),
         },
         true,
     )?;
@@ -943,45 +943,6 @@ pub fn read_active_text(
         .transpose()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn commit_immediate_text(
-    paths: &MyOpenPanelsPaths,
-    project_id: &str,
-    panel_id: Option<&str>,
-    kind: ResourceKind,
-    resource_key: &str,
-    logical_path: &str,
-    content: &[u8],
-    mime_type: &str,
-    replace_all: bool,
-) -> Result<Value, CliError> {
-    validate_logical_path(logical_path)?;
-    if content.len() > MAX_TEXT_FILE_BYTES || std::str::from_utf8(content).is_err() {
-        return Err(CliError::with_code("invalid_output", "Content must be bounded UTF-8 text."));
-    }
-    let active = read_active_pointer(paths, project_id, kind, resource_key)?;
-    let staging = tempfile::tempdir_in(&paths.storage_dir).map_err(to_cli_error)?;
-    let staged = StagedResource {
-        project_id: project_id.to_owned(),
-        panel_id: panel_id.unwrap_or_default().to_owned(),
-        resource_kind: kind.as_str().to_owned(),
-        resource_key: resource_key.to_owned(),
-        base_revision_id: active.as_ref().map(|value| value.revision_id.clone()),
-        base_content_version: active.as_ref().map_or(0, |value| value.content_version),
-        metadata: json!({ "replaceAll": replace_all }),
-    };
-    write_json_atomic(&staging.path().join("resource.json"), &staged)?;
-    let file = staging.path().join("files").join(logical_path_buf(logical_path)?);
-    write_materialized_file(&file, content)?;
-    write_json_atomic(&staging.path().join("replace-all.json"), &replace_all)?;
-    let pointer = commit_staged_resource_with_mime(paths, &staged, staging.path(), Some((logical_path, mime_type)))?;
-    Ok(json!({
-        "revisionId": pointer.revision_id,
-        "contentVersion": pointer.content_version,
-        "manifestHash": pointer.manifest_hash,
-    }))
-}
-
 pub fn rename_active_file(
     paths: &MyOpenPanelsPaths,
     project_id: &str,
@@ -1304,9 +1265,12 @@ fn prepare_staged_resource(
     let revision_id = crate::ids::random_id("revision");
     let temporary = resource.join(format!(".{revision_id}.tmp"));
     let files_dir = temporary.join("files");
-    let replace_all = staged.metadata.get("replaceAll").and_then(Value::as_bool).unwrap_or(false)
-        || stage_dir.join("replace-all.json").is_file()
-        || matches!(kind, ResourceKind::WikiMarkdown | ResourceKind::MyDocument);
+    let replace_all = staged
+        .metadata
+        .get("replaceAll")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || read_json::<bool>(&stage_dir.join("replace-all.json")).unwrap_or(false);
     if !replace_all {
         if let Some(parent) = staged.base_revision_id.as_deref() {
             copy_tree(&resource.join(parent).join("files"), &files_dir)?;
@@ -1498,6 +1462,9 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), CliError> {
         let target = destination.join(logical_path_buf(&relative)?);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(to_cli_error)?;
+        }
+        if target.exists() {
+            fs::remove_file(&target).map_err(to_cli_error)?;
         }
         if fs::hard_link(&path, &target).is_err() {
             fs::copy(&path, &target).map_err(to_cli_error)?;

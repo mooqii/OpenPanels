@@ -197,32 +197,21 @@ pub fn create_my_document(
         Some(task_id) => get_wiki_task_target(paths, task_id)?,
         None => get_wiki_bootstrap(paths)?,
     };
-    let storage = Storage::open(paths)?;
     let document_id = create_id("my-document");
     let safe_file_name = sanitize_file_name(file_name);
     let extension = if format == "markdown" { "md" } else { "txt" };
-    let content_ref = wiki_ref(&["my-documents", &document_id, &format!("content.{extension}")]);
-    let content_path = wiki_panel_path(
-        &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
+    let content_ref = format!("content.{extension}");
+    crate::content::commit_immediate_text(
+        paths,
+        &wiki.project.id,
+        Some(&wiki.panel.id),
+        crate::content::ResourceKind::MyDocument,
+        &document_id,
         &content_ref,
+        content,
+        &normalized_mime_type,
+        true,
     )?;
-    if let Some(parent) = content_path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(&content_path, content).map_err(to_cli_error)?;
-    if task_id.is_none() {
-        crate::content::commit_immediate_text(
-            paths,
-            &wiki.project.id,
-            Some(&wiki.panel.id),
-            crate::content::ResourceKind::MyDocument,
-            &document_id,
-            &format!("content.{extension}"),
-            content,
-            &normalized_mime_type,
-            true,
-        )?;
-    }
     let now = now_iso();
     let document = json!({
         "id": document_id,
@@ -289,13 +278,7 @@ pub fn begin_my_document_for_target(
     };
     let document_id = create_id("my-document");
     let file_name = format!("{}.{}", sanitize_file_name(title), extension);
-    let content_ref = wiki_ref(&["my-documents", &document_id, &format!("content.{extension}")]);
-    let storage = Storage::open(paths)?;
-    let content_path = wiki_panel_path(&storage.panel_dir(project_id, panel_id), &content_ref)?;
-    if let Some(parent) = content_path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(&content_path, b"").map_err(to_cli_error)?;
+    let content_ref = format!("content.{extension}");
     let document = json!({
         "id": document_id,
         "title": title,
@@ -340,22 +323,11 @@ pub fn complete_my_document_for_target(
     if current_version != base_content_version {
         return Err(CliError::with_code("content_conflict", format!("My Document changed from version {base_content_version} to {current_version}")));
     }
-    let old_ref = find_my_document(&wiki.state, document_id)?["contentRef"]
-        .as_str()
-        .unwrap_or("")
-        .to_owned();
     let extension = Path::new(file_name)
         .extension()
         .and_then(|v| v.to_str())
         .unwrap_or(if format == "markdown" { "md" } else { "txt" });
-    let content_ref = wiki_ref(&["my-documents", document_id, &format!("content.{extension}")]);
-    let storage = Storage::open(paths)?;
-    let panel_dir = storage.panel_dir(project_id, panel_id);
-    let content_path = wiki_panel_path(&panel_dir, &content_ref)?;
-    if let Some(parent) = content_path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(&content_path, content).map_err(to_cli_error)?;
+    let content_ref = format!("content.{extension}");
     crate::content::commit_immediate_text(
         paths,
         &wiki.project.id,
@@ -367,9 +339,6 @@ pub fn complete_my_document_for_target(
         &mime_type,
         true,
     )?;
-    if !old_ref.is_empty() && old_ref != content_ref {
-        let _ = fs::remove_file(wiki_panel_path(&panel_dir, &old_ref)?);
-    }
     let document = find_my_document_mut(&mut wiki.state, document_id)?;
     document["contentRef"] = json!(content_ref);
     document["contentVersion"] = json!(base_content_version + 1);
@@ -403,13 +372,6 @@ pub fn finish_my_document_operation(
                 && !documents[index]["taskId"].is_string()
             {
                 documents.remove(index);
-                let storage = Storage::open(paths)?;
-                let _ = fs::remove_dir_all(
-                    storage
-                        .panel_dir(project_id, panel_id)
-                        .join("my-documents")
-                        .join(sanitize_path_part(document_id)),
-                );
             } else {
                 documents[index]
                     .as_object_mut()
@@ -451,15 +413,7 @@ pub fn remove_pending_writing_document(
         return Ok(());
     }
     documents.remove(index);
-    save_wiki_state(paths, &wiki)?;
-    let storage = Storage::open(paths)?;
-    let _ = fs::remove_dir_all(
-        storage
-            .panel_dir(project_id, panel_id)
-            .join("my-documents")
-            .join(sanitize_path_part(document_id)),
-    );
-    Ok(())
+    save_wiki_state(paths, &wiki)
 }
 
 pub fn recover_my_document_for_target(
@@ -525,6 +479,19 @@ pub fn read_my_document(
     crate::content::require_broker_for_task_execution()?;
     let wiki = get_wiki_bootstrap(paths)?;
     let document = find_my_document(&wiki.state, document_id)?.clone();
+    if document["contentVersion"].as_u64().unwrap_or(0) == 0 {
+        return Ok(json!({
+            "document": document,
+            "content": "",
+            "contentFilePath": null,
+            "contentAccess": {
+                "status": "pending",
+                "localPath": null,
+                "version": 0,
+                "readAction": my_document_read_action(paths, document_id),
+            },
+        }));
+    }
     let (content_path, content_access) = materialize_my_document_content(paths, &wiki, &document);
     let content_path = content_path.ok_or_else(|| {
         CliError::with_code(
@@ -562,20 +529,8 @@ pub fn write_my_document(
     })?;
     let (format, normalized_mime_type) = my_document_format(file_name, mime_type)?;
     let mut wiki = get_wiki_bootstrap(paths)?;
-    let storage = Storage::open(paths)?;
-    let existing_document = find_my_document(&wiki.state, document_id)?;
-    let old_ref = existing_document["contentRef"]
-        .as_str()
-        .ok_or_else(|| CliError::new("My Document contentRef is missing."))?
-        .to_owned();
     let extension = if format == "markdown" { "md" } else { "txt" };
-    let content_ref = wiki_ref(&["my-documents", document_id, &format!("content.{extension}")]);
-    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
-    let content_path = wiki_panel_path(&panel_dir, &content_ref)?;
-    if let Some(parent) = content_path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(&content_path, content).map_err(to_cli_error)?;
+    let content_ref = format!("content.{extension}");
     crate::content::commit_immediate_text(
         paths,
         &wiki.project.id,
@@ -587,10 +542,6 @@ pub fn write_my_document(
         &normalized_mime_type,
         true,
     )?;
-    if old_ref != content_ref {
-        let old_path = wiki_panel_path(&panel_dir, &old_ref)?;
-        let _ = fs::remove_file(old_path);
-    }
     let now = now_iso();
     let document = find_my_document_mut(&mut wiki.state, document_id)?;
     document["contentRef"] = json!(content_ref);
@@ -685,10 +636,6 @@ pub fn delete_my_document(
             )
         })?;
     let document = documents.remove(index);
-    let my_documents_dir = storage
-        .panel_dir(&wiki.project.id, &wiki.panel.id)
-        .join("my-documents")
-        .join(sanitize_path_part(document_id));
     save_wiki_state(paths, &wiki)?;
     crate::content::archive_resource(
         paths,
@@ -696,11 +643,6 @@ pub fn delete_my_document(
         crate::content::ResourceKind::MyDocument,
         document_id,
     )?;
-    if let Err(error) = fs::remove_dir_all(my_documents_dir) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(to_cli_error(error));
-        }
-    }
     if let Some(mut selection) = storage.read_panel_selection(&wiki.project.id, &wiki.panel.id)? {
         if let Some(selected_ids) = selection
             .get_mut("selectedMyDocumentIds")

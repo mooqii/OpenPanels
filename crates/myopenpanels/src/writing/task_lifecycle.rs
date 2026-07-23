@@ -143,7 +143,7 @@ pub(crate) fn prepare_task_completion(
     } else {
         "text/markdown"
     };
-    document["contentRef"] = json!(format!("my-documents/{document_id}/{logical_path}"));
+    document["contentRef"] = json!(logical_path);
     document["contentVersion"] = json!(current_version + 1);
     document["format"] = json!(format);
     document["mimeType"] = json!(mime_type);

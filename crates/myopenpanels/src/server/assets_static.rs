@@ -229,17 +229,6 @@ async fn api_write_asset(
     }
 }
 
-async fn api_read_panel_asset(
-    State(state): State<Arc<AppState>>,
-    Path((project_id, panel_id, asset_name)): Path<(String, String, String)>,
-) -> Response {
-    let asset_ref = format!("projects/{project_id}/panels/{panel_id}/assets/{asset_name}");
-    match Storage::open(&state.paths).and_then(|storage| storage.read_asset(&asset_ref)) {
-        Ok(bytes) => bytes_response(StatusCode::OK, bytes, mime_type(&asset_name)),
-        Err(error) => json_error(StatusCode::NOT_FOUND, error.message()),
-    }
-}
-
 async fn index(State(state): State<Arc<AppState>>) -> Response {
     serve_static_path(&state, "index.html")
 }

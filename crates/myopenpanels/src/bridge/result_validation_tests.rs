@@ -318,8 +318,8 @@ mod publication_title_output_tests {
             .as_str()
             .expect("asset ref");
         assert!(asset_ref.contains(&format!(
-            "projects/{}/panels/{}/assets/",
-            bootstrap.project.id, bootstrap.panel.id
+            "projects/{}/content/asset/",
+            bootstrap.project.id
         )));
     }
 }

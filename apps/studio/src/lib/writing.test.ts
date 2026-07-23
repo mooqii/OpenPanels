@@ -138,7 +138,7 @@ function task(
 
 function document(id: string, updatedAt: string): MyDocument {
   return {
-    contentRef: `my-documents/${id}/content.md`,
+    contentRef: "content.md",
     contentVersion: 0,
     createdAt: updatedAt,
     format: "markdown",

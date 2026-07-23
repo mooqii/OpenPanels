@@ -508,6 +508,9 @@ const zhCNMessages: Record<string, string> = {
   "Retry save": "重试保存",
   "Insert into content details": "插入到内容详情",
   "Insert document content into content details": "将文档内容插入到内容详情",
+  "Generate publication content from this document": "根据此文档生成发布内容",
+  "Click to generate new publication content from this document.":
+    "点击后将根据当前文档生成一篇新的发布内容。",
   "Loading document": "正在加载文档",
   "File name": "文件名",
   "Edit file name": "编辑文件名",

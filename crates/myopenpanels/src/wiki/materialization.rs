@@ -65,14 +65,25 @@ pub(crate) fn reject_live_content_access_for_task() -> Result<(), CliError> {
 }
 
 fn raw_original_access(
-    panel_dir: &Path,
+    paths: &MyOpenPanelsPaths,
+    wiki: &WikiBootstrapValue,
     document: &Value,
 ) -> (Option<PathBuf>, Value) {
-    let path = document
+    let document_id = document.get("id").and_then(Value::as_str).unwrap_or("");
+    let ready_path = document
         .get("originalRef")
         .and_then(Value::as_str)
-        .and_then(|reference| wiki_panel_path(panel_dir, reference).ok());
-    let ready_path = path.filter(|path| path.is_file());
+        .and_then(|reference| {
+            crate::content::active_file_path(
+                paths,
+                &wiki.project.id,
+                crate::content::ResourceKind::WikiMarkdown,
+                document_id,
+                reference,
+            )
+            .ok()
+            .flatten()
+        });
     let access = json!({
         "status": if ready_path.is_some() { "ready" } else { "unavailable" },
         "localPath": ready_path,
@@ -82,10 +93,14 @@ fn raw_original_access(
     (ready_path, access)
 }
 
-fn raw_document_listing(paths: &MyOpenPanelsPaths, panel_dir: &Path, document: &Value) -> Value {
+fn raw_document_listing(
+    paths: &MyOpenPanelsPaths,
+    wiki: &WikiBootstrapValue,
+    document: &Value,
+) -> Value {
     let mut item = document.clone();
     let document_id = document.get("id").and_then(Value::as_str).unwrap_or("");
-    let (original_path, original_access) = raw_original_access(panel_dir, document);
+    let (original_path, original_access) = raw_original_access(paths, wiki, document);
     let markdown_version = document
         .get("markdownVersion")
         .and_then(Value::as_i64)
@@ -126,14 +141,13 @@ fn my_document_listing(paths: &MyOpenPanelsPaths, document: &Value) -> Value {
 pub fn list_raw_documents(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     reject_live_content_access_for_task()?;
     let wiki = get_wiki_bootstrap(paths)?;
-    let panel_dir = Storage::open(paths)?.panel_dir(&wiki.project.id, &wiki.panel.id);
     let documents = wiki
         .state
         .get("rawDocuments")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(|document| raw_document_listing(paths, &panel_dir, document))
+        .map(|document| raw_document_listing(paths, &wiki, document))
         .collect::<Vec<_>>();
     Ok(json!({ "documents": documents }))
 }
@@ -188,30 +202,32 @@ fn materialize_raw_markdown(
             }),
         );
     }
-    let panel_dir = Storage::open(paths)
-        .map(|storage| storage.panel_dir(&wiki.project.id, &wiki.panel.id));
-    let result = panel_dir.and_then(|panel_dir| {
+    let result: Result<(PathBuf, Option<Value>), CliError> = (|| {
         let reference = document
             .get("markdownRef")
             .and_then(Value::as_str)
             .ok_or_else(|| CliError::new("Raw document Markdown reference is missing."))?;
-        let destination = wiki_panel_path(&panel_dir, reference)?;
-        let materialized = crate::content::materialize_active_file(
+        let path = crate::content::active_file_path(
             paths,
             &wiki.project.id,
             crate::content::ResourceKind::WikiMarkdown,
             document_id,
-            "source.md",
-            &destination,
-        )?;
-        if materialized.is_none() && !destination.is_file() {
-            return Err(CliError::with_code(
+            reference,
+        )?
+        .ok_or_else(|| {
+            CliError::with_code(
                 "content_unavailable",
                 format!("Raw document Markdown is unavailable: {document_id}"),
-            ));
-        }
-        Ok((destination, materialized))
-    });
+            )
+        })?;
+        let descriptor = crate::content::active_resource_descriptor(
+            paths,
+            &wiki.project.id,
+            crate::content::ResourceKind::WikiMarkdown,
+            document_id,
+        )?;
+        Ok((path, descriptor))
+    })();
     match result {
         Ok((path, materialized)) => (
             Some(path.clone()),
@@ -245,7 +261,7 @@ fn materialize_my_document_content(
 ) -> (Option<PathBuf>, Value) {
     let document_id = document.get("id").and_then(Value::as_str).unwrap_or("");
     let read_action = my_document_read_action(paths, document_id);
-    let result = (|| {
+    let result: Result<(PathBuf, Option<Value>), CliError> = (|| {
         let content_ref = document
             .get("contentRef")
             .and_then(Value::as_str)
@@ -254,26 +270,26 @@ fn materialize_my_document_content(
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or("content.md");
-        let storage = Storage::open(paths)?;
-        let destination = wiki_panel_path(
-            &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
-            content_ref,
-        )?;
-        let materialized = crate::content::materialize_active_file(
+        let path = crate::content::active_file_path(
             paths,
             &wiki.project.id,
             crate::content::ResourceKind::MyDocument,
             document_id,
             logical_path,
-            &destination,
-        )?;
-        if materialized.is_none() && !destination.is_file() {
-            return Err(CliError::with_code(
+        )?
+        .ok_or_else(|| {
+            CliError::with_code(
                 "content_unavailable",
                 format!("My Document content is unavailable: {document_id}"),
-            ));
-        }
-        Ok((destination, materialized))
+            )
+        })?;
+        let descriptor = crate::content::active_resource_descriptor(
+            paths,
+            &wiki.project.id,
+            crate::content::ResourceKind::MyDocument,
+            document_id,
+        )?;
+        Ok((path, descriptor))
     })();
     match result {
         Ok((path, materialized)) => (
@@ -359,8 +375,20 @@ pub(crate) fn agent_content_context(
     }))
 }
 
-fn wiki_local_paths(panel_dir: &Path, wiki_space_id: &str) -> (PathBuf, PathBuf, PathBuf) {
-    let wiki_dir = panel_dir
+fn wiki_materialization_dir(paths: &MyOpenPanelsPaths, project_id: &str) -> PathBuf {
+    paths
+        .storage_dir
+        .join("projects")
+        .join(sanitize_path_part(project_id))
+        .join("materialized")
+}
+
+fn wiki_local_paths(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    wiki_space_id: &str,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let wiki_dir = wiki_materialization_dir(paths, project_id)
         .join("wikis")
         .join(sanitize_path_part(wiki_space_id));
     (
@@ -471,23 +499,8 @@ fn wiki_local_access(
                 })
             });
     }
-    let storage = match Storage::open(paths) {
-        Ok(storage) => storage,
-        Err(error) => {
-            return json!({
-                "status": "unavailable",
-                "rootPath": null,
-                "manifestFilePath": null,
-                "errorCode": error.code(),
-                "message": error.message(),
-                "materializeAction": wiki_materialize_action(paths, wiki_space_id),
-            });
-        }
-    };
-    let (root_path, pages_path, manifest_path) = wiki_local_paths(
-        &storage.panel_dir(&wiki.project.id, &wiki.panel.id),
-        wiki_space_id,
-    );
+    let (root_path, pages_path, manifest_path) =
+        wiki_local_paths(paths, &wiki.project.id, wiki_space_id);
     let descriptor = crate::content::active_resource_descriptor(
         paths,
         &wiki.project.id,
@@ -537,9 +550,9 @@ fn materialize_wiki_space_for(
     wiki_space_id: &str,
 ) -> Result<Value, CliError> {
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
-    let storage = Storage::open(paths)?;
-    let panel_dir = storage.panel_dir(&wiki.project.id, &wiki.panel.id);
-    let (root_path, pages_path, manifest_path) = wiki_local_paths(&panel_dir, &space.id);
+    let materialization_dir = wiki_materialization_dir(paths, &wiki.project.id);
+    let (root_path, pages_path, manifest_path) =
+        wiki_local_paths(paths, &wiki.project.id, &space.id);
     let descriptor = crate::content::active_resource_descriptor(
         paths,
         &wiki.project.id,
@@ -590,7 +603,7 @@ fn materialize_wiki_space_for(
                 .get("path")
                 .and_then(Value::as_str)
                 .ok_or_else(|| CliError::new("Wiki page index contains no path."))?;
-            let final_path = wiki_page_path(&panel_dir, &space.id, page_path)?;
+            let final_path = wiki_page_path(&materialization_dir, &space.id, page_path)?;
             let relative_path = final_path.strip_prefix(&pages_path).map_err(to_cli_error)?;
             let staged_path = staging_path.join(relative_path);
             let active_file = snapshot

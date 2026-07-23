@@ -261,10 +261,16 @@ mod tests {
         let started = begin_my_document(&paths, "Report", "markdown", None).expect("begin");
         let operation_id = started["operation"]["id"].as_str().unwrap().to_owned();
         let document_id = started["document"]["id"].as_str().unwrap().to_owned();
-        let my_document = wiki::read_my_document(&paths, &document_id).expect("document");
-        fs::write(
-            my_document["contentFilePath"].as_str().unwrap(),
-            "# Already written\n",
+        crate::content::commit_immediate_text(
+            &paths,
+            &bootstrap.project.id,
+            Some(&bootstrap.panel.id),
+            crate::content::ResourceKind::MyDocument,
+            &document_id,
+            "content.md",
+            b"# Already written\n",
+            "text/markdown",
+            true,
         )
         .expect("content");
 
