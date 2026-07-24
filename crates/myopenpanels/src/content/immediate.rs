@@ -1,3 +1,13 @@
+use super::filesystem::{
+    commit_staged_resource_with_mime, logical_path_buf, read_active_pointer, resource_dir,
+    revision_dir, to_cli_error, validate_logical_path, write_json_atomic, write_materialized_file,
+    ResourceKind, StagedResource, MAX_STAGING_BYTES, MAX_TEXT_FILE_BYTES,
+};
+use crate::error::CliError;
+use crate::paths::MyOpenPanelsPaths;
+use serde_json::{json, Value};
+use std::path::PathBuf;
+
 pub fn active_file_path(
     paths: &MyOpenPanelsPaths,
     project_id: &str,

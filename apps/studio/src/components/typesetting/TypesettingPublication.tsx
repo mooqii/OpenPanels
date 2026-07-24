@@ -894,7 +894,6 @@ export function PublicationDetail({
           <div className="op-typesetting-section__heading">
             <div>
               <span>{t`Covers`}</span>
-              <small>{t`The first cover is used in the project list.`}</small>
             </div>
             <div className="op-typesetting-section__actions">
               <Button

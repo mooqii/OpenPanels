@@ -556,6 +556,14 @@ mod tests {
             project.id, written.resource_id
         )));
         assert!(written.file_path.is_file());
+        assert!(
+            written
+                .file_path
+                .strip_prefix(&paths.storage_dir)
+                .expect("storage-relative asset path")
+                .components()
+                .all(|part| !part.as_os_str().to_string_lossy().contains(':'))
+        );
         assert!(!storage.project_dir(&project.id).join("panels").exists());
         drop(storage);
 

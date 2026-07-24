@@ -56,47 +56,72 @@ export interface ManualAgentScopeCandidate {
   scope: TaskExecutionScope
 }
 
-export function manualAgentScopeCandidates(
+export interface WikiMutationTaskGroup {
+  key: string
+  mutationKey: string
+  projectId: string
   tasks: ProjectTask[]
-): ManualAgentScopeCandidate[] {
-  const byId = new Map(tasks.map((task) => [task.id, task]))
-  const coveredTaskIds = new Set<string>()
-  const candidates: ManualAgentScopeCandidate[] = []
-  const mutationGroups = new Map<string, ProjectTask[]>()
+}
+
+export function wikiMutationTaskGroups(
+  tasks: ProjectTask[]
+): WikiMutationTaskGroup[] {
+  const groupsByKey = new Map<string, WikiMutationTaskGroup>()
 
   for (const task of tasks) {
     if (
-      task.queue === "wiki" &&
-      task.mutationKey &&
-      WIKI_UPDATE_TASK_TYPES.has(task.type) &&
-      !isDoneTask(task)
+      task.queue !== "wiki" ||
+      !task.mutationKey ||
+      !WIKI_UPDATE_TASK_TYPES.has(task.type) ||
+      isDoneTask(task)
     ) {
-      const group = mutationGroups.get(task.mutationKey) ?? []
-      group.push(task)
-      mutationGroups.set(task.mutationKey, group)
+      continue
     }
+    const key = `${task.projectId}:${task.mutationKey}`
+    const group = groupsByKey.get(key) ?? {
+      key: `wiki-mutation-drain:${key}`,
+      mutationKey: task.mutationKey,
+      projectId: task.projectId,
+      tasks: [],
+    }
+    group.tasks.push(task)
+    groupsByKey.set(key, group)
   }
 
-  for (const [mutationKey, mutationTasks] of mutationGroups) {
-    const scopedTasks = [...mutationTasks]
-    const visitPrerequisites = (task: ProjectTask) => {
-      for (const dependency of task.dependencies ?? []) {
-        const prerequisite = byId.get(dependency.prerequisiteTaskId)
-        if (!prerequisite || coveredTaskIds.has(prerequisite.id)) continue
-        coveredTaskIds.add(prerequisite.id)
-        scopedTasks.push(prerequisite)
-        visitPrerequisites(prerequisite)
-      }
-    }
-    for (const task of mutationTasks) {
-      coveredTaskIds.add(task.id)
-      visitPrerequisites(task)
-    }
-    const projectId = mutationTasks[0].projectId
+  return [...groupsByKey.values()].map((group) => ({
+    ...group,
+    tasks: group.tasks.sort(compareWikiMutationTasks),
+  }))
+}
+
+export function manualAgentScopeCandidates(
+  tasks: ProjectTask[]
+): ManualAgentScopeCandidate[] {
+  const mutationGroups = wikiMutationTaskGroups(tasks)
+  const byId = new Map(tasks.map((task) => [task.id, task]))
+  const scopeTasksByGroup = new Map(
+    mutationGroups.map((group) => [
+      group.key,
+      wikiMutationScopeTasks(group, byId),
+    ])
+  )
+  const coveredTaskIds = new Set(
+    [...scopeTasksByGroup.values()].flatMap((scopeTasks) =>
+      scopeTasks.map((task) => task.id)
+    )
+  )
+  const candidates: ManualAgentScopeCandidate[] = []
+
+  for (const group of mutationGroups) {
+    const scopeTasks = scopeTasksByGroup.get(group.key) ?? group.tasks
     candidates.push({
-      isReady: scopedTasks.some(isTaskReadyForManualAgent),
-      key: `wiki-mutation-drain:${projectId}:${mutationKey}`,
-      scope: { kind: "wiki-mutation-drain", mutationKey, projectId },
+      isReady: scopeTasks.some(isTaskReadyForManualAgent),
+      key: group.key,
+      scope: {
+        kind: "wiki-mutation-drain",
+        mutationKey: group.mutationKey,
+        projectId: group.projectId,
+      },
     })
   }
 
@@ -109,6 +134,31 @@ export function manualAgentScopeCandidates(
     })
   }
   return candidates
+}
+
+function wikiMutationScopeTasks(
+  group: WikiMutationTaskGroup,
+  byId: Map<string, ProjectTask>
+): ProjectTask[] {
+  const scopeTasks = [...group.tasks]
+  const coveredTaskIds = new Set(scopeTasks.map((task) => task.id))
+  const visitPrerequisites = (task: ProjectTask) => {
+    for (const dependency of task.dependencies ?? []) {
+      const prerequisite = byId.get(dependency.prerequisiteTaskId)
+      if (
+        !prerequisite ||
+        isDoneTask(prerequisite) ||
+        coveredTaskIds.has(prerequisite.id)
+      ) {
+        continue
+      }
+      coveredTaskIds.add(prerequisite.id)
+      scopeTasks.push(prerequisite)
+      visitPrerequisites(prerequisite)
+    }
+  }
+  for (const task of group.tasks) visitPrerequisites(task)
+  return scopeTasks
 }
 
 export function taskExecutionScopeKey(scope: TaskExecutionScope): string {
@@ -143,17 +193,17 @@ export function manualTaskInstruction(
       return `请通过 MyOpenPanels 排空 Project ${scope.projectId} 中的任务。${cliBoundary}执行下面的 Task Handoff 命令，按照返回的 ExecutionBundle 和 Delivery Contract 工作；每完成一个任务后继续处理 Runtime 返回的下一项，直到 scopeState 为 complete 或 blocked：\n\n${command}`
     }
     if (scope.kind === "wiki-mutation-drain") {
-      return `请通过 MyOpenPanels 处理 Project ${scope.projectId} 中 Wiki mutation ${scope.mutationKey} 的串行更新队列。${cliBoundary}执行下面的 Task Handoff 命令，按照返回的 ExecutionBundle 和 Delivery Contract 工作；只处理这个 Wiki mutation 范围内返回的任务，不要处理 Project 中的其他任务，直到 scopeState 为 complete 或 blocked：\n\n${command}`
+      return `请通过 MyOpenPanels 处理 Project ${scope.projectId} 中的 Wiki 更新任务。${cliBoundary}执行下面的 Task Handoff 命令，并按照返回的 ExecutionBundle 和 Delivery Contract 持续处理任务，直到 scopeState 为 complete 或 blocked：\n\n${command}`
     }
-    return `请通过 MyOpenPanels 只处理任务 ${scope.taskId}。${cliBoundary}执行下面的 Task Handoff 命令，并按照返回的 ExecutionBundle 和 Delivery Contract 完成这个任务；完成后即停止，不要领取或处理其他任务：\n\n${command}`
+    return `请通过 MyOpenPanels 处理任务 ${scope.taskId}。${cliBoundary}执行下面的 Task Handoff 命令，并按照返回的 ExecutionBundle 和 Delivery Contract 完成这个任务：\n\n${command}`
   }
   if (scope.kind === "project-drain") {
     return `Use MyOpenPanels to drain tasks in Project ${scope.projectId}. ${cliBoundary} Run the Task Handoff command below, follow its ExecutionBundle and Delivery Contract, and continue with each Task returned by the Runtime until scopeState is complete or blocked:\n\n${command}`
   }
   if (scope.kind === "wiki-mutation-drain") {
-    return `Use MyOpenPanels to process the serial Wiki mutation queue ${scope.mutationKey} in Project ${scope.projectId}. ${cliBoundary} Run the Task Handoff command below and follow its ExecutionBundle and Delivery Contract. Process only Tasks returned within this Wiki mutation scope. Do not process other Project tasks; stop when scopeState is complete or blocked:\n\n${command}`
+    return `Use MyOpenPanels to process Wiki update tasks in Project ${scope.projectId}. ${cliBoundary} Run the Task Handoff command below, follow its ExecutionBundle and Delivery Contract, and continue until scopeState is complete or blocked:\n\n${command}`
   }
-  return `Use MyOpenPanels to process only Task ${scope.taskId}. ${cliBoundary} Run the Task Handoff command below and follow its ExecutionBundle and Delivery Contract for this Task. Stop after it completes. Do not claim or process another Task:\n\n${command}`
+  return `Use MyOpenPanels to process Task ${scope.taskId}. ${cliBoundary} Run the Task Handoff command below and follow its ExecutionBundle and Delivery Contract to complete the Task:\n\n${command}`
 }
 
 export function retryTaskAgentMessage(
@@ -199,6 +249,10 @@ export function formatBlockedReason(reason: string): string {
       return "retry later"
     case "leased":
       return "leased"
+    case "mutationPredecessor":
+      return "waiting for earlier update"
+    case "prerequisite":
+      return "waiting for document conversion"
     default:
       return reason
   }
@@ -258,16 +312,64 @@ function isTaskReadyForManualAgent(task: ProjectTask): boolean {
 }
 
 export function pendingTaskCount(tasks: ProjectTask[]): number {
-  return tasks.filter(isPendingTask).length
+  const groups = wikiMutationTaskGroups(tasks)
+  const groupedTaskIds = new Set(
+    groups.flatMap((group) => group.tasks.map((task) => task.id))
+  )
+  const pendingGroups = groups.filter(
+    (group) =>
+      !group.tasks.some(isActiveTask) && group.tasks.some(isPendingTask)
+  ).length
+  const pendingTasks = tasks.filter(
+    (task) => !groupedTaskIds.has(task.id) && isPendingTask(task)
+  ).length
+  return pendingGroups + pendingTasks
 }
 
 export function formatTaskCount(count: number): string {
   return count > 99 ? "99+" : String(count)
 }
 
+function compareWikiMutationTasks(left: ProjectTask, right: ProjectTask) {
+  const leftSequence = left.mutationSequence ?? Number.MIN_SAFE_INTEGER
+  const rightSequence = right.mutationSequence ?? Number.MIN_SAFE_INTEGER
+  if (leftSequence !== rightSequence) return leftSequence - rightSequence
+  return Date.parse(left.createdAt) - Date.parse(right.createdAt)
+}
+
 export function formatTaskType(type: string): string {
+  const knownType = TASK_TYPE_LABELS[type]
+  if (knownType) return knownType
   return type
     .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+}
+
+const TASK_TYPE_LABELS: Record<string, string> = {
+  convert_document_to_markdown: "Document conversion",
+  distill_writing_skill: "Distill Writing Skill",
+  format_publication_content: "Format Publication Content",
+  generate_publication_cover: "Generate Publication Cover",
+  generate_publication_titles: "Generate Publication Titles",
+  ingest_markdown_into_wiki: "Import Markdown into Wiki",
+  maintain_wiki: "Update Wiki",
+  write_my_document: "Write My Document",
+}
+
+export function formatTaskName(task: Pick<ProjectTask, "capability" | "type">) {
+  if (TASK_TYPE_LABELS[task.type]) return TASK_TYPE_LABELS[task.type]
+  return task.capability
+    ? formatTaskCapability(task.capability)
+    : formatTaskType(task.type)
+}
+
+function formatTaskCapability(capability: string): string {
+  return capability
+    .replaceAll(".", " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/\s+/)
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ")
@@ -295,10 +397,13 @@ export function formatDispatchState(status: string): string {
   }
 }
 
-export function formatTaskTime(value: string): string {
+export function formatTaskTime(
+  value: string,
+  locale?: MyOpenPanelsLocale
+): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale === "zh-CN" ? "zh-CN" : "en", {
     hour: "2-digit",
     minute: "2-digit",
     month: "short",

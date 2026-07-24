@@ -439,7 +439,7 @@ fn agent_procedure_bootstrap(
         },
     });
     if procedure.registration.module_key == "task" {
-        payload["tasks"] = compact_task_summary(visible);
+        payload["tasks"] = compact_task_queue_summary(visible);
     }
     if procedure
         .registration

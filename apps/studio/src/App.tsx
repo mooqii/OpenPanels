@@ -24,6 +24,7 @@ import {
   type AgentPanelTab,
   type TaskFilter,
 } from "./components/trace/TracePanel"
+import { pendingTaskCount } from "./components/trace/trace-utils"
 import { TypesettingPanel } from "./components/typesetting/TypesettingPanel"
 import type { StudioRuntimeState } from "./components/update/StudioRuntimeStatus"
 import { WikiPanel } from "./components/wiki/WikiPanel"
@@ -178,7 +179,6 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       setLoadedRuntimeVersion(version)
     }
   }, [appState?.buildInfo?.version, loadedRuntimeVersion])
-
   useEffect(() => {
     if (!appState) return
     const next = new Map(
@@ -976,7 +976,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             setIsTraceOpen((value) => !value)
           }}
           onUpdate={updateNow}
-          pendingTaskCount={appState.pendingTaskCount ?? 0}
+          pendingTaskCount={pendingTaskCount(appState.tasks ?? [])}
           runtimeState={runtimeState}
           setIsModelSettingsOpen={setIsModelSettingsOpen}
           setIsSkillManagerOpen={skillManager.onOpenChange}

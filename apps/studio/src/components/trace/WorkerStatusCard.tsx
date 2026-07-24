@@ -162,19 +162,33 @@ export function WorkerStatusCard({
               showArrow
             >
               <Tooltip.Arrow />
-              <p>
-                {t`Enabled Agent CLIs claim queued tasks from left to right in priority order.`}
-              </p>
-              <p>
-                {t`Current priority:`}{" "}
-                {enabledLocalClis.length
-                  ? enabledLocalClis.map((cli) => cli.name).join(" > ")
-                  : t`No enabled automatic task channel.`}
-              </p>
-              <p>
-                {t`This project can process up to`} {maxConcurrency}{" "}
-                {t`tasks at the same time.`}
-              </p>
+              {requiresManualInstruction ? (
+                <>
+                  <p>{t`No active Agent CLI is currently available.`}</p>
+                  <p>
+                    {t`Use the settings button on the right to configure the Agent CLI that processes tasks.`}
+                  </p>
+                  <p>
+                    {t`Until an Agent CLI is activated, copy the task instruction manually and send it to an Agent.`}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p>
+                    {t`Enabled Agent CLIs claim queued tasks from left to right in priority order.`}
+                  </p>
+                  <p>
+                    {t`Current priority:`}{" "}
+                    {enabledLocalClis.length
+                      ? enabledLocalClis.map((cli) => cli.name).join(" > ")
+                      : t`No enabled automatic task channel.`}
+                  </p>
+                  <p>
+                    {t`This project can process up to`} {maxConcurrency}{" "}
+                    {t`tasks at the same time.`}
+                  </p>
+                </>
+              )}
             </Tooltip.Content>
           </Tooltip>
         </div>

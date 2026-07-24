@@ -287,6 +287,149 @@ fn task_claim_and_heartbeat_do_not_write_domain_panel_state() {
 }
 
 #[test]
+fn wiki_mutation_scope_skips_an_update_with_a_running_conversion() {
+    let temp = tempfile::tempdir().expect("temp");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join("storage");
+    fs::create_dir_all(&project_dir).expect("project");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
+    let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let binary = crate::wiki::add_raw_document(
+        &paths,
+        "source.png",
+        Some("Source"),
+        Some("image/png"),
+        "user",
+        Some(&wiki_space_id),
+        b"binary source",
+    )
+    .expect("binary document");
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let markdown = crate::wiki::add_raw_document(
+        &paths,
+        "ready.md",
+        Some("Ready"),
+        Some("text/markdown"),
+        "user",
+        Some(&wiki_space_id),
+        b"# Ready",
+    )
+    .expect("markdown document");
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let second_markdown = crate::wiki::add_raw_document(
+        &paths,
+        "also-ready.md",
+        Some("Also ready"),
+        Some("text/markdown"),
+        "user",
+        Some(&wiki_space_id),
+        b"# Also ready",
+    )
+    .expect("second markdown document");
+    let conversion_id = binary["document"]["conversion"]["taskId"]
+        .as_str()
+        .expect("conversion task");
+    let ready_ingestion_id = markdown["document"]["ingestionByWikiSpace"]
+        [&wiki_space_id]["taskId"]
+        .as_str()
+        .expect("ready ingestion");
+    let second_ready_ingestion_id = second_markdown["document"]["ingestionByWikiSpace"]
+        [&wiki_space_id]["taskId"]
+        .as_str()
+        .expect("second ready ingestion");
+    let listed = tasks::list_tasks(&paths, tasks::TaskListFilter::default()).expect("task list");
+    for task_id in [ready_ingestion_id, second_ready_ingestion_id] {
+        let task = listed["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|task| task["id"] == task_id)
+            .expect("ready Wiki update");
+        assert_eq!(task["ready"], true);
+        assert_eq!(task["mutationBlocked"], false);
+        assert!(task["blockedReason"].is_null());
+    }
+    let mutation_key = format!("wiki:{}", bootstrap.project.id);
+    let scope = tasks::TaskExecutionScope::WikiMutationDrain {
+        project_id: bootstrap.project.id,
+        mutation_key,
+    };
+    let _broker = crate::content::enable_test_task_broker();
+
+    let conversion_claim =
+        tasks::claim_task_scope(&paths, &scope, "agent-cli:converter").expect("conversion claim");
+    assert_eq!(conversion_claim["task"]["id"], conversion_id);
+
+    let update_claim =
+        tasks::claim_task_scope(&paths, &scope, "agent-cli:wiki").expect("update claim");
+    assert!(
+        [ready_ingestion_id, second_ready_ingestion_id]
+            .iter()
+            .any(|task_id| update_claim["task"]["id"] == **task_id)
+    );
+}
+
+#[test]
+fn terminal_conversion_failure_fails_its_dependent_wiki_update() {
+    let temp = tempfile::tempdir().expect("temp");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join("storage");
+    fs::create_dir_all(&project_dir).expect("project");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
+    let binary = crate::wiki::add_raw_document(
+        &paths,
+        "source.png",
+        Some("Source"),
+        Some("image/png"),
+        "user",
+        Some(&wiki_space_id),
+        b"binary source",
+    )
+    .expect("binary document");
+    let conversion_id = binary["document"]["conversion"]["taskId"]
+        .as_str()
+        .expect("conversion task");
+    let ingestion_id = binary["document"]["ingestionByWikiSpace"][&wiki_space_id]["taskId"]
+        .as_str()
+        .expect("ingestion task");
+    let _broker = crate::content::enable_test_task_broker();
+    let claim = tasks::claim_task(&paths, conversion_id, "agent-cli:converter")
+        .expect("conversion claim");
+
+    tasks::fail_task_with_class(
+        &paths,
+        conversion_id,
+        claim["leaseToken"].as_str().expect("lease token"),
+        "unsupported document",
+        None,
+        tasks::TaskFailureClass::TerminalTask,
+    )
+    .expect("terminal conversion failure");
+
+    let ingestion = tasks::inspect_task(&paths, ingestion_id).expect("dependent ingestion");
+    assert_eq!(ingestion["task"]["status"], "failed");
+    assert_eq!(ingestion["task"]["error"]["code"], "prerequisite_failed");
+    assert_eq!(
+        ingestion["task"]["error"]["prerequisiteTaskId"],
+        conversion_id
+    );
+}
+
+#[test]
 fn task_output_plan_conflict_leaves_task_and_panel_unchanged() {
     let temp = tempfile::tempdir().expect("temp");
     let project_dir = temp.path().join("project");
@@ -529,6 +672,71 @@ fn cancelling_and_archiving_a_document_task_keeps_its_projection_consistent() {
     assert_eq!(
         state_after_archive["rawDocuments"][0]["ingestionByWikiSpace"][wiki_space_id.as_str()]
             ["status"],
+        "cancelled"
+    );
+}
+
+#[test]
+fn deleting_a_queued_task_archives_its_dependents_and_updates_resource_status() {
+    let temp = tempfile::tempdir().expect("temp");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join("storage");
+    fs::create_dir_all(&project_dir).expect("project");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
+    let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let uploaded = crate::wiki::add_raw_document(
+        &paths,
+        "source.png",
+        Some("Source"),
+        Some("image/png"),
+        "user",
+        Some(&wiki_space_id),
+        b"binary source",
+    )
+    .expect("raw document");
+    let conversion_id = uploaded["document"]["conversion"]["taskId"]
+        .as_str()
+        .expect("conversion task")
+        .to_owned();
+    let ingestion_id = uploaded["document"]["ingestionByWikiSpace"][wiki_space_id.as_str()]
+        ["taskId"]
+        .as_str()
+        .expect("ingestion task")
+        .to_owned();
+
+    let deleted = tasks::delete_task(&paths, &conversion_id).expect("delete task");
+
+    let deleted_ids = deleted["deletedTaskIds"]
+        .as_array()
+        .expect("deleted task ids");
+    assert_eq!(deleted_ids.len(), 2);
+    assert!(deleted_ids.iter().any(|value| value == &conversion_id));
+    assert!(deleted_ids.iter().any(|value| value == &ingestion_id));
+    for task_id in [&conversion_id, &ingestion_id] {
+        let task = tasks::inspect_task(&paths, task_id).expect("deleted task");
+        assert_eq!(task["task"]["status"], "cancelled");
+        assert!(task["task"]["archivedAt"].is_string());
+    }
+    assert!(tasks::list_tasks(&paths, tasks::TaskListFilter::default())
+        .expect("visible tasks")["tasks"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
+
+    let state = Storage::open(&paths)
+        .expect("storage")
+        .read_panel_state(&bootstrap.project.id, &bootstrap.panel.id)
+        .expect("panel state")
+        .expect("Wiki state");
+    assert_eq!(state["rawDocuments"][0]["conversion"]["status"], "cancelled");
+    assert_eq!(
+        state["rawDocuments"][0]["ingestionByWikiSpace"][wiki_space_id.as_str()]["status"],
         "cancelled"
     );
 }

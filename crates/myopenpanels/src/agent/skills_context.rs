@@ -703,28 +703,6 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
         .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
         .map(|snapshot| &snapshot.state)
         .unwrap_or(&bootstrap.state);
-    let tasks = state
-        .get("tasks")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|task| {
-            task.get("status")
-                .and_then(Value::as_str)
-                .is_some_and(|status| ["queued", "running", "failed"].contains(&status))
-        })
-        .collect::<Vec<_>>();
-    let next_task = tasks
-        .iter()
-        .find(|task| task.get("status").and_then(Value::as_str) == Some("queued"))
-        .or_else(|| {
-            tasks
-                .iter()
-                .find(|task| task.get("status").and_then(Value::as_str) == Some("failed"))
-        })
-        .or_else(|| tasks.first())
-        .cloned();
     let active_space_id = state
         .get("activeWikiSpaceId")
         .and_then(Value::as_str)
@@ -757,7 +735,6 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
         .collect::<Vec<_>>();
     json!({
         "agentSkillId": selected_agent_skill_id(state),
-        "nextTaskAgentSkillId": next_task.as_ref().and_then(|task| task.get("agentSkillId")).and_then(Value::as_str).unwrap_or_else(|| selected_agent_skill_id(state)),
         "available": state.get("wikiSpaces").and_then(Value::as_array).is_some_and(|spaces| !spaces.is_empty()),
         "selected": selection.and_then(|value| value.get("selection")).and_then(|value| value.get("isWikiSelected")).and_then(Value::as_bool).unwrap_or(false),
         "wikiSpaceId": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("wikiSpaceId")).cloned().unwrap_or_else(|| json!(active_space_id)),
@@ -767,8 +744,6 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
         "localAccess": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("localAccess")).cloned().unwrap_or(Value::Null),
         "selectedMyDocumentCount": selected_my_documents.len(),
         "selectedMyDocuments": selected_my_documents,
-        "nextTask": next_task,
-        "pendingTaskCount": tasks.len(),
     })
 }
 
@@ -807,26 +782,6 @@ fn next_project_task(bootstrap: &ProjectBootstrap) -> Option<&Value> {
                 .tasks
                 .iter()
                 .filter(|task| task.get("ready").and_then(Value::as_bool).unwrap_or(false))
-                .find(|task| task.get("status").and_then(Value::as_str) == Some("failed"))
-        })
-}
-
-fn next_project_task_for_queue<'a>(
-    bootstrap: &'a ProjectBootstrap,
-    queue: &str,
-) -> Option<&'a Value> {
-    bootstrap
-        .tasks
-        .iter()
-        .filter(|task| task.get("ready").and_then(Value::as_bool).unwrap_or(false))
-        .filter(|task| task.get("queue").and_then(Value::as_str) == Some(queue))
-        .find(|task| task.get("status").and_then(Value::as_str) == Some("queued"))
-        .or_else(|| {
-            bootstrap
-                .tasks
-                .iter()
-                .filter(|task| task.get("ready").and_then(Value::as_bool).unwrap_or(false))
-                .filter(|task| task.get("queue").and_then(Value::as_str) == Some(queue))
                 .find(|task| task.get("status").and_then(Value::as_str) == Some("failed"))
         })
 }

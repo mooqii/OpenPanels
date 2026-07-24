@@ -208,46 +208,12 @@ pub fn agent_bootstrap(
             &panel_commands,
         )?);
     }
-    if let Some((task_id, skill_id)) = next_wiki_task_authoring_skill(&bootstrap)
-        .or_else(|| next_writing_task_authoring_skill(&bootstrap))
-    {
-        let skill = required_agent_skill(&skills, skill_id)?;
-        required_commands.extend(skill.metadata.requires_commands.iter().cloned());
-        required_skills.push(write_required_skill_loader(
-            paths,
-            skill,
-            &bootstrap,
-            detailed_selection.as_ref(),
-            wiki_selection.as_ref(),
-            Some(task_id),
-            &[],
-            &skill.metadata.requires_commands,
-        )?);
-    }
     let mut next_actions = Vec::new();
     let required_domains = required_commands
         .iter()
         .filter_map(|intent| crate::cli::registry::catalog_domain_for_intent(intent))
         .collect::<BTreeSet<_>>();
     next_actions.extend(required_domains.into_iter().map(catalog_action));
-    if !bootstrap.tasks.is_empty() {
-        let mut action = project_command_action(
-            paths,
-            "agent.skill.read",
-            vec![
-                "--skill-id".to_owned(),
-                TASK_QUEUE_SKILL_ID.to_owned(),
-                "--format".to_owned(),
-                "json".to_owned(),
-            ],
-        );
-        action["condition"] = json!({
-            "type": "agent-judgment",
-            "description": "The user request handles work from the project Task queue."
-        });
-        action["skillId"] = json!(TASK_QUEUE_SKILL_ID);
-        next_actions.push(action);
-    }
     next_actions.extend(
         recommended_domains
             .iter()
@@ -278,24 +244,6 @@ pub fn agent_bootstrap(
         "when": "no-recommended-domain-matches"
     });
     next_actions.push(catalog_index_action);
-    if let Some(task_id) = next_task_id(&bootstrap) {
-        let mut action = project_command_action(
-            paths,
-            "task.read",
-            vec![
-                "--task-id".to_owned(),
-                task_id.to_owned(),
-                "--format".to_owned(),
-                "json".to_owned(),
-            ],
-        );
-        action["condition"] = json!({
-            "type": "resource-status",
-            "resource": "next-task",
-            "statuses": ["queued", "failed"]
-        });
-        next_actions.push(action);
-    }
     next_actions.extend(operations.iter().take(3).filter_map(|operation| {
         let operation_id = operation.get("id").and_then(Value::as_str)?;
         let mut action = project_command_action(
@@ -372,7 +320,7 @@ pub fn agent_bootstrap(
             "contextTruncated": context_truncated,
             "selection": selection_summary,
         },
-        "tasks": compact_task_summary(&bootstrap),
+        "tasks": compact_task_counts(&bootstrap),
         "operations": compact_operation_summary(&operations),
         "modules": crate::capabilities::module_catalog()?,
         "discovery": {
@@ -461,46 +409,6 @@ fn next_task_id(bootstrap: &ProjectBootstrap) -> Option<&str> {
         })
         .and_then(|task| task.get("id"))
         .and_then(Value::as_str)
-}
-
-fn next_wiki_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str, &str)> {
-    if bootstrap.active_panel_kind != PanelKind::Wiki {
-        return None;
-    }
-    let task = next_project_task_for_queue(bootstrap, "wiki")?;
-    let task_id = task.get("id").and_then(Value::as_str)?;
-    let skill_id = task
-        .get("agentSkillId")
-        .or_else(|| {
-            task.get("input")
-                .and_then(|input| input.get("agentSkillId"))
-        })
-        .or_else(|| {
-            task.get("source")
-                .and_then(|source| source.get("agentSkillId"))
-        })
-        .and_then(Value::as_str)
-        .or_else(|| {
-            bootstrap
-                .panels
-                .iter()
-                .find(|snapshot| snapshot.panel.kind == PanelKind::Wiki)
-                .map(|snapshot| selected_agent_skill_id(&snapshot.state))
-        })?;
-    (skill_id != PANELS_SKILL_ID).then_some((task_id, skill_id))
-}
-
-fn next_writing_task_authoring_skill(bootstrap: &ProjectBootstrap) -> Option<(&str, &str)> {
-    if bootstrap.active_panel_kind != PanelKind::Writing {
-        return None;
-    }
-    let task = next_project_task_for_queue(bootstrap, "writing")?;
-    let skill_id = match task.get("type").and_then(Value::as_str) {
-        Some("distill_writing_skill") => task.pointer("/input/distillerSkillId"),
-        _ => task.pointer("/input/writingSkillId"),
-    }
-    .and_then(Value::as_str)?;
-    Some((task.get("id").and_then(Value::as_str)?, skill_id))
 }
 
 fn required_agent_skill<'a>(
@@ -634,7 +542,7 @@ fn project_command_action(paths: &MyOpenPanelsPaths, intent: &str, args: Vec<Str
     command_action(intent, contextual_args)
 }
 
-fn compact_task_summary(bootstrap: &ProjectBootstrap) -> Value {
+fn compact_task_counts(bootstrap: &ProjectBootstrap) -> Value {
     let ready_count = bootstrap
         .tasks
         .iter()
@@ -650,6 +558,15 @@ fn compact_task_summary(bootstrap: &ProjectBootstrap) -> Value {
             )
         })
         .count();
+    json!({
+        "pendingCount": bootstrap.pending_task_count,
+        "readyCount": ready_count,
+        "runningCount": running_count,
+    })
+}
+
+fn compact_task_queue_summary(bootstrap: &ProjectBootstrap) -> Value {
+    let mut summary = compact_task_counts(bootstrap);
     let next = next_project_task(bootstrap)
         .and_then(|task| {
             let task_id = task.get("id").and_then(Value::as_str)?;
@@ -661,12 +578,8 @@ fn compact_task_summary(bootstrap: &ProjectBootstrap) -> Value {
             }))
         })
         .unwrap_or(Value::Null);
-    json!({
-        "pendingCount": bootstrap.pending_task_count,
-        "readyCount": ready_count,
-        "runningCount": running_count,
-        "next": next,
-    })
+    summary["next"] = next;
+    summary
 }
 
 fn compact_operation_summary(operations: &[Value]) -> Value {

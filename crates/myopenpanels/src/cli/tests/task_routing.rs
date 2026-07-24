@@ -126,7 +126,7 @@ fn agent_bootstrap_delivers_entry_skill_update_until_the_context_acknowledges_it
 }
 
 #[test]
-fn agent_bootstrap_prepares_panel_and_wiki_task_authoring_skills() {
+fn agent_bootstrap_keeps_queued_wiki_tasks_out_of_generic_context() {
     let temp = tempfile::tempdir().expect("temp dir");
     let project_dir = temp.path().join("project");
     let storage_dir = temp.path().join(".myopenpanels");
@@ -163,19 +163,24 @@ fn agent_bootstrap_prepares_panel_and_wiki_task_authoring_skills() {
     let envelope = serde_json::from_str::<Value>(&stdout).expect("bootstrap");
     let payload = &envelope["data"];
     let required_skills = payload["skills"].as_array().unwrap();
-    assert_eq!(required_skills.len(), 2);
+    assert_eq!(required_skills.len(), 1);
     assert_eq!(required_skills[0]["id"], "myopenpanels-panels");
-    assert_eq!(required_skills[1]["id"], "wiki-default");
-    assert_eq!(required_skills[1]["taskId"], task_id);
     for skill in required_skills {
         let context_path = Path::new(skill["contextPath"].as_str().unwrap());
         let local_path = Path::new(skill["localPath"].as_str().unwrap());
         assert!(context_path.is_file());
         assert!(local_path.is_file());
     }
-    let authoring_context = fs::read_to_string(required_skills[1]["contextPath"].as_str().unwrap())
-        .expect("authoring loader context");
-    assert!(authoring_context.contains(task_id));
+    let panel_context = fs::read_to_string(required_skills[0]["contextPath"].as_str().unwrap())
+        .expect("panel loader context");
+    assert!(!panel_context.contains(task_id));
+    assert!(payload["tasks"].get("next").is_none());
+    assert!(envelope["actions"]["suggested"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|action| action["intent"] != "task.read"
+            && action["skillId"] != "myopenpanels-task-queue"));
 }
 
 #[test]

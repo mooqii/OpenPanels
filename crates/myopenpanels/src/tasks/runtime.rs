@@ -145,13 +145,26 @@ fn finalize_task_runtime(
             "prerequisiteTaskId": task_id,
             "prerequisiteStatus": status,
         });
+        let dependent_status = if status == "failed" {
+            "failed"
+        } else {
+            "cancelled"
+        };
         tx.execute(
             r#"
-            UPDATE tasks SET status = 'cancelled', error_json = ?, completed_at = ?,
-              execution_generation = execution_generation + 1, updated_at = ?
+            UPDATE tasks SET status = ?, error_json = ?, completed_at = ?,
+              execution_generation = execution_generation + 1,
+              execution_token_hash = NULL, lease_owner = NULL, lease_expires_at = NULL,
+              heartbeat_at = NULL, current_runner_key = NULL, updated_at = ?
             WHERE depends_on_task_id = ? AND status IN ('queued', 'running')
             "#,
-            params![reason.to_string(), now, now, task_id],
+            params![
+                dependent_status,
+                reason.to_string(),
+                now,
+                now,
+                task_id
+            ],
         )
         .map_err(to_cli_error)?;
     }

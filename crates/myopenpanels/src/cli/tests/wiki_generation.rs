@@ -68,16 +68,18 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let context = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(context["tasks"]["next"]["taskId"], task_id);
-    assert!(context["tasks"]["next"].get("readCommand").is_none());
-    assert!(context["tasks"]["next"].get("readAction").is_none());
-    let task_action = context["actions"]["suggested"]
+    assert_eq!(context["tasks"]["readyCount"], 1);
+    assert!(context["tasks"].get("next").is_none());
+    assert!(context["actions"]["suggested"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|action| action["intent"] == "task.read")
-        .expect("Task read action");
-    assert_action_parses(task_action);
+        .all(|action| action["intent"] != "task.read"));
+    assert!(context["actions"]["suggested"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|action| action["skillId"] != "myopenpanels-task-queue"));
 
     update_wiki_state_field(
         &storage_dir,
@@ -98,15 +100,38 @@ fn wiki_commands_create_markdown_tasks_and_pages() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let context = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(context["tasks"]["next"]["taskId"], task_id);
+    assert!(context["tasks"].get("next").is_none());
     assert!(context.get("state").is_none());
-    let task_queue_action = context["actions"]["suggested"]
+    assert!(context["actions"]["suggested"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|action| action["skillId"] == "myopenpanels-task-queue")
-        .expect("Task queue Skill action");
-    assert_action_parses(task_queue_action);
+        .all(|action| action["skillId"] != "myopenpanels-task-queue"));
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bootstrap",
+        "--procedure",
+        "task.queue.inspect",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let task_context = serde_json::from_str::<Value>(&stdout).expect("json");
+    assert_eq!(task_context["tasks"]["next"]["taskId"], task_id);
+    let task_action = task_context["actions"]["suggested"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["intent"] == "task.read")
+        .expect("Task read action");
+    assert_action_parses(task_action);
 
     let (code, stdout, stderr) = run(&[
         "agent",

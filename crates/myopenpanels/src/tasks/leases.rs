@@ -114,15 +114,7 @@ fn claim_once(
                       AND predecessor.project_id = tasks.project_id
                       AND predecessor.mutation_key = tasks.mutation_key
                       AND predecessor.id <> tasks.id
-                      AND predecessor.status IN ('queued', 'running')
-                      AND (
-                        predecessor.status = 'running'
-                        OR predecessor.created_at < tasks.created_at
-                        OR (
-                          predecessor.created_at = tasks.created_at
-                          AND predecessor.id < tasks.id
-                        )
-                      )
+                      AND predecessor.status = 'running'
                   )
                 ORDER BY created_at, id
                 "#,

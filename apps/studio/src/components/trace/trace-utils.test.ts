@@ -3,12 +3,14 @@ import type { ProjectTask, TraceCategory, TraceEvent } from "../../types"
 import {
   canArchiveTask,
   formatTaskError,
+  formatTaskName,
   isPendingTask,
   manualAgentScopeCandidates,
   manualTaskInstruction,
   pendingTaskCount,
   retryTaskAgentMessage,
   traceEventMatchesFilter,
+  wikiMutationTaskGroups,
 } from "./trace-utils"
 
 function event(
@@ -83,6 +85,50 @@ describe("task archive rules", () => {
       ])
     ).toBe(1)
   })
+
+  it("counts one Wiki mutation queue as one pending work unit", () => {
+    const first = projectTask({
+      id: "task:wiki:first",
+      mutationKey: "wiki:mutation",
+      mutationSequence: 1,
+    })
+    const second = projectTask({
+      id: "task:wiki:second",
+      mutationKey: "wiki:mutation",
+      mutationSequence: 2,
+      ready: false,
+    })
+    const unrelated = projectTask({
+      id: "task:unrelated",
+      mutationKey: null,
+    })
+
+    expect(wikiMutationTaskGroups([second, unrelated, first])).toEqual([
+      {
+        key: "wiki-mutation-drain:project:test:wiki:mutation",
+        mutationKey: "wiki:mutation",
+        projectId: "project:test",
+        tasks: [first, second],
+      },
+    ])
+    expect(pendingTaskCount([first, second, unrelated])).toBe(2)
+  })
+
+  it("moves a Wiki mutation queue out of pending while one task is active", () => {
+    expect(
+      pendingTaskCount([
+        projectTask({
+          id: "task:wiki:running",
+          mutationKey: "wiki:mutation",
+          status: "running",
+        }),
+        projectTask({
+          id: "task:wiki:queued",
+          mutationKey: "wiki:mutation",
+        }),
+      ])
+    ).toBe(0)
+  })
 })
 describe("manual task instructions", () => {
   it("includes the exact scope command in the current language", () => {
@@ -98,10 +144,11 @@ describe("manual task instructions", () => {
     expect(english).toContain(
       "myopenpanels task handoff start --scope exact-task --task-id task:manual --format json"
     )
-    expect(english).toContain("Do not claim or process another Task")
-    expect(english).not.toContain("continue with each Bundle")
-    expect(chinese).toContain("只处理任务 task:manual")
-    expect(chinese).toContain("不要领取或处理其他任务")
+    expect(english).not.toContain("Do not claim or process another Task")
+    expect(english).not.toContain("Stop after it completes")
+    expect(chinese).toContain("处理任务 task:manual")
+    expect(chinese).not.toContain("不要领取或处理其他任务")
+    expect(chinese).not.toContain("完成后即停止")
     expect(chinese).not.toContain("Runtime 会返回下一项")
   })
 
@@ -122,7 +169,8 @@ describe("manual task instructions", () => {
     )
 
     expect(projectDrain).toContain("continue with each Task returned")
-    expect(wikiDrain).toContain("Do not process other Project tasks")
+    expect(wikiDrain).not.toContain("Do not process other Project tasks")
+    expect(wikiDrain).not.toContain("Process only Tasks")
     expect(wikiDrain).not.toContain("continue with each Task returned")
   })
 
@@ -172,7 +220,7 @@ describe("manual task instructions", () => {
     const ingest = projectTask({
       dependencies: [
         {
-          failurePolicy: "cancel",
+          failurePolicy: "fail",
           prerequisiteTaskId: conversion.id,
           status: "queued",
           successCondition: "succeeded",
@@ -195,6 +243,10 @@ describe("manual task instructions", () => {
         },
       },
     ])
+    expect(wikiMutationTaskGroups([conversion, ingest])[0]?.tasks).toEqual([
+      ingest,
+    ])
+    expect(pendingTaskCount([conversion, ingest])).toBe(2)
   })
 })
 
@@ -217,5 +269,29 @@ describe("retry task Agent messages", () => {
 describe("task errors", () => {
   it("preserves Error messages", () => {
     expect(formatTaskError(new Error("Retry rejected"))).toBe("Retry rejected")
+  })
+})
+
+describe("task names", () => {
+  it("uses stable display names for built-in tasks", () => {
+    expect(
+      formatTaskName(
+        projectTask({
+          capability: "publication.cover.generate",
+          type: "generate_publication_cover",
+        })
+      )
+    ).toBe("Generate Publication Cover")
+  })
+
+  it("humanizes custom capabilities when the task type is unknown", () => {
+    expect(
+      formatTaskName(
+        projectTask({
+          capability: "wiki.ingestMarkdown",
+          type: "custom_task",
+        })
+      )
+    ).toBe("Wiki Ingest Markdown")
   })
 })

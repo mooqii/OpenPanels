@@ -286,10 +286,13 @@ fn project_wiki_source_status(
             .optional()
             .map_err(to_cli_error)?;
         let task = document_tasks.iter().find(|task| {
+            let task_version = task.input.get("markdownVersion").and_then(Value::as_i64);
             task.task_type == "ingest_markdown_into_wiki"
                 && task.source.get("wikiSpaceId").and_then(Value::as_str) == Some(space_id)
-                && task.input.get("markdownVersion").and_then(Value::as_i64)
-                    == Some(document_version)
+                && (task_version == Some(document_version)
+                    || (task_version == Some(document_version + 1)
+                        && task.depends_on_task_id.as_deref()
+                            == conversion.map(|dependency| dependency.id.as_str())))
         });
         let dependency_waiting = task
             .and_then(|task| task.depends_on_task_id.as_deref())

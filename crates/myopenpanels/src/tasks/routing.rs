@@ -59,12 +59,7 @@ fn mutation_task_blocked(
                   WHERE predecessor.project_id = candidate.project_id
                     AND predecessor.mutation_key = candidate.mutation_key
                     AND predecessor.id <> candidate.id
-                    AND predecessor.status IN ('queued', 'running')
-                    AND (
-                      predecessor.status = 'running'
-                      OR predecessor.created_at < candidate.created_at
-                      OR (predecessor.created_at = candidate.created_at AND predecessor.id < candidate.id)
-                    )
+                    AND predecessor.status = 'running'
                 )
             )
             "#,
@@ -91,7 +86,7 @@ fn read_task_dependency_values(
                     "prerequisiteTaskId": row.get::<_, String>(0)?,
                     "status": row.get::<_, String>(1)?,
                     "successCondition": "succeeded",
-                    "failurePolicy": "cancel",
+                    "failurePolicy": "fail",
                 })])
             },
         )

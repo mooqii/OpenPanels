@@ -10,6 +10,7 @@ const MAX_LINE_COUNT_OVERRIDES = new Map([
   ["apps/studio/src/App.tsx", 1032],
   ["apps/studio/src/components/typesetting/TypesettingPublication.tsx", 1415],
   ["apps/studio/src/components/wiki/useWikiPanelController.tsx", 1013],
+  ["apps/studio/src/styles/trace.css", 1019],
   ["apps/studio/src/styles/typesetting.css", 1436],
   ["crates/myopenpanels/src/bridge/result_validation.rs", 1396],
   ["crates/myopenpanels/src/bridge/task_handlers.rs", 1249],
@@ -19,7 +20,7 @@ const MAX_LINE_COUNT_OVERRIDES = new Map([
   ["crates/myopenpanels/src/control/runtime.rs", 1096],
   ["crates/myopenpanels/src/release.rs", 1183],
   ["crates/myopenpanels/src/studio/lifecycle.rs", 1037],
-  ["crates/myopenpanels/src/writing/tests.rs", 1045],
+  ["crates/myopenpanels/src/writing/tests.rs", 1046],
 ])
 
 async function sourceFiles(directory) {

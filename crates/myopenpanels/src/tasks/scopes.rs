@@ -331,25 +331,53 @@ fn collect_nonterminal_prerequisites(
 }
 
 fn next_wiki_scope_candidate(tasks: &[Value], mutation_key: &str) -> Option<String> {
-    let head = tasks
+    let mut mutation_tasks = tasks
         .iter()
         .filter(|task| {
             task.get("mutationKey").and_then(Value::as_str) == Some(mutation_key)
                 && !scope_task_terminal(task)
         })
-        .min_by_key(|task| {
+        .collect::<Vec<_>>();
+    mutation_tasks.sort_by_key(|task| {
+        (
             task.get("mutationSequence")
                 .and_then(Value::as_i64)
-                .unwrap_or(i64::MAX)
-        })?;
-    if scope_task_claimable(head) {
-        return head.get("id").and_then(Value::as_str).map(str::to_owned);
+                .unwrap_or(i64::MAX),
+            task.get("createdAt")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            task.get("id").and_then(Value::as_str).unwrap_or_default(),
+        )
+    });
+    if mutation_tasks.iter().any(|task| is_active_task(task)) {
+        return None;
     }
     let by_id = tasks
         .iter()
         .filter_map(|task| Some((task.get("id")?.as_str()?.to_owned(), task)))
         .collect::<std::collections::BTreeMap<_, _>>();
-    find_ready_prerequisite(head, &by_id, &mut std::collections::BTreeSet::new())
+    for task in mutation_tasks {
+        if scope_task_claimable(task) {
+            return task.get("id").and_then(Value::as_str).map(str::to_owned);
+        }
+        if let Some(candidate) =
+            find_ready_prerequisite(task, &by_id, &mut std::collections::BTreeSet::new())
+        {
+            return Some(candidate);
+        }
+        let prerequisite_blocked = task
+            .get("dependencies")
+            .and_then(Value::as_array)
+            .is_some_and(|dependencies| {
+                dependencies.iter().any(|dependency| {
+                    dependency.get("status").and_then(Value::as_str) != Some("succeeded")
+                })
+            });
+        if !prerequisite_blocked {
+            return None;
+        }
+    }
+    None
 }
 
 fn find_ready_prerequisite(

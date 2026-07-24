@@ -202,7 +202,10 @@ fn build_router(
         .route("/api/events", get(api_project_events))
         .route("/api/tasks", get(api_tasks))
         .route("/api/tasks/next", get(api_next_task))
-        .route("/api/tasks/{task_id}", get(api_inspect_task))
+        .route(
+            "/api/tasks/{task_id}",
+            get(api_inspect_task).delete(api_task_delete),
+        )
         .route("/api/tasks/{task_id}/retry", post(api_task_retry))
         .route("/api/tasks/{task_id}/cancel", post(api_task_cancel))
         .route("/api/tasks/{task_id}/archive", post(api_task_archive))

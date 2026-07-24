@@ -55,7 +55,7 @@ export function TaskRetryControl({
       }
       setRetryTaskId(nextTaskId)
     } catch (cause) {
-      setError(formatTaskError(cause))
+      setError(t(formatTaskError(cause)))
     } finally {
       retryInFlight.current = false
       setIsRetrying(false)

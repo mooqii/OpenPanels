@@ -990,9 +990,10 @@ mod tests {
             .flatten()
             .any(|skill| skill["id"].as_str() == Some(skill_id));
         assert!(
-            bootstrap_loads_custom_skill,
-            "bootstrap did not load the custom skill: {agent_bootstrap:#}"
+            !bootstrap_loads_custom_skill,
+            "generic bootstrap loaded a queued Task skill: {agent_bootstrap:#}"
         );
+        assert!(agent_bootstrap["tasks"].get("next").is_none());
 
         let other = crate::control::create_project(&paths, Some("Other")).expect("other project");
         ensure_project_bootstrap(
