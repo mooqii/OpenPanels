@@ -95,7 +95,7 @@ fn startup_recovery_preserves_an_unresolvable_active_revision() {
         ResourceKind::MyDocument,
         "my-document:legacy",
     );
-    let unexpected_revision = resource.join("revision:unresolvable");
+    let unexpected_revision = revision_dir(&resource, "revision:unresolvable");
     fs::create_dir_all(unexpected_revision.join("files")).expect("unexpected revision");
     fs::write(unexpected_revision.join("files/content.md"), "preserve me")
         .expect("unexpected content");
