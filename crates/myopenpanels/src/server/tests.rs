@@ -86,7 +86,13 @@ mod tests {
             "projects/{}/content/asset/",
             bootstrap.project.id
         )));
-        assert!(storage_dir.join(asset_ref).is_file());
+        assert!(
+            crate::storage::Storage::open(&paths)
+                .expect("storage")
+                .asset_path(asset_ref)
+                .expect("asset path")
+                .is_file()
+        );
         assert!(!storage_dir
             .join("projects")
             .join(sanitize_path_part(&bootstrap.project.id))

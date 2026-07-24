@@ -1,5 +1,5 @@
 use crate::error::CliError;
-use crate::paths::{sanitize_path_part, MyOpenPanelsPaths};
+use crate::paths::{sanitize_logical_path_part, sanitize_path_part, MyOpenPanelsPaths};
 use crate::types::{Panel, PanelKind, Project};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;

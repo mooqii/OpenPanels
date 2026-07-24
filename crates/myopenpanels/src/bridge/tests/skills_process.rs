@@ -93,7 +93,7 @@
         assert!(stdout.ends_with("|unset"));
         assert!(stdout.contains(
             &storage
-                .join("executions/task:workspace/7-attempt:test")
+                .join("executions/task_workspace/7-attempt_test")
                 .display()
                 .to_string()
         ));

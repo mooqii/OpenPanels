@@ -756,7 +756,7 @@ pub fn recover_filesystem(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
                 continue;
             };
             let resource = resource_dir(paths, &project_id, kind, resource_key);
-            let revision_dir = resource.join(revision_id);
+            let revision_dir = revision_dir(&resource, revision_id);
             let manifest_path = revision_dir.join("manifest.json");
             if !manifest_path.is_file() {
                 continue;
@@ -818,7 +818,7 @@ fn retain_active_revision_chain(
     let active: ActivePointer = read_json(&active_path)?;
     let mut revision_id = Some(active.revision_id);
     while let Some(current) = revision_id {
-        let revision = resource.join(&current);
+        let revision = revision_dir(resource, &current);
         if !retained.insert(revision.clone()) {
             break;
         }
@@ -872,7 +872,8 @@ fn resource_snapshot_at_revision(
     revision_id: &str,
 ) -> Result<Option<ActiveResourceSnapshot>, CliError> {
     let resource = resource_dir(paths, project_id, kind, resource_key);
-    let manifest_path = resource.join(revision_id).join("manifest.json");
+    let revision = revision_dir(&resource, revision_id);
+    let manifest_path = revision.join("manifest.json");
     if !manifest_path.is_file() {
         return Ok(None);
     }
@@ -882,8 +883,7 @@ fn resource_snapshot_at_revision(
         .into_iter()
         .map(|file| {
             let bytes = fs::read(
-                resource
-                    .join(revision_id)
+                revision
                     .join("files")
                     .join(logical_path_buf(&file.logical_path)?),
             )
@@ -976,7 +976,7 @@ pub fn rename_active_file(
     let resource = resource_dir(paths, project_id, kind, resource_key);
     let stage = tempfile::tempdir_in(&paths.storage_dir).map_err(to_cli_error)?;
     copy_tree(
-        &resource.join(&snapshot.revision_id).join("files"),
+        &revision_dir(&resource, &snapshot.revision_id).join("files"),
         &stage.path().join("files"),
     )?;
     let current = stage.path().join("files").join(logical_path_buf(current_path)?);
@@ -1064,7 +1064,7 @@ pub fn active_writing_skill_sources(
             let manifest = snapshot.files.iter().find(|file| file.logical_path == "manifest.json")
                 .and_then(|file| serde_json::from_slice::<Value>(&file.bytes).ok());
             if let (Some(source), Some(manifest)) = (source, manifest) {
-                let dir = skill.join(&snapshot.revision_id).join("files");
+                let dir = revision_dir(&skill, &snapshot.revision_id).join("files");
                 result.push((skill_id, source, manifest, dir.display().to_string()));
             }
         }
@@ -1279,7 +1279,7 @@ fn prepare_staged_resource(
     fs::create_dir_all(&resource).map_err(to_cli_error)?;
     write_json_atomic(&resource.join("resource.json"), &json!({ "resourceKey": staged.resource_key }))?;
     let revision_id = crate::ids::random_id("revision");
-    let temporary = resource.join(format!(".{revision_id}.tmp"));
+    let temporary = resource.join(format!(".{}.tmp", sanitize_path_part(&revision_id)));
     let files_dir = temporary.join("files");
     let replace_all = staged
         .metadata
@@ -1289,7 +1289,7 @@ fn prepare_staged_resource(
         || read_json::<bool>(&stage_dir.join("replace-all.json")).unwrap_or(false);
     if !replace_all {
         if let Some(parent) = staged.base_revision_id.as_deref() {
-            copy_tree(&resource.join(parent).join("files"), &files_dir)?;
+            copy_tree(&revision_dir(&resource, parent).join("files"), &files_dir)?;
         }
     }
     copy_tree(&stage_dir.join("files"), &files_dir)?;
@@ -1324,7 +1324,7 @@ fn prepare_staged_resource(
     let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(to_cli_error)?;
     fs::create_dir_all(&temporary).map_err(to_cli_error)?;
     fs::write(temporary.join("manifest.json"), &manifest_bytes).map_err(to_cli_error)?;
-    fs::rename(&temporary, resource.join(&revision_id)).map_err(to_cli_error)?;
+    fs::rename(&temporary, revision_dir(&resource, &revision_id)).map_err(to_cli_error)?;
     let pointer = ActivePointer {
         revision_id,
         content_version: manifest.content_version,
@@ -1361,6 +1361,10 @@ fn resource_dir(
         .join("content")
         .join(kind.as_str())
         .join(sanitize_path_part(resource_key))
+}
+
+fn revision_dir(resource: &Path, revision_id: &str) -> PathBuf {
+    resource.join(sanitize_path_part(revision_id))
 }
 
 fn staging_task_dir(paths: &MyOpenPanelsPaths, context: &ExecutionContext) -> PathBuf {

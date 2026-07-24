@@ -87,9 +87,29 @@ pub fn sanitize_path_part(value: &str) -> String {
     let sanitized = trimmed
         .chars()
         .map(|ch| {
-            if ch.is_ascii_alphanumeric()
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '@' | '+' | '=') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim_matches('.').to_owned();
+    if sanitized.is_empty() {
+        "default".to_owned()
+    } else {
+        sanitized
+    }
+}
+
+pub fn sanitize_logical_path_part(value: &str) -> String {
+    let trimmed = value.trim();
+    let sanitized = trimmed
+        .chars()
+        .map(|ch| {
+            if ch == ':'
+                || ch.is_ascii_alphanumeric()
                 || matches!(ch, '-' | '_' | '.' | '@' | '+' | '=')
-                || (!cfg!(target_os = "windows") && ch == ':')
             {
                 ch
             } else {
@@ -208,6 +228,12 @@ mod tests {
             "Final 版本 (v2) [approved].md"
         );
         assert_eq!(sanitize_file_name("notes/report?.md"), "notes_report_.md");
+    }
+
+    #[test]
+    fn filesystem_parts_are_portable_while_logical_parts_preserve_ids() {
+        assert_eq!(sanitize_path_part("task:example"), "task_example");
+        assert_eq!(sanitize_logical_path_part("task:example"), "task:example");
     }
 
     #[test]

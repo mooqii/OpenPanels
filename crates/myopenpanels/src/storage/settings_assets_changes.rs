@@ -177,12 +177,12 @@ impl Storage {
         let content_version = current_version + 1;
         let canonical_ref = format!(
             "projects/{}/content/asset/{}/{}/{}",
-            sanitize_path_part(project_id),
-            sanitize_path_part(&asset_id),
+            sanitize_logical_path_part(project_id),
+            sanitize_logical_path_part(&asset_id),
             content_version,
             file_name
                 .split('/')
-                .map(sanitize_path_part)
+                .map(sanitize_logical_path_part)
                 .collect::<Vec<_>>()
                 .join("/")
         );

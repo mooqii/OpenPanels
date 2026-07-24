@@ -9,8 +9,8 @@ pub fn active_file_path(
     let Some(active) = read_active_pointer(paths, project_id, kind, resource_key)? else {
         return Ok(None);
     };
-    let path = resource_dir(paths, project_id, kind, resource_key)
-        .join(active.revision_id)
+    let resource = resource_dir(paths, project_id, kind, resource_key);
+    let path = revision_dir(&resource, &active.revision_id)
         .join("files")
         .join(logical_path_buf(logical_path)?);
     Ok(path.is_file().then_some(path))

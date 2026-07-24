@@ -267,6 +267,7 @@ mod tests {
         assert_eq!(error.code(), Some("studio_already_running"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn owner_lock_survives_storage_directory_replacement() {
         let temp = tempfile::tempdir().expect("temp dir");
