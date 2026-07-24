@@ -764,9 +764,12 @@ mod tests {
         drop(storage);
 
         let reopened = Storage::open(&paths).expect("reopened storage");
-        assert!(reopened
+        let materialized_path = reopened
             .asset_path(&written.asset_ref)
-            .expect("portable materialized Asset path")
+            .expect("portable materialized Asset path");
+        assert!(materialized_path
+            .strip_prefix(&paths.storage_dir)
+            .expect("storage-relative materialized Asset path")
             .components()
             .all(|part| !part.as_os_str().to_string_lossy().contains(':')));
         assert_eq!(
