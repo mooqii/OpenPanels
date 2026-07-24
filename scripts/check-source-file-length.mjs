@@ -15,7 +15,7 @@ const MAX_LINE_COUNT_OVERRIDES = new Map([
   ["crates/myopenpanels/src/bridge/task_handlers.rs", 1249],
   ["crates/myopenpanels/src/agent/skill_import.rs", 1011],
   ["crates/myopenpanels/src/cli/tests/bootstrap_and_parsing.rs", 1033],
-  ["crates/myopenpanels/src/content/filesystem.rs", 1706],
+  ["crates/myopenpanels/src/content/filesystem.rs", 1708],
   ["crates/myopenpanels/src/control/runtime.rs", 1096],
   ["crates/myopenpanels/src/release.rs", 1183],
   ["crates/myopenpanels/src/studio/lifecycle.rs", 1037],

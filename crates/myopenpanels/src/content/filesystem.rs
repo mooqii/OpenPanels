@@ -1643,12 +1643,14 @@ mod filesystem_recovery_tests {
             ResourceKind::WikiSpace,
             "wiki:default",
         );
-        let orphan = resource.join("revision:orphan");
+        let orphan = resource.join(sanitize_path_part("revision:orphan"));
         fs::create_dir_all(&orphan).expect("orphan");
         let abandoned_stage = storage_dir
             .join("projects")
             .join(sanitize_path_part(&bootstrap.project.id))
-            .join("content/.staging/task:old/1");
+            .join("content/.staging")
+            .join(sanitize_path_part("task:old"))
+            .join("1");
         fs::create_dir_all(&abandoned_stage).expect("abandoned staging");
 
         recover_filesystem(&paths).expect("recovery");

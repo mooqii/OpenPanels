@@ -307,8 +307,8 @@ mod tests {
         assert!(instructions.contains("Request id: `cover-request:1`"));
         assert!(instructions.contains("Publication id: `publication:cover`"));
         assert!(instructions.contains(&format!("Cover Skill id: `{DEFAULT_COVER_SKILL_ID}`")));
-        assert!(instructions.contains("inputs/title.txt"));
-        assert!(instructions.contains("inputs/body.txt"));
+        assert!(instructions.contains(&workspace.join("inputs/title.txt").display().to_string()));
+        assert!(instructions.contains(&workspace.join("inputs/body.txt").display().to_string()));
         assert!(instructions.contains("outputs/cover.png"));
         assert!(instructions.contains("Use restrained colors"));
         assert_eq!(
@@ -510,10 +510,12 @@ mod tests {
             .bundle
             .instructions
             .contains("references/publication-title-generate.md"));
-        assert!(prepared
-            .bundle
-            .instructions
-            .contains("inputs/existing-titles.json"));
+        assert!(prepared.bundle.instructions.contains(
+            &workspace
+                .join("inputs/existing-titles.json")
+                .display()
+                .to_string()
+        ));
         assert!(prepared
             .bundle
             .instructions
@@ -645,8 +647,8 @@ mod tests {
         assert!(instructions.contains("Publication id: `publication:layout`"));
         assert!(instructions.contains(&format!("Layout Skill id: `{DEFAULT_LAYOUT_SKILL_ID}`")));
         assert!(instructions.contains("Captured content hash: `sha256:"));
-        assert!(instructions.contains("inputs/title.txt"));
-        assert!(instructions.contains("inputs/content.json"));
+        assert!(instructions.contains(&workspace.join("inputs/title.txt").display().to_string()));
+        assert!(instructions.contains(&workspace.join("inputs/content.json").display().to_string()));
         assert!(instructions.contains("outputs/content.json"));
         assert!(instructions.contains("Emphasize sections"));
         assert_eq!(
