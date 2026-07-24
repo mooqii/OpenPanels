@@ -137,6 +137,25 @@ impl Storage {
         bytes: &[u8],
         overwrite: bool,
     ) -> Result<WrittenAsset, CliError> {
+        let prepared =
+            self.prepare_asset_from_buffer(project_id, panel_id, requested_name, bytes, overwrite)?;
+        let tx = self
+            .connection
+            .unchecked_transaction()
+            .map_err(to_cli_error)?;
+        Self::write_prepared_asset_in_transaction(&tx, project_id, panel_id, &prepared)?;
+        tx.commit().map_err(to_cli_error)?;
+        Ok(prepared.written_asset())
+    }
+
+    pub(crate) fn prepare_asset_from_buffer(
+        &self,
+        project_id: &str,
+        panel_id: &str,
+        requested_name: &str,
+        bytes: &[u8],
+        overwrite: bool,
+    ) -> Result<PreparedAssetWrite, CliError> {
         let file_name = sanitize_asset_path(requested_name);
         let asset_id = if overwrite {
             let stable_key =
@@ -174,10 +193,25 @@ impl Storage {
         let temporary = canonical_path.with_extension("asset.tmp");
         fs::write(&temporary, bytes).map_err(to_cli_error)?;
         fs::rename(&temporary, &canonical_path).map_err(to_cli_error)?;
-        let tx = self
-            .connection
-            .unchecked_transaction()
-            .map_err(to_cli_error)?;
+        Ok(PreparedAssetWrite {
+            resource_id: asset_id,
+            asset_ref: canonical_ref,
+            file_name,
+            file_path: canonical_path,
+            content_version,
+            content_hash: format!("{:x}", Sha256::digest(bytes)),
+            size_bytes: bytes.len() as i64,
+        })
+    }
+
+    pub(crate) fn write_prepared_asset_in_transaction(
+        tx: &Transaction<'_>,
+        project_id: &str,
+        panel_id: &str,
+        prepared: &PreparedAssetWrite,
+    ) -> Result<(), CliError> {
+        let asset_id = &prepared.resource_id;
+        let file_name = &prepared.file_name;
         let revision = record_resource_scope(&tx, project_id, panel_id, &asset_id)?;
         let metadata = json!({ "originPanelId": panel_id });
         upsert_resource(
@@ -209,21 +243,15 @@ impl Storage {
                 asset_id,
                 asset_media_type(&file_name),
                 file_name,
-                canonical_ref,
-                content_version,
-                format!("{:x}", Sha256::digest(bytes)),
-                bytes.len() as i64,
+                prepared.asset_ref,
+                prepared.content_version,
+                prepared.content_hash,
+                prepared.size_bytes,
                 serde_json::to_string(&metadata).map_err(to_cli_error)?,
             ],
         )
         .map_err(to_cli_error)?;
-        tx.commit().map_err(to_cli_error)?;
-        Ok(WrittenAsset {
-            resource_id: asset_id,
-            asset_ref: canonical_ref,
-            file_name,
-            file_path: canonical_path,
-        })
+        Ok(())
     }
 
     pub fn read_asset(&self, asset_ref: &str) -> Result<Vec<u8>, CliError> {
@@ -424,6 +452,9 @@ fn asset_media_type(file_name: &str) -> &'static str {
         "gif" => "image/gif",
         "webp" => "image/webp",
         "svg" => "image/svg+xml",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
         "pdf" => "application/pdf",
         _ => "application/octet-stream",
     }

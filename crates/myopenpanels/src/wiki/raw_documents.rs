@@ -10,7 +10,7 @@ pub fn add_raw_document(
     let mut wiki = get_wiki_bootstrap(paths)?;
     let now = now_iso();
     let wiki_space = resolve_wiki_space(&wiki.state, wiki_space_id)?;
-    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space.id);
+    let mutation_key = wiki_mutation_key(&wiki.project.id);
     let safe_file_name = sanitize_file_name(file_name);
     let document_id = create_id("raw");
     let original_ref = format!("original/{safe_file_name}");
@@ -98,7 +98,7 @@ pub fn add_raw_document(
             .as_ref()
             .and_then(|value| value["id"].as_str())
             .unwrap_or_default();
-        task["status"] = json!("waiting");
+        task["status"] = json!("queued");
         task["dependsOnTaskIds"] = json!([conversion_id]);
         task["idempotencyKey"] = json!(format!("ingest:{document_id}:1"));
         if let Some(stored) = wiki
@@ -285,7 +285,7 @@ pub fn delete_raw_document(
         .position(|document| document.get("id").and_then(Value::as_str) == Some(document_id))
         .ok_or_else(|| CliError::new(format!("Wiki raw document not found: {document_id}")))?;
     let document = documents.remove(index);
-    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space.id);
+    let mutation_key = wiki_mutation_key(&wiki.project.id);
     let task = create_wiki_maintenance_task(
         &wiki.state,
         &mut wiki.tasks,
@@ -394,13 +394,13 @@ pub fn extract_raw_document_markdown(
     for task in &mut wiki.tasks {
         let active_status = matches!(
             task.get("status").and_then(Value::as_str),
-            Some("queued" | "claimed" | "running" | "failed")
+            Some("queued" | "running" | "failed")
         );
         if task.get("documentId").and_then(Value::as_str) == Some(document_id)
             && task.get("type").and_then(Value::as_str) == Some("convert_document_to_markdown")
             && active_status
         {
-            task["status"] = json!("stale");
+            task["status"] = json!("superseded");
             task["error"] = json!("Superseded by a new extraction request");
             task["updatedAt"] = json!(now);
         }
@@ -453,7 +453,7 @@ pub fn reindex_raw_document(
         .get("markdownVersion")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space.id);
+    let mutation_key = wiki_mutation_key(&wiki.project.id);
     let task = create_wiki_task(
         &wiki.state,
         &mut wiki.tasks,

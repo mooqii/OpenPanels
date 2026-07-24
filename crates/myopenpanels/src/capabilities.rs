@@ -26,6 +26,7 @@ pub(crate) struct CapabilityCatalog {
 pub(crate) struct CapabilityDefinition {
     pub key: String,
     pub description: String,
+    pub module_key: String,
     pub panel_kind: Option<String>,
     pub platform_contract: PlatformContract,
     pub local_skill: LocalSkillPolicy,
@@ -131,14 +132,13 @@ pub(crate) fn command_domains_for_panel(panel_kind: PanelKind) -> Result<Vec<Str
     Ok(domains.into_iter().collect())
 }
 
-pub(crate) fn module_key_for_capability(key: &str) -> Option<&str> {
-    if key.starts_with("panel.") {
-        return None;
-    }
-    key.split('.').next().map(|module| match module {
-        "canvas" => "canvas-document",
-        other => other,
-    })
+#[cfg(test)]
+fn module_key_for_capability(key: &str) -> Result<Option<&'static str>, CliError> {
+    Ok(capability_catalog()?
+        .capabilities
+        .iter()
+        .find(|capability| capability.key == key)
+        .map(|capability| capability.module_key.as_str()))
 }
 
 pub(crate) fn capability(key: &str) -> Result<Option<&'static CapabilityDefinition>, CliError> {
@@ -297,6 +297,20 @@ fn parse_capability_catalog() -> Result<CapabilityCatalog, CliError> {
 }
 
 fn validate_capability_catalog(catalog: &CapabilityCatalog) -> Result<(), CliError> {
+    let module_catalog = module_catalog()?;
+    let modules = module_catalog
+        .get("modules")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            CliError::with_code(
+                "module_catalog_invalid",
+                "Module Catalog must contain a modules array.",
+            )
+        })?;
+    let module_keys = modules
+        .iter()
+        .filter_map(|module| module.get("key").and_then(serde_json::Value::as_str))
+        .collect::<BTreeSet<_>>();
     let mut keys = BTreeSet::new();
     let mut routes = BTreeSet::new();
     for capability in &catalog.capabilities {
@@ -307,6 +321,14 @@ fn validate_capability_catalog(catalog: &CapabilityCatalog) -> Result<(), CliErr
             return Err(invalid_capability(
                 capability,
                 "has an invalid or duplicate key",
+            ));
+        }
+        if capability.module_key.trim().is_empty()
+            || !module_keys.contains(capability.module_key.as_str())
+        {
+            return Err(invalid_capability(
+                capability,
+                "references an invalid Module key",
             ));
         }
         if capability
@@ -486,6 +508,17 @@ mod tests {
     fn catalog_owns_typed_invocations_routes_and_local_skill_policy() {
         let catalog = capability_catalog().expect("Capability Catalog");
         assert_eq!(catalog.capabilities.len(), 28);
+        let modules = module_catalog().expect("Module Catalog");
+        let module_keys = modules["modules"]
+            .as_array()
+            .expect("modules")
+            .iter()
+            .filter_map(|module| module["key"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(catalog
+            .capabilities
+            .iter()
+            .all(|capability| module_keys.contains(capability.module_key.as_str())));
         let procedure_count = catalog
             .capabilities
             .iter()
@@ -512,6 +545,18 @@ mod tests {
             7
         );
         assert_eq!(task_routes().expect("Task routes").count(), 10);
+        assert_eq!(
+            module_key_for_capability("my-document.create").expect("module"),
+            Some("my-document")
+        );
+        assert_eq!(
+            module_key_for_capability("publication.title.request").expect("module"),
+            Some("publication")
+        );
+        assert_eq!(
+            module_key_for_capability("unknown").expect("unknown module"),
+            None
+        );
     }
 
     #[test]

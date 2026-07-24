@@ -2,6 +2,7 @@ use crate::error::CliError;
 use crate::paths::{resolve_studio_service_paths, MyOpenPanelsPaths};
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::net::TcpListener;
@@ -122,9 +123,12 @@ enum StudioOwnerState {
 }
 
 pub(crate) struct StudioOwnerLock {
+    _guard_file: fs::File,
     _file: fs::File,
     identity_path: PathBuf,
     pid: u32,
+    #[cfg(not(any(unix, windows)))]
+    guard_lock_path: PathBuf,
     #[cfg(not(any(unix, windows)))]
     lock_path: PathBuf,
 }
@@ -145,7 +149,10 @@ impl Drop for StudioOwnerLock {
             let _ = fs::remove_file(&self.identity_path);
         }
         #[cfg(not(any(unix, windows)))]
-        let _ = fs::remove_file(&self.lock_path);
+        {
+            let _ = fs::remove_file(&self.lock_path);
+            let _ = fs::remove_file(&self.guard_lock_path);
+        }
     }
 }
 
@@ -440,6 +447,9 @@ pub(crate) fn acquire_studio_owner_lock(
     port: u16,
 ) -> Result<StudioOwnerLock, CliError> {
     fs::create_dir_all(&paths.studio_dir).map_err(to_cli_error)?;
+    let Some(guard_file) = try_acquire_studio_guard_file(paths)? else {
+        return Err(studio_owner_conflict_error());
+    };
     let Some(file) = try_acquire_studio_owner_file(paths)? else {
         return Err(studio_owner_conflict_error());
     };
@@ -451,9 +461,12 @@ pub(crate) fn acquire_studio_owner_lock(
     };
     write_studio_owner_identity(paths, &owner)?;
     Ok(StudioOwnerLock {
+        _guard_file: guard_file,
         _file: file,
         identity_path,
         pid: owner.pid,
+        #[cfg(not(any(unix, windows)))]
+        guard_lock_path: studio_owner_guard_lock_path(paths),
         #[cfg(not(any(unix, windows)))]
         lock_path: studio_owner_lock_path(paths),
     })
@@ -495,13 +508,7 @@ fn studio_session_path(paths: &MyOpenPanelsPaths) -> PathBuf {
     paths.studio_dir.join("instance.json")
 }
 
-fn studio_owner_lock_path(paths: &MyOpenPanelsPaths) -> PathBuf {
-    paths.studio_dir.join("owner.lock")
-}
-
-fn studio_owner_identity_path(paths: &MyOpenPanelsPaths) -> PathBuf {
-    paths.studio_dir.join("owner.json")
-}
+include!("owner_lock.rs");
 
 fn studio_port_preference_path(paths: &MyOpenPanelsPaths) -> PathBuf {
     paths.studio_dir.join("preferred-port.json")
@@ -536,90 +543,6 @@ fn write_studio_port_preference(
     file.persist(studio_port_preference_path(paths))
         .map(|_| ())
         .map_err(to_cli_error)
-}
-
-fn write_studio_owner_identity(
-    paths: &MyOpenPanelsPaths,
-    owner: &StudioOwner,
-) -> Result<(), CliError> {
-    let mut file = tempfile::NamedTempFile::new_in(&paths.studio_dir).map_err(to_cli_error)?;
-    file.write_all(
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(owner).map_err(to_cli_error)?
-        )
-        .as_bytes(),
-    )
-    .map_err(to_cli_error)?;
-    file.persist(studio_owner_identity_path(paths))
-        .map(|_| ())
-        .map_err(to_cli_error)
-}
-
-fn studio_owner_state(paths: &MyOpenPanelsPaths) -> Result<StudioOwnerState, CliError> {
-    fs::create_dir_all(&paths.studio_dir).map_err(to_cli_error)?;
-    if let Some(file) = try_acquire_studio_owner_file(paths)? {
-        drop(file);
-        return Ok(StudioOwnerState::Available);
-    }
-    let owner = fs::read_to_string(studio_owner_identity_path(paths))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<StudioOwner>(&raw).ok());
-    Ok(StudioOwnerState::Held(owner))
-}
-
-#[cfg(unix)]
-fn try_acquire_studio_owner_file(paths: &MyOpenPanelsPaths) -> Result<Option<fs::File>, CliError> {
-    use std::os::fd::AsRawFd;
-
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .open(studio_owner_lock_path(paths))
-        .map_err(to_cli_error)?;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result == 0 {
-        return Ok(Some(file));
-    }
-    let error = std::io::Error::last_os_error();
-    if matches!(error.raw_os_error(), Some(code) if code == libc::EAGAIN || code == libc::EACCES) {
-        return Ok(None);
-    }
-    Err(to_cli_error(error))
-}
-
-#[cfg(windows)]
-fn try_acquire_studio_owner_file(paths: &MyOpenPanelsPaths) -> Result<Option<fs::File>, CliError> {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    match fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .share_mode(0)
-        .open(studio_owner_lock_path(paths))
-    {
-        Ok(file) => Ok(Some(file)),
-        Err(error) if matches!(error.raw_os_error(), Some(code) if code == 32 || code == 33) => {
-            Ok(None)
-        }
-        Err(error) => Err(to_cli_error(error)),
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn try_acquire_studio_owner_file(paths: &MyOpenPanelsPaths) -> Result<Option<fs::File>, CliError> {
-    match fs::OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(studio_owner_lock_path(paths))
-    {
-        Ok(file) => Ok(Some(file)),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
-        Err(error) => Err(to_cli_error(error)),
-    }
 }
 
 fn studio_owner_matches(owner: &StudioOwner, session: &StudioSession) -> bool {
@@ -731,9 +654,12 @@ pub(crate) fn studio_version(
 }
 
 fn compare_studio_version(server_version: Option<&str>) -> Result<StudioVersionRelation, CliError> {
-    let Some(server_version) = server_version else {
-        return Ok(StudioVersionRelation::Older);
-    };
+    let server_version = server_version.ok_or_else(|| {
+        CliError::with_code(
+            "studio_version_mismatch",
+            "Running Studio did not report its version.",
+        )
+    })?;
     let server = Version::parse(server_version.trim_start_matches('v')).map_err(|error| {
         CliError::with_code(
             "studio_version_mismatch",

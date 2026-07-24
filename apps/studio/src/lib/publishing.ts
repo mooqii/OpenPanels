@@ -4,6 +4,7 @@ import type {
   PublishingAttempt,
   PublishingRelease,
 } from "../types"
+import { taskDisplayPhase } from "./task-status"
 
 export type PublishingBusinessStatus =
   | "queued"
@@ -80,21 +81,17 @@ export function publishingAttemptStatus(
 ): PublishingBusinessStatus {
   if (attempt.outcome) return attempt.outcome
   if (attempt.phase === "committing") {
-    return task && ["reserved", "claimed", "running"].includes(task.status)
+    return task && taskDisplayPhase(task) === "running"
       ? "committing"
       : "unknown"
   }
   if (!task) return "unknown"
-  if (["reserved", "claimed", "running"].includes(task.status)) {
-    return "running"
-  }
-  if (["failed", "cancelled", "blocked"].includes(task.status)) {
+  const phase = taskDisplayPhase(task)
+  if (phase === "running") return "running"
+  if (phase === "failed" || phase === "cancelled") {
     return "not_published"
   }
-  if (["succeeded", "stale", "superseded"].includes(task.status)) {
-    return "unknown"
-  }
-  return "queued"
+  return phase === "waiting" ? "queued" : "unknown"
 }
 
 export function publishingAttemptIsActive(

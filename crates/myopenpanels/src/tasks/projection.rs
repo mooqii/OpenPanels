@@ -116,7 +116,7 @@ pub fn annotate_task(mut task: Value) -> Value {
         "failed" => "failed_terminal",
         "succeeded" => "succeeded",
         "cancelled" => "cancelled",
-        "stale" | "superseded" => "superseded",
+        "superseded" => "superseded",
         status => status,
     }
     .to_owned();

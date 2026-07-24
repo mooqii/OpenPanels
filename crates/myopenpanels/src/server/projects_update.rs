@@ -7,74 +7,99 @@ struct ProjectEventsQuery {
 async fn api_project_events(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ProjectEventsQuery>,
-) -> impl IntoResponse {
+) -> Response {
+    let permit = match state.project_event_slots.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return StatusCode::NO_CONTENT.into_response(),
+    };
     let paths = state.paths.clone();
     let project_id = query.project_id;
     let (sender, receiver) = mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
 
-    tokio::spawn(async move {
-        let mut last_seq = read_storage_change_seq(&paths).unwrap_or(0);
-        let mut last_focus_revision = read_focus_revision(&paths).unwrap_or(0);
-        let mut interval =
-            tokio::time::interval(Duration::from_millis(PROJECT_EVENT_POLL_INTERVAL_MS));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tokio::spawn(run_project_event_stream(
+        paths,
+        project_id,
+        sender,
+        permit,
+        Duration::from_millis(PROJECT_EVENT_POLL_INTERVAL_MS),
+    ));
 
-        loop {
-            interval.tick().await;
-            if let Ok(focus_revision) = read_focus_revision(&paths) {
-                if focus_revision != last_focus_revision {
-                    last_focus_revision = focus_revision;
-                    let payload = json!({
-                        "kind": "focus",
-                        "focusRevision": focus_revision,
-                    });
-                    if sender
-                        .send(Ok(Event::default()
-                            .event("project")
-                            .data(payload.to_string())))
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-            }
-            let (next_seq, changes) =
-                match read_change_scopes_after(&paths, last_seq, project_id.as_deref()) {
-                    Ok(result) => result,
-                    Err(error) => {
-                        let payload = json!({
-                            "kind": "error",
-                            "message": error.message(),
-                        });
-                        if sender
-                            .send(Ok(Event::default()
-                                .event("error")
-                                .data(payload.to_string())))
-                            .is_err()
-                        {
-                            break;
-                        }
-                        continue;
-                    }
-                };
-            if next_seq == last_seq {
-                continue;
-            }
-            last_seq = next_seq;
-            for change in changes {
+    Sse::new(UnboundedReceiverStream::new(receiver))
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+async fn run_project_event_stream(
+    paths: MyOpenPanelsPaths,
+    project_id: Option<String>,
+    sender: mpsc::UnboundedSender<Result<Event, std::convert::Infallible>>,
+    _permit: OwnedSemaphorePermit,
+    poll_interval: Duration,
+) {
+    if sender.is_closed() {
+        return;
+    }
+    let mut last_seq = read_storage_change_seq(&paths).unwrap_or(0);
+    let mut last_focus_revision = read_focus_revision(&paths).unwrap_or(0);
+    let mut interval = tokio::time::interval(poll_interval);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        interval.tick().await;
+        if sender.is_closed() {
+            return;
+        }
+        if let Ok(focus_revision) = read_focus_revision(&paths) {
+            if focus_revision != last_focus_revision {
+                last_focus_revision = focus_revision;
+                let payload = json!({
+                    "kind": "focus",
+                    "focusRevision": focus_revision,
+                });
                 if sender
-                    .send(Ok(Event::default().event("project").data(
-                        serde_json::to_string(&change).unwrap_or_else(|_| "{}".to_owned()),
-                    )))
+                    .send(Ok(Event::default()
+                        .event("project")
+                        .data(payload.to_string())))
                     .is_err()
                 {
                     return;
                 }
             }
         }
-    });
-
-    Sse::new(UnboundedReceiverStream::new(receiver)).keep_alive(KeepAlive::default())
+        let (next_seq, changes) =
+            match read_change_scopes_after(&paths, last_seq, project_id.as_deref()) {
+                Ok(result) => result,
+                Err(error) => {
+                    let payload = json!({
+                        "kind": "error",
+                        "message": error.message(),
+                    });
+                    if sender
+                        .send(Ok(Event::default()
+                            .event("error")
+                            .data(payload.to_string())))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+            };
+        if next_seq == last_seq {
+            continue;
+        }
+        last_seq = next_seq;
+        for change in changes {
+            if sender
+                .send(Ok(Event::default().event("project").data(
+                    serde_json::to_string(&change).unwrap_or_else(|_| "{}".to_owned()),
+                )))
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
 }
 
 fn read_storage_change_seq(paths: &MyOpenPanelsPaths) -> Result<i64, CliError> {

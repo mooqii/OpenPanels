@@ -5,6 +5,7 @@ import { createEmptySnapshot } from "../canvas/types/records"
 import type { MyOpenPanelsPanel, MyOpenPanelsPanelKind } from "../protocol"
 import type {
   AgentOperation,
+  AppPanelStateSnapshot,
   AppState,
   BootstrapResponse,
   PanelStateSnapshot,
@@ -75,7 +76,10 @@ describe("mergeLiveProjectBootstrap", () => {
     )
     if (!writing) throw new Error("Missing Writing panel")
     writing.revision += 1
-    writing.state = { ...writingState(), draft: "New prompt" }
+    ;(writing as AppPanelStateSnapshot & PanelStateSnapshot).state = {
+      ...writingState(),
+      draft: "New prompt",
+    }
 
     const result = mergeLiveProjectBootstrap({
       current,
@@ -98,7 +102,7 @@ describe("mergeLiveProjectBootstrap", () => {
     )
     if (!typesetting) throw new Error("Missing Typesetting panel")
     typesetting.revision += 1
-    typesetting.state = {
+    ;(typesetting as AppPanelStateSnapshot & PanelStateSnapshot).state = {
       ...typesettingState(),
       publications: [
         {
@@ -188,7 +192,9 @@ describe("mergeLiveProjectBootstrap", () => {
     remote.activePanelKind = "wiki"
     remote.panel = remoteWiki.panel
     remote.revision = remoteWiki.revision
-    remote.state = remoteWiki.state
+    remote.state = (
+      remoteWiki as AppPanelStateSnapshot & PanelStateSnapshot
+    ).state
 
     const result = mergeLiveProjectBootstrap({
       current,
@@ -258,30 +264,52 @@ function appState({
   const writingPanel = panel("writing", "panel:writing")
   const typesettingPanel = panel("typesetting", "panel:typesetting")
   const publishingPanel = panel("publishing", "panel:publishing")
-  const wikiSnapshot: PanelStateSnapshot = {
+  const wikiSnapshot: PanelStateSnapshot & AppPanelStateSnapshot = {
+    moduleState: {
+      myDocuments: [],
+      rawDocuments: [],
+      wikiSpaces: wikiState().wikiSpaces,
+    },
     panel: wikiPanel,
     revision: 3,
     state: wikiState(),
+    uiState: {
+      activeRawDocumentId: null,
+      activeWikiPagePath: "index.md",
+      activeWikiSpaceId: "wiki:default",
+      ruleSets: [],
+    },
   }
-  const canvasPanelSnapshot: PanelStateSnapshot = {
+  const canvasPanelSnapshot: PanelStateSnapshot & AppPanelStateSnapshot = {
+    moduleState: canvasSnapshot,
     panel: canvasPanel,
     revision: canvasRevision,
     state: canvasSnapshot,
+    uiState: {},
   }
-  const writingSnapshot: PanelStateSnapshot = {
+  const writingSnapshot: PanelStateSnapshot & AppPanelStateSnapshot = {
+    moduleState: {},
     panel: writingPanel,
     revision: 1,
     state: writingState(),
+    uiState: writingState(),
   }
-  const typesettingSnapshot: PanelStateSnapshot = {
+  const typesettingSnapshot: PanelStateSnapshot & AppPanelStateSnapshot = {
+    moduleState: typesettingState(),
     panel: typesettingPanel,
     revision: 1,
     state: typesettingState(),
+    uiState: {},
   }
-  const publishingSnapshot: PanelStateSnapshot = {
+  const publishingSnapshot: PanelStateSnapshot & AppPanelStateSnapshot = {
+    moduleState: { releases: publishingState().releases },
     panel: publishingPanel,
     revision: 1,
     state: publishingState(),
+    uiState: {
+      selectedPublicationId: null,
+      selectedSkillIds: { xiaohongshu: "release-xiaohongshu" },
+    },
   }
   return {
     activePanelId: canvasPanel.id,

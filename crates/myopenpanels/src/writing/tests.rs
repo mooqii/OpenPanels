@@ -148,6 +148,70 @@ mod tests {
     }
 
     #[test]
+    fn retry_recaptures_writing_skill_markdown_and_fails_without_the_skill() {
+        let (_temp, paths) = test_paths();
+        let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        write_custom_writing_skill(&paths);
+        ensure_project_bootstrap(
+            &paths,
+            BootstrapRequest {
+                requested_panel_kind: Some(PanelKind::Writing),
+                requested_panel_id: None,
+                requested_project_id: Some(initial.project.id.clone()),
+            },
+        )
+        .expect("writing panel");
+        write_selection(&paths, false, &[]).expect("writing selection");
+        let created = create_requests(
+            &paths,
+            "Write a retryable report",
+            "create",
+            None,
+            &["writing-custom-test-style".to_owned()],
+        )
+        .expect("writing request");
+        let original_id = created["tasks"][0]["id"].as_str().expect("task id");
+        let storage = Storage::open(&paths).expect("storage");
+        storage
+            .connection()
+            .execute(
+                "UPDATE tasks SET status = 'failed', completed_at = ? WHERE id = ?",
+                rusqlite::params![crate::control::now_iso(), original_id],
+            )
+            .expect("fail original task");
+
+        let skill_directory = paths
+            .storage_dir
+            .join("skills")
+            .join("writing-custom-test-style");
+        fs::write(
+            skill_directory.join("SKILL.md"),
+            "---\nname: writing-custom-test-style\ndescription: Write concise test prose.\n---\n\nUse the refreshed retry instructions.\n",
+        )
+        .expect("update Writing Skill");
+        let retried = crate::tasks::retry_task(&paths, original_id).expect("retry task");
+        assert!(retried["task"]["input"]["writingSkillSnapshot"]["markdown"]
+            .as_str()
+            .is_some_and(|markdown| markdown.contains("refreshed retry instructions")));
+
+        fs::remove_dir_all(skill_directory).expect("remove required Writing Skill");
+        let task_count = storage
+            .list_tasks(&initial.project.id)
+            .expect("tasks before failed retry")
+            .len();
+        let error = crate::tasks::retry_task(&paths, original_id)
+            .expect_err("retry without required Writing Skill");
+        assert_eq!(error.code(), Some("task_retry_skill_snapshot_failed"));
+        assert_eq!(
+            storage
+                .list_tasks(&initial.project.id)
+                .expect("tasks after failed retry")
+                .len(),
+            task_count
+        );
+    }
+
+    #[test]
     fn writing_selection_exposes_materialized_my_document_access() {
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
@@ -421,7 +485,7 @@ mod tests {
     #[test]
     fn claimed_request_generates_into_the_linked_wiki_panel() {
         let _broker = crate::content::enable_test_task_broker();
-        let (temp, paths) = test_paths();
+        let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
         ensure_project_bootstrap(
             &paths,
@@ -462,35 +526,28 @@ mod tests {
         let missing_output = crate::tasks::complete_task(&paths, task_id, lease_token, None)
             .expect_err("missing generation output");
         assert_eq!(missing_output.code(), Some("invalid_output"));
-        let started = crate::content::begin_operation(
+        crate::content::stage_runtime_validated_file(
             &paths,
             execution_token,
-            &crate::content::BeginOperationRequest {
-                task_id: task_id.to_owned(),
-                title: "Report".to_owned(),
-                document_format: "markdown".to_owned(),
-            },
-        )
-        .expect("generation");
-        assert_eq!(started["document"]["id"], json!(placeholder_id));
-        assert_eq!(started["document"]["title"], json!("Report"));
-        let operation_id = started["operation"]["id"].as_str().unwrap();
-        let early = crate::tasks::complete_task(&paths, task_id, lease_token, None)
-            .expect_err("active operation");
-        assert_eq!(early.code(), Some("writing_operation_active"));
-        let artifact = temp.path().join("report.md");
-        fs::write(&artifact, "# Report\n\nDone.\n").expect("artifact");
-        crate::content::prepare_operation(
-            &paths,
-            execution_token,
-            &crate::content::PrepareOperationRequest {
-                operation_id: operation_id.to_owned(),
-                file_name: "report.md".to_owned(),
+            &crate::content::StageFileRequest {
+                resource_kind: crate::content::ResourceKind::MyDocument
+                    .as_str()
+                    .to_owned(),
+                resource_key: placeholder_id.clone(),
+                logical_path: "content.md".to_owned(),
                 content_base64: base64::engine::general_purpose::STANDARD
-                    .encode(fs::read(&artifact).expect("artifact bytes")),
+                    .encode("# Report\n\nDone.\n"),
+                mime_type: "text/markdown".to_owned(),
+                metadata: json!({
+                    "baseContentVersion": 0,
+                    "mode": "create",
+                    "title": "Report",
+                    "fileName": "content.md",
+                    "runtimeOutputPlanHash": "test",
+                }),
             },
         )
-        .expect("prepare operation");
+        .expect("stage generation");
         let task = crate::tasks::complete_task(
             &paths,
             task_id,
@@ -499,27 +556,23 @@ mod tests {
         )
         .expect("complete task");
         assert_eq!(task["task"]["status"], json!("succeeded"));
+        let completed =
+            crate::wiki::read_my_document(&paths, &placeholder_id).expect("completed document");
+        assert_eq!(completed["document"]["title"], json!("Report"));
+        assert_eq!(completed["content"], json!("# Report\n\nDone.\n"));
+        assert!(crate::storage::Storage::open(&paths)
+            .expect("storage")
+            .list_direct_operations(None, None)
+            .expect("operations")
+            .is_empty());
 
         let cancelled = create_requests(&paths, "Write another report", "create", None, &skill_ids)
             .expect("second request");
         let cancelled_task_id = cancelled["tasks"][0]["id"].as_str().unwrap();
         crate::tasks::claim_task(&paths, cancelled_task_id, target_id).expect("second claim");
-        let cancelled_operation = crate::operations::begin_writing(
-            &paths,
-            cancelled_task_id,
-            "Cancelled report",
-            "markdown",
-        )
-        .expect("second generation");
-        let cancelled_operation_id = cancelled_operation["operation"]["id"].as_str().unwrap();
         let cancelled_task =
             crate::tasks::cancel_task(&paths, cancelled_task_id).expect("cancel task");
         assert_eq!(cancelled_task["task"]["status"], json!("cancelled"));
-        assert_eq!(
-            crate::operations::inspect(&paths, cancelled_operation_id)
-                .expect("cancelled operation")["status"],
-            json!("cancelled")
-        );
         assert!(crate::wiki::read_my_document(
             &paths,
             cancelled["documents"][0]["id"].as_str().unwrap()
@@ -532,8 +585,6 @@ mod tests {
         let released_document_id = released["documents"][0]["id"].as_str().unwrap();
         let released_claim =
             crate::tasks::claim_task(&paths, released_task_id, target_id).expect("release claim");
-        crate::operations::begin_writing(&paths, released_task_id, "Released report", "markdown")
-            .expect("released generation");
         crate::tasks::release_task(
             &paths,
             released_task_id,
@@ -543,8 +594,6 @@ mod tests {
         assert!(crate::wiki::read_my_document(&paths, released_document_id).is_ok());
         let failed_claim =
             crate::tasks::claim_task(&paths, released_task_id, target_id).expect("failed claim");
-        crate::operations::begin_writing(&paths, released_task_id, "Failed report", "markdown")
-            .expect("failed generation");
         let retry_now = crate::control::now_iso();
         let failed_task = crate::tasks::fail_task(
             &paths,
@@ -572,6 +621,7 @@ mod tests {
 
     #[test]
     fn revision_rejects_a_target_changed_after_submission() {
+        let _broker = crate::content::enable_test_task_broker();
         let (_temp, paths) = test_paths();
         let initial = ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
         let document = crate::wiki::create_my_document(
@@ -654,9 +704,42 @@ mod tests {
             registered["target"]["id"].as_str().unwrap(),
         )
         .expect("claim");
-        let error = crate::operations::begin_writing(&paths, task_id, "Draft", "markdown")
-            .expect_err("content conflict");
+        crate::content::stage_runtime_validated_file(
+            &paths,
+            claimed["executionToken"].as_str().unwrap(),
+            &crate::content::StageFileRequest {
+                resource_kind: crate::content::ResourceKind::MyDocument
+                    .as_str()
+                    .to_owned(),
+                resource_key: document_id.clone(),
+                logical_path: "content.md".to_owned(),
+                content_base64: base64::engine::general_purpose::STANDARD.encode("Revised"),
+                mime_type: "text/markdown".to_owned(),
+                metadata: json!({
+                    "baseContentVersion": 1,
+                    "mode": "revise",
+                    "title": "Draft",
+                    "fileName": "content.md",
+                    "runtimeOutputPlanHash": "test",
+                }),
+            },
+        )
+        .expect("stage revision");
+        let error = crate::tasks::complete_task(
+            &paths,
+            task_id,
+            claimed["leaseToken"].as_str().unwrap(),
+            Some(json!({ "myDocumentId": document_id })),
+        )
+        .expect_err("content conflict");
         assert_eq!(error.code(), Some("content_conflict"));
+        crate::tasks::supersede_task_for_content_conflict(
+            &paths,
+            task_id,
+            claimed["leaseToken"].as_str().unwrap(),
+            error.message(),
+        )
+        .expect("supersede task");
         let superseded = crate::tasks::inspect_task(&paths, task_id).expect("superseded task");
         assert_eq!(superseded["task"]["status"], json!("superseded"));
         assert_eq!(
@@ -716,7 +799,7 @@ mod tests {
             Some("writing_skill_name_too_long")
         );
         assert_eq!(
-            create_distillation_request(&paths, "默认写作")
+            create_distillation_request(&paths, "Default Writing")
                 .expect_err("built-in conflict")
                 .code(),
             Some("writing_skill_name_conflict")
@@ -926,7 +1009,8 @@ mod tests {
             .iter()
             .any(|item| item.skill.id == skill_id));
 
-        let files = read_skill_files(&paths, skill_id).expect("read custom skill files");
+        let files =
+            crate::agent::read_managed_skill_files(&paths, skill_id).expect("read custom skill files");
         let source = files["files"]
             .as_array()
             .unwrap()
@@ -938,20 +1022,22 @@ mod tests {
             "Use short, direct paragraphs",
             "Use crisp, direct paragraphs",
         );
-        write_custom_skill_file(&paths, skill_id, "SKILL.md", &edited).expect("edit custom skill");
+        crate::agent::write_managed_skill_file(&paths, skill_id, "SKILL.md", &edited)
+            .expect("edit custom skill");
         assert!(
-            read_skill_files(&paths, skill_id).expect("read edited skill")["files"][0]["content"]
+            crate::agent::read_managed_skill_files(&paths, skill_id)
+                .expect("read edited skill")["files"][0]["content"]
                 .as_str()
                 .unwrap()
                 .contains("crisp, direct")
         );
         assert_eq!(
-            delete_custom_skill(&paths, "writing-default")
+            crate::agent::delete_managed_skill(&paths, "writing-default")
                 .expect_err("built-in delete must fail")
                 .code(),
-            Some("writing_skill_read_only")
+            Some("skill_read_only")
         );
-        delete_custom_skill(&paths, skill_id).expect("delete custom skill");
+        crate::agent::delete_managed_skill(&paths, skill_id).expect("delete custom skill");
         assert!(crate::agent::writing_agent_skill(&paths, skill_id).is_err());
     }
 

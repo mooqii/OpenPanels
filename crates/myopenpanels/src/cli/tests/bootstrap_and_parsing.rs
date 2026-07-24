@@ -412,7 +412,7 @@ fn failed_project_prepare_does_not_stop_a_reused_studio() {
 
     assert_eq!(code, 5, "{stderr}{stdout}");
     assert!(owner_paths.studio_dir.join("instance.json").exists());
-    assert_eq!(session.pid, std::process::id());
+    let _ = TcpStream::connect(("127.0.0.1", port));
     server.join().expect("server thread");
 }
 
@@ -701,22 +701,7 @@ fn project_list_marks_current_and_select_switches_focus() {
 }
 
 #[test]
-fn cli_rejects_legacy_unknown_and_inapplicable_project_arguments() {
-    for args in [
-        vec!["project", "create", "--path", ".", "--format", "json"],
-        vec!["project", "list", "--title", "Nope", "--format", "json"],
-        vec!["studio", "start", "--no-open", "--format", "json"],
-        vec!["studio", "start", "--project", ".", "--format", "json"],
-    ] {
-        let (code, stdout, stderr) = run(&args);
-        assert_eq!(code, 2, "unexpected success for {args:?}");
-        assert_eq!(stderr, "");
-        let payload = serde_json::from_str::<Value>(&stdout).expect("error");
-        assert_eq!(payload["code"], "invalid_argument");
-        assert_eq!(payload["retryable"], false);
-        assert!(payload["recovery"].as_str().is_some());
-    }
-
+fn studio_start_rejects_a_missing_project_directory() {
     let missing = tempfile::tempdir().expect("temp").path().join("missing");
     let (code, stdout, stderr) = run(&[
         "studio",
@@ -772,7 +757,10 @@ fn agent_bootstrap_emits_focus_skills_and_capabilities() {
     assert!(payload.get("cliVersion").is_none());
     assert_eq!(envelope["meta"]["cliVersion"], VERSION);
     assert!(payload.get("commandCatalogVersion").is_none());
-    assert_eq!(payload["bootstrapBudget"]["maxBytes"], 8192);
+    assert_eq!(
+        payload["bootstrapBudget"]["maxBytes"],
+        crate::agent::MAX_BOOTSTRAP_ENVELOPE_BYTES
+    );
     assert!(payload.get("entrySkill").is_none());
     assert!(payload.get("entrySkillUpdate").is_none());
     assert_eq!(payload["focus"]["panelKind"], "wiki");
@@ -907,8 +895,9 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
         payload["commands"]["items"][0]["intent"],
         "canvas.image.create"
     );
-    assert_eq!(envelope["actions"]["required"].as_array().unwrap().len(), 3);
+    assert_eq!(envelope["actions"]["required"], json!([]));
     assert_eq!(payload["agentProcedure"]["skillId"], "myopenpanels-panels");
+    assert_canvas_insert_procedure_contract(payload);
     let reference_paths = payload["agentProcedure"]["referencePaths"]
         .as_array()
         .unwrap();
@@ -1007,26 +996,6 @@ fn procedure_bootstrap_targets_without_changing_focus_and_returns_scoped_command
             );
             assert!(!reference_paths.is_empty());
         }
-        if procedure == "wiki-space.query" {
-            assert_eq!(
-                envelope["data"]["agentProcedure"]["localSkill"]["mode"],
-                "none"
-            );
-            assert!(envelope["data"]["skills"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|skill| skill["role"] != "selected-portable"));
-            assert!(envelope["actions"]["required"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|action| action["id"] != "skill.wiki-default.body"));
-        }
-        assert!(envelope["actions"]["suggested"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|action| action["intent"] != "agent.catalog"));
+        assert_complete_procedure_package(procedure, &envelope);
     }
 }

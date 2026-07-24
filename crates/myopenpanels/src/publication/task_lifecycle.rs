@@ -15,23 +15,11 @@ fn read_publication_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Val
     Ok(payload)
 }
 
-pub fn claim_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let mut payload = read_publication_task(paths, task_id)?;
-    let attempt = payload["task"]["attempt"].as_i64().unwrap_or(0) + 1;
-    payload["task"]["status"] = json!("running");
-    payload["task"]["attempt"] = json!(attempt);
-    Ok(payload)
-}
-
-pub fn heartbeat_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    read_publication_task(paths, task_id)
-}
-
 pub(crate) fn prepare_task_completion(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
     result: Option<Value>,
-) -> Result<Option<(String, Value)>, CliError> {
+) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
     let payload = read_publication_task(paths, task_id)?;
     let task = &payload["task"];
     if task.get("type").and_then(Value::as_str) == Some(TITLE_TASK_TYPE) {
@@ -48,7 +36,7 @@ fn prepare_title_completion(
     task_id: &str,
     task: &Value,
     result: Option<Value>,
-) -> Result<Option<(String, Value)>, CliError> {
+) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
     let generated = result
         .as_ref()
         .and_then(|value| value.pointer("/runtimeFinalization/artifacts/0/titles"))
@@ -77,8 +65,8 @@ fn prepare_title_completion(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let storage = Storage::open(paths)?;
-    let mut state = storage
-        .read_panel_state(project_id, panel_id)?
+    let (mut state, base_revision) = storage
+        .read_panel_state_snapshot(project_id, panel_id)?
         .ok_or_else(|| CliError::with_code("target_not_found", "Typesetting state not found."))?;
     let publication = state
         .get_mut("publications")
@@ -145,7 +133,11 @@ fn prepare_title_completion(
     if changed {
         publication["updatedAt"] = json!(crate::control::now_iso());
     }
-    Ok(Some((panel_id.to_owned(), state)))
+    Ok(Some(crate::tasks::PreparedPanelState::new(
+        panel_id,
+        base_revision,
+        state,
+    )))
 }
 
 fn prepare_cover_completion(
@@ -153,30 +145,17 @@ fn prepare_cover_completion(
     task_id: &str,
     task: &Value,
     result: Option<Value>,
-) -> Result<Option<(String, Value)>, CliError> {
+) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
     let result = result.ok_or_else(|| {
         CliError::with_code("invalid_output", "Cover Task completed without a result.")
     })?;
-    let artifact = result
-        .pointer("/runtimeFinalization/artifacts/0")
+    let artifacts = result
+        .pointer("/runtimeFinalization/artifacts")
+        .and_then(Value::as_array)
+        .filter(|artifacts| !artifacts.is_empty())
         .ok_or_else(|| {
             CliError::with_code("invalid_output", "Cover Task has no finalized image artifact.")
         })?;
-    let asset_ref = artifact
-        .get("assetRef")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| CliError::with_code("invalid_output", "Cover asset reference is missing."))?;
-    let file_name = artifact
-        .get("fileName")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| CliError::with_code("invalid_output", "Cover file name is missing."))?;
-    let resource_id = artifact
-        .get("resourceId")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| CliError::with_code("invalid_output", "Cover resource id is missing."))?;
     let project_id = task
         .get("projectId")
         .and_then(Value::as_str)
@@ -194,8 +173,8 @@ fn prepare_cover_completion(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let storage = Storage::open(paths)?;
-    let mut state = storage
-        .read_panel_state(project_id, panel_id)?
+    let (mut state, base_revision) = storage
+        .read_panel_state_snapshot(project_id, panel_id)?
         .ok_or_else(|| CliError::with_code("target_not_found", "Typesetting state not found."))?;
     let publication = state
         .get_mut("publications")
@@ -215,10 +194,33 @@ fn prepare_cover_completion(
         .get_mut("covers")
         .and_then(Value::as_array_mut)
         .ok_or_else(|| CliError::with_code("invalid_target", "Typesetting covers are invalid."))?;
-    let exists = covers.iter().any(|cover| {
-        cover.pointer("/source/taskId").and_then(Value::as_str) == Some(task_id)
-    });
-    if !exists {
+    let mut existing_asset_refs = covers
+        .iter()
+        .filter_map(|cover| cover.get("assetRef").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
+    let mut changed = false;
+    for artifact in artifacts {
+        let asset_ref = artifact
+            .get("assetRef")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                CliError::with_code("invalid_output", "Cover asset reference is missing.")
+            })?;
+        let file_name = artifact
+            .get("fileName")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| CliError::with_code("invalid_output", "Cover file name is missing."))?;
+        let resource_id = artifact
+            .get("resourceId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| CliError::with_code("invalid_output", "Cover resource id is missing."))?;
+        if !existing_asset_refs.insert(asset_ref.to_owned()) {
+            continue;
+        }
         covers.push(json!({
             "assetRef": asset_ref,
             "resourceId": resource_id,
@@ -233,9 +235,16 @@ fn prepare_cover_completion(
                 "skillId": skill_id,
             },
         }));
+        changed = true;
+    }
+    if changed {
         publication["updatedAt"] = json!(crate::control::now_iso());
     }
-    Ok(Some((panel_id.to_owned(), state)))
+    Ok(Some(crate::tasks::PreparedPanelState::new(
+        panel_id,
+        base_revision,
+        state,
+    )))
 }
 
 fn prepare_layout_completion(
@@ -243,7 +252,7 @@ fn prepare_layout_completion(
     task_id: &str,
     task: &Value,
     result: Option<Value>,
-) -> Result<Option<(String, Value)>, CliError> {
+) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
     let content = result
         .as_ref()
         .and_then(|value| value.pointer("/runtimeFinalization/artifacts/0/content"))
@@ -268,8 +277,8 @@ fn prepare_layout_completion(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let storage = Storage::open(paths)?;
-    let mut state = storage
-        .read_panel_state(project_id, panel_id)?
+    let (mut state, base_revision) = storage
+        .read_panel_state_snapshot(project_id, panel_id)?
         .ok_or_else(|| CliError::with_code("target_not_found", "Typesetting state not found."))?;
     let publication = state
         .get_mut("publications")
@@ -294,25 +303,9 @@ fn prepare_layout_completion(
     }
     publication["content"] = content;
     publication["updatedAt"] = json!(crate::control::now_iso());
-    Ok(Some((panel_id.to_owned(), state)))
-}
-
-pub fn fail_task(
-    paths: &MyOpenPanelsPaths,
-    task_id: &str,
-    _message: &str,
-) -> Result<Value, CliError> {
-    read_publication_task(paths, task_id)
-}
-
-pub fn release_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    read_publication_task(paths, task_id)
-}
-
-pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    read_publication_task(paths, task_id)
-}
-
-pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    read_publication_task(paths, task_id)
+    Ok(Some(crate::tasks::PreparedPanelState::new(
+        panel_id,
+        base_revision,
+        state,
+    )))
 }

@@ -1,5 +1,5 @@
 import { Button, Chip, Input, Modal, Tabs } from "@heroui/react"
-import { Blocks, FolderOpen, Plus, RefreshCw, Search, X } from "lucide-react"
+import { Blocks, Monitor, Plus, RefreshCw, Search, X } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { type MyOpenPanelsLocale, useMyOpenPanelsI18n } from "../../canvas"
 import { apiJson } from "../../lib/api"
@@ -85,6 +85,12 @@ export function installedSkillCountLabel(
     : `${count} installed ${count === 1 ? "Skill" : "Skills"}`
 }
 
+export function visibleInstalledSkillCount(modules: ManagedSkillModule[]) {
+  return new Set(
+    modules.flatMap((module) => module.skills.map((skill) => skill.id))
+  ).size
+}
+
 export function SkillManagerDialog({
   initialModuleKind,
   initialTab = "installed",
@@ -121,6 +127,8 @@ export function SkillManagerDialog({
     skill: ManagedProjectSkill
   } | null>(null)
   const [pendingDeleteSkill, setPendingDeleteSkill] =
+    useState<ManagedProjectSkill | null>(null)
+  const [moduleEditTarget, setModuleEditTarget] =
     useState<ManagedProjectSkill | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [associationTarget, setAssociationTarget] = useState<{
@@ -216,7 +224,7 @@ export function SkillManagerDialog({
   }, [transport.apiBase])
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!(isOpen && Number.isFinite(openRequestId))) {
       setIsOpenReady(false)
       return
     }
@@ -234,7 +242,7 @@ export function SkillManagerDialog({
     return () => {
       cancelled = true
     }
-  }, [initialTab, isOpen, loadInstalled, loadRecommended])
+  }, [initialTab, isOpen, loadInstalled, loadRecommended, openRequestId])
 
   useEffect(() => {
     if (
@@ -362,6 +370,32 @@ export function SkillManagerDialog({
     }
   }, [refreshSkills, removalTarget, transport.apiBase])
 
+  const saveSkillModules = useCallback(
+    async (moduleKinds: string[]) => {
+      if (!moduleEditTarget) return
+      setIsMutating(true)
+      setError(null)
+      try {
+        await apiJson(
+          transport.apiBase,
+          `/api/skills/${encodeURIComponent(moduleEditTarget.id)}/modules`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ moduleKinds }),
+          }
+        )
+        setModuleEditTarget(null)
+        await refreshSkills()
+      } catch (cause) {
+        setError(String((cause as Error)?.message || cause))
+      } finally {
+        setIsMutating(false)
+      }
+    },
+    [moduleEditTarget, refreshSkills, transport.apiBase]
+  )
+
   const resolveMismatch = useCallback(
     async (action: "ignore" | "replace") => {
       if (!mismatchTarget?.skill.installed) return
@@ -456,14 +490,8 @@ export function SkillManagerDialog({
   )
 
   const installedCount = useMemo(
-    () =>
-      new Set([
-        ...installed.systemSkills.map((skill) => skill.id),
-        ...installed.modules.flatMap((module) =>
-          module.skills.map((skill) => skill.id)
-        ),
-      ]).size,
-    [installed]
+    () => visibleInstalledSkillCount(installed.modules),
+    [installed.modules]
   )
 
   const installedSkillsById = useMemo(
@@ -505,6 +533,7 @@ export function SkillManagerDialog({
           !(
             skillFilesDialog ||
             pendingDeleteSkill ||
+            moduleEditTarget ||
             associationTarget ||
             removalTarget ||
             mismatchTarget ||
@@ -542,7 +571,7 @@ export function SkillManagerDialog({
                       <Tabs.Indicator />
                     </Tabs.Tab>
                     <Tabs.Tab id="device">
-                      <FolderOpen size={15} />
+                      <Monitor size={15} />
                       <span>{t`Device Skills`}</span>
                       <Tabs.Indicator />
                     </Tabs.Tab>
@@ -560,9 +589,9 @@ export function SkillManagerDialog({
                     modules={installed.modules}
                     onCheckUpdates={checkUpdates}
                     onDelete={setPendingDeleteSkill}
+                    onManageModules={setModuleEditTarget}
                     onOpen={openSkill}
                     onUpdate={requestUpdate}
-                    systemSkills={installed.systemSkills}
                     updateStates={skillUpdateStates}
                     updatingSkillId={updatingSkillId}
                   />
@@ -682,6 +711,15 @@ export function SkillManagerDialog({
           isBusy={isMutating}
           onClose={() => setAssociationTarget(null)}
           onSave={installAssociations}
+        />
+      ) : null}
+      {moduleEditTarget ? (
+        <AssociationDialog
+          associated={moduleEditTarget.moduleKinds}
+          isBusy={isMutating}
+          mode="manage"
+          onClose={() => setModuleEditTarget(null)}
+          onSave={saveSkillModules}
         />
       ) : null}
       {removalTarget ? (

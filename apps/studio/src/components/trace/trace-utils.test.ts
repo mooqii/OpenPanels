@@ -181,7 +181,7 @@ describe("manual task instructions", () => {
       id: "task:ingest",
       mutationKey: "wiki:project:panel:default",
       ready: false,
-      status: "waiting",
+      status: "queued",
     })
 
     expect(manualAgentScopeCandidates([conversion, ingest])).toEqual([

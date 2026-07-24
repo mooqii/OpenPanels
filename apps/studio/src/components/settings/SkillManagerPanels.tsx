@@ -37,7 +37,7 @@ const ASSOCIATION_MODULES = [
   "publication-cover",
   "publication-title",
   "publication-layout",
-  "publishing",
+  "release",
 ] as const
 
 export function managedSkillActionIds(
@@ -45,6 +45,7 @@ export function managedSkillActionIds(
   updateState?: SkillUpdateState
 ) {
   const actions = ["open"]
+  if (skill.kind === "custom") actions.push("modules")
   if (updateState?.status === "updateAvailable") actions.push("update")
   if (skill.canDelete) actions.push("delete")
   return actions
@@ -56,9 +57,9 @@ export function InstalledSkillsPanel({
   modules,
   onCheckUpdates,
   onDelete,
+  onManageModules,
   onOpen,
   onUpdate,
-  systemSkills,
   updateStates,
   updatingSkillId,
 }: {
@@ -67,9 +68,9 @@ export function InstalledSkillsPanel({
   modules: ManagedSkillModule[]
   onCheckUpdates: () => void
   onDelete: (skill: ManagedProjectSkill) => void
+  onManageModules: (skill: ManagedProjectSkill) => void
   onOpen: (skill: ManagedProjectSkill) => void
   onUpdate: (skill: ManagedProjectSkill) => void
-  systemSkills: ManagedProjectSkill[]
   updateStates: Record<string, SkillUpdateState>
   updatingSkillId: string | null
 }) {
@@ -96,21 +97,12 @@ export function InstalledSkillsPanel({
         </Tooltip>
       </div>
       <div className="op-skill-sections">
-        <SkillSection
-          isCheckingUpdates={isCheckingUpdates}
-          onDelete={onDelete}
-          onOpen={onOpen}
-          onUpdate={onUpdate}
-          skills={systemSkills}
-          title={t`MyOpenPanels system`}
-          updateStates={updateStates}
-          updatingSkillId={updatingSkillId}
-        />
         {modules.map((module) => (
           <SkillSection
             isCheckingUpdates={isCheckingUpdates}
             key={module.kind}
             onDelete={onDelete}
+            onManageModules={onManageModules}
             onOpen={onOpen}
             onUpdate={onUpdate}
             skills={module.skills}
@@ -127,6 +119,7 @@ export function InstalledSkillsPanel({
 function SkillSection({
   isCheckingUpdates,
   onDelete,
+  onManageModules,
   onOpen,
   onUpdate,
   skills,
@@ -136,6 +129,7 @@ function SkillSection({
 }: {
   isCheckingUpdates: boolean
   onDelete: (skill: ManagedProjectSkill) => void
+  onManageModules: (skill: ManagedProjectSkill) => void
   onOpen: (skill: ManagedProjectSkill) => void
   onUpdate: (skill: ManagedProjectSkill) => void
   skills: ManagedProjectSkill[]
@@ -153,6 +147,7 @@ function SkillSection({
             isCheckingUpdates={isCheckingUpdates}
             key={skill.id}
             onDelete={onDelete}
+            onManageModules={onManageModules}
             onOpen={onOpen}
             onUpdate={onUpdate}
             skill={skill}
@@ -168,6 +163,7 @@ function SkillSection({
 function SkillRow({
   isCheckingUpdates,
   onDelete,
+  onManageModules,
   onOpen,
   onUpdate,
   skill,
@@ -176,6 +172,7 @@ function SkillRow({
 }: {
   isCheckingUpdates: boolean
   onDelete: (skill: ManagedProjectSkill) => void
+  onManageModules: (skill: ManagedProjectSkill) => void
   onOpen: (skill: ManagedProjectSkill) => void
   onUpdate: (skill: ManagedProjectSkill) => void
   skill: ManagedProjectSkill
@@ -225,47 +222,73 @@ function SkillRow({
           </span>
         ) : null}
       </div>
-      <Dropdown>
-        <Button
-          aria-label={`${t`Skill actions`}: ${skill.name}`}
-          isIconOnly
-          isPending={updatingSkillId === skill.id}
-          size="sm"
-          variant="ghost"
-        >
-          <MoreHorizontal size={16} />
-        </Button>
-        <Dropdown.Popover>
-          <Dropdown.Menu
-            onAction={(key) => {
-              if (key === "open") onOpen(skill)
-              if (key === "update") onUpdate(skill)
-              if (key === "delete") onDelete(skill)
-            }}
+      {skill.kind === "preset" ? (
+        <Tooltip closeDelay={0} delay={300}>
+          <Button
+            aria-label={`${t`View`}: ${skill.name}`}
+            isIconOnly
+            onPress={() => onOpen(skill)}
+            size="sm"
+            variant="ghost"
           >
-            <Dropdown.Item
-              id="open"
-              textValue={skill.canEdit ? t`Edit` : t`View`}
+            <Eye size={16} />
+          </Button>
+          <Tooltip.Content placement="bottom">{t`View`}</Tooltip.Content>
+        </Tooltip>
+      ) : (
+        <Dropdown>
+          <Button
+            aria-label={`${t`Skill actions`}: ${skill.name}`}
+            isIconOnly
+            isPending={updatingSkillId === skill.id}
+            size="sm"
+            variant="ghost"
+          >
+            <MoreHorizontal size={16} />
+          </Button>
+          <Dropdown.Popover>
+            <Dropdown.Menu
+              onAction={(key) => {
+                if (key === "open") onOpen(skill)
+                if (key === "modules") onManageModules(skill)
+                if (key === "update") onUpdate(skill)
+                if (key === "delete") onDelete(skill)
+              }}
             >
-              {skill.canEdit ? <Pencil size={14} /> : <Eye size={14} />}
-              <Label>{skill.canEdit ? t`Edit` : t`View`}</Label>
-            </Dropdown.Item>
-            {actionIds.includes("update") ? (
-              <Dropdown.Item id="update" textValue={t`Update Skill`}>
-                <Download size={14} />
-                <Label>{t`Update Skill`}</Label>
+              <Dropdown.Item
+                id="open"
+                textValue={skill.canEdit ? t`Edit` : t`View`}
+              >
+                {skill.canEdit ? <Pencil size={14} /> : <Eye size={14} />}
+                <Label>{skill.canEdit ? t`Edit` : t`View`}</Label>
               </Dropdown.Item>
-            ) : null}
-            {actionIds.includes("delete") ? <Separator /> : null}
-            {actionIds.includes("delete") ? (
-              <Dropdown.Item id="delete" textValue={t`Delete`} variant="danger">
-                <Trash2 size={14} />
-                <Label>{t`Delete`}</Label>
-              </Dropdown.Item>
-            ) : null}
-          </Dropdown.Menu>
-        </Dropdown.Popover>
-      </Dropdown>
+              {actionIds.includes("modules") ? (
+                <Dropdown.Item id="modules" textValue={t`Adjust modules`}>
+                  <Plus size={14} />
+                  <Label>{t`Adjust modules`}</Label>
+                </Dropdown.Item>
+              ) : null}
+              {actionIds.includes("update") ? (
+                <Dropdown.Item id="update" textValue={t`Update Skill`}>
+                  <Download size={14} />
+                  <Label>{t`Update Skill`}</Label>
+                </Dropdown.Item>
+              ) : null}
+              {actionIds.includes("delete") ? <Separator /> : null}
+              {actionIds.includes("delete") ? (
+                <Dropdown.Item
+                  id="delete"
+                  textValue={t`Delete`}
+                  variant="danger"
+                >
+                  <Trash2 size={14} />
+                  <Label>{t`Delete`}</Label>
+                </Dropdown.Item>
+              ) : null}
+            </Dropdown.Menu>
+          </Dropdown.Popover>
+        </Dropdown>
+      )}
     </div>
   )
 }
@@ -475,17 +498,25 @@ export function moduleLabel(
 
 export function AssociationDialog({
   associated,
+  mode = "add",
   isBusy,
   onClose,
   onSave,
 }: {
   associated: string[]
+  mode?: "add" | "manage"
   isBusy: boolean
   onClose: () => void
   onSave: (moduleKinds: string[]) => void
 }) {
   const { t } = useMyOpenPanelsI18n()
-  const [selectedModules, setSelectedModules] = useState<string[]>([])
+  const [selectedModules, setSelectedModules] = useState<string[]>(
+    mode === "manage" ? associated : []
+  )
+  const hasChanges =
+    mode === "add" ||
+    selectedModules.length !== associated.length ||
+    selectedModules.some((moduleKind) => !associated.includes(moduleKind))
   return (
     <Modal.Backdrop
       className="op-skill-manager-child-backdrop"
@@ -496,7 +527,11 @@ export function AssociationDialog({
         <Modal.Dialog className="op-skill-association-dialog">
           <Modal.CloseTrigger aria-label={t`Close`} />
           <Modal.Header>
-            <Modal.Heading>{t`Add Skill association`}</Modal.Heading>
+            <Modal.Heading>
+              {mode === "manage"
+                ? t`Adjust Skill modules`
+                : t`Add Skill association`}
+            </Modal.Heading>
           </Modal.Header>
           <Modal.Body>
             <p className="op-skill-association-dialog__description">
@@ -505,14 +540,15 @@ export function AssociationDialog({
             <div className="op-skill-association-options">
               {ASSOCIATION_MODULES.map((moduleKind) => {
                 const isAssociated = associated.includes(moduleKind)
+                const isSelected = selectedModules.includes(moduleKind)
                 return (
                   <div className="op-skill-association-option" key={moduleKind}>
                     <Checkbox
                       aria-label={moduleLabel(moduleKind, t)}
                       id={`skill-association-${moduleKind}`}
-                      isDisabled={isAssociated || isBusy}
+                      isDisabled={(mode === "add" && isAssociated) || isBusy}
                       isSelected={
-                        isAssociated || selectedModules.includes(moduleKind)
+                        mode === "add" ? isAssociated || isSelected : isSelected
                       }
                       onChange={(isSelected) =>
                         setSelectedModules((current) =>
@@ -543,7 +579,7 @@ export function AssociationDialog({
               {t`Cancel`}
             </Button>
             <Button
-              isDisabled={selectedModules.length === 0}
+              isDisabled={selectedModules.length === 0 || !hasChanges}
               isPending={isBusy}
               onPress={() => onSave(selectedModules)}
               variant="primary"

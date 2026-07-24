@@ -287,13 +287,25 @@ mod my_document_import_tests {
             .expect("original")
             .file_path;
 
-        fail_task(&paths, task_id, "conversion failed").expect("fail");
+        let _broker = crate::content::enable_test_task_broker();
+        let claim =
+            crate::tasks::claim_task(&paths, task_id, "agent-cli:codex").expect("claim");
+        crate::tasks::fail_task_with_class(
+            &paths,
+            task_id,
+            claim["leaseToken"].as_str().expect("lease"),
+            "conversion failed",
+            None,
+            crate::tasks::TaskFailureClass::TerminalTask,
+        )
+        .expect("fail");
         let failed = wiki_context(&paths).expect("failed context");
         assert_eq!(
             failed["state"]["myDocuments"][0]["conversion"]["status"],
             "failed"
         );
-        retry_task(&paths, task_id).expect("retry");
+        let retry = crate::tasks::retry_task(&paths, task_id).expect("retry");
+        let retry_task_id = retry["task"]["id"].as_str().expect("retry task id");
         let retried = wiki_context(&paths).expect("retried context");
         assert_eq!(
             retried["state"]["myDocuments"][0]["conversion"]["status"],
@@ -317,9 +329,15 @@ mod my_document_import_tests {
         let task = bootstrap
             .tasks
             .iter()
-            .find(|task| task["id"] == task_id)
+            .find(|task| task["id"] == retry_task_id)
             .expect("task");
         assert_eq!(task["status"], "cancelled");
+        let original = bootstrap
+            .tasks
+            .iter()
+            .find(|task| task["id"] == task_id)
+            .expect("original task");
+        assert_eq!(original["status"], "failed");
         assert_eq!(bootstrap.state["myDocuments"], json!([]));
     }
 }

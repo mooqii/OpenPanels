@@ -6,7 +6,6 @@ import {
   CircleX,
   Clock3,
   LoaderCircle,
-  Plus,
   Send,
   X,
 } from "lucide-react"
@@ -70,6 +69,7 @@ type PendingAction =
 export function PublishingPanel({
   chromeContent,
   onAddSkill,
+  onManageSkillModule,
   onOpenAgentTasks,
   onOpenManualTask,
   onStateSaved,
@@ -82,6 +82,7 @@ export function PublishingPanel({
 }: {
   chromeContent: ReactNode
   onAddSkill: () => void
+  onManageSkillModule: (moduleKind: string) => void
   onOpenAgentTasks: (taskIds: string[]) => void
   onOpenManualTask: (scope: TaskExecutionScope) => void
   onStateSaved: (
@@ -275,15 +276,15 @@ export function PublishingPanel({
     <div className="op-publishing-side-stack">
       <section className="op-publishing-module op-publishing-status-module">
         <div className="op-publishing-section-heading">
-          <h2>{t`Publishing status`}</h2>
+          <h2>{t`Publish`}</h2>
           <Button
-            aria-label={t`Add content publishing Skill`}
-            isIconOnly
+            aria-label={t`Manage Skill`}
+            className="op-publishing-skills__manage"
             onPress={onAddSkill}
             size="sm"
             variant="ghost"
           >
-            <Plus size={16} />
+            {t`Manage Skill`}
           </Button>
         </div>
         {skillsLoading ? (
@@ -543,6 +544,7 @@ export function PublishingPanel({
                   onDelete={() => setPendingDelete(selectedPublication)}
                   onFlushSave={flushTypesettingSave}
                   onInsertHandlerChange={() => undefined}
+                  onManageSkillModule={onManageSkillModule}
                   onOpenAgentTasks={onOpenAgentTasks}
                   onOpenLibrary={() => setIsSourceListOpen(true)}
                   onPreview={() => setView("preview")}

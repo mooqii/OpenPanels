@@ -4,6 +4,7 @@ struct AgentProcedureRegistration {
     description: String,
     key: String,
     local_skill: LocalSkillPolicy,
+    module_key: String,
     panel_kind: Option<String>,
     references: Vec<String>,
     selection_policy: String,
@@ -18,7 +19,6 @@ struct AgentProcedure {
 
 struct AgentProcedureCatalog {
     procedures: Vec<AgentProcedure>,
-    task_handoff_keys: BTreeSet<String>,
 }
 
 fn load_agent_procedures() -> Result<AgentProcedureCatalog, CliError> {
@@ -35,7 +35,6 @@ fn load_agent_procedures() -> Result<AgentProcedureCatalog, CliError> {
         .collect::<BTreeSet<_>>();
     let mut used_handler_keys = BTreeSet::new();
     let mut procedures = Vec::new();
-    let mut task_handoff_keys = BTreeSet::new();
 
     for capability in &capability_catalog.capabilities {
         let skill = system_skills
@@ -61,6 +60,7 @@ fn load_agent_procedures() -> Result<AgentProcedureCatalog, CliError> {
                     description: capability.description.clone(),
                     key: capability.key.clone(),
                     local_skill: capability.local_skill.clone(),
+                    module_key: capability.module_key.clone(),
                     panel_kind: capability.panel_kind.clone(),
                     references: capability.platform_contract.references.clone(),
                     selection_policy: selection_policy.clone(),
@@ -84,11 +84,8 @@ fn load_agent_procedures() -> Result<AgentProcedureCatalog, CliError> {
                     }
                     used_handler_keys.insert(route.handler_key.clone());
                 }
-                task_handoff_keys.insert(capability.key.clone());
             }
-            CapabilityInvocation::TaskScope { .. } => {
-                task_handoff_keys.insert(capability.key.clone());
-            }
+            CapabilityInvocation::TaskScope { .. } => {}
         }
     }
 
@@ -104,10 +101,7 @@ fn load_agent_procedures() -> Result<AgentProcedureCatalog, CliError> {
     }
 
     procedures.sort_by(|left, right| left.registration.key.cmp(&right.registration.key));
-    Ok(AgentProcedureCatalog {
-        procedures,
-        task_handoff_keys,
-    })
+    Ok(AgentProcedureCatalog { procedures })
 }
 
 fn procedure_command_intents_for_panel(panel_kind: PanelKind) -> Result<Vec<String>, CliError> {
@@ -225,27 +219,15 @@ fn agent_procedure_bootstrap(
     let procedure = catalog
         .procedures
         .iter()
-        .find(|procedure| procedure.registration.key == procedure_key)
-        .ok_or_else(|| {
-            if catalog.task_handoff_keys.contains(procedure_key) {
-                return CliError::with_recovery(
-                    "task_handoff_required",
-                    format!(
-                        "{} is a Task Handoff and cannot be used as an Agent Procedure.",
-                        procedure_key
-                    ),
-                    false,
-                    "Execute the unchanged Task Handoff or claimed Task command. Do not replace it with Agent Bootstrap.",
-                );
-            }
-            CliError::with_recovery(
-                "agent_procedure_not_found",
-                format!("Agent Procedure not found: {procedure_key}"),
-                true,
-                "Run the generic Agent Bootstrap and select a supported Procedure from current discovery context.",
-            )
-            .with_recovery_action(generic_bootstrap_recovery_action(paths))
-        })?;
+        .find(|procedure| procedure.registration.key == procedure_key);
+    let Some(procedure) = procedure else {
+        let mut fallback = agent_bootstrap(paths, None)?;
+        fallback["procedureFallback"] = json!({
+            "requestedKey": procedure_key,
+            "reason": "agent_procedure_not_found",
+        });
+        return Ok(fallback);
+    };
 
     let requested_panel_kind = procedure
         .registration
@@ -270,41 +252,45 @@ fn agent_procedure_bootstrap(
 
     let skills = load_agent_skills(paths, &visible.project.id)?;
     let panel_skill = required_agent_skill(&skills, &procedure.skill_id)?;
-    let (_, skill_path) = agent_skill_local_paths(paths, &visible.project.id, &panel_skill.metadata);
-    let skill_dir = skill_path
-        .parent()
-        .ok_or_else(|| CliError::new("Agent Procedure Skill path has no parent directory."))?;
-    let reference_paths = procedure
+    let references = procedure
         .registration
         .references
         .iter()
-        .map(|reference| skill_dir.join(reference))
-        .collect::<Vec<_>>();
-    for reference_path in &reference_paths {
-        if !reference_path.is_file() {
-            return Err(CliError::with_code(
-                "agent_procedure_reference_not_found",
-                format!(
-                    "Agent Procedure reference is unavailable: {}",
-                    reference_path.display()
-                ),
-            ));
-        }
-    }
-    let primary_reference_path = reference_paths
+        .map(|reference| {
+            Ok(json!({
+                "path": reference,
+                "body": embedded_system_skill_text(&procedure.skill_id, reference)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    let primary_reference = procedure
+        .registration
+        .references
         .last()
         .expect("validated Agent Procedure references");
 
-    let (selection, mut blockers) = procedure_selection(paths, visible, target, procedure)?;
+    let selection_target = target.or_else(|| {
+        procedure
+            .registration
+            .panel_kind
+            .is_none()
+            .then_some(visible)
+    });
+    let (selection, mut blockers) =
+        procedure_selection(paths, visible, selection_target, procedure)?;
     let storage = crate::storage::Storage::open(paths)?;
-    let operations = storage.list_agent_operations(Some(&paths.context_id), Some("active"))?;
+    let operations = storage.list_direct_operations(Some(&paths.context_id), Some("active"))?;
     let commands = crate::cli::registry::descriptors_for_intents(
         &procedure.registration.command_intents,
     )?;
     let focus_revision = crate::control::read_focus_revision(paths)?;
     let mut context_truncated = false;
-    let panel_context = target
-        .filter(|_| requested_panel_kind.is_some())
+    let context_target = target.or_else(|| {
+        (procedure.registration.panel_kind.is_none()
+            && procedure.registration.selection_policy != "none")
+            .then_some(visible)
+    });
+    let panel_context = context_target
         .map(|target| {
             bounded_json(
                 crate::panel::context_for_bootstrap(target),
@@ -313,22 +299,7 @@ fn agent_procedure_bootstrap(
             )
         })
         .unwrap_or(Value::Null);
-    let mut required_actions = vec![json!({
-        "id": format!("skill.{}.body", procedure.skill_id),
-        "intent": "agent-host.file.read",
-        "executor": "agent-host",
-        "kind": "read-file",
-        "path": skill_path.display().to_string(),
-    })];
-    required_actions.extend(reference_paths.iter().enumerate().map(|(index, path)| {
-        json!({
-            "id": format!("reference.{index}"),
-            "intent": "agent-host.file.read",
-            "executor": "agent-host",
-            "kind": "read-file",
-            "path": path.display().to_string(),
-        })
-    }));
+    let required_actions = Vec::<Value>::new();
     let suggested_actions = procedure_state_actions(paths, visible, procedure, &operations);
     let available_panel_kinds = visible
         .panels
@@ -337,32 +308,48 @@ fn agent_procedure_bootstrap(
         .collect::<Vec<_>>();
     let target_value = match (requested_panel_kind, target) {
         (Some(_), Some(target)) => json!({
+            "kind": "panel",
+            "moduleKey": procedure.registration.module_key,
             "projectId": target.project.id,
             "panelId": target.panel.id,
             "panelKind": target.panel.kind,
             "revision": target.revision,
+            "resourceVersions": selected_resource_versions(&selection),
         }),
         (Some(panel_kind), None) => json!({
+            "kind": "panel",
+            "moduleKey": procedure.registration.module_key,
             "projectId": visible.project.id,
             "panelId": null,
             "panelKind": panel_kind,
             "revision": null,
+            "resourceVersions": [],
         }),
         (None, _) => json!({
+            "kind": "module",
+            "moduleKey": procedure.registration.module_key,
             "projectId": visible.project.id,
             "panelId": null,
             "panelKind": null,
             "revision": null,
+            "resourceVersions": selected_resource_versions(&selection),
+            "selectionSource": if procedure.registration.selection_policy == "none" {
+                Value::Null
+            } else {
+                json!({
+                    "panelId": visible.panel.id,
+                    "panelKind": visible.panel.kind,
+                    "revision": visible.revision,
+                })
+            },
         }),
     };
     let mut skill_entries = vec![json!({
         "id": procedure.skill_id,
-        "role": "panel",
-        "localPath": skill_path.display().to_string(),
-        "referencePaths": reference_paths
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>(),
+        "role": "system",
+        "name": panel_skill.metadata.name,
+        "body": panel_skill.body,
+        "references": references,
     })];
     if let Some(target) = target {
         let selected_skill_ids = match procedure.registration.local_skill.mode.as_str() {
@@ -399,43 +386,31 @@ fn agent_procedure_bootstrap(
                 }));
                 continue;
             };
-            let (_, selected_skill_path) =
-                agent_skill_local_paths(paths, &visible.project.id, &selected_skill.metadata);
             skill_entries.push(json!({
                 "id": selected_skill.metadata.id,
                 "role": "selected-portable",
-                "localPath": selected_skill_path.display().to_string(),
-            }));
-            required_actions.push(json!({
-                "id": format!("skill.{}.body", selected_skill.metadata.id),
-                "intent": "agent-host.file.read",
-                "executor": "agent-host",
-                "kind": "read-file",
-                "path": selected_skill_path.display().to_string(),
+                "name": selected_skill.metadata.name,
+                "body": selected_skill.body,
             }));
         }
     }
 
-    Ok(json!({
+    let execution_contract = procedure_execution_contract(&commands);
+    let mut payload = json!({
         "bootstrapBudget": {
             "maxBytes": MAX_BOOTSTRAP_ENVELOPE_BYTES,
             "unit": "utf8",
         },
         "agentProcedure": {
             "key": procedure.registration.key,
-            "moduleKey": crate::capabilities::module_key_for_capability(
-                &procedure.registration.key
-            ),
+            "moduleKey": procedure.registration.module_key,
             "description": procedure.registration.description,
             "panelKind": procedure.registration.panel_kind,
             "selectionPolicy": procedure.registration.selection_policy,
             "localSkill": procedure.registration.local_skill,
             "skillId": procedure.skill_id,
-            "referencePath": primary_reference_path.display().to_string(),
-            "referencePaths": reference_paths
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>(),
+            "referencePath": primary_reference,
+            "referencePaths": procedure.registration.references,
             "commandIntents": procedure.registration.command_intents,
         },
         "readiness": if blockers.is_empty() { "ready" } else { "blocked" },
@@ -453,17 +428,103 @@ fn agent_procedure_bootstrap(
             "contextTruncated": context_truncated,
             "selection": selection,
         },
-        "tasks": compact_task_summary(visible),
-        "operations": compact_operation_summary(&operations),
         "skills": skill_entries,
         "commands": {
             "items": commands,
         },
+        "executionContract": execution_contract,
         "actions": {
             "required": required_actions,
             "suggested": suggested_actions,
         },
-    }))
+    });
+    if procedure.registration.module_key == "task" {
+        payload["tasks"] = compact_task_summary(visible);
+    }
+    if procedure
+        .registration
+        .command_intents
+        .iter()
+        .any(|intent| intent.starts_with("operation."))
+    {
+        payload["operations"] = compact_operation_summary(&operations);
+    }
+    Ok(payload)
+}
+
+fn selected_resource_versions(selection: &Value) -> Vec<Value> {
+    selection
+        .pointer("/value/selectedMyDocuments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|document| {
+            let resource_id = document.get("id").and_then(Value::as_str)?;
+            Some(json!({
+                "resourceKind": "my-document",
+                "resourceId": resource_id,
+                "contentVersion": document.get("contentVersion").cloned().unwrap_or(Value::Null),
+                "updatedAt": document.get("updatedAt").cloned().unwrap_or(Value::Null),
+            }))
+        })
+        .collect()
+}
+
+fn procedure_execution_contract(commands: &[Value]) -> Value {
+    let artifact_inputs = commands
+        .iter()
+        .flat_map(|command| {
+            let intent = command
+                .get("intent")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            command
+                .get("args")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|argument| {
+                    matches!(
+                        argument.get("type").and_then(Value::as_str),
+                        Some("path" | "path-array")
+                    )
+                })
+                .map(move |argument| {
+                    json!({
+                        "commandIntent": intent,
+                        "name": argument.get("name").cloned().unwrap_or(Value::Null),
+                        "flag": argument.get("flag").cloned().unwrap_or(Value::Null),
+                        "required": argument.get("required").cloned().unwrap_or(json!(false)),
+                        "type": argument.get("type").cloned().unwrap_or(Value::Null),
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    let intents = commands
+        .iter()
+        .filter_map(|command| command.get("intent").and_then(Value::as_str))
+        .collect::<BTreeSet<_>>();
+    let operation_completion = intents.contains("operation.complete");
+    json!({
+        "artifactInputs": artifact_inputs,
+        "completion": if operation_completion {
+            json!({
+                "kind": "operation",
+                "successIntent": "operation.complete",
+                "failureIntent": intents.contains("operation.fail").then_some("operation.fail"),
+                "cancellationIntent": intents.contains("operation.cancel").then_some("operation.cancel"),
+            })
+        } else {
+            json!({
+                "kind": "command-response",
+                "successField": "ok",
+            })
+        },
+        "recovery": {
+            "authority": "cli-error-actions",
+            "reuseBootstrap": false,
+        },
+    })
 }
 
 fn procedure_selection(
@@ -614,7 +675,7 @@ fn procedure_state_actions(
     let mut actions = Vec::new();
     if procedure.registration.key == "task.queue.inspect" {
         if let Some(task_id) = next_task_id(bootstrap) {
-            actions.push(project_command_action(
+            let mut action = project_command_action(
                 paths,
                 "task.read",
                 vec![
@@ -623,7 +684,13 @@ fn procedure_state_actions(
                     "--format".to_owned(),
                     "json".to_owned(),
                 ],
-            ));
+            );
+            action["condition"] = json!({
+                "type": "resource-status",
+                "resource": "next-task",
+                "statuses": ["queued", "failed"],
+            });
+            actions.push(action);
         }
     }
     if procedure
@@ -634,7 +701,7 @@ fn procedure_state_actions(
     {
         actions.extend(operations.iter().take(3).filter_map(|operation| {
             let operation_id = operation.get("id").and_then(Value::as_str)?;
-            Some(project_command_action(
+            let mut action = project_command_action(
                 paths,
                 "operation.read",
                 vec![
@@ -643,24 +710,15 @@ fn procedure_state_actions(
                     "--format".to_owned(),
                     "json".to_owned(),
                 ],
-            ))
+            );
+            action["condition"] = json!({
+                "type": "resource-status",
+                "resource": "operation",
+                "resourceId": operation_id,
+                "statuses": ["active"],
+            });
+            Some(action)
         }));
     }
     actions
-}
-
-fn generic_bootstrap_recovery_action(
-    paths: &MyOpenPanelsPaths,
-) -> crate::error::CliRecoveryAction {
-    crate::error::CliRecoveryAction::cli_intent(
-        "agent.bootstrap.read",
-        [
-            "agent".to_owned(),
-            "bootstrap".to_owned(),
-            "--project-dir".to_owned(),
-            paths.project_dir.display().to_string(),
-            "--format".to_owned(),
-            "json".to_owned(),
-        ],
-    )
 }

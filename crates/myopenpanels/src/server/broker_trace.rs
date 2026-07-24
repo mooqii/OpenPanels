@@ -60,48 +60,6 @@ async fn api_broker_read(
     }
 }
 
-async fn api_broker_prepare_operation(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<PrepareOperationRequest>,
-) -> Response {
-    let token = match broker_token(&headers) {
-        Ok(token) => token,
-        Err(error) => return broker_error(error),
-    };
-    if let Err(error) = content::authorize_agent_broker_capability(
-        &state.paths,
-        token,
-        "operation.prepare",
-    ) {
-        return broker_error(error);
-    }
-    match content::prepare_operation(&state.paths, token, &body) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => broker_error(error),
-    }
-}
-
-async fn api_broker_begin_operation(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<BeginOperationRequest>,
-) -> Response {
-    let token = match broker_token(&headers) {
-        Ok(token) => token,
-        Err(error) => return broker_error(error),
-    };
-    if let Err(error) =
-        content::authorize_agent_broker_capability(&state.paths, token, "operation.begin")
-    {
-        return broker_error(error);
-    }
-    match content::begin_operation(&state.paths, token, &body) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => broker_error(error),
-    }
-}
-
 async fn api_broker_prepare_skill(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

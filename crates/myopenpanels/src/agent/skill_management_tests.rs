@@ -135,6 +135,59 @@ mod skill_management_tests {
     }
 
     #[test]
+    fn changing_locale_resets_builtin_presets_to_the_matching_language() {
+        let (_temp, paths) = test_paths();
+
+        sync_builtin_agent_skills(&paths).expect("default presets");
+        let skill_path = paths
+            .storage_dir
+            .join("skills")
+            .join("writing-default")
+            .join("SKILL.md");
+        let english = fs::read_to_string(&skill_path).expect("English preset");
+        assert!(english.contains("Follow the user's writing instruction"));
+
+        set_preset_skill_locale(&paths, "zh-CN").expect("Chinese presets");
+        let chinese = fs::read_to_string(&skill_path).expect("Chinese preset");
+        assert!(chinese.contains("直接执行用户的写作要求"));
+        let chinese_listing = list_writing_agent_skills(&paths)
+            .expect("Chinese listing")
+            .into_iter()
+            .find(|item| item.skill.id == "writing-default")
+            .expect("default writing Skill");
+        assert_eq!(chinese_listing.skill.name, "默认写作");
+        assert!(chinese_listing.skill.description.starts_with("直接遵循"));
+
+        set_preset_skill_locale(&paths, "en").expect("English presets");
+        assert_eq!(
+            fs::read_to_string(&skill_path).expect("reset English preset"),
+            english
+        );
+        let english_listing = list_writing_agent_skills(&paths)
+            .expect("English listing")
+            .into_iter()
+            .find(|item| item.skill.id == "writing-default")
+            .expect("default writing Skill");
+        assert_eq!(english_listing.skill.name, "Default Writing");
+        assert!(english_listing
+            .skill
+            .description
+            .starts_with("Follow the user's writing request"));
+
+        set_preset_skill_locale(&paths, "fr").expect("fallback locale");
+        assert_eq!(
+            fs::read_to_string(&skill_path).expect("fallback preset"),
+            english
+        );
+        assert_eq!(
+            set_preset_skill_locale(&paths, "../zh-CN")
+                .expect_err("unsupported locale")
+                .code(),
+            Some("invalid_preset_skill_locale")
+        );
+    }
+
+    #[test]
     fn device_discovery_groups_names_and_deduplicates_symlinks() {
         let temp = tempfile::tempdir().expect("temp");
         let root_a = temp.path().join("agent-a");
@@ -498,6 +551,23 @@ mod skill_management_tests {
         )
         .expect("replaced manifest");
         assert_eq!(replaced_manifest["createdAt"], initial_manifest["createdAt"]);
+
+        let adjusted = set_skill_modules(
+            &paths,
+            &skill_id,
+            &["wiki-update".to_owned(), "release".to_owned()],
+        )
+        .expect("adjust module associations");
+        assert_eq!(adjusted["moduleKinds"], json!(["wiki-update", "release"]));
+        let adjusted_listing = managed_skill_listing(&paths, &skill_id).expect("adjusted listing");
+        assert_eq!(
+            read_skill_manifest(&adjusted_listing).expect("adjusted manifest")["binding"]["moduleKinds"],
+            json!(["wiki-update", "release"])
+        );
+        assert_eq!(
+            set_skill_modules(&paths, &skill_id, &[]).expect_err("module required").code(),
+            Some("skill_module_required")
+        );
     }
 
     #[test]

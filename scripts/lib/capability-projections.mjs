@@ -5,20 +5,23 @@ export const CAPABILITY_MATRIX_START =
   "<!-- BEGIN GENERATED CAPABILITY MATRIX -->"
 export const CAPABILITY_MATRIX_END = "<!-- END GENERATED CAPABILITY MATRIX -->"
 
+const CAPABILITY_SURFACES = [
+  { label: "Canvas", moduleKeys: ["canvas-document"] },
+  { label: "Wiki", moduleKeys: ["wiki-source", "wiki-space"] },
+  { label: "My Document", moduleKeys: ["my-document"] },
+  { label: "Writing", moduleKeys: ["writing"] },
+  { label: "Typesetting", moduleKeys: ["publication"] },
+  { label: "Publishing", moduleKeys: ["release"] },
+  { label: "Skills", moduleKeys: ["skill"] },
+  { label: "Task queue", moduleKeys: ["task"] },
+]
+
 export function renderEntryCapabilityIndex(catalog) {
-  const panelLabels = new Map([
-    ["canvas", "Canvas"],
-    ["wiki", "Wiki"],
-    ["writing", "Writing"],
-    ["typesetting", "Typesetting"],
-    ["publishing", "Publishing"],
-    [null, "Task queue"],
-  ])
   const lines = []
-  for (const [panelKind, label] of panelLabels) {
+  for (const { label, moduleKeys } of CAPABILITY_SURFACES) {
     const procedures = catalog.capabilities.filter(
       (capability) =>
-        capability.panelKind === panelKind &&
+        moduleKeys.includes(capability.moduleKey) &&
         capability.invocation.kind === "procedure"
     )
     if (procedures.length === 0) {
@@ -50,14 +53,6 @@ export function replaceEntryCapabilityIndex(source, rendered) {
 }
 
 export function renderCapabilityMatrix(catalog) {
-  const surfaces = [
-    ["canvas", "Canvas"],
-    ["wiki", "Wiki"],
-    ["writing", "Writing"],
-    ["typesetting", "Typesetting"],
-    ["publishing", "Publishing"],
-    [null, "Generic Task queue"],
-  ]
   const lines = [
     "| Surface | Direct Procedures | Task Capabilities | Task Routes |",
     "| --- | ---: | ---: | ---: |",
@@ -65,9 +60,9 @@ export function renderCapabilityMatrix(catalog) {
   let directTotal = 0
   let taskTotal = 0
   let routeTotal = 0
-  for (const [panelKind, label] of surfaces) {
-    const capabilities = catalog.capabilities.filter(
-      (capability) => capability.panelKind === panelKind
+  for (const { label, moduleKeys } of CAPABILITY_SURFACES) {
+    const capabilities = catalog.capabilities.filter((capability) =>
+      moduleKeys.includes(capability.moduleKey)
     )
     const direct = capabilities.filter(
       (capability) => capability.invocation.kind === "procedure"

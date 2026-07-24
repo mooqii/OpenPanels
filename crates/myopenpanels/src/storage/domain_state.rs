@@ -365,7 +365,6 @@ fn persist_wiki_state(
         };
         let document_version = document
             .get("markdownVersion")
-            .or_else(|| document.get("contentVersion"))
             .and_then(Value::as_i64)
             .unwrap_or(0);
         let ingestions = document
@@ -477,24 +476,33 @@ fn persist_document(
         .get("originalFileName")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let original_revision_id = document
-        .get("originalRef")
-        .or_else(|| document.pointer("/importSource/originalRef"))
-        .and_then(Value::as_str);
-    let active_revision_id = document
-        .get("markdownRef")
-        .or_else(|| document.get("contentRef"))
-        .and_then(Value::as_str);
-    let content_version = document
-        .get("markdownVersion")
-        .or_else(|| document.get("contentVersion"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let content_hash = document
-        .get("sha256")
-        .or_else(|| document.pointer("/importSource/sha256"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let is_my_document = document_kind == "my_document";
+    let original_revision_id = if is_my_document {
+        document.pointer("/importSource/originalRef")
+    } else {
+        document.get("originalRef")
+    }
+    .and_then(Value::as_str);
+    let active_revision_id = if is_my_document {
+        document.get("contentRef")
+    } else {
+        document.get("markdownRef")
+    }
+    .and_then(Value::as_str);
+    let content_version = if is_my_document {
+        document.get("contentVersion")
+    } else {
+        document.get("markdownVersion")
+    }
+    .and_then(Value::as_i64)
+    .unwrap_or(0);
+    let content_hash = if is_my_document {
+        document.pointer("/importSource/sha256")
+    } else {
+        document.get("sha256")
+    }
+    .and_then(Value::as_str)
+    .unwrap_or("");
     let character_count = document.get("wordCount").and_then(Value::as_i64);
     let metadata = strip_fields(
         document,
@@ -661,10 +669,7 @@ fn persist_wiki_space(
         .ok_or_else(|| CliError::new("Wiki space id is required."))?;
     let title = space.get("title").and_then(Value::as_str).unwrap_or("Wiki");
     let active_revision_id = space.get("rootRef").and_then(Value::as_str);
-    let selected_skill_id = space
-        .get("agentSkillId")
-        .or_else(|| space.get("selectedSkillId"))
-        .and_then(Value::as_str);
+    let selected_skill_id = space.get("agentSkillId").and_then(Value::as_str);
     let metadata = strip_fields(space, &["id", "title", "createdAt", "updatedAt"]);
     let metadata_json = serde_json::to_string(&metadata).map_err(to_cli_error)?;
     let content_hash = hash_text(&metadata_json);

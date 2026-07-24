@@ -53,6 +53,7 @@ type InsertDocumentHandler = (
 export function TypesettingPanel({
   chromeContent,
   onStateSaved,
+  onManageSkillModule,
   onOpenAgentTasks,
   panelId,
   projectId,
@@ -62,6 +63,7 @@ export function TypesettingPanel({
   transport,
 }: {
   chromeContent: ReactNode
+  onManageSkillModule: (moduleKind: string) => void
   onStateSaved: (state: TypesettingState, revision: number) => void
   onOpenAgentTasks: (taskIds: string[]) => void
   panelId: string
@@ -497,6 +499,7 @@ export function TypesettingPanel({
                   onDelete={() => setPendingDelete(activePublication)}
                   onFlushSave={flushSave}
                   onInsertHandlerChange={handleInsertHandlerChange}
+                  onManageSkillModule={onManageSkillModule}
                   onOpenAgentTasks={onOpenAgentTasks}
                   onOpenLibrary={() => setIsLibraryOpen(true)}
                   onPreview={() => setView("preview")}

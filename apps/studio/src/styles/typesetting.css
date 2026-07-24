@@ -247,17 +247,6 @@ button.op-typesetting-save {
   border-bottom: 1px solid var(--op-divider);
 }
 
-.op-typesetting-mode-tabs {
-  flex: 0 0 auto;
-}
-
-.op-typesetting-mode-tabs .tabs__tab {
-  min-width: 58px;
-  height: 32px;
-  padding-inline: 12px;
-  font-size: 12px;
-}
-
 .op-typesetting-detail-header__save-meta {
   display: grid;
   gap: 2px;
@@ -545,7 +534,8 @@ button.op-typesetting-detail-header__save-state.is-failed {
   border-radius: 6px;
 }
 
-.op-publication-cover > img {
+.op-publication-cover > img,
+.op-publication-cover > video {
   display: block;
   width: 100%;
   height: 100%;
@@ -560,6 +550,19 @@ button.op-typesetting-detail-header__save-state.is-failed {
   place-items: center;
   width: 24px;
   height: 24px;
+  color: var(--white);
+  background: color-mix(in oklab, var(--black) 62%, transparent);
+  border-radius: 5px;
+}
+
+.op-publication-cover__view {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
   color: var(--white);
   background: color-mix(in oklab, var(--black) 62%, transparent);
   border-radius: 5px;
@@ -708,7 +711,8 @@ button.op-typesetting-detail-header__save-state.is-failed {
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 24%, transparent);
 }
 
-.op-publication-cover-picker__asset img {
+.op-publication-cover-picker__asset img,
+.op-publication-cover-picker__asset video {
   display: block;
   width: 100%;
   height: 100%;
@@ -805,6 +809,44 @@ button.op-typesetting-detail-header__save-state.is-failed {
   color: var(--op-text-secondary);
 }
 
+.op-publication-cover-dialog__field-heading {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.op-publication-cover-dialog__field-heading > label {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--op-text-secondary);
+}
+
+.op-publication-cover-dialog__manage-skill {
+  min-width: 0;
+  height: 24px;
+  padding-inline: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.op-publication-cover-dialog__select {
+  width: 100%;
+  min-width: 0;
+}
+
+.op-publication-cover-dialog__skill-popover {
+  width: var(--trigger-width);
+  max-width: min(var(--trigger-width), calc(100vw - 24px));
+}
+
+.op-publication-cover-dialog__skill-popover [data-slot="list-box-item"] {
+  min-width: 0;
+}
+
 .op-publication-cover-dialog__loading,
 .op-publication-cover-dialog__empty {
   display: flex;
@@ -830,6 +872,15 @@ button.op-typesetting-detail-header__save-state.is-failed {
 .op-publication-cover-dialog__skill-description {
   font-size: 11px;
   color: var(--op-text-tertiary);
+}
+
+.op-publication-cover-dialog__skill-popover
+  .op-publication-cover-dialog__skill-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  white-space: normal;
 }
 
 .op-typesetting-drop-empty {

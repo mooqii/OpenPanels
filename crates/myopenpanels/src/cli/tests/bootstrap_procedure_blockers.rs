@@ -58,36 +58,18 @@ fn procedure_bootstrap_reports_selection_blockers_and_structured_fallbacks() {
     let mut unknown = vec!["agent", "bootstrap", "--procedure", "panel.unknown"];
     unknown.extend(base);
     let (code, stdout, stderr) = run_raw(&unknown);
-    assert_eq!(code, 1, "{stdout}{stderr}");
-    let error = serde_json::from_str::<Value>(&stderr).expect("unknown procedure error");
-    assert_eq!(error["error"]["subtype"], "agent_procedure_not_found");
-    assert_eq!(error["actions"]["suggested"][0]["intent"], "agent.bootstrap.read");
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let fallback = serde_json::from_str::<Value>(&stdout).expect("generic fallback");
     assert_eq!(
-        &error["actions"]["suggested"][0]["argv"]
-            .as_array()
-            .unwrap()[..2],
-        &[json!("agent"), json!("bootstrap")]
+        fallback["data"]["procedureFallback"]["requestedKey"],
+        "panel.unknown"
     );
-
-    let mut handoff = vec!["agent", "bootstrap", "--procedure", "task.scope.execute"];
-    handoff.extend(base);
-    let (code, stdout, stderr) = run_raw(&handoff);
-    assert_eq!(code, 1, "{stdout}{stderr}");
     assert_eq!(
-        serde_json::from_str::<Value>(&stderr).expect("handoff error")["error"]["subtype"],
-        "task_handoff_required"
+        fallback["data"]["procedureFallback"]["reason"],
+        "agent_procedure_not_found"
     );
+    assert!(fallback["data"].get("agentProcedure").is_none());
 
-    let mut removed_flag = vec![
-        "agent",
-        "bootstrap",
-        "--workflow",
-        "canvas.image.edit",
-    ];
-    removed_flag.extend(base);
-    let (code, stdout, stderr) = run_raw(&removed_flag);
-    assert_ne!(code, 0, "{stdout}{stderr}");
-    assert!(stderr.contains("--workflow"), "{stderr}");
 }
 
 #[test]
@@ -144,4 +126,67 @@ fn procedure_bootstrap_blocks_when_its_target_panel_is_missing() {
     assert_eq!(payload["focus"]["panelKind"], "wiki");
     assert_eq!(payload["target"]["panelKind"], "canvas");
     assert_eq!(payload["target"]["panelId"], Value::Null);
+}
+
+#[test]
+fn module_procedure_materializes_selected_resource_versions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join(".myopenpanels");
+    fs::create_dir_all(&project_dir).expect("project dir");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let document = crate::wiki::create_my_document(
+        &paths,
+        "selected.md",
+        Some("Selected"),
+        Some("text/markdown"),
+        None,
+        None,
+        b"# Selected\n",
+    )
+    .expect("document");
+    let document_id = document["document"]["id"].as_str().unwrap().to_owned();
+    crate::wiki::write_agent_selection(&paths, std::slice::from_ref(&document_id))
+        .expect("selection");
+
+    let (code, stdout, stderr) = run(&[
+        "agent",
+        "bootstrap",
+        "--procedure",
+        "my-document.read",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+
+    assert_eq!(code, 0, "{stderr}{stdout}");
+    let payload = serde_json::from_str::<Value>(&stdout).expect("Procedure");
+    assert_eq!(payload["readiness"], "ready");
+    assert_eq!(payload["target"]["kind"], "module");
+    assert_eq!(payload["target"]["moduleKey"], "my-document");
+    assert_eq!(
+        payload["target"]["resourceVersions"][0]["resourceId"],
+        document_id
+    );
+    assert_eq!(
+        payload["target"]["resourceVersions"][0]["contentVersion"],
+        1
+    );
+    assert_eq!(payload["focus"]["panelKind"], "wiki");
+    assert!(payload["target"]["selectionSource"]["revision"].is_i64());
+    assert_eq!(
+        payload["panel"]["selection"]["value"]["selectedMyDocuments"][0]["id"],
+        payload["target"]["resourceVersions"][0]["resourceId"]
+    );
 }

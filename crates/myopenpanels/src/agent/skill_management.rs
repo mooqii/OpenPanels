@@ -24,17 +24,7 @@ pub struct ManagedSkillModule {
 pub fn list_writing_distillation_agent_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
-    Ok(list_agent_skills(paths)?
-        .into_iter()
-        .filter(|item| {
-            metadata_matches(
-                &item.skill.applies_to,
-                &item.skill.task_types,
-                Some("writing"),
-                Some("distill_writing_skill"),
-            )
-        })
-        .collect())
+    list_agent_skills_for_module(paths, "writing-distillation")
 }
 
 pub fn writing_distillation_agent_skill(
@@ -55,18 +45,7 @@ pub fn writing_distillation_agent_skill(
 pub fn list_publication_cover_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
-    sync_builtin_agent_skills(paths)?;
-    Ok(list_agent_skills(paths)?
-        .into_iter()
-        .filter(|item| {
-            metadata_matches(
-                &item.skill.applies_to,
-                &item.skill.task_types,
-                Some("typesetting"),
-                Some(crate::publication::COVER_TASK_TYPE),
-            )
-        })
-        .collect())
+    list_agent_skills_for_module(paths, "publication-cover")
 }
 
 pub fn publication_cover_skill(
@@ -87,18 +66,7 @@ pub fn publication_cover_skill(
 pub fn list_publication_title_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
-    sync_builtin_agent_skills(paths)?;
-    Ok(list_agent_skills(paths)?
-        .into_iter()
-        .filter(|item| {
-            metadata_matches(
-                &item.skill.applies_to,
-                &item.skill.task_types,
-                Some("typesetting"),
-                Some(crate::publication::TITLE_TASK_TYPE),
-            )
-        })
-        .collect())
+    list_agent_skills_for_module(paths, "publication-title")
 }
 
 pub fn publication_title_skill(
@@ -119,18 +87,7 @@ pub fn publication_title_skill(
 pub fn list_publication_layout_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
-    sync_builtin_agent_skills(paths)?;
-    Ok(list_agent_skills(paths)?
-        .into_iter()
-        .filter(|item| {
-            metadata_matches(
-                &item.skill.applies_to,
-                &item.skill.task_types,
-                Some("typesetting"),
-                Some(crate::publication::LAYOUT_TASK_TYPE),
-            )
-        })
-        .collect())
+    list_agent_skills_for_module(paths, "publication-layout")
 }
 
 pub fn publication_layout_skill(
@@ -253,19 +210,24 @@ pub fn write_managed_skill_file(
         ));
     }
     if relative_path == "SKILL.md" {
-        let manifest: Value = serde_json::from_slice(
-            &fs::read(root.join("manifest.json")).map_err(to_cli_error)?,
-        )
-        .map_err(to_cli_error)?;
-        let expected_name = manifest.get("name").and_then(Value::as_str).unwrap_or_default();
-        let parsed = external_custom_skill_from_source(content, relative_path, skill_id).map_err(|_| {
+        let current_source = fs::read_to_string(&canonical).map_err(to_cli_error)?;
+        let current =
+            validate_portable_custom_skill_source(&current_source, relative_path, skill_id)
+                .map_err(|_| {
+                    CliError::with_code(
+                        "invalid_custom_skill",
+                        "The installed SKILL.md is not a valid portable Skill.",
+                    )
+                })?;
+        let parsed = validate_portable_custom_skill_source(content, relative_path, skill_id)
+            .map_err(|_| {
             CliError::with_code(
                 "skill_file_invalid",
-                "SKILL.md must remain a valid portable Skill with the same id.",
+                "SKILL.md must remain portable and keep the same name.",
             )
         })?;
         if normalized_device_skill_name(&parsed.metadata.name)
-            != normalized_device_skill_name(expected_name)
+            != normalized_device_skill_name(&current.metadata.name)
         {
             return Err(CliError::with_code(
                 "skill_file_invalid",
@@ -273,12 +235,7 @@ pub fn write_managed_skill_file(
             ));
         }
     }
-    let temporary = canonical.with_file_name(format!(
-        ".skill-file-{}",
-        crate::ids::random_base64url_96()
-    ));
-    fs::write(&temporary, content).map_err(to_cli_error)?;
-    fs::rename(&temporary, &canonical).map_err(to_cli_error)?;
+    atomic_write_skill_file(&canonical, content.as_bytes())?;
     read_managed_skill_files(paths, skill_id)
 }
 
@@ -290,14 +247,24 @@ pub fn delete_managed_skill(paths: &MyOpenPanelsPaths, skill_id: &str) -> Result
             "System and preset Skills cannot be deleted.",
         ));
     }
+    let module_kinds = managed_skill_module_kinds(&listing);
     crate::content::archive_resource(
         paths,
         None,
         crate::content::ResourceKind::WritingSkill,
         skill_id,
     )?;
-    fs::remove_dir_all(&listing.local_dir).map_err(to_cli_error)?;
-    clear_deleted_writing_skill_selections(paths, skill_id)?;
+    clear_skill_selections(paths, skill_id, &module_kinds)?;
+    let skill_dir = PathBuf::from(&listing.local_dir);
+    let parent = skill_dir
+        .parent()
+        .ok_or_else(|| CliError::new("Invalid Skill package path."))?;
+    let removed = parent.join(format!(
+        ".skill-delete-{}",
+        crate::ids::random_base64url_96()
+    ));
+    fs::rename(&skill_dir, &removed).map_err(to_cli_error)?;
+    let _ = fs::remove_dir_all(removed);
     Ok(json!({ "deleted": true, "skillId": skill_id }))
 }
 
@@ -432,31 +399,56 @@ fn collect_managed_skill_files(
     Ok(())
 }
 
-fn clear_deleted_writing_skill_selections(
+fn clear_skill_selections(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,
+    module_kinds: &[String],
 ) -> Result<(), CliError> {
-    clear_writing_skill_module_selections(paths, skill_id, true, true)?;
-    clear_wiki_skill_selections(paths, skill_id)?;
-    clear_publishing_skill_selections(paths, skill_id)
+    for module_kind in module_kinds {
+        clear_removed_skill_module_selections(paths, skill_id, module_kind)?;
+    }
+    Ok(())
+}
+
+fn atomic_write_skill_file(path: &Path, content: &[u8]) -> Result<(), CliError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| CliError::new("Invalid Skill file path."))?;
+    let temporary = parent.join(format!(
+        ".skill-file-{}",
+        crate::ids::random_base64url_96()
+    ));
+    fs::write(&temporary, content).map_err(to_cli_error)?;
+    #[cfg(windows)]
+    {
+        let backup = parent.join(format!(
+            ".skill-file-backup-{}",
+            crate::ids::random_base64url_96()
+        ));
+        if let Err(error) = fs::rename(path, &backup) {
+            let _ = fs::remove_file(&temporary);
+            return Err(to_cli_error(error));
+        }
+        if let Err(error) = fs::rename(&temporary, path) {
+            let _ = fs::rename(&backup, path);
+            let _ = fs::remove_file(&temporary);
+            return Err(to_cli_error(error));
+        }
+        fs::remove_file(backup).map_err(to_cli_error)?;
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(to_cli_error(error));
+    }
+    Ok(())
 }
 
 pub fn list_publishing_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
-    sync_builtin_agent_skills(paths)?;
-    Ok(list_agent_skills(paths)?
-        .into_iter()
-        .filter(|item| {
-            item.skill.applies_to.iter().any(|value| value == "publishing")
-                && item.skill.task_types.iter().any(|value| {
-                    matches!(
-                        value.as_str(),
-                        "release_xiaohongshu" | "release_wechat_official_account"
-                    )
-                })
-        })
-        .collect())
+    list_agent_skills_for_module(paths, "release")
 }
 
 pub fn publishing_skill(

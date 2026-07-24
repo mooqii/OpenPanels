@@ -3,6 +3,7 @@ import type {
   ProjectTask,
   PublishingAttempt,
   PublishingRelease,
+  TaskStatus,
 } from "../types"
 import {
   publishingAttemptStatus,
@@ -41,7 +42,7 @@ function release(attempts: PublishingAttempt[]): PublishingRelease {
   }
 }
 
-function task(status: string): ProjectTask {
+function task(status: TaskStatus): ProjectTask {
   return {
     createdAt: "2026-07-20T00:00:00Z",
     id: "task:1",
@@ -162,7 +163,7 @@ describe("publishing helpers", () => {
       publishingPublicationSummary(
         [release([published, retry, failed])],
         [
-          { ...task("reserved"), id: "task:retry" },
+          { ...task("running"), id: "task:retry" },
           { ...task("failed"), id: "task:failed" },
         ]
       )

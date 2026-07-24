@@ -69,6 +69,28 @@ struct CanvasTarget {
     project: Project,
     panel: Panel,
     state: Value,
+    revision: i64,
+}
+
+pub(crate) struct PreparedCanvasPlaceholder {
+    pub(crate) base_revision: i64,
+    pub(crate) bounds: CanvasBounds,
+    pub(crate) panel_id: String,
+    pub(crate) project_id: String,
+    pub(crate) shape_id: String,
+    pub(crate) state: Value,
+}
+
+pub(crate) struct PreparedCanvasImage {
+    pub(crate) asset: crate::storage::PreparedAssetWrite,
+    pub(crate) base_revision: i64,
+    pub(crate) payload: InsertImagePayload,
+    pub(crate) state: Value,
+}
+
+pub(crate) struct PreparedCanvasPlaceholderUpdate {
+    pub(crate) base_revision: i64,
+    pub(crate) state: Value,
 }
 
 pub fn insert_placeholder(
@@ -92,9 +114,43 @@ pub fn insert_placeholder_for_target(
     input: InsertPlaceholderInput<'_>,
     select_result: bool,
 ) -> Result<InsertPlaceholderPayload, CliError> {
-    let bootstrap = load_canvas_target(paths, project_id, panel_id)?;
+    let prepared =
+        prepare_placeholder_for_target(paths, project_id, panel_id, input, select_result)?;
     let storage = Storage::open(paths)?;
-    let mut state = bootstrap.state;
+    let revision = storage
+        .write_panel_state_if_current(
+            &prepared.project_id,
+            &prepared.panel_id,
+            &prepared.state,
+            Some(prepared.base_revision),
+        )?
+        .map_err(|conflict| {
+            CliError::with_code(
+                "content_conflict",
+                format!(
+                    "Canvas changed from revision {} to {}.",
+                    conflict.base_revision, conflict.current_revision
+                ),
+            )
+        })?;
+    Ok(InsertPlaceholderPayload {
+        project_id: prepared.project_id,
+        panel_id: prepared.panel_id,
+        revision,
+        shape_id: prepared.shape_id,
+        bounds: prepared.bounds,
+    })
+}
+
+pub(crate) fn prepare_placeholder_for_target(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    panel_id: &str,
+    input: InsertPlaceholderInput<'_>,
+    select_result: bool,
+) -> Result<PreparedCanvasPlaceholder, CliError> {
+    let target = load_canvas_target(paths, project_id, panel_id)?;
+    let mut state = target.state;
     let mut store = state_store(&state);
     let page_id = ensure_page(
         &mut store,
@@ -135,20 +191,12 @@ pub fn insert_placeholder_for_target(
             },
         }),
     );
-    let revision = write_canvas_state(
-        &storage,
-        &bootstrap.project.id,
-        &bootstrap.panel.id,
-        &mut state,
-        store,
-        &page_id,
-        &shape_id,
-        select_result,
-    )?;
-    Ok(InsertPlaceholderPayload {
-        project_id: bootstrap.project.id,
-        panel_id: bootstrap.panel.id,
-        revision,
+    apply_canvas_state(&mut state, store, &page_id, &shape_id, select_result);
+    Ok(PreparedCanvasPlaceholder {
+        project_id: target.project.id,
+        panel_id: target.panel.id,
+        base_revision: target.revision,
+        state,
         shape_id,
         bounds: CanvasBounds {
             x: position.x,
@@ -180,7 +228,52 @@ pub fn insert_image_for_target(
     input: InsertImageInput<'_>,
     select_result: bool,
 ) -> Result<InsertImagePayload, CliError> {
+    let mut prepared =
+        prepare_image_for_target(paths, project_id, panel_id, input, select_result, None)?;
+    let prepared_asset_path = prepared.asset.file_path.clone();
+    let mut storage = Storage::open(paths)?;
+    let committed = (|| {
+        let tx = storage
+            .connection_mut()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(to_cli_error)?;
+        Storage::write_prepared_asset_in_transaction(&tx, project_id, panel_id, &prepared.asset)?;
+        prepared.payload.revision = Storage::write_panel_state_if_revision_in_transaction(
+            &tx,
+            project_id,
+            panel_id,
+            prepared.base_revision,
+            &prepared.state,
+        )?;
+        tx.commit().map_err(to_cli_error)
+    })();
+    if let Err(error) = committed {
+        let _ = fs::remove_file(prepared_asset_path);
+        return Err(error);
+    }
+    Ok(prepared.payload)
+}
+
+pub(crate) fn prepare_image_for_target(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    panel_id: &str,
+    input: InsertImageInput<'_>,
+    select_result: bool,
+    bound_base_revision: Option<i64>,
+) -> Result<PreparedCanvasImage, CliError> {
     let bootstrap = load_canvas_target(paths, project_id, panel_id)?;
+    if let Some(expected_revision) = bound_base_revision {
+        if bootstrap.revision != expected_revision {
+            return Err(CliError::with_code(
+                "content_conflict",
+                format!(
+                    "Canvas changed from revision {expected_revision} to {}.",
+                    bootstrap.revision
+                ),
+            ));
+        }
+    }
     let storage = Storage::open(paths)?;
     let mut asset_meta = match input.metadata {
         Some(Value::Object(object)) => object,
@@ -198,14 +291,6 @@ pub fn insert_image_for_target(
         .file_name
         .or_else(|| source.file_name().and_then(|name| name.to_str()))
         .unwrap_or("image.png");
-    let written = storage.write_asset_from_buffer(
-        &bootstrap.project.id,
-        &bootstrap.panel.id,
-        requested_name,
-        &image,
-        false,
-    )?;
-
     let mut state = bootstrap.state;
     let mut store = state_store(&state);
     let page_id = ensure_page(
@@ -217,6 +302,21 @@ pub fn insert_image_for_target(
         .and_then(|shape_id| store.get(shape_id))
         .filter(|shape| shape.get("typeName").and_then(Value::as_str) == Some("shape"))
         .cloned();
+    if bound_base_revision.is_some() && input.replace_shape_id.is_some() && replace_shape.is_none()
+    {
+        return Err(CliError::with_code(
+            "target_not_found",
+            "The bound Canvas placeholder no longer exists.",
+        ));
+    }
+    let prepared_asset = storage.prepare_asset_from_buffer(
+        &bootstrap.project.id,
+        &bootstrap.panel.id,
+        requested_name,
+        &image,
+        false,
+    )?;
+    let written = prepared_asset.written_asset();
     let replace_bounds = replace_shape.as_ref().map(shape_bounds);
     let width = input
         .display_width
@@ -298,31 +398,27 @@ pub fn insert_image_for_target(
     if let Some(shape_id) = replaced_shape_id.as_deref() {
         store.remove(shape_id);
     }
-    let revision = write_canvas_state(
-        &storage,
-        &bootstrap.project.id,
-        &bootstrap.panel.id,
-        &mut state,
-        store,
-        &page_id,
-        &shape_id,
-        select_result,
-    )?;
-    Ok(InsertImagePayload {
-        project_id: bootstrap.project.id,
-        panel_id: bootstrap.panel.id,
-        revision,
-        asset_id,
-        shape_id,
-        asset_ref: written.asset_ref,
-        asset_file: written.file_path.display().to_string(),
-        asset_url,
-        replaced_shape_id,
-        bounds: CanvasBounds {
-            x: position.x,
-            y: position.y,
-            width,
-            height,
+    apply_canvas_state(&mut state, store, &page_id, &shape_id, select_result);
+    Ok(PreparedCanvasImage {
+        asset: prepared_asset,
+        base_revision: bootstrap.revision,
+        state,
+        payload: InsertImagePayload {
+            project_id: bootstrap.project.id,
+            panel_id: bootstrap.panel.id,
+            revision: 0,
+            asset_id,
+            shape_id,
+            asset_ref: written.asset_ref,
+            asset_file: written.file_path.display().to_string(),
+            asset_url,
+            replaced_shape_id,
+            bounds: CanvasBounds {
+                x: position.x,
+                y: position.y,
+                width,
+                height,
+            },
         },
     })
 }
@@ -357,8 +453,8 @@ fn load_canvas_target(
             "Operation target is not a Canvas panel",
         ));
     }
-    let state = storage
-        .read_panel_state(project_id, panel_id)?
+    let (state, revision) = storage
+        .read_panel_state_snapshot(project_id, panel_id)?
         .ok_or_else(|| {
             CliError::with_code(
                 "target_not_found",
@@ -369,6 +465,7 @@ fn load_canvas_target(
         project,
         panel,
         state,
+        revision,
     })
 }
 
@@ -380,10 +477,44 @@ pub fn update_placeholder_for_target(
     text: Option<&str>,
     remove: bool,
 ) -> Result<i64, CliError> {
-    let target = load_canvas_target(paths, project_id, panel_id)?;
+    let prepared =
+        prepare_placeholder_update_for_target(paths, project_id, panel_id, shape_id, text, remove)?;
     let storage = Storage::open(paths)?;
+    storage
+        .write_panel_state_if_current(
+            project_id,
+            panel_id,
+            &prepared.state,
+            Some(prepared.base_revision),
+        )?
+        .map_err(|conflict| {
+            CliError::with_code(
+                "content_conflict",
+                format!(
+                    "Canvas changed from revision {} to {}.",
+                    conflict.base_revision, conflict.current_revision
+                ),
+            )
+        })
+}
+
+pub(crate) fn prepare_placeholder_update_for_target(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    panel_id: &str,
+    shape_id: &str,
+    text: Option<&str>,
+    remove: bool,
+) -> Result<PreparedCanvasPlaceholderUpdate, CliError> {
+    let target = load_canvas_target(paths, project_id, panel_id)?;
     let mut state = target.state;
     let mut store = state_store(&state);
+    if !store.contains_key(shape_id) {
+        return Err(CliError::with_code(
+            "target_not_found",
+            "The bound Canvas placeholder no longer exists.",
+        ));
+    }
     if remove {
         store.remove(shape_id);
     } else if let Some(shape) = store.get_mut(shape_id) {
@@ -391,7 +522,10 @@ pub fn update_placeholder_for_target(
         shape["meta"]["myopenpanelsGenerationStatus"] = json!("failed");
     }
     ensure_state_object(&mut state).insert("store".to_owned(), Value::Object(store));
-    storage.write_panel_state(project_id, panel_id, &state)
+    Ok(PreparedCanvasPlaceholderUpdate {
+        base_revision: target.revision,
+        state,
+    })
 }
 
 fn state_store(state: &Value) -> Map<String, Value> {
@@ -423,25 +557,19 @@ fn ensure_page(store: &mut Map<String, Value>, current_page_id: Option<&str>) ->
     page_id
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_canvas_state(
-    storage: &Storage,
-    project_id: &str,
-    panel_id: &str,
+fn apply_canvas_state(
     state: &mut Value,
     store: Map<String, Value>,
     page_id: &str,
     selected_shape_id: &str,
     select_result: bool,
-) -> Result<i64, CliError> {
+) {
     ensure_state_object(state).insert("store".to_owned(), Value::Object(store));
     ensure_state_object(state).insert("currentPageId".to_owned(), json!(page_id));
     if select_result {
         ensure_state_object(state)
             .insert("selectedShapeIds".to_owned(), json!([selected_shape_id]));
     }
-    let revision = storage.write_panel_state(project_id, panel_id, state)?;
-    Ok(revision)
 }
 
 fn ensure_state_object(state: &mut Value) -> &mut Map<String, Value> {

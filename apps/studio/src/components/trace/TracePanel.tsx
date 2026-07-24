@@ -1,8 +1,17 @@
 import { Button, Chip, Tabs, Tooltip } from "@heroui/react"
-import { Archive, ArrowDown, ArrowLeft, Copy, Trash2, X } from "lucide-react"
+import {
+  Archive,
+  ArrowDown,
+  ArrowLeft,
+  Copy,
+  LoaderCircle,
+  Trash2,
+  X,
+} from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { appendTraceEvent, fetchTraceSnapshot } from "../../lib/api"
+import { taskDisplayPhase } from "../../lib/task-status"
 import type {
   AgentWorkerStatus,
   MyOpenPanelsBuildInfo,
@@ -96,7 +105,7 @@ export function AgentPanel({
   }, [focusedTaskIds])
 
   useEffect(() => {
-    if (!isDevelopment) {
+    if (!(isDevelopment && isOpen)) {
       setEvents([])
       return
     }
@@ -122,7 +131,7 @@ export function AgentPanel({
       cancelled = true
       source.close()
     }
-  }, [isDevelopment, transport])
+  }, [isDevelopment, isOpen, transport])
 
   const visibleEvents = useMemo(() => {
     if (!isDevelopment) return []
@@ -505,7 +514,14 @@ function TaskList({
                         size="sm"
                         variant="soft"
                       >
-                        {task.status}
+                        <Chip.Label>{task.status}</Chip.Label>
+                        {task.status === "running" ? (
+                          <LoaderCircle
+                            aria-hidden="true"
+                            className="op-agent-task__status-spinner"
+                            size={13}
+                          />
+                        ) : null}
                       </Chip>
                       {isPendingTask(task) && task.ready === false ? (
                         <Chip color="warning" size="sm" variant="soft">
@@ -550,8 +566,8 @@ function TaskList({
                       <span>{task.targetId || task.id}</span>
                     </div>
                     {task.error &&
-                    (task.status === "failed" ||
-                      task.status === "cancelled") ? (
+                    (taskDisplayPhase(task) === "failed" ||
+                      taskDisplayPhase(task) === "cancelled") ? (
                       <span className="op-agent-task__note">
                         {formatTaskError(task.error)}
                       </span>

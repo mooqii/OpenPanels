@@ -1,6 +1,84 @@
 const CURRENT_SCHEMA_VERSION: i64 = 1;
 const MIGRATION_0001_SQL: &str = include_str!("../../migrations/0001_initial.sql");
 
+fn archive_legacy_storage_if_needed(
+    paths: &MyOpenPanelsPaths,
+    database_path: &Path,
+) -> Result<(), CliError> {
+    if !database_path.is_file() {
+        return Ok(());
+    }
+    let source = Connection::open(database_path).map_err(to_cli_error)?;
+    if schema_version(&source)? != 0 || application_table_count(&source)? == 0 {
+        return Ok(());
+    }
+
+    let backup_parent = paths
+        .storage_dir
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(
+            "{}-backups",
+            paths
+                .storage_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("myopenpanels")
+        ));
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(to_cli_error)?
+        .as_millis();
+    let backup_dir = backup_parent.join(format!("pre-1.0-{timestamp}-{}", std::process::id()));
+    fs::create_dir_all(&backup_dir).map_err(to_cli_error)?;
+    copy_legacy_storage_files(&paths.storage_dir, &backup_dir)?;
+
+    let backup_database_path = backup_dir.join(DATABASE_FILE_NAME);
+    let mut destination = Connection::open(&backup_database_path).map_err(to_cli_error)?;
+    rusqlite::backup::Backup::new(&source, &mut destination)
+        .map_err(to_cli_error)?
+        .run_to_completion(64, Duration::from_millis(25), None)
+        .map_err(to_cli_error)?;
+    drop(destination);
+    drop(source);
+
+    for path in [
+        database_path.to_path_buf(),
+        PathBuf::from(format!("{}-wal", database_path.display())),
+        PathBuf::from(format!("{}-shm", database_path.display())),
+    ] {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(to_cli_error(error)),
+        }
+    }
+    Ok(())
+}
+
+fn copy_legacy_storage_files(source: &Path, destination: &Path) -> Result<(), CliError> {
+    for entry in fs::read_dir(source).map_err(to_cli_error)? {
+        let entry = entry.map_err(to_cli_error)?;
+        let file_type = entry.file_type().map_err(to_cli_error)?;
+        let source_path = entry.path();
+        let file_name = entry.file_name();
+        if matches!(
+            file_name.to_str(),
+            Some(DATABASE_FILE_NAME | "main.sqlite3-wal" | "main.sqlite3-shm")
+        ) {
+            continue;
+        }
+        let destination_path = destination.join(file_name);
+        if file_type.is_dir() {
+            fs::create_dir_all(&destination_path).map_err(to_cli_error)?;
+            copy_legacy_storage_files(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(source_path, destination_path).map_err(to_cli_error)?;
+        }
+    }
+    Ok(())
+}
+
 fn current_schema_fingerprint() -> String {
     format!("{:x}", Sha256::digest(MIGRATION_0001_SQL.as_bytes()))
 }

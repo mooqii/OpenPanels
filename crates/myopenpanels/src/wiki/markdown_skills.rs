@@ -122,7 +122,7 @@ pub fn write_markdown(
                 && existing.get("documentId").and_then(Value::as_str) == Some(document_id)
                 && matches!(
                     existing.get("status").and_then(Value::as_str),
-                    Some("waiting" | "queued" | "failed" | "running" | "indexing")
+                    Some("queued" | "failed" | "running")
                 )
             {
                 existing["status"] = json!("superseded");
@@ -130,7 +130,7 @@ pub fn write_markdown(
                 existing["updatedAt"] = json!(now);
             }
         }
-        let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &wiki_space_id);
+        let mutation_key = wiki_mutation_key(&wiki.project.id);
         let task = create_wiki_task(
             &wiki.state,
             &mut wiki.tasks,
@@ -197,13 +197,7 @@ pub fn set_agent_skill(
             ) && matches!(
                 task.get("status").and_then(Value::as_str),
                 Some(
-                    "waiting"
-                        | "queued"
-                        | "failed"
-                        | "reserved"
-                        | "running"
-                        | "claimed"
-                        | "indexing"
+                        "queued" | "failed" | "running"
                 )
             )
         })
@@ -238,7 +232,7 @@ pub fn set_agent_skill(
     state.insert("activeWikiPagePath".to_owned(), Value::Null);
     state.insert("wikiAgentSkillId".to_owned(), json!(skill_id));
     state.insert("wikiAgentSkillConfigured".to_owned(), json!(true));
-    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space_id);
+    let mutation_key = wiki_mutation_key(&wiki.project.id);
     let mut documents = wiki
         .state
         .get("rawDocuments")
@@ -312,7 +306,7 @@ pub fn set_agent_skill(
             "rebuild-ingest:{space_id}:{document_id}:{markdown_version}"
         ));
         if let Some(conversion_task_id) = conversion_task_id {
-            ingest["status"] = json!("waiting");
+            ingest["status"] = json!("queued");
             ingest["dependsOnTaskIds"] = json!([conversion_task_id]);
         }
         let ingest_id = ingest["id"].as_str().unwrap_or_default().to_owned();
@@ -364,13 +358,7 @@ fn active_conversion_task_id(tasks: &[Value], document_id: &str) -> Option<Strin
                 && matches!(
                     task.get("status").and_then(Value::as_str),
                     Some(
-                        "waiting"
-                            | "queued"
-                            | "failed"
-                            | "reserved"
-                            | "running"
-                            | "claimed"
-                            | "converting"
+                        "queued" | "failed" | "running"
                     )
                 )
         })

@@ -45,7 +45,13 @@
     {
       "packageDir": "wiki-default",
       "id": "wiki-default",
-      "name": "默认Wiki",
+      "name": "Default Wiki",
+      "localizations": {
+        "zh-CN": {
+          "name": "默认 Wiki",
+          "loadWhen": ["当前 Wiki 工作应维护默认生成 Wiki。"]
+        }
+      },
       "source": "builtin",
       "appliesTo": ["wiki"],
       "taskTypes": ["ingest_markdown_into_wiki", "maintain_wiki"],
@@ -58,7 +64,13 @@
     {
       "packageDir": "writing-distillation-default",
       "id": "writing-distillation-default",
-      "name": "默认提炼",
+      "name": "Default Distillation",
+      "localizations": {
+        "zh-CN": {
+          "name": "默认提炼",
+          "loadWhen": ["当前写作工作需要从所选示例中提炼可复用的 Skill。"]
+        }
+      },
       "source": "builtin",
       "appliesTo": ["writing"],
       "taskTypes": ["distill_writing_skill"],
@@ -71,7 +83,13 @@
     {
       "packageDir": "writing-default",
       "id": "writing-default",
-      "name": "默认写作",
+      "name": "Default Writing",
+      "localizations": {
+        "zh-CN": {
+          "name": "默认写作",
+          "loadWhen": ["当前写作请求选择了默认写作方法。"]
+        }
+      },
       "source": "builtin",
       "appliesTo": ["writing"],
       "taskTypes": ["write_my_document"],
@@ -82,7 +100,13 @@
     {
       "packageDir": "publication-cover-default",
       "id": "publication-cover-default",
-      "name": "默认封面",
+      "name": "Default Cover",
+      "localizations": {
+        "zh-CN": {
+          "name": "默认封面",
+          "loadWhen": ["当前排版请求需要创建文章封面。"]
+        }
+      },
       "source": "builtin",
       "appliesTo": ["typesetting"],
       "taskTypes": ["generate_publication_cover"],
@@ -93,7 +117,13 @@
     {
       "packageDir": "publication-title-default",
       "id": "publication-title-default",
-      "name": "默认标题生成",
+      "name": "Default Title Generation",
+      "localizations": {
+        "zh-CN": {
+          "name": "默认标题生成",
+          "loadWhen": ["当前排版请求需要生成候选标题。"]
+        }
+      },
       "source": "builtin",
       "appliesTo": ["typesetting"],
       "taskTypes": ["generate_publication_titles"],
@@ -106,7 +136,13 @@
     {
       "packageDir": "publication-layout-default",
       "id": "publication-layout-default",
-      "name": "默认排版",
+      "name": "Default Layout",
+      "localizations": {
+        "zh-CN": {
+          "name": "默认排版",
+          "loadWhen": ["当前排版请求需要整理文章内容格式。"]
+        }
+      },
       "source": "builtin",
       "appliesTo": ["typesetting"],
       "taskTypes": ["format_publication_content"],
@@ -117,7 +153,13 @@
     {
       "packageDir": "release-xiaohongshu",
       "id": "release-xiaohongshu",
-      "name": "小红书发布",
+      "name": "Publish to Xiaohongshu",
+      "localizations": {
+        "zh-CN": {
+          "name": "小红书发布",
+          "loadWhen": ["当前发布请求面向小红书图文笔记。"]
+        }
+      },
       "source": "builtin",
       "appliesTo": ["publishing"],
       "taskTypes": ["release_xiaohongshu"],
@@ -128,7 +170,13 @@
     {
       "packageDir": "release-wechat-official-account",
       "id": "release-wechat-official-account",
-      "name": "微信公众号发布",
+      "name": "Publish to WeChat Official Account",
+      "localizations": {
+        "zh-CN": {
+          "name": "微信公众号发布",
+          "loadWhen": ["当前发布请求面向微信公众号草稿。"]
+        }
+      },
       "source": "builtin",
       "appliesTo": ["publishing"],
       "taskTypes": ["release_wechat_official_account"],

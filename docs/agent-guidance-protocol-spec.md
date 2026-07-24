@@ -1,5 +1,8 @@
 # Agent Guidance Contract
 
+This protocol implements the Procedure, Task, CLI authority, and Skill
+boundaries defined in [`core-concepts.md`](core-concepts.md).
+
 The CLI exposes three stable entries:
 
 1. `agent bootstrap --procedure <key> --format json` resolves one static Agent
@@ -21,24 +24,27 @@ after all required actions succeed, using each action's structured condition.
 Studio startup returns a required URL action followed by a conditional CLI
 fallback action.
 
-Bootstrap remains within 8192 UTF-8 bytes. Procedure Bootstrap distinguishes the
-visible `focus` from its non-activating `target`, includes a
-Procedure metadata and reports `readiness` plus structured `blockers`.
-It loads only the owning Panel Skill and relevant reference, and embeds command
-descriptions for the Procedure's registered command intents. Generic Bootstrap
-retains progressive domain catalog discovery.
+Bootstrap remains within 16384 UTF-8 bytes. Procedure Bootstrap distinguishes
+the visible `focus` from its non-activating `target`, includes Procedure
+metadata, and reports `readiness` plus structured `blockers`. It embeds the
+owning System Skill body, exact reference bodies, required selection, target
+versions, execution contract, and command descriptions for only the
+Procedure's registered command intents. Generic Bootstrap retains progressive
+domain catalog discovery. An unknown Procedure key returns generic Bootstrap
+data with `procedureFallback` in the same response.
 
-Task Capabilities whose invocation kind is `task` or `task-scope`
-reject Procedure Bootstrap with `task_handoff_required` and
-must preserve the exact claimed Task or `task handoff start` contract. Tasks
-are the only persisted execution entity. Procedure keys and Task Capability
-keys select code-owned behavior; they are not stored workflow definitions.
+Task Capability keys are not Procedure aliases. Passing one to Procedure
+Bootstrap follows the same unknown-key fallback as any other unregistered
+Procedure. Task execution must preserve the exact claimed Task or
+`task handoff start` contract. Tasks are the only persisted queued execution
+entity. Procedure keys and Task Capability keys select code-owned behavior;
+they are not stored workflow definitions.
 
 The ExecutionBundle gives the Agent an artifact-only ExecutionResult contract.
 The Agent writes declared workspace files; the shared Runtime Finalizer builds
-a TaskOutputPlan, creates or resumes Operations, stages
-content, validates the execution fence, and completes the Task. Agent-side Broker
-access is limited to Handler-declared reads and Publishing checkpoints.
+a TaskOutputPlan, stages content, validates the execution fence, and completes
+the Task. Agent-side Broker access is limited to Handler-declared reads and
+Publishing checkpoints.
 Only Registry-owned Task capabilities are advertised to Agent CLI workers; an
 unregistered queue/type/capability tuple has no generic execution fallback.
 Finalizer responses and development traces expose the `validating`, `applying`,

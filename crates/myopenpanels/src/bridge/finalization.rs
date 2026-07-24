@@ -146,7 +146,6 @@ pub(crate) fn finalize_execution_unit(
         "phase": RuntimeFinalizationPhase::Completed.as_str(),
         "handlerKey": request.handler_key,
         "outputPlanHash": prepared.plan.content_hash,
-        "operationIds": applied.get("operationIds").cloned().unwrap_or_else(|| json!([])),
         "artifacts": applied.get("artifacts").cloned().unwrap_or_else(|| json!([])),
     });
     let mut result = prepared.result;
@@ -206,7 +205,6 @@ fn apply_task_output_plan(
     execution_token: &str,
     plan: &TaskOutputPlan,
 ) -> Result<Value, CliError> {
-    let mut operation_ids = Vec::new();
     let mut artifacts = Vec::new();
     for action in &plan.actions {
         match action {
@@ -256,74 +254,6 @@ fn apply_task_output_plan(
                 )?;
                 artifacts.push(finalized_artifact(artifact, Some("SKILL.md")));
             }
-            TaskOutputAction::PrepareMyDocument {
-                document_id,
-                title,
-                document_format,
-                artifact,
-            } => {
-                let bytes = read_planned_artifact(artifact)?;
-                let operation = crate::operations::ensure_writing_for_task_output(
-                    paths,
-                    &plan.task_id,
-                    title,
-                    document_format,
-                    &plan.attempt_id,
-                    plan.execution_generation,
-                    &plan.content_hash,
-                )?["operation"]
-                    .clone();
-                let operation_id = operation
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| CliError::new("Runtime Writing Operation id is missing."))?;
-                if operation
-                    .pointer("/target/documentId")
-                    .and_then(Value::as_str)
-                    != Some(document_id)
-                {
-                    return Err(CliError::with_code(
-                        "task_output_plan_conflict",
-                        "Runtime Writing Operation targets a different document.",
-                    ));
-                }
-                match operation.get("status").and_then(Value::as_str) {
-                    Some("active") => {
-                        crate::content::prepare_operation(
-                            paths,
-                            execution_token,
-                            &crate::content::PrepareOperationRequest {
-                                operation_id: operation_id.to_owned(),
-                                file_name: artifact_file_name(artifact),
-                                content_base64: base64::engine::general_purpose::STANDARD
-                                    .encode(bytes),
-                            },
-                        )?;
-                    }
-                    Some("prepared") => validate_prepared_writing_output(
-                        paths,
-                        &plan.task_id,
-                        document_id,
-                        operation_id,
-                        artifact,
-                        &plan.content_hash,
-                    )?,
-                    Some("completed") => {}
-                    _ => {
-                        return Err(CliError::with_code(
-                            "task_output_plan_conflict",
-                            "Runtime Writing Operation is not resumable.",
-                        ));
-                    }
-                }
-                operation_ids.push(operation_id.to_owned());
-                let logical_path = if document_format == "text" {
-                    "content.txt"
-                } else {
-                    "content.md"
-                };
-                artifacts.push(finalized_artifact(artifact, Some(logical_path)));
-            }
             TaskOutputAction::PrepareTypesettingCover {
                 project_id,
                 panel_id,
@@ -334,7 +264,8 @@ fn apply_task_output_plan(
             } => {
                 let bytes = read_planned_artifact(artifact)?;
                 let storage = crate::storage::Storage::open(paths)?;
-                let requested = format!("cover-tasks/{task_id}/cover.png");
+                let logical_path = cover_artifact_file_name(artifact)?;
+                let requested = format!("cover-tasks/{task_id}/{logical_path}");
                 let written = storage.write_asset_from_buffer(
                     project_id,
                     panel_id,
@@ -344,7 +275,7 @@ fn apply_task_output_plan(
                 )?;
                 artifacts.push(json!({
                     "role": artifact.role,
-                    "logicalPath": "cover.png",
+                    "logicalPath": logical_path,
                     "contentHash": artifact.content_hash,
                     "sizeBytes": artifact.size_bytes,
                     "assetRef": written.asset_ref,
@@ -415,10 +346,7 @@ fn apply_task_output_plan(
             }
         }
     }
-    Ok(json!({
-        "operationIds": operation_ids,
-        "artifacts": artifacts,
-    }))
+    Ok(json!({ "artifacts": artifacts }))
 }
 
 fn read_planned_artifact(artifact: &TaskOutputArtifact) -> Result<Vec<u8>, CliError> {
@@ -433,12 +361,15 @@ fn read_planned_artifact(artifact: &TaskOutputArtifact) -> Result<Vec<u8>, CliEr
     Ok(bytes)
 }
 
-fn artifact_file_name(artifact: &TaskOutputArtifact) -> String {
+fn cover_artifact_file_name(artifact: &TaskOutputArtifact) -> Result<String, CliError> {
     Path::new(&artifact.relative_path)
         .file_name()
         .and_then(|value| value.to_str())
-        .unwrap_or("document.md")
-        .to_owned()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            CliError::with_code("invalid_output", "Cover artifact file name is missing.")
+        })
 }
 
 fn finalized_artifact(artifact: &TaskOutputArtifact, logical_path: Option<&str>) -> Value {
@@ -448,42 +379,6 @@ fn finalized_artifact(artifact: &TaskOutputArtifact, logical_path: Option<&str>)
         "contentHash": artifact.content_hash,
         "sizeBytes": artifact.size_bytes,
     })
-}
-
-fn validate_prepared_writing_output(
-    paths: &MyOpenPanelsPaths,
-    task_id: &str,
-    document_id: &str,
-    operation_id: &str,
-    artifact: &TaskOutputArtifact,
-    output_plan_hash: &str,
-) -> Result<(), CliError> {
-    let staged = crate::content::staged_files_for_task(
-        paths,
-        task_id,
-        crate::content::ResourceKind::MyDocument,
-    )?;
-    let [(staged_document_id, _, bytes, metadata)] = staged.as_slice() else {
-        return Err(CliError::with_code(
-            "task_output_plan_conflict",
-            "Prepared Writing Operation has an invalid staged result.",
-        ));
-    };
-    let hash = format!("sha256:{:x}", Sha256::digest(bytes));
-    if staged_document_id != document_id
-        || metadata.get("operationId").and_then(Value::as_str) != Some(operation_id)
-        || metadata
-            .get("runtimeOutputPlanHash")
-            .and_then(Value::as_str)
-            != Some(output_plan_hash)
-        || hash != artifact.content_hash
-    {
-        return Err(CliError::with_code(
-            "task_output_plan_conflict",
-            "Prepared Writing Operation does not match this Task Output Plan.",
-        ));
-    }
-    Ok(())
 }
 
 fn finish_execution_unit_error(
@@ -511,10 +406,15 @@ fn finish_execution_unit_error(
         return Err(error);
     }
     if error.code() == Some("content_conflict") {
-        let lifecycle = tasks::inspect_task(paths, task_id)?;
+        let lifecycle = tasks::supersede_task_for_content_conflict(
+            paths,
+            task_id,
+            lease_token,
+            error.message(),
+        )?;
         return Ok(json!({
             "taskId": task_id,
-            "status": lifecycle.pointer("/task/status").cloned().unwrap_or_else(|| json!("superseded")),
+            "status": "superseded",
             "finalizationState": finalization_state(RuntimeFinalizationPhase::Failed, handler_key, output_plan_hash, Some(failed_at.as_str())),
             "error": { "code": "content_conflict", "message": error.message() },
             "lifecycle": lifecycle,

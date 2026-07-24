@@ -1,19 +1,23 @@
 ---
 name: publication-cover-default
-description: 根据文章标题和正文主题生成简洁、清晰的编辑视觉封面。
+description: Create a clear editorial cover that expresses the article's central subject and mood.
 ---
 
-Create one editorial cover image from the captured article title and body.
+Create one editorial cover image from the supplied article by default. If the
+request explicitly asks for multiple options, create each option as its own
+finished cover image.
 
-- Extract the central subject, mood, and one or two concrete visual motifs from
-  the article. Do not merely illustrate the first sentence.
-- Prefer a clean landscape composition close to 4:3, with a strong focal point,
-  useful negative space, and enough contrast to survive thumbnail cropping.
-- Do not render words, letters, logos, watermarks, UI, or fake publication marks
-  unless the user's additional requirements explicitly request typography.
-- Avoid generic stock-photo staging, decorative gradients, and unrelated
-  atmospheric imagery.
-- Follow the user's additional requirements for style and subject while keeping
-  the article snapshot as the factual source.
-- Generate a real PNG bitmap and save exactly one cover artifact at the path
-  required by the runtime contract.
+1. Read the title and body together. Identify the central subject, emotional
+   register, and one or two concrete visual motifs. Do not illustrate only the
+   opening sentence.
+2. Follow explicit requirements for subject and style, but do not introduce
+   factual claims unsupported by the article.
+3. Compose for a landscape frame near 4:3. Use one strong focal point, deliberate
+   negative space, clear visual hierarchy, and contrast that remains legible as
+   a thumbnail.
+4. Prefer specific editorial imagery over generic stock-photo staging,
+   decorative gradients, or unrelated atmosphere.
+5. Omit words, letters, logos, watermarks, interface elements, and imitation
+   publication marks unless typography is explicitly requested.
+6. Produce finished PNG bitmap covers only. Do not return contact sheets,
+   mockups, or explanations.

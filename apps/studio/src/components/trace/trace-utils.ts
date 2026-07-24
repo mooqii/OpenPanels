@@ -4,6 +4,11 @@ import {
   agentCliBoundaryInstruction,
   agentCliExecutable,
 } from "../../lib/agent-instructions"
+import {
+  taskDisplayPhase,
+  taskIsActive,
+  taskIsTerminal,
+} from "../../lib/task-status"
 import type {
   ProjectTask,
   TaskExecutionScope,
@@ -178,10 +183,11 @@ export function compareTasksForDisplay(
 }
 
 export function taskDisplayRank(task: ProjectTask): number {
-  if (task.ready && task.status === "failed") return 0
-  if (task.ready && task.status === "queued") return 1
-  if (!task.ready && task.status === "failed") return 2
-  if (!task.ready && task.status === "queued") return 3
+  const phase = taskDisplayPhase(task)
+  if (task.ready && phase === "failed") return 0
+  if (task.ready && phase === "waiting") return 1
+  if (!task.ready && phase === "failed") return 2
+  if (!task.ready && phase === "waiting") return 3
   return 4
 }
 
@@ -219,7 +225,7 @@ export function taskMatchesFilter(
 ): boolean {
   switch (filter) {
     case "pending":
-      return task.status === "queued"
+      return taskDisplayPhase(task) === "waiting"
     case "active":
       return isActiveTask(task)
     case "done":
@@ -232,13 +238,11 @@ export function taskMatchesFilter(
 }
 
 export function isActiveTask(task: ProjectTask): boolean {
-  return task.status === "running"
+  return taskIsActive(task)
 }
 
 export function isDoneTask(task: ProjectTask): boolean {
-  return ["succeeded", "failed", "cancelled", "superseded"].includes(
-    task.status
-  )
+  return taskIsTerminal(task)
 }
 
 export function canArchiveTask(task: ProjectTask): boolean {
@@ -246,11 +250,11 @@ export function canArchiveTask(task: ProjectTask): boolean {
 }
 
 export function isPendingTask(task: ProjectTask): boolean {
-  return task.status === "queued"
+  return taskDisplayPhase(task) === "waiting"
 }
 
 function isTaskReadyForManualAgent(task: ProjectTask): boolean {
-  return Boolean(task.ready) && task.status === "queued"
+  return Boolean(task.ready) && taskDisplayPhase(task) === "waiting"
 }
 
 export function pendingTaskCount(tasks: ProjectTask[]): number {
@@ -302,26 +306,16 @@ export function formatTaskTime(value: string): string {
   }).format(date)
 }
 
-export function taskStatusTone(status: string): string {
-  if (status === "failed") return "danger"
-  if (["waiting", "queued"].includes(status)) return "warning"
-  if (
-    [
-      "reserved",
-      "running",
-      "claimed",
-      "converting",
-      "indexing",
-      "cancel_requested",
-    ].includes(status)
-  ) {
-    return "active"
-  }
-  if (status === "succeeded") return "success"
+export function taskStatusTone(status: ProjectTask["status"]): string {
+  const phase = taskDisplayPhase({ status })
+  if (phase === "failed") return "danger"
+  if (phase === "waiting") return "warning"
+  if (phase === "running") return "active"
+  if (phase === "succeeded") return "success"
   return "muted"
 }
 
-export function taskStatusColor(status: string) {
+export function taskStatusColor(status: ProjectTask["status"]) {
   switch (taskStatusTone(status)) {
     case "danger":
       return "danger"

@@ -33,12 +33,7 @@ fn validate_distillation_sources(
                     .get("contentRef")
                     .and_then(Value::as_str)
                     .is_some_and(|value| !value.is_empty())
-                && matches!(
-                    document
-                        .pointer("/writeOperation/status")
-                        .and_then(Value::as_str),
-                    None | Some("completed")
-                )
+                && document.get("writeOperation").is_none()
         });
         if !ready {
             return Err(CliError::with_code(
@@ -88,7 +83,7 @@ fn validate_available_skill_name(
                 && task.get("type").and_then(Value::as_str) == Some("distill_writing_skill")
                 && matches!(
                     task.get("status").and_then(Value::as_str),
-                    Some("queued" | "reserved" | "running" | "claimed" | "failed")
+                    Some("queued" | "running" | "failed")
                 )
                 && task
                     .pointer("/input/name")
@@ -246,7 +241,7 @@ pub fn install_project_skill(
     let task = &payload["task"];
     if !matches!(
         task.get("status").and_then(Value::as_str),
-        Some("reserved" | "running" | "claimed")
+        Some("running")
     ) {
         return Err(CliError::with_code(
             "task_not_claimed",
@@ -337,148 +332,6 @@ pub fn install_project_skill(
 fn read_skill_manifest(skill_dir: &Path) -> Result<Value, CliError> {
     let source = fs::read_to_string(skill_dir.join("manifest.json")).map_err(to_cli_error)?;
     serde_json::from_str(&source).map_err(to_cli_error)
-}
-
-pub fn read_skill_files(paths: &MyOpenPanelsPaths, skill_id: &str) -> Result<Value, CliError> {
-    let listing = crate::agent::writing_agent_skill(paths, skill_id)?;
-    let root = PathBuf::from(&listing.local_dir);
-    let mut files = Vec::new();
-    collect_skill_files(&root, &root, &mut files)?;
-    files.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
-    Ok(json!({ "skill": listing, "files": files }))
-}
-
-fn collect_skill_files(
-    root: &Path,
-    directory: &Path,
-    files: &mut Vec<Value>,
-) -> Result<(), CliError> {
-    for entry in fs::read_dir(directory).map_err(to_cli_error)? {
-        let entry = entry.map_err(to_cli_error)?;
-        let file_type = entry.file_type().map_err(to_cli_error)?;
-        if file_type.is_symlink() {
-            continue;
-        }
-        if file_type.is_dir() {
-            collect_skill_files(root, &entry.path(), files)?;
-            continue;
-        }
-        if !file_type.is_file() || entry.file_name() == "manifest.json" {
-            continue;
-        }
-        let path = entry.path();
-        let relative = path.strip_prefix(root).map_err(to_cli_error)?;
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
-        files.push(json!({
-            "path": relative.to_string_lossy().replace('\\', "/"),
-            "content": content,
-        }));
-    }
-    Ok(())
-}
-
-pub fn write_custom_skill_file(
-    paths: &MyOpenPanelsPaths,
-    skill_id: &str,
-    relative_path: &str,
-    content: &str,
-) -> Result<Value, CliError> {
-    let listing = crate::agent::writing_agent_skill(paths, skill_id)?;
-    if listing.source != "custom" {
-        return Err(CliError::with_code(
-            "writing_skill_read_only",
-            "Built-in Writing Skills cannot be edited.",
-        ));
-    }
-    let relative = safe_skill_relative_path(relative_path)?;
-    let root = PathBuf::from(&listing.local_dir);
-    let target = root.join(&relative);
-    let target_metadata = fs::symlink_metadata(&target).ok();
-    let stays_inside_root = fs::canonicalize(&target)
-        .ok()
-        .zip(fs::canonicalize(&root).ok())
-        .is_some_and(|(target, root)| target.starts_with(root));
-    if target_metadata
-        .as_ref()
-        .is_none_or(|metadata| !metadata.is_file() || metadata.file_type().is_symlink())
-        || !stays_inside_root
-        || target
-            .file_name()
-            .is_some_and(|name| name == "manifest.json")
-    {
-        return Err(CliError::with_code(
-            "writing_skill_file_not_found",
-            format!("Writing Skill file not found: {relative_path}"),
-        ));
-    }
-    if relative == Path::new("SKILL.md") {
-        let parsed = crate::agent::parse_portable_skill(content, "SKILL.md")?;
-        if parsed.metadata.id != skill_id {
-            return Err(CliError::with_code(
-                "writing_skill_file_invalid",
-                "Writing Skill name does not match its registered id.",
-            ));
-        }
-        crate::agent::validate_portable_writing_skill(
-            content,
-            "SKILL.md",
-            skill_id,
-        )?;
-        let name = listing.skill.name.as_str();
-        let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
-        validate_available_skill_name(
-            paths,
-            &bootstrap.project.id,
-            name,
-            Some(skill_id),
-        )?;
-        let mut manifest = read_skill_manifest(Path::new(&listing.local_dir))?;
-        manifest["name"] = json!(name);
-        manifest["binding"] = json!({
-            "moduleKinds": ["writing"],
-        });
-        let manifest_content = format!(
-            "{}\n",
-            serde_json::to_string_pretty(&manifest).map_err(to_cli_error)?
-        );
-        fs::write(
-            Path::new(&listing.local_dir).join("manifest.json"),
-            manifest_content,
-        )
-        .map_err(to_cli_error)?;
-        fs::write(&target, content.as_bytes()).map_err(to_cli_error)?;
-        return Ok(json!({ "path": relative_path, "content": content }));
-    }
-    fs::write(&target, content.as_bytes()).map_err(to_cli_error)?;
-    Ok(json!({ "path": relative_path, "content": content }))
-}
-
-pub fn delete_custom_skill(paths: &MyOpenPanelsPaths, skill_id: &str) -> Result<Value, CliError> {
-    crate::agent::delete_managed_skill(paths, skill_id).map_err(|error| {
-        if error.code() == Some("skill_read_only") {
-            CliError::with_code("writing_skill_read_only", error.message())
-        } else {
-            error
-        }
-    })
-}
-
-fn safe_skill_relative_path(value: &str) -> Result<PathBuf, CliError> {
-    let path = Path::new(value);
-    if path.as_os_str().is_empty()
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(CliError::with_code(
-            "writing_skill_file_invalid",
-            "Writing Skill file path is invalid.",
-        ));
-    }
-    Ok(path.to_path_buf())
 }
 
 fn installed_project_skill_for_task(

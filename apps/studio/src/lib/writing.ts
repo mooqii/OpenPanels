@@ -1,4 +1,5 @@
 import type { MyDocument, ProjectTask, WritingState } from "../types"
+import { taskDisplayPhase } from "./task-status"
 
 export type WritingSkillSelectionError = "required" | "revision_limit" | null
 export type WritingReferenceSelectionError = "required" | "unready" | null
@@ -8,16 +9,6 @@ export type WritingDocumentStatus =
   | "pending_revise"
   | "active"
   | "failed"
-
-const ACTIVE_TASK_STATUSES = new Set([
-  "reserved",
-  "running",
-  "claimed",
-  "converting",
-  "indexing",
-  "cancel_requested",
-])
-const WAITING_TASK_STATUSES = new Set(["waiting", "queued"])
 
 export function distillationTaskGroups(
   tasks: ProjectTask[]
@@ -31,9 +22,10 @@ export function distillationTaskGroups(
     if (!(task.queue === "writing" && task.type === "distill_writing_skill")) {
       continue
     }
-    if (WAITING_TASK_STATUSES.has(task.status)) groups.waiting.push(task)
-    else if (ACTIVE_TASK_STATUSES.has(task.status)) groups.active.push(task)
-    else if (task.status === "failed") groups.error.push(task)
+    const phase = taskDisplayPhase(task)
+    if (phase === "waiting") groups.waiting.push(task)
+    else if (phase === "running") groups.active.push(task)
+    else if (phase === "failed") groups.error.push(task)
   }
   for (const group of Object.values(groups)) {
     group.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -71,15 +63,16 @@ export function writingDocumentStatus(
   task: ProjectTask | null
 ): WritingDocumentStatus | null {
   if (!task) return null
-  if (WAITING_TASK_STATUSES.has(task.status)) {
+  const phase = taskDisplayPhase(task)
+  if (phase === "waiting") {
     const mode =
       task.input && typeof task.input === "object"
         ? (task.input as { mode?: unknown }).mode
         : null
     return mode === "revise" ? "pending_revise" : "pending_create"
   }
-  if (ACTIVE_TASK_STATUSES.has(task.status)) return "active"
-  if (task.status === "failed") return "failed"
+  if (phase === "running") return "active"
+  if (phase === "failed") return "failed"
   return null
 }
 

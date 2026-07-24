@@ -4,10 +4,31 @@ pub(crate) fn validate_portable_writing_skill(
     expected_id: &str,
 ) -> Result<AgentSkill, CliError> {
     let skill = parse_portable_skill(source, file_name)?;
-    if skill.metadata.id != expected_id || portable_skill_mentions_platform(source) {
+    if skill.metadata.id != expected_id {
         return Err(CliError::with_code(
             "writing_skill_file_invalid",
             "Writing Skill must be portable and match the requested Skill id.",
+        ));
+    }
+    validate_portable_custom_skill_source(source, file_name, expected_id).map_err(|_| {
+        CliError::with_code(
+            "writing_skill_file_invalid",
+            "Writing Skill must be portable and match the requested Skill id.",
+        )
+    })?;
+    Ok(skill)
+}
+
+fn validate_portable_custom_skill_source(
+    source: &str,
+    file_name: &str,
+    skill_id: &str,
+) -> Result<AgentSkill, CliError> {
+    let skill = external_custom_skill_from_source(source, file_name, skill_id)?;
+    if portable_skill_mentions_platform(source) {
+        return Err(CliError::with_code(
+            "invalid_skill_package",
+            "Portable Skills cannot contain MyOpenPanels platform or lifecycle instructions.",
         ));
     }
     Ok(skill)
@@ -55,7 +76,13 @@ pub(crate) fn custom_agent_skill_from_source(
             format!("Custom Skill manifest is invalid: {file_name}"),
         ));
     }
-    let mut skill = external_custom_skill_from_source(source, file_name, skill_id)?;
+    let mut skill =
+        validate_portable_custom_skill_source(source, file_name, skill_id).map_err(|error| {
+        CliError::with_code(
+            "invalid_custom_skill",
+            format!("Custom Skill package is invalid: {skill_id}: {}", error.message()),
+        )
+    })?;
     let module_kinds = manifest
         .pointer("/binding/moduleKinds")
         .and_then(Value::as_array)
@@ -77,9 +104,7 @@ pub(crate) fn custom_agent_skill_from_source(
         let (panel_kind, tasks): (&str, &[&str]) = match module_kind {
             "wiki-update" => ("wiki", &["ingest_markdown_into_wiki", "maintain_wiki"]),
             "writing" => ("writing", &["write_my_document"]),
-            "writing-distillation" | "writing-refinement" => {
-                ("writing", &["distill_writing_skill"])
-            }
+            "writing-distillation" => ("writing", &["distill_writing_skill"]),
             "release" => ("publishing", &["release_xiaohongshu"]),
             "publication-cover" => ("typesetting", &[crate::publication::COVER_TASK_TYPE]),
             "publication-title" => ("typesetting", &[crate::publication::TITLE_TASK_TYPE]),

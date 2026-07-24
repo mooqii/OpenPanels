@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { MyDocument, ProjectTask } from "../types"
+import type { MyDocument, ProjectTask, TaskStatus } from "../types"
 import { emptyWritingState, normalizeWritingState } from "./api"
 import {
   activeWritingSkillIds,
@@ -25,24 +25,10 @@ describe("Writing Skill selection", () => {
     expect(emptyWritingState().revisionDraft).toBe("")
   })
 
-  it("normalizes legacy refinement state into distillation state", () => {
-    expect(
-      normalizeWritingState({
-        createDraft: "Create this",
-        draft: "",
-        mode: "refine",
-        refinementName: "House style",
-        revisionDraft: "Revise this",
-        selectedCreateWritingSkillIds: ["writing-default"],
-        selectedRefinementSkillId: "writing-refinement-default",
-        selectedRevisionWritingSkillId: "writing-default",
-        targetMyDocumentId: null,
-      })
-    ).toMatchObject({
-      distillationName: "House style",
-      mode: "distill",
-      selectedDistillationSkillId: "writing-distillation-default",
-    })
+  it("does not reinterpret retired refinement fields", () => {
+    expect(() => normalizeWritingState({ mode: "refine" })).toThrow(
+      "malformed writing panel state"
+    )
   })
 
   it("rejects an explicitly empty selection", () => {
@@ -114,7 +100,7 @@ describe("Writing Skill selection", () => {
 
 function task(
   id: string,
-  status: string,
+  status: TaskStatus,
   updatedAt: string,
   options: { mode?: "create" | "revise"; targetId?: string; type?: string } = {}
 ): ProjectTask {

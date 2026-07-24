@@ -1,18 +1,16 @@
 use crate::agent::{read_agent_skill_for_panel, PANELS_SKILL_ID};
-use crate::canvas::{
-    insert_image_for_target, insert_placeholder_for_target, update_placeholder_for_target,
-    InsertImageInput, InsertPlaceholderInput,
-};
+use crate::canvas::{InsertImageInput, InsertPlaceholderInput};
 use crate::control::{now_iso, read_project_bootstrap, require_active_panel, BootstrapRequest};
 use crate::error::CliError;
 use crate::paths::{sanitize_path_part, MyOpenPanelsPaths};
 use crate::selection::{read_selection, read_selection_asset_to_file};
 use crate::storage::Storage;
 use crate::types::PanelKind;
+#[cfg(test)]
 use crate::wiki;
-use base64::Engine;
+use rusqlite::TransactionBehavior;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -24,17 +22,17 @@ fn operation_id() -> String {
 
 pub fn list(paths: &MyOpenPanelsPaths, status: Option<&str>) -> Result<Value, CliError> {
     let operations =
-        Storage::open(paths)?.list_agent_operations(Some(&paths.context_id), status)?;
+        Storage::open(paths)?.list_direct_operations(Some(&paths.context_id), status)?;
     Ok(json!({ "operations": operations }))
 }
 
 pub fn inspect(paths: &MyOpenPanelsPaths, id: &str) -> Result<Value, CliError> {
     Storage::open(paths)?
-        .read_agent_operation(id)?
+        .read_direct_operation(id)?
         .ok_or_else(|| {
             CliError::with_code(
                 "operation_not_found",
-                format!("Agent operation not found: {id}"),
+                format!("Direct Operation not found: {id}"),
             )
         })
 }
@@ -47,9 +45,7 @@ fn active_operation(paths: &MyOpenPanelsPaths, id: &str, intent: &str) -> Result
             format!("Operation {id} is not {intent}"),
         ));
     }
-    if operation["status"].as_str() != Some("active")
-        && operation["status"].as_str() != Some("failed")
-    {
+    if operation["status"].as_str() != Some("active") {
         return Err(CliError::with_code(
             "operation_not_active",
             format!("Operation {id} is not active"),
@@ -72,7 +68,7 @@ fn active_my_document_operation(
             format!("Operation {id} is not a My Document operation"),
         ));
     }
-    if !matches!(operation["status"].as_str(), Some("active" | "failed")) {
+    if operation["status"].as_str() != Some("active") {
         return Err(CliError::with_code(
             "operation_not_active",
             format!("Operation {id} is not active"),
@@ -83,9 +79,38 @@ fn active_my_document_operation(
 
 fn save(paths: &MyOpenPanelsPaths, operation: &Value) -> Result<(), CliError> {
     let storage = Storage::open(paths)?;
-    storage.write_agent_operation(operation)?;
+    storage.write_direct_operation(operation)?;
     cleanup_artifacts_with_storage(paths, &storage, chrono::Utc::now());
     Ok(())
+}
+
+fn commit_direct_panel_state(
+    paths: &MyOpenPanelsPaths,
+    operation: &mut Value,
+    state: &Value,
+    expected_panel_revision: i64,
+    bind_resulting_revision: bool,
+) -> Result<i64, CliError> {
+    let project_id = operation["projectId"].as_str().unwrap_or_default();
+    let panel_id = operation["panelId"].as_str().unwrap_or_default();
+    let mut storage = Storage::open(paths)?;
+    let tx = storage
+        .connection_mut()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(to_cli_error)?;
+    let revision = Storage::write_panel_state_if_revision_in_transaction(
+        &tx,
+        project_id,
+        panel_id,
+        expected_panel_revision,
+        state,
+    )?;
+    if bind_resulting_revision {
+        operation["baseRevision"] = json!(revision);
+    }
+    Storage::write_direct_operation_in_transaction(&tx, operation)?;
+    tx.commit().map_err(to_cli_error)?;
+    Ok(revision)
 }
 
 /// Best-effort cleanup of files that can no longer be used by an Operation.
@@ -103,16 +128,35 @@ fn cleanup_artifacts_with_storage(
 ) {
     let cutoff = (now - chrono::Duration::minutes(TERMINAL_OPERATION_ARTIFACT_RETENTION_MINUTES))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let Ok(operation_ids) = storage.list_terminal_agent_operation_ids_before(&cutoff) else {
+    let Ok(terminal_operation_ids) = storage.list_terminal_direct_operation_ids_before(&cutoff)
+    else {
         return;
     };
+    let Ok(known_operation_ids) = storage.direct_operation_ids() else {
+        return;
+    };
+    let terminal_operation_ids = terminal_operation_ids.into_iter().collect::<HashSet<_>>();
+    let known_operation_ids = known_operation_ids.into_iter().collect::<HashSet<_>>();
     let operations_dir = paths.storage_dir.join("operations");
-    for operation_id in operation_ids {
-        let operation_dir = operations_dir.join(sanitize_path_part(&operation_id));
+    let Ok(entries) = fs::read_dir(&operations_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let operation_dir = entry.path();
         let Ok(metadata) = fs::symlink_metadata(&operation_dir) else {
             continue;
         };
-        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let operation_id = entry.file_name().to_string_lossy().into_owned();
+        let known = known_operation_ids
+            .iter()
+            .any(|id| sanitize_path_part(id) == operation_id);
+        let expired = terminal_operation_ids
+            .iter()
+            .any(|id| sanitize_path_part(id) == operation_id);
+        if !known || expired {
             let _ = fs::remove_dir_all(operation_dir);
         }
     }
@@ -186,7 +230,7 @@ pub fn begin_canvas(
             "mimeType": exported.mime_type,
         });
     }
-    let placeholder = insert_placeholder_for_target(
+    let prepared = crate::canvas::prepare_placeholder_for_target(
         paths,
         &bootstrap.project.id,
         &bootstrap.panel.id,
@@ -211,11 +255,13 @@ pub fn begin_canvas(
         "panelId": bootstrap.panel.id,
         "panelTitle": bootstrap.panel.title,
         "panelKind": "canvas",
+        "targetId": prepared.shape_id,
+        "baseRevision": 0,
         "skillId": PANELS_SKILL_ID,
         "guideId": null,
         "target": {
-            "placeholderShapeId": placeholder.shape_id,
-            "bounds": placeholder.bounds,
+            "placeholderShapeId": prepared.shape_id,
+            "bounds": prepared.bounds,
             "reference": reference,
         },
         "input": { "displayWidth": width, "displayHeight": height, "useSelection": use_selection },
@@ -225,7 +271,14 @@ pub fn begin_canvas(
         "updatedAt": now,
         "completedAt": null,
     });
-    save(paths, &operation)?;
+    let mut operation = operation;
+    commit_direct_panel_state(
+        paths,
+        &mut operation,
+        &prepared.state,
+        prepared.base_revision,
+        true,
+    )?;
     Ok(
         json!({ "operation": operation, "panelSkill": panel_skill, "nextAction": "Read the Panels Skill and returned Canvas references, generate the bitmap, then run operation complete with the captured operation id." }),
     )
@@ -280,15 +333,30 @@ pub fn complete_canvas(
             );
         }
     }
-    let project_id = operation["projectId"].as_str().unwrap_or_default();
-    let panel_id = operation["panelId"].as_str().unwrap_or_default();
+    let project_id = operation["projectId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let panel_id = operation["panelId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     let placeholder = operation
         .pointer("/target/placeholderShapeId")
-        .and_then(Value::as_str);
-    let inserted = match insert_image_for_target(
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if operation["targetId"].as_str() != Some(placeholder.as_str()) {
+        return Err(CliError::with_code(
+            "operation_target_mismatch",
+            "The Direct Operation target binding is invalid.",
+        ));
+    }
+    let expected_revision = operation["baseRevision"].as_i64().unwrap_or(-1);
+    let mut prepared = match crate::canvas::prepare_image_for_target(
         paths,
-        project_id,
-        panel_id,
+        &project_id,
+        &panel_id,
         InsertImageInput {
             anchor_shape_id: None,
             display_height: operation
@@ -301,9 +369,10 @@ pub fn complete_canvas(
             image_path: image,
             metadata: Some(metadata),
             placement: Some("auto"),
-            replace_shape_id: placeholder,
+            replace_shape_id: Some(&placeholder),
         },
         false,
+        Some(expected_revision),
     ) {
         Ok(inserted) => inserted,
         Err(error) => {
@@ -319,9 +388,37 @@ pub fn complete_canvas(
             return Err(error);
         }
     };
-    let result = serde_json::to_value(&inserted).map_err(to_cli_error)?;
-    finish(&mut operation, "completed", result.clone(), Value::Null);
-    save(paths, &operation)?;
+    let prepared_asset_path = prepared.asset.file_path.clone();
+    let mut storage = Storage::open(paths)?;
+    let committed = (|| {
+        let tx = storage
+            .connection_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(to_cli_error)?;
+        Storage::write_prepared_asset_in_transaction(
+            &tx,
+            &project_id,
+            &panel_id,
+            &prepared.asset,
+        )?;
+        prepared.payload.revision = Storage::write_panel_state_if_revision_in_transaction(
+            &tx,
+            &project_id,
+            &panel_id,
+            expected_revision,
+            &prepared.state,
+        )?;
+        let result = serde_json::to_value(&prepared.payload).map_err(to_cli_error)?;
+        finish(&mut operation, "completed", result, Value::Null);
+        Storage::write_direct_operation_in_transaction(&tx, &operation)?;
+        tx.commit().map_err(to_cli_error)
+    })();
+    if let Err(error) = committed {
+        let _ = fs::remove_file(prepared_asset_path);
+        return Err(error);
+    }
+    let result = operation["result"].clone();
+    cleanup_artifacts_with_storage(paths, &storage, chrono::Utc::now());
     Ok(json!({ "operation": operation, "image": result }))
 }
 
@@ -331,21 +428,50 @@ pub fn finish_canvas(
     status: &str,
     message: Option<&str>,
 ) -> Result<Value, CliError> {
+    if !matches!(status, "failed" | "cancelled") {
+        return Err(CliError::with_code(
+            "invalid_operation_status",
+            "A Direct Operation can only be finished as failed or cancelled.",
+        ));
+    }
     let mut operation = active_operation(paths, id, "canvas.image.generate")?;
-    let project_id = operation["projectId"].as_str().unwrap_or_default();
-    let panel_id = operation["panelId"].as_str().unwrap_or_default();
+    let project_id = operation["projectId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let panel_id = operation["panelId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     let placeholder = operation
         .pointer("/target/placeholderShapeId")
         .and_then(Value::as_str)
-        .unwrap_or_default();
-    update_placeholder_for_target(
+        .unwrap_or_default()
+        .to_owned();
+    if operation["targetId"].as_str() != Some(placeholder.as_str()) {
+        return Err(CliError::with_code(
+            "operation_target_mismatch",
+            "The Direct Operation target binding is invalid.",
+        ));
+    }
+    let prepared = crate::canvas::prepare_placeholder_update_for_target(
         paths,
-        project_id,
-        panel_id,
-        placeholder,
+        &project_id,
+        &panel_id,
+        &placeholder,
         message,
-        status == "cancelled",
+        true,
     )?;
+    let expected_revision = operation["baseRevision"].as_i64().unwrap_or(-1);
+    if prepared.base_revision != expected_revision {
+        return Err(CliError::with_code(
+            "content_conflict",
+            format!(
+                "Canvas changed from revision {expected_revision} to {}.",
+                prepared.base_revision
+            ),
+        ));
+    }
     finish(
         &mut operation,
         status,
@@ -354,7 +480,13 @@ pub fn finish_canvas(
             .map(|m| json!({"message": m}))
             .unwrap_or(Value::Null),
     );
-    save(paths, &operation)?;
+    commit_direct_panel_state(
+        paths,
+        &mut operation,
+        &prepared.state,
+        expected_revision,
+        false,
+    )?;
     Ok(operation)
 }
 
@@ -369,7 +501,7 @@ pub fn begin_my_document(
     let bootstrap = read_project_bootstrap(paths, request)?;
     let id = operation_id();
     let is_update = document_id.is_some();
-    let started = wiki::begin_my_document_for_target(
+    let prepared = crate::my_document::prepare_begin_my_document_for_target(
         paths,
         &bootstrap.project.id,
         &bootstrap.panel.id,
@@ -379,7 +511,7 @@ pub fn begin_my_document(
         document_id,
         false,
     )?;
-    let document_id = started["document"]["id"].as_str().unwrap_or_default();
+    let document_id = prepared.document["id"].as_str().unwrap_or_default();
     let now = now_iso();
     let panel_skill =
         read_agent_skill_for_panel(paths, PANELS_SKILL_ID, None, Some(PanelKind::Wiki))?;
@@ -389,251 +521,23 @@ pub fn begin_my_document(
         "status": "active",
         "projectId": bootstrap.project.id, "projectTitle": bootstrap.project.title,
         "panelId": bootstrap.panel.id, "panelTitle": bootstrap.panel.title, "panelKind": "wiki",
+        "targetId": document_id, "baseRevision": prepared.base_content_version,
         "skillId": PANELS_SKILL_ID, "guideId": null,
-        "target": { "documentId": document_id, "baseContentVersion": started["baseContentVersion"] },
+        "target": { "documentId": document_id, "baseContentVersion": prepared.base_content_version },
         "input": { "title": title, "format": format, "mode": if is_update { "revise" } else { "create" } },
         "result": null, "error": null, "createdAt": now, "updatedAt": now, "completedAt": null,
     });
-    save(paths, &operation)?;
-    Ok(
-        json!({ "operation": operation, "panelSkill": panel_skill, "document": started["document"], "nextAction": "Read the Panels Skill and returned Wiki references, write the result file, then run operation complete with the captured operation id." }),
-    )
-}
-
-pub fn begin_writing(
-    paths: &MyOpenPanelsPaths,
-    task_id: &str,
-    title: &str,
-    format: &str,
-) -> Result<Value, CliError> {
-    if crate::content::broker_execution_available() {
-        return crate::content::broker_begin_operation(&crate::content::BeginOperationRequest {
-            task_id: task_id.to_owned(),
-            title: title.to_owned(),
-            document_format: format.to_owned(),
-        });
-    }
-    crate::tasks::verify_task_write_access(paths, task_id)?;
-    begin_writing_for_broker(paths, task_id, title, format)
-}
-
-pub(crate) fn begin_writing_for_broker(
-    paths: &MyOpenPanelsPaths,
-    task_id: &str,
-    title: &str,
-    format: &str,
-) -> Result<Value, CliError> {
-    begin_writing_internal(paths, task_id, title, format, None)
-}
-
-pub(crate) fn ensure_writing_for_task_output(
-    paths: &MyOpenPanelsPaths,
-    task_id: &str,
-    title: &str,
-    format: &str,
-    attempt_id: &str,
-    execution_generation: i64,
-    output_plan_hash: &str,
-) -> Result<Value, CliError> {
-    let identity = format!("{task_id}:{attempt_id}:{execution_generation}");
-    let digest = format!("{:x}", Sha256::digest(identity.as_bytes()));
-    let id = format!("operation:task-output:{}", &digest[..32]);
-    let storage = Storage::open(paths)?;
-    let conflicting_operation = storage
-        .list_agent_operations(None, None)?
-        .into_iter()
-        .find(|operation| {
-            operation.get("id").and_then(Value::as_str) != Some(id.as_str())
-                && operation
-                    .pointer("/target/writingTaskId")
-                    .and_then(Value::as_str)
-                    == Some(task_id)
-                && operation
-                    .pointer("/input/runtimeAttemptId")
-                    .and_then(Value::as_str)
-                    == Some(attempt_id)
-                && operation
-                    .pointer("/input/runtimeExecutionGeneration")
-                    .and_then(Value::as_i64)
-                    == Some(execution_generation)
-        });
-    if conflicting_operation.is_some() {
-        return Err(CliError::with_code(
-            "task_output_plan_conflict",
-            "The current Task execution has multiple Runtime Writing Operations.",
-        ));
-    }
-    if let Some(operation) = storage.read_agent_operation(&id)? {
-        let matches_plan = matches!(
-            operation.get("intent").and_then(Value::as_str),
-            Some("my-document.create" | "my-document.revise")
-        )
-            && operation
-                .pointer("/target/writingTaskId")
-                .and_then(Value::as_str)
-                == Some(task_id)
-            && operation.pointer("/input/title").and_then(Value::as_str) == Some(title)
-            && operation.pointer("/input/format").and_then(Value::as_str) == Some(format)
-            && operation
-                .pointer("/input/runtimeAttemptId")
-                .and_then(Value::as_str)
-                == Some(attempt_id)
-            && operation
-                .pointer("/input/runtimeExecutionGeneration")
-                .and_then(Value::as_i64)
-                == Some(execution_generation)
-            && operation
-                .pointer("/input/runtimeOutputPlanHash")
-                .and_then(Value::as_str)
-                == Some(output_plan_hash)
-            && matches!(
-                operation.get("status").and_then(Value::as_str),
-                Some("active" | "prepared" | "completed")
-            );
-        if !matches_plan {
-            return Err(CliError::with_code(
-                "task_output_plan_conflict",
-                "The current Writing Operation does not match this Task Output Plan.",
-            ));
-        }
-        return Ok(json!({ "operation": operation, "reused": true }));
-    }
-    begin_writing_internal(
+    let mut operation = operation;
+    commit_direct_panel_state(
         paths,
-        task_id,
-        title,
-        format,
-        Some((&id, attempt_id, execution_generation, output_plan_hash)),
-    )
-}
-
-fn begin_writing_internal(
-    paths: &MyOpenPanelsPaths,
-    task_id: &str,
-    title: &str,
-    format: &str,
-    runtime_identity: Option<(&str, &str, i64, &str)>,
-) -> Result<Value, CliError> {
-    let request = crate::writing::read_request(paths, task_id)?;
-    let task = &request["task"];
-    if !matches!(
-        task.get("status").and_then(Value::as_str),
-        Some("reserved" | "running" | "claimed")
-    ) {
-        return Err(CliError::with_code(
-            "task_not_claimed",
-            "Claim the writing task before beginning the My Document write.",
-        ));
-    }
-    let project_id = task["projectId"].as_str().unwrap_or_default();
-    let wiki_panel_id = task["source"]["wikiPanelId"].as_str().unwrap_or_default();
-    if project_id.is_empty() || wiki_panel_id.is_empty() {
-        return Err(CliError::with_code(
-            "writing_target_not_found",
-            "The writing task has no captured Wiki target.",
-        ));
-    }
-    let mode = task["input"]["mode"].as_str().unwrap_or("create");
-    let document_id = task["input"]["targetMyDocumentId"].as_str();
-    let storage = Storage::open(paths)?;
-    let project = storage.read_project(project_id)?.ok_or_else(|| {
-        CliError::with_code(
-            "target_not_found",
-            format!("Project not found: {project_id}"),
-        )
-    })?;
-    let panel = storage
-        .read_panel(project_id, wiki_panel_id)?
-        .ok_or_else(|| CliError::with_code("target_not_found", "Wiki panel not found."))?;
-    if let Some(document_id) = document_id {
-        let expected_version = task["input"]["targetContentVersion"]
-            .as_u64()
-            .ok_or_else(|| {
-                CliError::with_code(
-                    "writing_target_version_missing",
-                    "The writing task has no captured target content version.",
-                )
-            })?;
-        let wiki_state = storage
-            .read_panel_state(project_id, wiki_panel_id)?
-            .ok_or_else(|| CliError::with_code("target_not_found", "Wiki state not found."))?;
-        let current_version = wiki_state
-            .get("myDocuments")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|document| document.get("id").and_then(Value::as_str) == Some(document_id))
-            .and_then(|document| document.get("contentVersion"))
-            .and_then(Value::as_u64)
-            .ok_or_else(|| {
-                CliError::with_code(
-                    "writing_target_not_found",
-                    format!("My Document not found: {document_id}"),
-                )
-            })?;
-        if current_version != expected_version {
-            crate::tasks::supersede_task_for_content_conflict(paths, task_id, document_id)?;
-            return Err(CliError::with_code(
-                "content_conflict",
-                format!(
-                    "My Document changed from version {expected_version} to {current_version}"
-                ),
-            ));
-        }
-    }
-    let id = runtime_identity
-        .map(|(id, _, _, _)| id.to_owned())
-        .unwrap_or_else(operation_id);
-    let started = wiki::begin_my_document_for_target(
-        paths,
-        project_id,
-        wiki_panel_id,
-        &id,
-        title,
-        format,
-        document_id,
-        mode == "create",
+        &mut operation,
+        &prepared.state,
+        prepared.base_panel_revision,
+        false,
     )?;
-    let my_document_id = started["document"]["id"].as_str().unwrap_or_default();
-    let now = now_iso();
-    let panel_skill =
-        read_agent_skill_for_panel(paths, PANELS_SKILL_ID, None, Some(PanelKind::Writing))?;
-    let mut operation = json!({
-        "id": id,
-        "ownerContextId": paths.context_id,
-        "intent": if mode == "revise" { "my-document.revise" } else { "my-document.create" },
-        "status": "active",
-        "projectId": project.id,
-        "projectTitle": project.title,
-        "panelId": panel.id,
-        "panelTitle": panel.title,
-        "panelKind": "wiki",
-        "skillId": PANELS_SKILL_ID,
-        "guideId": null,
-        "target": {
-            "documentId": my_document_id,
-            "baseContentVersion": started["baseContentVersion"],
-            "writingTaskId": task_id,
-        },
-        "input": { "title": title, "format": format, "mode": mode, "taskId": task_id },
-        "result": null,
-        "error": null,
-        "createdAt": now,
-        "updatedAt": now,
-        "completedAt": null,
-    });
-    if let Some((_, attempt_id, execution_generation, output_plan_hash)) = runtime_identity {
-        operation["input"]["runtimeAttemptId"] = json!(attempt_id);
-        operation["input"]["runtimeExecutionGeneration"] = json!(execution_generation);
-        operation["input"]["runtimeOutputPlanHash"] = json!(output_plan_hash);
-    }
-    save(paths, &operation)?;
-    Ok(json!({
-        "operation": operation,
-        "panelSkill": panel_skill,
-        "document": started["document"],
-        "nextAction": "Write the requested document, complete this Operation, then complete the writing Task.",
-    }))
+    Ok(
+        json!({ "operation": operation, "panelSkill": panel_skill, "document": prepared.document, "nextAction": "Read the Panels Skill and returned Wiki references, write the result file, then run operation complete with the captured operation id." }),
+    )
 }
 
 pub fn complete_my_document(
@@ -641,20 +545,6 @@ pub fn complete_my_document(
     id: &str,
     file: &str,
 ) -> Result<Value, CliError> {
-    if crate::content::broker_execution_available() {
-        let content = fs::read(file).map_err(to_cli_error)?;
-        let file_name = Path::new(file)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("document.md");
-        return crate::content::broker_prepare_operation(
-            &crate::content::PrepareOperationRequest {
-                operation_id: id.to_owned(),
-                file_name: file_name.to_owned(),
-                content_base64: base64::engine::general_purpose::STANDARD.encode(content),
-            },
-        );
-    }
     crate::content::require_broker_for_task_execution()?;
     let mut operation = active_my_document_operation(paths, id)?;
     let content = fs::read(file).map_err(to_cli_error)?;
@@ -662,19 +552,58 @@ pub fn complete_my_document(
         .file_name()
         .and_then(|v| v.to_str())
         .unwrap_or("document.md");
-    let result = match wiki::complete_my_document_for_target(
-        paths,
-        operation["projectId"].as_str().unwrap_or_default(),
-        operation["panelId"].as_str().unwrap_or_default(),
-        operation
-            .pointer("/target/documentId")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-        operation
+    let project_id = operation["projectId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let panel_id = operation["panelId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let document_id = operation
+        .pointer("/target/documentId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let base_content_version = operation["baseRevision"].as_u64().unwrap_or(0);
+    if operation["targetId"].as_str() != Some(document_id.as_str())
+        || operation
             .pointer("/target/baseContentVersion")
             .and_then(Value::as_u64)
-            .unwrap_or(0),
+            != Some(base_content_version)
+    {
+        return Err(CliError::with_code(
+            "operation_target_mismatch",
+            "The Direct Operation target binding is invalid.",
+        ));
+    }
+    let (_, mime_type, content_ref) =
+        crate::my_document::my_document_content_descriptor(file_name)?;
+    let prepared_content = crate::content::prepare_direct_text_content(
+        paths,
+        id,
+        &project_id,
+        &panel_id,
+        crate::content::ResourceKind::MyDocument,
+        &document_id,
+        content_ref,
+        &content,
+        mime_type,
+        base_content_version,
+    )?;
+    let committed_content_version = prepared_content.commit["contentVersion"]
+        .as_u64()
+        .unwrap_or(0);
+    let prepared_document = match crate::my_document::prepare_complete_my_document_for_target(
+        paths,
+        &project_id,
+        &panel_id,
+        id,
+        &document_id,
+        base_content_version,
         file_name,
+        content_ref,
+        committed_content_version,
         &content,
     ) {
         Ok(result) => result,
@@ -691,8 +620,27 @@ pub fn complete_my_document(
             return Err(error);
         }
     };
+    let result = json!({
+        "document": prepared_document.document.clone(),
+        "contentCommits": [prepared_content.commit.clone()],
+    });
     finish(&mut operation, "completed", result.clone(), Value::Null);
-    save(paths, &operation)?;
+    let mut storage = Storage::open(paths)?;
+    let tx = storage
+        .connection_mut()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(to_cli_error)?;
+    Storage::write_panel_state_if_revision_in_transaction(
+        &tx,
+        &project_id,
+        &panel_id,
+        prepared_document.base_panel_revision,
+        &prepared_document.state,
+    )?;
+    Storage::write_direct_operation_in_transaction(&tx, &operation)?;
+    tx.commit().map_err(to_cli_error)?;
+    crate::content::publish_prepared_direct_content(prepared_content)?;
+    cleanup_artifacts_with_storage(paths, &storage, chrono::Utc::now());
     Ok(json!({ "operation": operation, "document": result["document"] }))
 }
 
@@ -702,17 +650,38 @@ pub fn finish_my_document(
     status: &str,
     message: Option<&str>,
 ) -> Result<Value, CliError> {
+    if !matches!(status, "failed" | "cancelled") {
+        return Err(CliError::with_code(
+            "invalid_operation_status",
+            "A Direct Operation can only be finished as failed or cancelled.",
+        ));
+    }
     let mut operation = active_my_document_operation(paths, id)?;
-    wiki::finish_my_document_operation(
+    let project_id = operation["projectId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let panel_id = operation["panelId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let document_id = operation
+        .pointer("/target/documentId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if operation["targetId"].as_str() != Some(document_id.as_str()) {
+        return Err(CliError::with_code(
+            "operation_target_mismatch",
+            "The Direct Operation target binding is invalid.",
+        ));
+    }
+    let prepared = crate::my_document::prepare_finish_my_document_operation(
         paths,
-        operation["projectId"].as_str().unwrap_or_default(),
-        operation["panelId"].as_str().unwrap_or_default(),
-        operation
-            .pointer("/target/documentId")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-        status,
-        message,
+        &project_id,
+        &panel_id,
+        id,
+        &document_id,
     )?;
     finish(
         &mut operation,
@@ -722,110 +691,14 @@ pub fn finish_my_document(
             .map(|m| json!({"message": m}))
             .unwrap_or(Value::Null),
     );
-    save(paths, &operation)?;
-    Ok(operation)
-}
-
-pub fn retry_my_document(
-    paths: &MyOpenPanelsPaths,
-    document_id: &str,
-) -> Result<Value, CliError> {
-    let context = wiki::wiki_context(paths)?;
-    let project_id = context["project"]["id"].as_str().unwrap_or_default();
-    let panel_id = context["panel"]["id"].as_str().unwrap_or_default();
-    let my_document = wiki::read_my_document(paths, document_id)?;
-    let document = &my_document["document"];
-    if document
-        .pointer("/writeOperation/status")
-        .and_then(Value::as_str)
-        != Some("failed")
-    {
-        return Err(CliError::with_code(
-            "my_document_write_not_failed",
-            "Only a failed My Document can be retried.",
-        ));
-    }
-
-    let operation_id = document
-        .pointer("/writeOperation/operationId")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let storage = Storage::open(paths)?;
-    let mut operation = match operation_id.as_deref() {
-        Some(operation_id) => storage.read_agent_operation(operation_id)?,
-        None => None,
-    };
-    if operation.is_none() {
-        operation = storage
-            .list_agent_operations(None, None)?
-            .into_iter()
-            .find(|candidate| {
-                matches!(
-                    candidate.get("intent").and_then(Value::as_str),
-                    Some("my-document.create" | "my-document.revise")
-                )
-                    && candidate.get("projectId").and_then(Value::as_str) == Some(project_id)
-                    && candidate.get("panelId").and_then(Value::as_str) == Some(panel_id)
-                    && candidate
-                        .pointer("/target/documentId")
-                        .and_then(Value::as_str)
-                        == Some(document_id)
-            });
-    }
-
-    if let Some(task_id) = operation
-        .as_ref()
-        .and_then(|value| value.pointer("/target/writingTaskId"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-    {
-        if let Some(operation_id) = operation
-            .as_ref()
-            .and_then(|value| value.get("id"))
-            .and_then(Value::as_str)
-        {
-            finish_my_document(
-                paths,
-                operation_id,
-                "cancelled",
-                Some("My Document write retried."),
-            )?;
-        }
-        let task = crate::tasks::retry_task(paths, &task_id)?;
-        return Ok(json!({ "retryMode": "task", "task": task["task"] }));
-    }
-
-    let base_content_version = operation
-        .as_ref()
-        .and_then(|value| value.pointer("/target/baseContentVersion"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let current_content_version = document["contentVersion"].as_u64().unwrap_or(0);
-    if current_content_version <= base_content_version {
-        return Err(CliError::with_code(
-            "my_document_write_retry_unavailable",
-            "This My Document operation has no saved result to recover. Ask the Agent to write it again.",
-        ));
-    }
-
-    let recovered = wiki::recover_my_document_for_target(
+    commit_direct_panel_state(
         paths,
-        project_id,
-        panel_id,
-        document_id,
-        operation
-            .as_ref()
-            .and_then(|value| value.get("id"))
-            .and_then(Value::as_str),
+        &mut operation,
+        &prepared.state,
+        prepared.base_panel_revision,
+        false,
     )?;
-    if let Some(operation) = operation.as_mut() {
-        finish(operation, "completed", recovered.clone(), Value::Null);
-        save(paths, operation)?;
-    }
-    Ok(json!({
-        "retryMode": "recovered",
-        "document": recovered["document"],
-    }))
+    Ok(operation)
 }
 
 pub fn complete(
@@ -834,17 +707,6 @@ pub fn complete(
     artifact_file: &str,
     metadata: Option<Value>,
 ) -> Result<Value, CliError> {
-    // A v3 executor has no database access, so route the task-bound Writing
-    // completion to the Broker before trying to inspect the Operation locally.
-    if crate::content::broker_execution_available() {
-        if metadata.is_some() {
-            return Err(CliError::with_code(
-                "invalid_argument",
-                "My Document completion does not accept --metadata-file.",
-            ));
-        }
-        return complete_my_document(paths, id, artifact_file);
-    }
     let operation = inspect(paths, id)?;
     match operation.get("intent").and_then(Value::as_str) {
         Some("canvas.image.generate") => {

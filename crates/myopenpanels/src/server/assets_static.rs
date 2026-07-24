@@ -17,11 +17,11 @@ struct PublicationAssetsQuery {
 async fn api_assets(State(state): State<Arc<AppState>>) -> Response {
     let result =
         ensure_project_bootstrap(&state.paths, BootstrapRequest::new()).and_then(|bootstrap| {
-        let storage = Storage::open(&state.paths)?;
-        Ok(json!({
-            "projectId": bootstrap.project.id,
-            "assets": storage.list_assets(&bootstrap.project.id)?,
-        }))
+            let storage = Storage::open(&state.paths)?;
+            Ok(json!({
+                "projectId": bootstrap.project.id,
+                "assets": storage.list_assets(&bootstrap.project.id)?,
+            }))
         });
     match result {
         Ok(payload) => json_response(StatusCode::OK, &payload),
@@ -35,10 +35,29 @@ async fn api_asset_content(
 ) -> Response {
     let result =
         ensure_project_bootstrap(&state.paths, BootstrapRequest::new()).and_then(|bootstrap| {
-        Storage::open(&state.paths)?.read_asset_by_id(&bootstrap.project.id, &asset_id)
+            let storage = Storage::open(&state.paths)?;
+            let mime_type = storage
+                .list_assets(&bootstrap.project.id)?
+                .into_iter()
+                .find(|asset| {
+                    asset.get("id").and_then(Value::as_str) == Some(&asset_id)
+                })
+                .and_then(|asset| {
+                    asset
+                        .get("mimeType")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| "application/octet-stream".to_owned());
+            Ok((
+                storage.read_asset_by_id(&bootstrap.project.id, &asset_id)?,
+                mime_type,
+            ))
         });
     match result {
-        Ok(bytes) => bytes_response(StatusCode::OK, bytes, "application/octet-stream"),
+        Ok((bytes, mime_type)) => {
+            bytes_response(StatusCode::OK, bytes, &mime_type)
+        }
         Err(error) => json_error(status_for_cli_error(&error), error.message()),
     }
 }

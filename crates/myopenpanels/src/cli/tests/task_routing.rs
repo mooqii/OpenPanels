@@ -43,6 +43,34 @@ fn agent_bootstrap_delivers_entry_skill_update_until_the_context_acknowledges_it
         serde_json::from_str::<Value>(&repeated).unwrap()["entrySkillUpdate"]["eventId"],
         event_id
     );
+    let (code, procedure_pending, stderr) = run(&[
+        "agent",
+        "bootstrap",
+        "--procedure",
+        "canvas.image.insert",
+        "--project-dir",
+        project_dir.to_str().unwrap(),
+        "--storage-dir",
+        storage_dir.to_str().unwrap(),
+        "--context-id",
+        "ctx",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{stderr}{procedure_pending}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&procedure_pending).unwrap()["actions"]["required"][2]["argv"],
+        json!([
+            "agent",
+            "bootstrap",
+            "--project-dir",
+            project_dir,
+            "--procedure",
+            "canvas.image.insert",
+            "--format",
+            "json"
+        ])
+    );
 
     let (code, stdout, stderr) = run(&[
         "agent",

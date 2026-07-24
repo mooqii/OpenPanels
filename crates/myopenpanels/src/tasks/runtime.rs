@@ -4,11 +4,10 @@ fn finalize_task_runtime(
     project_id: &str,
     task_id: &str,
     requested_status: &str,
-    result: Option<Value>,
+    output_plan: TaskOutputPlan,
     error: Option<Value>,
     retry_after: Option<&str>,
     failure_class: Option<TaskFailureClass>,
-    panel_state: Option<(&str, &Value)>,
     expected_generation: Option<i64>,
 ) -> Result<(), CliError> {
     let mut storage = Storage::open(paths)?;
@@ -17,9 +16,9 @@ fn finalize_task_runtime(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(to_cli_error)?;
     let now = crate::control::now_iso();
-    let (current_status, attempt_count, generation, handler_key, input_json, history_json) = tx
+    let (current_status, attempt_count, generation, handler_key, history_json) = tx
         .query_row(
-            "SELECT status, attempt_count, execution_generation, handler_key, input_json, attempt_history_json FROM tasks WHERE id = ? AND project_id = ?",
+            "SELECT status, attempt_count, execution_generation, handler_key, attempt_history_json FROM tasks WHERE id = ? AND project_id = ?",
             params![task_id, project_id],
             |row| Ok((
                 row.get::<_, String>(0)?,
@@ -27,7 +26,6 @@ fn finalize_task_runtime(
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
             )),
         )
         .map_err(to_cli_error)?;
@@ -38,7 +36,7 @@ fn finalize_task_runtime(
         ));
     }
 
-    let mut result = result;
+    let mut result = output_plan.result;
     let mut prepared_content = None;
     if requested_status == "succeeded" {
         let prepared = crate::content::prepare_task_staging_in_transaction(
@@ -69,80 +67,6 @@ fn finalize_task_runtime(
         object.remove("bridgeValidated");
     }
 
-    let route = crate::capabilities::task_route_for_handler(&handler_key)?;
-    let mut merged_layout_panel_state = None;
-    if requested_status == "succeeded"
-        && route.is_some_and(|route| route.task_type == crate::publication::LAYOUT_TASK_TYPE)
-    {
-        let (panel_id, formatted_state) = panel_state.ok_or_else(|| {
-            CliError::with_code(
-                "invalid_output",
-                "Publication Layout completion requires a panel state.",
-            )
-        })?;
-        let input: Value = serde_json::from_str(&input_json).map_err(to_cli_error)?;
-        let publication_id = input
-            .get("publicationId")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let expected_hash = input
-            .pointer("/snapshot/contentHash")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let mut current_state = crate::storage::read_composed_panel_state(
-            &tx,
-            project_id,
-            panel_id,
-        )?
-        .ok_or_else(|| {
-            CliError::with_code(
-                "publication_not_found",
-                "Typesetting panel state was not found.",
-            )
-        })?;
-        let current_publication = current_state
-            .get_mut("publications")
-            .and_then(Value::as_array_mut)
-            .and_then(|publications| {
-                publications.iter_mut().find(|publication| {
-                    publication.get("id").and_then(Value::as_str) == Some(publication_id)
-                })
-            })
-            .ok_or_else(|| {
-                CliError::with_code(
-                    "publication_not_found",
-                    format!("Typesetting publication not found: {publication_id}"),
-                )
-            })?;
-        if crate::publication::hash_json(
-            &current_publication
-                .get("content")
-                .cloned()
-                .unwrap_or(Value::Null),
-        )? != expected_hash
-        {
-            return Err(CliError::with_code(
-                "content_conflict",
-                format!("Publication content changed before Layout Task {task_id} completed."),
-            ));
-        }
-        let formatted_publication = formatted_state
-            .get("publications")
-            .and_then(Value::as_array)
-            .and_then(|publications| {
-                publications.iter().find(|publication| {
-                    publication.get("id").and_then(Value::as_str) == Some(publication_id)
-                })
-            })
-            .ok_or_else(|| CliError::with_code("invalid_output", "Layout output is incomplete."))?;
-        current_publication["content"] = formatted_publication
-            .get("content")
-            .cloned()
-            .unwrap_or(Value::Null);
-        current_publication["updatedAt"] = json!(now);
-        merged_layout_panel_state = Some((panel_id.to_owned(), current_state));
-    }
-
     let retryable = requested_status == "failed"
         && failure_class != Some(TaskFailureClass::TerminalTask)
         && attempt_count < TASK_EXECUTION_LIMIT;
@@ -152,7 +76,7 @@ fn finalize_task_runtime(
         match requested_status {
             "succeeded" => "succeeded",
             "cancelled" => "cancelled",
-            "stale" | "superseded" => "superseded",
+            "superseded" => "superseded",
             _ => "failed",
         }
     };
@@ -232,12 +156,14 @@ fn finalize_task_runtime(
         .map_err(to_cli_error)?;
     }
 
-    let panel_state = merged_layout_panel_state
-        .as_ref()
-        .map(|(panel_id, state)| (panel_id.as_str(), state))
-        .or(panel_state);
-    if let Some((panel_id, state)) = panel_state {
-        Storage::write_panel_state_in_transaction(&tx, project_id, panel_id, state)?;
+    if let Some(panel_state) = output_plan.panel_state {
+        Storage::write_panel_state_if_revision_in_transaction(
+            &tx,
+            project_id,
+            &panel_state.panel_id,
+            panel_state.base_revision,
+            &panel_state.state,
+        )?;
     }
     crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
     tx.commit().map_err(to_cli_error)?;
@@ -245,6 +171,27 @@ fn finalize_task_runtime(
         crate::content::publish_prepared_task_content(paths, prepared)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn complete_task_with_prepared_panel_state_for_test(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    task_id: &str,
+    execution_generation: i64,
+    panel_state: PreparedPanelState,
+) -> Result<(), CliError> {
+    finalize_task_runtime(
+        paths,
+        project_id,
+        task_id,
+        "succeeded",
+        TaskOutputPlan::completed(Some(json!({ "outcome": "no_change" })), Some(panel_state)),
+        None,
+        None,
+        None,
+        Some(execution_generation),
+    )
 }
 
 fn recover_expired_tasks(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
@@ -285,14 +232,13 @@ pub(crate) fn recover_builtin_worker_tasks_after_restart(
             project_id,
             task_id,
             "failed",
-            None,
+            TaskOutputPlan::empty(),
             Some(json!({
                 "code": "studio_restart",
                 "message": "Studio restarted while the local executor was running."
             })),
             Some(&crate::control::now_iso()),
             Some(TaskFailureClass::RetryableInterruption),
-            None,
             Some(*generation),
         )?;
     }
@@ -330,11 +276,10 @@ fn recover_expired_tasks_in_session(
             project_id,
             &task_id,
             "failed",
-            None,
+            TaskOutputPlan::empty(),
             Some(json!({ "code": "lease_expired", "message": "Task lease expired." })),
             Some(&retry_after),
             Some(TaskFailureClass::RetryableChannel),
-            None,
             Some(generation),
         )?;
     }

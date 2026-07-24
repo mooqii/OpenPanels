@@ -13,7 +13,9 @@ import { apiJson, apiUrl } from "../../lib/api"
 import {
   groupTypesettingAssets,
   isSupportedTypesettingCoverImage,
+  isSupportedTypesettingCoverMedia,
   TYPESETTING_COVER_IMAGE_ACCEPT,
+  TYPESETTING_COVER_MEDIA_ACCEPT,
 } from "../../lib/typesetting"
 import type {
   MyOpenPanelsTransport,
@@ -101,11 +103,15 @@ export function TypesettingAddCoverDialog({
     [assets, selectedAssetIds]
   )
   const isBusy = isLoading || isAdding
-  const heading = purpose === "content" ? t`Insert images` : t`Add cover images`
+  const heading = purpose === "content" ? t`Insert images` : t`Add covers`
   const sourceLabel =
-    purpose === "content" ? t`Image source` : t`Add cover image source`
+    purpose === "content" ? t`Image source` : t`Add cover source`
   const confirmLabel =
     purpose === "content" ? t`Insert selected images` : t`Add selected images`
+  const supportsFile = (file: File) =>
+    purpose === "content"
+      ? isSupportedTypesettingCoverImage(file)
+      : isSupportedTypesettingCoverMedia(file)
 
   const addCanvasAssets = async () => {
     if (isAdding || selectedAssets.length === 0) return
@@ -128,7 +134,7 @@ export function TypesettingAddCoverDialog({
 
   const uploadFiles = async (files: Iterable<File>) => {
     if (isAdding) return
-    const supported = Array.from(files).filter(isSupportedTypesettingCoverImage)
+    const supported = Array.from(files).filter(supportsFile)
     if (supported.length === 0) return
     setIsAdding(true)
     setIsDropActive(false)
@@ -144,8 +150,13 @@ export function TypesettingAddCoverDialog({
     }
     if (added.length > 0) onAdd(added)
     setIsAdding(false)
-    if (failed) setError(t`Failed to upload some images`)
-    else onOpenChange(false)
+    if (failed) {
+      setError(
+        purpose === "content"
+          ? t`Failed to upload some images`
+          : t`Failed to upload some media`
+      )
+    } else onOpenChange(false)
   }
 
   const pasteImages = (event: ClipboardEvent<HTMLElement>) => {
@@ -154,7 +165,7 @@ export function TypesettingAddCoverDialog({
       const file = item.kind === "file" ? item.getAsFile() : null
       return file ? [file] : []
     })
-    if (!files.some(isSupportedTypesettingCoverImage)) return
+    if (!files.some(supportsFile)) return
     event.preventDefault()
     uploadFiles(files).catch(() => undefined)
   }
@@ -274,7 +285,11 @@ export function TypesettingAddCoverDialog({
                 </Tabs.Panel>
                 <Tabs.Panel id="upload">
                   <input
-                    accept={TYPESETTING_COVER_IMAGE_ACCEPT}
+                    accept={
+                      purpose === "content"
+                        ? TYPESETTING_COVER_IMAGE_ACCEPT
+                        : TYPESETTING_COVER_MEDIA_ACCEPT
+                    }
                     hidden
                     multiple
                     onChange={(event) => {
@@ -309,22 +324,36 @@ export function TypesettingAddCoverDialog({
                     {isAdding ? (
                       <>
                         <Spinner size="md" />
-                        <strong>{t`Uploading images`}</strong>
+                        <strong>
+                          {purpose === "content"
+                            ? t`Uploading images`
+                            : t`Uploading media`}
+                        </strong>
                       </>
                     ) : (
                       <>
                         <span className="op-publication-cover-upload__icon">
                           <Upload size={22} />
                         </span>
-                        <strong>{t`Drag or paste images here`}</strong>
-                        <span>{t`PNG, JPEG, WebP, GIF`}</span>
+                        <strong>
+                          {purpose === "content"
+                            ? t`Drag or paste images here`
+                            : t`Drag or paste images or videos here`}
+                        </strong>
+                        <span>
+                          {purpose === "content"
+                            ? t`PNG, JPEG, WebP, GIF`
+                            : t`PNG, JPEG, WebP, GIF, MP4, MOV, WebM`}
+                        </span>
                         <Button
                           onPress={() => inputRef.current?.click()}
                           size="sm"
                           variant="secondary"
                         >
                           <Upload size={15} />
-                          {t`Upload images`}
+                          {purpose === "content"
+                            ? t`Upload images`
+                            : t`Upload media`}
                         </Button>
                       </>
                     )}

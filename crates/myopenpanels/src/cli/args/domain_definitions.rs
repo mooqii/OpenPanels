@@ -8,14 +8,6 @@ struct WritingArgs {
 enum WritingCommand {
     Request(WritingRequestArgs),
     Distillation(WritingDistillationArgs),
-    Write {
-        #[arg(long)]
-        task_id: String,
-        #[arg(long)]
-        title: String,
-        #[arg(long, default_value = "markdown")]
-        document_format: String,
-    },
     Skill(WritingSkillArgs),
 }
 

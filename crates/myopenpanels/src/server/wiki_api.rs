@@ -38,9 +38,7 @@ pub(super) async fn api_wiki_set_selection(
 fn my_document_error(error: CliError) -> Response {
     let status = match error.code() {
         Some("not_found") => StatusCode::NOT_FOUND,
-        Some(
-            "my_document_write_in_progress" | "my_document_write_not_failed" | "my_document_write_retry_unavailable",
-        ) => StatusCode::CONFLICT,
+        Some("my_document_write_in_progress") => StatusCode::CONFLICT,
         Some("invalid_my_document" | "invalid_raw_document" | "already_published") => {
             StatusCode::BAD_REQUEST
         }
@@ -243,16 +241,6 @@ pub(super) async fn api_publish_my_document(
         &document_id,
         body.wiki_space_id.as_deref(),
     ) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => my_document_error(error),
-    }
-}
-
-pub(super) async fn api_retry_my_document(
-    State(state): State<Arc<AppState>>,
-    Path(document_id): Path<String>,
-) -> Response {
-    match crate::operations::retry_my_document(&state.paths, &document_id) {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => my_document_error(error),
     }

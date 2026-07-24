@@ -29,113 +29,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removed_lifecycle_and_agent_routes_return_not_found() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let project_dir = temp.path().join("project");
-        let storage_dir = temp.path().join(".myopenpanels");
-        fs::create_dir_all(&project_dir).expect("project dir");
-        let paths = resolve_myopenpanels_paths(
-            Some(project_dir.to_str().unwrap()),
-            Some(storage_dir.to_str().unwrap()),
-            Some("removed-worker-routes"),
-        )
-        .expect("paths");
-        ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let router = build_router(
-            "127.0.0.1".to_owned(),
-            0,
-            paths,
-            None,
-            current_build_info(),
-        );
-
-        for (method, uri) in [
-            (Method::POST, "/api/agent/targets"),
-            (Method::POST, "/api/agent/targets/legacy/heartbeat"),
-            (Method::DELETE, "/api/agent/targets/legacy"),
-            (Method::POST, "/api/tasks/claim-next"),
-            (Method::POST, "/api/tasks/legacy/claim"),
-            (Method::POST, "/api/tasks/legacy/heartbeat"),
-            (Method::POST, "/api/tasks/legacy/complete"),
-            (Method::POST, "/api/tasks/legacy/fail"),
-            (Method::POST, "/api/tasks/legacy/release"),
-            (Method::PUT, "/api/tasks/task:legacy/dispatch"),
-            (Method::GET, "/api/workflows"),
-            (Method::GET, "/api/workflows/workflow:legacy"),
-            (Method::GET, "/api/wiki/generated-documents"),
-            (Method::POST, "/api/wiki/generated-documents"),
-            (Method::POST, "/api/my-documents/my-document:legacy/publish"),
-            (
-                Method::POST,
-                "/api/projects/project:legacy/panels/panel:legacy/assets",
-            ),
-            (
-                Method::GET,
-                "/api/projects/project:legacy/panels/panel:legacy/assets/cover.png",
-            ),
-            (Method::GET, "/api/typesetting/title-skills"),
-            (Method::GET, "/api/publishing/releases"),
-        ] {
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method(method)
-                        .uri(uri)
-                        .body(Body::empty())
-                        .expect("request"),
-                )
-                .await
-                .expect("response");
-            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
-        }
-
-        for uri in [
-            "/api/agent/targets",
-            "/api/agent/routes",
-            "/api/workflow-runs",
-            "/api/tasks/task:legacy/events",
-            "/api/tasks/task:legacy/attempts",
-        ] {
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri(uri)
-                        .body(Body::empty())
-                        .expect("request"),
-                )
-                .await
-                .expect("response");
-            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
-        }
-
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::DELETE)
-                    .uri("/api/tasks/task:missing")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/workflow-runs/workflow-run:missing")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
     async fn uploaded_assets_use_only_project_content_storage() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
@@ -267,6 +160,7 @@ mod tests {
             host: "127.0.0.1".to_owned(),
             paths,
             port: 0,
+            project_event_slots: Arc::new(Semaphore::new(MAX_PROJECT_EVENT_STREAMS)),
             static_dir: None,
         });
 
@@ -295,6 +189,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn project_event_stream_stops_polling_after_client_disconnect() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("event-disconnect"),
+        )
+        .expect("paths");
+        ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let (sender, receiver) =
+            mpsc::unbounded_channel::<Result<Event, std::convert::Infallible>>();
+        drop(receiver);
+        let permit = Arc::new(Semaphore::new(1))
+            .acquire_owned()
+            .await
+            .expect("event stream permit");
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                run_project_event_stream(paths, None, sender, permit, Duration::from_millis(10))
+            )
+            .await
+            .is_ok(),
+            "disconnected event stream kept polling"
+        );
+    }
+
+    #[tokio::test]
+    async fn project_event_streams_leave_capacity_for_regular_requests() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("event-capacity"),
+        )
+        .expect("paths");
+        ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let state = Arc::new(AppState {
+            build_info: current_build_info(),
+            host: "127.0.0.1".to_owned(),
+            paths,
+            port: 0,
+            project_event_slots: Arc::new(Semaphore::new(1)),
+            static_dir: None,
+        });
+        let query = || Query(ProjectEventsQuery { project_id: None });
+
+        let first = api_project_events(State(state.clone()), query()).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let saturated = api_project_events(State(state.clone()), query()).await;
+        assert_eq!(saturated.status(), StatusCode::NO_CONTENT);
+
+        drop(first);
+        tokio::time::sleep(Duration::from_millis(
+            PROJECT_EVENT_POLL_INTERVAL_MS * 2,
+        ))
+        .await;
+
+        let recovered = api_project_events(State(state), query()).await;
+        assert_eq!(recovered.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn skill_management_endpoints_list_and_protect_presets() {
         let temp = tempfile::tempdir().expect("temp dir");
         let project_dir = temp.path().join("project");
@@ -312,6 +276,7 @@ mod tests {
             host: "127.0.0.1".to_owned(),
             paths,
             port: 0,
+            project_event_slots: Arc::new(Semaphore::new(MAX_PROJECT_EVENT_STREAMS)),
             static_dir: None,
         });
 
@@ -331,7 +296,14 @@ mod tests {
         let payload =
             serde_json::from_slice::<Value>(&body).expect("recommended json response");
         assert!(payload.get("schemaVersion").is_none());
-        assert_eq!(payload["skills"], json!([]));
+        assert_eq!(
+            payload["skills"][0]["id"],
+            json!("guizang-social-card-skill")
+        );
+        assert_eq!(
+            payload["skills"][0]["moduleKinds"],
+            json!(["publication-cover"])
+        );
 
         let response = api_install_recommended_skill(
             State(state.clone()),
@@ -441,6 +413,7 @@ mod tests {
             host: "127.0.0.1".to_owned(),
             paths,
             port: 0,
+            project_event_slots: Arc::new(Semaphore::new(MAX_PROJECT_EVENT_STREAMS)),
             static_dir: None,
         };
 

@@ -165,6 +165,23 @@ CREATE TABLE releases (
   FOREIGN KEY (publication_id) REFERENCES publications(resource_id) ON DELETE RESTRICT
 );
 
+CREATE TABLE direct_operations (
+  id TEXT PRIMARY KEY NOT NULL,
+  owner_context_id TEXT NOT NULL,
+  intent TEXT NOT NULL CHECK (length(trim(intent)) > 0),
+  status TEXT NOT NULL CHECK (status IN ('active', 'completed', 'failed', 'cancelled')),
+  project_id TEXT NOT NULL,
+  panel_id TEXT NOT NULL,
+  target_id TEXT NOT NULL CHECK (length(trim(target_id)) > 0),
+  base_revision INTEGER NOT NULL CHECK (base_revision >= 0),
+  operation_json TEXT NOT NULL CHECK (json_valid(operation_json)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, panel_id) REFERENCES panels(project_id, id) ON DELETE CASCADE
+);
+
 CREATE TABLE tasks (
   id TEXT PRIMARY KEY NOT NULL,
   project_id TEXT NOT NULL,
@@ -242,6 +259,10 @@ CREATE INDEX assets_media_type_idx ON assets(media_type, resource_id);
 CREATE INDEX wiki_spaces_position_idx ON wiki_spaces(position, resource_id);
 CREATE INDEX publications_position_idx ON publications(position, resource_id);
 CREATE INDEX releases_publication_idx ON releases(publication_id, position, resource_id);
+CREATE INDEX direct_operations_owner_status_idx
+  ON direct_operations(owner_context_id, status, updated_at DESC);
+CREATE INDEX direct_operations_target_idx
+  ON direct_operations(project_id, panel_id, target_id, updated_at DESC);
 CREATE INDEX change_scopes_project_revision_idx ON change_scopes(project_id, revision);
 CREATE INDEX change_scopes_resource_revision_idx ON change_scopes(resource_id, revision);
 CREATE INDEX tasks_project_status_idx ON tasks(project_id, status, updated_at DESC);

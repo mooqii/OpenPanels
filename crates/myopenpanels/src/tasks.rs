@@ -10,28 +10,66 @@ include!("tasks/handoffs.rs");
 
 pub(crate) const TASK_EXECUTION_LIMIT: i64 = 3;
 
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedPanelState {
+    pub(crate) panel_id: String,
+    pub(crate) base_revision: i64,
+    pub(crate) state: Value,
+}
+
+impl PreparedPanelState {
+    pub(crate) fn new(panel_id: &str, base_revision: i64, state: Value) -> Self {
+        Self {
+            panel_id: panel_id.to_owned(),
+            base_revision,
+            state,
+        }
+    }
+}
+
+struct TaskOutputPlan {
+    result: Option<Value>,
+    panel_state: Option<PreparedPanelState>,
+}
+
+impl TaskOutputPlan {
+    fn empty() -> Self {
+        Self {
+            result: None,
+            panel_state: None,
+        }
+    }
+
+    fn completed(result: Option<Value>, panel_state: Option<PreparedPanelState>) -> Self {
+        Self {
+            result,
+            panel_state,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum TaskQueueAdapter {
+enum TaskDomain {
     Wiki,
     Writing,
     Publication,
     Release,
 }
 
-fn task_queue_adapter(queue: &str) -> Result<TaskQueueAdapter, CliError> {
+fn task_domain(queue: &str) -> Result<TaskDomain, CliError> {
     match queue {
-        "wiki" => Ok(TaskQueueAdapter::Wiki),
-        "writing" => Ok(TaskQueueAdapter::Writing),
-        "publication" => Ok(TaskQueueAdapter::Publication),
-        "release" => Ok(TaskQueueAdapter::Release),
+        "wiki" => Ok(TaskDomain::Wiki),
+        "writing" => Ok(TaskDomain::Writing),
+        "publication" => Ok(TaskDomain::Publication),
+        "release" => Ok(TaskDomain::Release),
         queue => Err(CliError::with_code(
-            "queue_adapter_missing",
-            format!("No task lifecycle adapter is available for queue: {queue}"),
+            "task_domain_missing",
+            format!("No Task domain is available for queue: {queue}"),
         )),
     }
 }
 
 #[cfg(test)]
-pub(crate) fn task_queue_has_lifecycle_adapter(queue: &str) -> bool {
-    task_queue_adapter(queue).is_ok()
+pub(crate) fn task_queue_has_domain(queue: &str) -> bool {
+    task_domain(queue).is_ok()
 }

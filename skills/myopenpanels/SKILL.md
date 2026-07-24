@@ -2,7 +2,7 @@
 name: myopenpanels
 description: "Use MyOpenPanels for persistent visual, knowledge, writing, typesetting, or publishing work in its Canvas, Wiki, Writing, Typesetting, or Publishing panel, including drawing, image work, diagrams, moodboards, brainstorming, organizing, research, drafting, writing, layout, and release tasks. Also use when the user asks to open or launch MyOpenPanels (including 打开面板) or refers to its current panel, selection, or content. After Studio is open, use the matching Agent Procedure Bootstrap when intent is clear and generic Agent Bootstrap only as fallback. Skip Bootstrap only for an open-only request or work clearly unrelated to MyOpenPanels."
 metadata:
-  version: "5.7"
+  version: "5.9"
   source: "https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels"
 ---
 
@@ -64,8 +64,8 @@ start Studio or Bootstrap; follow its prompt and task-id-bound broker commands.
 For a Studio-generated `task handoff start` command, run that exact command
 instead of Bootstrap. Follow its ExecutionBundle and Delivery Contract; create
 only the declared workspace artifacts and execution result. The Runtime owns
-Operation creation, output staging, and Task completion. Do not perform
-separate Catalog or Skill discovery.
+output staging and Task completion. Do not perform separate Catalog or Skill
+discovery.
 When the request clearly matches one entry below, run a fresh Procedure
 Bootstrap directly:
 
@@ -86,20 +86,26 @@ Wiki:
 
 - `wiki-space.query`: Answer from selected Wiki knowledge or selected Wiki documents.
 - `wiki-source.import`: Import a source file or Markdown text as a Wiki Raw Document.
+- `wiki-source.create-from-my-document`: Create a Wiki Source from an explicitly identified My Document.
 - `wiki-space.manage`: List, activate, or materialize a Wiki space.
+
+My Document:
+
+- `my-document.read`: Read a My Document selected or named by the user.
+- `my-document.create`: Create a new My Document through a target-bound Operation.
+- `my-document.revise`: Revise an existing My Document through a target-bound Operation.
+- `my-document.delete`: Delete an explicitly identified My Document.
 
 Writing:
 
 - `writing.context.read`: Read the Writing panel's selected source and Wiki context.
 
+Typesetting:
+
+- `publication.title.request`: Create a title generation Task for an explicitly identified Typesetting publication.
+
 Task queue:
 
-- `my-document.read`: Read a My Document selected or named by the user.
-- `my-document.create`: Create a new My Document through a target-bound Operation.
-- `my-document.revise`: Revise an existing My Document through a target-bound Operation.
-- `wiki-source.create-from-my-document`: Create a Wiki Source from an explicitly identified My Document.
-- `my-document.delete`: Delete an explicitly identified My Document.
-- `publication.title.request`: Create a title generation Task for an explicitly identified Typesetting publication.
 - `task.queue.inspect`: Inspect queued work, Task state, and its recent execution summaries.
 - `task.queue.retry`: Retry an explicitly identified failed Task.
 - `task.queue.cancel`: Cancel an explicitly identified Task.
@@ -120,12 +126,16 @@ Task Handoffs must never be passed to Procedure Bootstrap:
 Execute their exact Studio or claimed Task handoff instead.
 <!-- END GENERATED CAPABILITY INDEX -->
 
-When intent is ambiguous, no Procedure matches, or the CLI reports
-`agent_procedure_not_found`, run the generic fallback:
+When intent is ambiguous or no Procedure key is known, run the generic
+fallback:
 
 ```bash
 myopenpanels agent bootstrap --format json
 ```
+
+If an exact key is no longer registered, the same Procedure Bootstrap call
+returns generic Bootstrap data with `procedureFallback`; do not issue a second
+fallback call.
 
 Execute `actions.required` sequentially. For `executor: "cli"`, prepend the
 resolved executable to the returned `argv`; for typed file, URL, Skill, or host
@@ -133,10 +143,11 @@ actions, use the matching executor without translating the action into a shell
 command. If a required action updates the Entry Skill, Bootstrap again. Only
 after required actions finish, choose applicable `actions.suggested` entries by
 their structured conditions. Procedure Bootstrap returns only its relevant
-command descriptions in `commands.items`; retain each returned command path and
-flags, replace required placeholders with request values, and add only optional
-flags declared by that descriptor. Generic Bootstrap may still return scoped
-`agent catalog --domain <domain>` discovery actions.
+System Skill body, exact reference bodies, selection materialization, target
+versions, execution contract, and command descriptions. Retain each returned
+command path and flags, replace required placeholders with request values, and
+add only optional flags declared by that descriptor. Generic Bootstrap may
+still return scoped `agent catalog --domain <domain>` discovery actions.
 
 Never reuse an earlier Bootstrap result, execute display text, or reconstruct
 panel commands from memory.

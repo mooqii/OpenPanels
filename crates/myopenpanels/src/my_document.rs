@@ -5,10 +5,13 @@
 //! instead of treating the Wiki panel as the document owner.
 
 pub use crate::wiki::{
-    begin_my_document_for_target, complete_my_document_for_target, create_my_document,
-    delete_my_document, finish_my_document_operation, import_my_document, list_my_documents,
+    create_my_document, delete_my_document, import_my_document, list_my_documents,
     my_document_import_original, my_document_import_original_for_target, publish_my_document,
-    read_my_document, recover_my_document_for_target, remove_pending_writing_document,
-    rename_my_document, rename_my_document_file, reveal_my_document_import_original,
-    write_my_document, write_my_document_for_agent,
+    read_my_document, rename_my_document, rename_my_document_file,
+    reveal_my_document_import_original, write_my_document, write_my_document_for_agent,
+};
+
+pub(crate) use crate::wiki::{
+    my_document_content_descriptor, prepare_begin_my_document_for_target,
+    prepare_complete_my_document_for_target, prepare_finish_my_document_operation,
 };

@@ -3,6 +3,7 @@
     {
       "key": "panel.canvas.selection.read",
       "description": "Read the current explicit Canvas selection or its empty state.",
+      "moduleKey": "canvas-document",
       "panelKind": "canvas",
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -23,6 +24,7 @@
     {
       "key": "panel.canvas.selection.export",
       "description": "Export the explicit Canvas selection to a user-requested file.",
+      "moduleKey": "canvas-document",
       "panelKind": "canvas",
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -43,6 +45,7 @@
     {
       "key": "canvas.image.insert",
       "description": "Insert an existing bitmap file into the Project Canvas.",
+      "moduleKey": "canvas-document",
       "panelKind": "canvas",
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -63,6 +66,7 @@
     {
       "key": "canvas.image.generate",
       "description": "Generate a new bitmap and place it into the Project Canvas.",
+      "moduleKey": "canvas-document",
       "panelKind": "canvas",
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -88,6 +92,7 @@
     {
       "key": "canvas.image.edit",
       "description": "Edit, restyle, or redraw an explicitly selected Canvas image.",
+      "moduleKey": "canvas-document",
       "panelKind": "canvas",
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -114,6 +119,7 @@
     {
       "key": "wiki-space.query",
       "description": "Answer from selected Wiki knowledge or selected Wiki documents.",
+      "moduleKey": "wiki-space",
       "panelKind": "wiki",
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -142,6 +148,7 @@
     {
       "key": "wiki-source.import",
       "description": "Import a source file or Markdown text as a Wiki Raw Document.",
+      "moduleKey": "wiki-source",
       "panelKind": "wiki",
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -162,6 +169,7 @@
     {
       "key": "my-document.read",
       "description": "Read a My Document selected or named by the user.",
+      "moduleKey": "my-document",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -183,6 +191,7 @@
     {
       "key": "my-document.create",
       "description": "Create a new My Document through a target-bound Operation.",
+      "moduleKey": "my-document",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -205,6 +214,7 @@
     {
       "key": "my-document.revise",
       "description": "Revise an existing My Document through a target-bound Operation.",
+      "moduleKey": "my-document",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -229,6 +239,7 @@
     {
       "key": "wiki-source.create-from-my-document",
       "description": "Create a Wiki Source from an explicitly identified My Document.",
+      "moduleKey": "wiki-source",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -250,6 +261,7 @@
     {
       "key": "my-document.delete",
       "description": "Delete an explicitly identified My Document.",
+      "moduleKey": "my-document",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -272,6 +284,7 @@
     {
       "key": "wiki-space.manage",
       "description": "List, activate, or materialize a Wiki space.",
+      "moduleKey": "wiki-space",
       "panelKind": "wiki",
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -296,6 +309,7 @@
     {
       "key": "writing.context.read",
       "description": "Read the Writing panel's selected source and Wiki context.",
+      "moduleKey": "writing",
       "panelKind": "writing",
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -323,6 +337,7 @@
     {
       "key": "publication.title.request",
       "description": "Create a title generation Task for an explicitly identified Typesetting publication.",
+      "moduleKey": "publication",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -346,6 +361,7 @@
     {
       "key": "task.queue.inspect",
       "description": "Inspect queued work, Task state, and its recent execution summaries.",
+      "moduleKey": "task",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-task-queue",
@@ -363,6 +379,7 @@
     {
       "key": "task.queue.retry",
       "description": "Retry an explicitly identified failed Task.",
+      "moduleKey": "task",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-task-queue",
@@ -380,6 +397,7 @@
     {
       "key": "task.queue.cancel",
       "description": "Cancel an explicitly identified Task.",
+      "moduleKey": "task",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-task-queue",
@@ -397,6 +415,7 @@
     {
       "key": "task.queue.archive",
       "description": "Archive an explicitly identified terminal Task.",
+      "moduleKey": "task",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-task-queue",
@@ -414,6 +433,7 @@
     {
       "key": "wiki-source.convert",
       "description": "Convert an immutable raw source into faithful Markdown inside a claimed Task.",
+      "moduleKey": "wiki-source",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -440,6 +460,7 @@
     {
       "key": "wiki-space.maintain",
       "description": "Maintain generated Wiki pages inside an exact claimed Task.",
+      "moduleKey": "wiki-space",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -473,6 +494,7 @@
     {
       "key": "writing.execute",
       "description": "Execute a submitted Writing request inside its claimed Task.",
+      "moduleKey": "writing",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -500,6 +522,7 @@
     {
       "key": "skill.writing.distill",
       "description": "Distill selected examples into a reusable Writing Skill inside its claimed Task.",
+      "moduleKey": "skill",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -527,6 +550,7 @@
     {
       "key": "release.execute",
       "description": "Execute a captured Publishing release inside its exact claimed Task.",
+      "moduleKey": "release",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -560,6 +584,7 @@
     {
       "key": "publication.cover.generate",
       "description": "Generate a cover for a captured Typesetting publication inside its exact claimed Task.",
+      "moduleKey": "publication",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -587,6 +612,7 @@
     {
       "key": "publication.title.generate",
       "description": "Generate title candidates for a captured Typesetting publication inside its exact claimed Task.",
+      "moduleKey": "publication",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -614,6 +640,7 @@
     {
       "key": "publication.content.format",
       "description": "Automatically format captured Typesetting content inside its exact claimed Task.",
+      "moduleKey": "publication",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-panels",
@@ -641,6 +668,7 @@
     {
       "key": "task.scope.execute",
       "description": "Execute the exact Task scope supplied by a Studio handoff.",
+      "moduleKey": "task",
       "panelKind": null,
       "platformContract": {
         "systemSkillId": "myopenpanels-task-queue",

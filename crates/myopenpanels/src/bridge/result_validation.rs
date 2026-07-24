@@ -91,13 +91,46 @@ fn build_my_document_write_output_plan(
     } else {
         "markdown"
     };
+    let logical_path = if document_format == "text" {
+        "content.txt"
+    } else {
+        "content.md"
+    };
+    let base_content_version = task
+        .pointer("/input/targetContentVersion")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            CliError::with_code(
+                "invalid_output",
+                "My Document target version is missing.",
+            )
+        })?;
+    let mode = task
+        .pointer("/input/mode")
+        .and_then(Value::as_str)
+        .unwrap_or("create");
     Ok(TaskOutputPlanDraft {
         result,
-        actions: vec![TaskOutputAction::PrepareMyDocument {
-            document_id: document_id.to_owned(),
-            title,
-            document_format: document_format.to_owned(),
+        actions: vec![TaskOutputAction::StageText {
+            resource_kind: crate::content::ResourceKind::MyDocument
+                .as_str()
+                .to_owned(),
+            resource_key: document_id.to_owned(),
+            logical_path: logical_path.to_owned(),
             artifact,
+            mime_type: if document_format == "text" {
+                "text/plain"
+            } else {
+                "text/markdown"
+            }
+            .to_owned(),
+            metadata: json!({
+                "documentId": document_id,
+                "baseContentVersion": base_content_version,
+                "mode": mode,
+                "title": title,
+                "fileName": logical_path,
+            }),
         }],
     })
 }
@@ -156,20 +189,7 @@ fn build_publication_cover_output_plan(
         "Publication Cover",
     )?;
     require_outcome(&result, "generated", "Publication Cover")?;
-    let artifact = exactly_one_binary_artifact(workspace, &result, "Publication Cover")?;
-    validate_fixed_artifact(
-        &artifact,
-        "publication-cover",
-        "outputs/cover.png",
-        "Publication Cover",
-    )?;
-    let bytes = fs::read(&artifact.absolute_path).map_err(to_cli_error)?;
-    let (width, height) = png_dimensions(&bytes).ok_or_else(|| {
-        CliError::with_code(
-            "invalid_output",
-            "Publication Cover output must be a valid non-empty PNG bitmap.",
-        )
-    })?;
+    let artifacts = publication_cover_artifacts(workspace, &result)?;
     let project_id = task
         .get("projectId")
         .and_then(Value::as_str)
@@ -185,17 +205,57 @@ fn build_publication_cover_output_plan(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| CliError::with_code("invalid_output", "Cover Task id is missing."))?;
-    Ok(TaskOutputPlanDraft {
-        result,
-        actions: vec![TaskOutputAction::PrepareTypesettingCover {
+    let mut actions = Vec::with_capacity(artifacts.len());
+    for artifact in artifacts {
+        let bytes = fs::read(&artifact.absolute_path).map_err(to_cli_error)?;
+        let (width, height) = png_dimensions(&bytes).ok_or_else(|| {
+            CliError::with_code(
+                "invalid_output",
+                "Publication Cover output must contain only valid non-empty PNG bitmaps.",
+            )
+        })?;
+        actions.push(TaskOutputAction::PrepareTypesettingCover {
             project_id: project_id.to_owned(),
             panel_id: panel_id.to_owned(),
             task_id: task_id.to_owned(),
             artifact,
             width,
             height,
-        }],
+        });
+    }
+    Ok(TaskOutputPlanDraft {
+        result,
+        actions,
     })
+}
+
+fn publication_cover_artifacts(
+    workspace: &Path,
+    result: &Value,
+) -> Result<Vec<TaskOutputArtifact>, CliError> {
+    let artifacts = read_artifacts_with_mode(workspace, result, "Publication Cover", false)?;
+    if artifacts.is_empty() || artifacts.len() > MAX_PUBLICATION_COVER_ARTIFACTS {
+        return Err(CliError::with_code(
+            "invalid_output",
+            format!(
+                "Publication Cover must declare between 1 and {MAX_PUBLICATION_COVER_ARTIFACTS} image artifacts."
+            ),
+        ));
+    }
+    let mut seen = HashSet::new();
+    for artifact in &artifacts {
+        if artifact.role != "publication-cover"
+            || artifact.logical_path.is_some()
+            || !artifact.relative_path.ends_with(".png")
+            || !seen.insert(artifact.relative_path.clone())
+        {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "Publication Cover declared an unexpected image artifact.",
+            ));
+        }
+    }
+    Ok(artifacts)
 }
 
 fn build_publication_title_output_plan(
@@ -792,21 +852,6 @@ fn exactly_one_artifact(
     Ok(artifact.clone())
 }
 
-fn exactly_one_binary_artifact(
-    workspace: &Path,
-    result: &Value,
-    label: &str,
-) -> Result<TaskOutputArtifact, CliError> {
-    let artifacts = read_artifacts_with_mode(workspace, result, label, false)?;
-    let [artifact] = artifacts.as_slice() else {
-        return Err(CliError::with_code(
-            "invalid_output",
-            format!("{label} must declare exactly one artifact."),
-        ));
-    };
-    Ok(artifact.clone())
-}
-
 fn validate_fixed_artifact(
     artifact: &TaskOutputArtifact,
     role: &str,
@@ -1009,201 +1054,6 @@ fn validate_logical_output_path(path: &str, label: &str) -> Result<(), CliError>
         ));
     }
     Ok(())
-}
-
-#[cfg(test)]
-fn validate_conversion_execution_result(
-    paths: &MyOpenPanelsPaths,
-    task: &Value,
-    workspace: &Path,
-) -> Result<Value, CliError> {
-    let legacy = read_legacy_result(workspace, "Document conversion")?;
-    let document_id = task
-        .pointer("/input/documentId")
-        .and_then(Value::as_str)
-        .or_else(|| task.get("documentId").and_then(Value::as_str))
-        .unwrap_or("");
-    if legacy.pointer("/output/documentId").and_then(Value::as_str) != Some(document_id)
-        || legacy.pointer("/output/logicalPath").and_then(Value::as_str) != Some("source.md")
-    {
-        return Err(CliError::with_code(
-            "invalid_output",
-            "Legacy conversion result does not match its target.",
-        ));
-    }
-    let staged = crate::content::staged_files_for_task(
-        paths,
-        task.get("id").and_then(Value::as_str).unwrap_or(""),
-        crate::content::ResourceKind::WikiMarkdown,
-    )?;
-    let [(staged_id, logical_path, bytes, _)] = staged.as_slice() else {
-        return Err(CliError::with_code(
-            "invalid_output",
-            "Legacy conversion result requires one staged file.",
-        ));
-    };
-    if staged_id != document_id || logical_path != "source.md" {
-        return Err(CliError::with_code(
-            "invalid_output",
-            "Legacy conversion staged an unexpected file.",
-        ));
-    }
-    write_test_artifact(workspace, "outputs/source.md", bytes)?;
-    let result = json!({
-        "outcome": "converted",
-        "summary": legacy.get("summary"),
-        "artifacts": [{ "role": "source-markdown", "relativePath": "outputs/source.md" }],
-    });
-    write_test_result(workspace, &result)?;
-    Ok(build_conversion_output_plan(paths, task, workspace, "test", 0, &json!({}))?.result)
-}
-
-#[cfg(test)]
-fn validate_my_document_write_execution_result(
-    paths: &MyOpenPanelsPaths,
-    task: &Value,
-    workspace: &Path,
-) -> Result<Value, CliError> {
-    let legacy = read_legacy_result(workspace, "My Document write")?;
-    let task_id = task.get("id").and_then(Value::as_str).unwrap_or("");
-    let document_id = task
-        .pointer("/input/targetMyDocumentId")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let operation_id = legacy
-        .pointer("/output/operationId")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let staged = crate::content::staged_files_for_task(
-        paths,
-        task_id,
-        crate::content::ResourceKind::MyDocument,
-    )?;
-    let [(staged_id, logical_path, bytes, metadata)] = staged.as_slice() else {
-        return Err(CliError::with_code(
-            "invalid_output",
-            "Legacy My Document write result requires one staged document.",
-        ));
-    };
-    if staged_id != document_id
-        || metadata.get("operationId").and_then(Value::as_str) != Some(operation_id)
-    {
-        return Err(CliError::with_code(
-            "invalid_output",
-            "Legacy My Document write result does not match its Operation.",
-        ));
-    }
-    let relative = if logical_path == "content.txt" {
-        "outputs/document.txt"
-    } else {
-        "outputs/document.md"
-    };
-    write_test_artifact(workspace, relative, bytes)?;
-    let result = json!({
-        "outcome": "written",
-        "summary": legacy.get("summary"),
-        "title": "My Document",
-        "artifacts": [{ "role": "my-document", "relativePath": relative }],
-    });
-    write_test_result(workspace, &result)?;
-    Ok(build_my_document_write_output_plan(paths, task, workspace, "test", 0, &json!({}))?.result)
-}
-
-#[cfg(test)]
-fn validate_distillation_execution_result(
-    paths: &MyOpenPanelsPaths,
-    task: &Value,
-    workspace: &Path,
-) -> Result<Value, CliError> {
-    let legacy = read_legacy_result(workspace, "Writing distillation")?;
-    let skill_id = task
-        .pointer("/input/skillId")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    if legacy.pointer("/output/skillId").and_then(Value::as_str) != Some(skill_id) {
-        return Err(CliError::with_code(
-            "invalid_output",
-            "Legacy distillation result does not match its Skill.",
-        ));
-    }
-    let staged = crate::content::staged_files_for_task(
-        paths,
-        task.get("id").and_then(Value::as_str).unwrap_or(""),
-        crate::content::ResourceKind::WritingSkill,
-    )?;
-    let bytes = staged
-        .iter()
-        .find(|(id, path, _, _)| id == skill_id && path == "SKILL.md")
-        .map(|(_, _, bytes, _)| bytes)
-        .ok_or_else(|| {
-            CliError::with_code("invalid_output", "Legacy distillation did not stage SKILL.md.")
-        })?;
-    write_test_artifact(workspace, "outputs/SKILL.md", bytes)?;
-    let result = json!({
-        "outcome": "distilled",
-        "summary": legacy.get("summary"),
-        "artifacts": [{ "role": "writing-skill", "relativePath": "outputs/SKILL.md" }],
-    });
-    write_test_result(workspace, &result)?;
-    Ok(build_distillation_output_plan(paths, task, workspace, "test", 0, &json!({}))?.result)
-}
-
-#[cfg(test)]
-fn validate_wiki_execution_result(
-    paths: &MyOpenPanelsPaths,
-    task: &Value,
-    workspace: &Path,
-) -> Result<Value, CliError> {
-    let legacy = read_legacy_result(workspace, "Wiki")?;
-    let changed_paths = legacy
-        .get("changedPaths")
-        .cloned()
-        .unwrap_or_else(|| json!([]));
-    let staged = crate::content::staged_files_for_task(
-        paths,
-        task.get("id").and_then(Value::as_str).unwrap_or(""),
-        crate::content::ResourceKind::WikiSpace,
-    )?;
-    let mut artifacts = Vec::new();
-    for (_, logical_path, bytes, _) in staged {
-        let relative = format!("outputs/wiki/{logical_path}");
-        write_test_artifact(workspace, &relative, &bytes)?;
-        artifacts.push(json!({
-            "role": "wiki-page",
-            "relativePath": relative,
-            "logicalPath": logical_path,
-        }));
-    }
-    let mut result = json!({
-        "outcome": legacy.get("outcome"),
-        "summary": legacy.get("summary"),
-        "changedPaths": changed_paths,
-        "artifacts": artifacts,
-    });
-    if task.get("type").and_then(Value::as_str) == Some("ingest_markdown_into_wiki") {
-        result["disposition"] = legacy.get("disposition").cloned().unwrap_or(Value::Null);
-        result["reasonCode"] = legacy.get("reasonCode").cloned().unwrap_or(Value::Null);
-    }
-    write_test_result(workspace, &result)?;
-    Ok(build_wiki_output_plan(paths, task, workspace, "test", 0, &json!({}))?.result)
-}
-
-#[cfg(test)]
-fn read_legacy_result(workspace: &Path, label: &str) -> Result<Value, CliError> {
-    let raw = fs::read_to_string(workspace.join(EXECUTION_RESULT_FILE)).map_err(|_| {
-        CliError::with_code("invalid_output", format!("{label} result is missing."))
-    })?;
-    serde_json::from_str(&raw)
-        .map_err(|_| CliError::with_code("invalid_output", format!("{label} result is invalid.")))
-}
-
-#[cfg(test)]
-fn write_test_artifact(workspace: &Path, relative: &str, bytes: &[u8]) -> Result<(), CliError> {
-    let path = workspace.join(relative);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
-    }
-    fs::write(path, bytes).map_err(to_cli_error)
 }
 
 #[cfg(test)]

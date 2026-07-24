@@ -140,8 +140,8 @@ mod tests {
             StudioVersionRelation::Newer
         );
         assert_eq!(
-            compare_studio_version(None).expect("legacy"),
-            StudioVersionRelation::Older
+            compare_studio_version(None).expect_err("missing version").code(),
+            Some("studio_version_mismatch")
         );
         let error = compare_studio_version(Some("not-semver")).expect_err("invalid");
         assert_eq!(error.code(), Some("studio_version_mismatch"));
@@ -265,6 +265,29 @@ mod tests {
         };
 
         assert_eq!(error.code(), Some("studio_already_running"));
+    }
+
+    #[test]
+    fn owner_lock_survives_storage_directory_replacement() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join(".myopenpanels");
+        let moved_storage_dir = temp.path().join("moved-myopenpanels");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let owner_paths = paths_for(&project_dir, &storage_dir, "owner");
+        let borrower_paths = paths_for(&project_dir, &storage_dir, "borrower");
+        let owner_lock =
+            acquire_studio_owner_lock(&owner_paths, 41_001).expect("first owner lock");
+        fs::rename(&storage_dir, &moved_storage_dir).expect("move storage");
+        fs::create_dir_all(&storage_dir).expect("replacement storage");
+
+        let error = match acquire_studio_owner_lock(&borrower_paths, 41_002) {
+            Ok(_) => panic!("replacement storage acquired a second owner lock"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code(), Some("studio_already_running"));
+        drop(owner_lock);
     }
 
     #[test]

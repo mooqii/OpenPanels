@@ -35,7 +35,7 @@ mod publication_cover_png_tests {
     }
 
     #[test]
-    fn cover_output_plan_accepts_one_png_and_rejects_unsafe_or_invalid_outputs() {
+    fn cover_output_plan_accepts_multiple_pngs_and_rejects_unsafe_or_invalid_outputs() {
         let temp = tempfile::tempdir().expect("temp");
         let project = temp.path().join("project");
         let storage = temp.path().join("storage");
@@ -53,16 +53,19 @@ mod publication_cover_png_tests {
             "projectId": "project:cover",
             "panelId": "panel:typesetting"
         });
-        let write_result = |relative_path: &str| {
+        let write_result = |relative_paths: Vec<&str>| {
             write_test_result(
                 &workspace,
                 &json!({
                     "outcome": "generated",
                     "summary": "cover",
-                    "artifacts": [{
-                        "role": "publication-cover",
-                        "relativePath": relative_path
-                    }]
+                    "artifacts": relative_paths
+                        .into_iter()
+                        .map(|relative_path| json!({
+                            "role": "publication-cover",
+                            "relativePath": relative_path
+                        }))
+                        .collect::<Vec<_>>()
                 }),
             )
             .expect("execution result");
@@ -70,7 +73,9 @@ mod publication_cover_png_tests {
 
         fs::write(workspace.join("outputs/cover.png"), structurally_valid_png())
             .expect("valid png");
-        write_result("outputs/cover.png");
+        fs::write(workspace.join("outputs/cover-2.png"), structurally_valid_png())
+            .expect("second valid png");
+        write_result(vec!["outputs/cover.png", "outputs/cover-2.png"]);
         let plan = build_publication_cover_output_plan(
             &paths,
             &task,
@@ -80,9 +85,9 @@ mod publication_cover_png_tests {
             &json!({}),
         )
         .expect("valid output");
-        assert_eq!(plan.actions.len(), 1);
+        assert_eq!(plan.actions.len(), 2);
 
-        write_result("../cover.png");
+        write_result(vec!["../cover.png"]);
         assert!(build_publication_cover_output_plan(
             &paths,
             &task,
@@ -93,7 +98,7 @@ mod publication_cover_png_tests {
         )
         .is_err());
 
-        write_result("outputs/cover.png");
+        write_result(vec!["outputs/cover.png"]);
         fs::write(workspace.join("outputs/cover.png"), []).expect("empty png");
         assert!(build_publication_cover_output_plan(
             &paths,

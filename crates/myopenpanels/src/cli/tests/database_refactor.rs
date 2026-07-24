@@ -236,6 +236,135 @@ fn claim_transaction_enforces_global_concurrency_and_mutation_order() {
 }
 
 #[test]
+fn task_claim_and_heartbeat_do_not_write_domain_panel_state() {
+    let temp = tempfile::tempdir().expect("temp");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join("storage");
+    fs::create_dir_all(&project_dir).expect("project");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
+    let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let uploaded = crate::wiki::add_raw_document(
+        &paths,
+        "source.png",
+        Some("Source"),
+        Some("image/png"),
+        "user",
+        Some(&wiki_space_id),
+        b"binary source",
+    )
+    .expect("raw document");
+    let task_id = uploaded["document"]["conversion"]["taskId"]
+        .as_str()
+        .expect("task id");
+    let storage = Storage::open(&paths).expect("storage");
+    let revision = storage
+        .read_panel_state_revision(&bootstrap.project.id, &bootstrap.panel.id)
+        .expect("revision");
+    drop(storage);
+    let _broker = crate::content::enable_test_task_broker();
+    let claim = tasks::claim_task(&paths, task_id, "agent-cli:codex").expect("claim");
+    assert_eq!(claim["task"]["status"], "running");
+    tasks::heartbeat_task(
+        &paths,
+        task_id,
+        claim["leaseToken"].as_str().expect("lease"),
+    )
+    .expect("heartbeat");
+    assert_eq!(
+        Storage::open(&paths)
+            .expect("storage")
+            .read_panel_state_revision(&bootstrap.project.id, &bootstrap.panel.id)
+            .expect("revision"),
+        revision
+    );
+}
+
+#[test]
+fn task_output_plan_conflict_leaves_task_and_panel_unchanged() {
+    let temp = tempfile::tempdir().expect("temp");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join("storage");
+    fs::create_dir_all(&project_dir).expect("project");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let wiki_panel = bootstrap
+        .panels
+        .iter()
+        .find(|panel| panel.panel.kind == PanelKind::Wiki)
+        .expect("wiki panel");
+    let task = Storage::open(&paths)
+        .expect("storage")
+        .insert_task(
+            &bootstrap.project.id,
+            &wiki_panel.panel.id,
+            "wiki",
+            "maintain_wiki",
+            "wiki.maintain",
+            "wiki:default",
+            &json!({ "changeEvents": [] }),
+            &json!({ "wikiSpaceId": "wiki:default", "agentSkillId": "wiki-default" }),
+        )
+        .expect("task");
+    let task_id = task["id"].as_str().expect("task id");
+    let _broker = crate::content::enable_test_task_broker();
+    let claim = tasks::claim_task(&paths, task_id, "agent-cli:codex").expect("claim");
+
+    let storage = Storage::open(&paths).expect("storage");
+    let (mut prepared_state, base_revision) = storage
+        .read_panel_state_snapshot(&bootstrap.project.id, &wiki_panel.panel.id)
+        .expect("snapshot")
+        .expect("wiki state");
+    prepared_state["outputPlanMarker"] = json!("prepared");
+    let mut concurrent_state = prepared_state.clone();
+    concurrent_state["outputPlanMarker"] = json!("concurrent");
+    storage
+        .write_panel_state(
+            &bootstrap.project.id,
+            &wiki_panel.panel.id,
+            &concurrent_state,
+        )
+        .expect("concurrent write");
+    drop(storage);
+
+    let error = tasks::complete_task_with_prepared_panel_state_for_test(
+        &paths,
+        &bootstrap.project.id,
+        task_id,
+        claim["executionGeneration"]
+            .as_i64()
+            .expect("execution generation"),
+        tasks::PreparedPanelState::new(&wiki_panel.panel.id, base_revision, prepared_state),
+    )
+    .expect_err("stale output plan must conflict");
+    assert_eq!(error.code(), Some("content_conflict"));
+    assert_eq!(
+        tasks::inspect_task(&paths, task_id).expect("task")["task"]["status"],
+        "running"
+    );
+    assert_eq!(
+        Storage::open(&paths)
+            .expect("storage")
+            .read_panel_state(&bootstrap.project.id, &wiki_panel.panel.id)
+            .expect("panel state")
+            .expect("wiki state")["outputPlanMarker"],
+        "concurrent"
+    );
+}
+
+#[test]
 fn deleting_a_raw_document_cancels_and_fences_its_active_tasks() {
     let temp = tempfile::tempdir().expect("temp");
     let project_dir = temp.path().join("project");
@@ -505,10 +634,12 @@ fn filtered_wiki_ingestion_is_persisted_as_a_successful_terminal_result() {
         .expect("task id")
         .to_owned();
 
-    crate::wiki::claim_task(&paths, &task_id).expect("claim");
-    crate::wiki::complete_task(
+    let claim =
+        crate::tasks::claim_task(&paths, &task_id, "agent-cli:codex").expect("claim");
+    crate::tasks::complete_task(
         &paths,
         &task_id,
+        claim["leaseToken"].as_str().expect("lease"),
         Some(json!({
             "outcome": "no_change",
             "disposition": "excluded",

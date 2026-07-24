@@ -45,7 +45,6 @@ import {
   fetchStudioHealth,
   loadBootstrap,
   normalizeBootstrap,
-  normalizePanelState,
   normalizeSnapshot,
   publishingStateFromAppState,
   saveCanvasPanelState,
@@ -55,7 +54,13 @@ import {
   wikiStateFromAppState,
   writingStateFromAppState,
 } from "./lib/api"
-import { mergeLiveProjectBootstrap, sameSelectedShapeIds } from "./lib/app-sync"
+import {
+  type ActivePanelResponse,
+  mergeActivePanelResponse,
+  mergeLiveProjectBootstrap,
+  sameSelectedShapeIds,
+} from "./lib/app-sync"
+import { BootstrapContractError } from "./lib/bootstrap-contract"
 import { shouldShowOpenInBrowserPrompt } from "./lib/browser-context"
 import {
   flushBeforeRuntimeReload,
@@ -65,11 +70,7 @@ import {
   runtimePollDelay,
   runtimeVersionDecision,
 } from "./lib/studio-runtime"
-import type {
-  MyOpenPanelsPanel,
-  MyOpenPanelsPanelKind,
-  MyOpenPanelsProject,
-} from "./protocol"
+import type { MyOpenPanelsPanelKind, MyOpenPanelsProject } from "./protocol"
 import type {
   AgentOperation,
   AppState,
@@ -138,6 +139,14 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     transport,
   })
 
+  const surfaceContractError = useCallback((error: unknown): boolean => {
+    if (!(error instanceof BootstrapContractError)) return false
+    appStateRef.current = null
+    canvasDirtyRef.current = false
+    setBootstrapError(error.message)
+    setAppState(null)
+    return true
+  }, [])
   const openAgentTaskList = useCallback(
     (filter: TaskFilter, taskIds?: string[]) => {
       setAgentPanelTab("tasks")
@@ -200,7 +209,13 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     async (projectId?: string | null) => {
       setBootstrapError(null)
       const data = await loadBootstrap(transport, projectId)
-      const normalized = normalizeBootstrap(data)
+      let normalized: AppState
+      try {
+        normalized = normalizeBootstrap(data)
+      } catch (error) {
+        surfaceContractError(error)
+        throw error
+      }
       window.localStorage.setItem(
         ACTIVE_PROJECT_STORAGE_KEY,
         normalized.project.id
@@ -217,7 +232,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       setSnapshotLoadVersion((version) => version + 1)
       setProjects(data.projects ?? (await fetchProjects(transport)))
     },
-    [transport]
+    [surfaceContractError, transport]
   )
 
   useEffect(() => {
@@ -251,12 +266,13 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
         }
       } catch (error) {
         console.error("Failed to sync MyOpenPanels active project", error)
+        surfaceContractError(error)
       } finally {
         syncing = false
       }
     }, 5000)
     return () => window.clearInterval(timer)
-  }, [activeAppProjectId, loadProject, transport])
+  }, [activeAppProjectId, loadProject, surfaceContractError, transport])
 
   useEffect(() => {
     if (transport.kind !== "http") return
@@ -306,6 +322,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
         }
       } catch (error) {
         console.error("Failed to sync MyOpenPanels project changes", error)
+        surfaceContractError(error)
       } finally {
         syncing = false
       }
@@ -322,6 +339,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
         await syncProject()
       } catch (error) {
         console.error("Failed to sync MyOpenPanels focus", error)
+        surfaceContractError(error)
       }
     }
 
@@ -366,33 +384,49 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     const eventsUrl = apiUrl(transport.apiBase, "/api/events")
     if (activeAppProjectId)
       eventsUrl.searchParams.set("projectId", activeAppProjectId)
-    const source = new EventSource(eventsUrl.toString())
-    source.addEventListener("project", (event) => {
-      const change = JSON.parse((event as MessageEvent<string>).data) as {
-        kind?: string
-        panelId?: string | null
-        projectId?: string | null
-      }
-      if (change.kind === "panel_selection") {
-        syncSelection(change)
-        return
-      }
-      if (change.kind === "focus") {
-        syncFocus()
+    let source: EventSource | null = null
+    const openEventStream = () => {
+      if (source || document.visibilityState === "hidden") return
+      source = new EventSource(eventsUrl.toString())
+      source.addEventListener("project", (event) => {
+        const change = JSON.parse((event as MessageEvent<string>).data) as {
+          kind?: string
+          panelId?: string | null
+          projectId?: string | null
+        }
+        if (change.kind === "panel_selection") {
+          syncSelection(change)
+          return
+        }
+        if (change.kind === "focus") {
+          syncFocus()
+          return
+        }
+        syncProject()
+      })
+      source.addEventListener("open", () => {
+        window.dispatchEvent(new Event("myopenpanels:runtime-check"))
+      })
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        source?.close()
+        source = null
         return
       }
       syncProject()
-    })
-    source.addEventListener("open", () => {
-      window.dispatchEvent(new Event("myopenpanels:runtime-check"))
-    })
+      openEventStream()
+    }
+    openEventStream()
+    document.addEventListener("visibilitychange", handleVisibilityChange)
     const targetStatusTimer = window.setInterval(syncProject, 15_000)
     return () => {
       cancelled = true
       window.clearInterval(targetStatusTimer)
-      source.close()
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      source?.close()
     }
-  }, [activeAppProjectId, loadProject, transport])
+  }, [activeAppProjectId, loadProject, surfaceContractError, transport])
 
   const canvasPanel = useMemo(
     () =>
@@ -423,7 +457,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             ...current,
             panels: current.panels.map((snapshot) =>
               snapshot.panel.kind === "canvas"
-                ? { ...snapshot, state: nextSnapshot }
+                ? { ...snapshot, moduleState: nextSnapshot }
                 : snapshot
             ),
             state:
@@ -443,7 +477,13 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     })
     const data = (await response.json()) as BootstrapResponse
     window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, data.project.id)
-    const normalized = normalizeBootstrap(data)
+    let normalized: AppState
+    try {
+      normalized = normalizeBootstrap(data)
+    } catch (error) {
+      surfaceContractError(error)
+      throw error
+    }
     const nextCanvasSnapshot = canvasSnapshotFromState(normalized)
     appStateRef.current = normalized
     canvasSnapshotRef.current = nextCanvasSnapshot
@@ -455,7 +495,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
     setCanvasSnapshot(nextCanvasSnapshot)
     setSnapshotLoadVersion((version) => version + 1)
     setProjects(data.projects ?? (await fetchProjects(transport)))
-  }, [transport])
+  }, [surfaceContractError, transport])
 
   const renameProject = useCallback(
     async (title: string) => {
@@ -517,30 +557,13 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           kind,
         }),
       })
-      const data = (await response.json()) as {
-        activePanelId: string
-        activePanelKind: MyOpenPanelsPanelKind
-        panel: MyOpenPanelsPanel
-        revision?: number
-        state: unknown
-      }
-      const normalizedState = normalizePanelState(data.panel.kind, data.state)
-      const nextAppState: AppState = {
-        ...appState,
-        activePanelId: data.activePanelId,
-        activePanelKind: data.activePanelKind,
-        panel: data.panel,
-        panels: appState.panels.map((snapshot) =>
-          snapshot.panel.id === data.panel.id
-            ? {
-                panel: data.panel,
-                revision: data.revision ?? snapshot.revision,
-                state: normalizedState,
-              }
-            : snapshot
-        ),
-        revision: data.revision ?? appState.revision,
-        state: normalizedState,
+      const data = (await response.json()) as ActivePanelResponse
+      let nextAppState: AppState
+      try {
+        nextAppState = mergeActivePanelResponse(appState, data)
+      } catch (error) {
+        if (surfaceContractError(error)) return
+        throw error
       }
       appStateRef.current = nextAppState
       setSelection(null)
@@ -551,7 +574,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       )
       if (data.panel.kind === "canvas") {
         const nextCanvasSnapshot = normalizeSnapshot(
-          normalizedState as StoreSnapshot
+          nextAppState.state as StoreSnapshot
         )
         canvasSnapshotRef.current = nextCanvasSnapshot
         canvasRevisionRef.current = data.revision ?? canvasRevisionRef.current
@@ -559,7 +582,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
         setCanvasSnapshot(nextCanvasSnapshot)
       }
     },
-    [appState, transport]
+    [appState, surfaceContractError, transport]
   )
 
   const reloadCurrentProject = useCallback(async () => {
@@ -838,6 +861,11 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
       projects={projects}
     />
   )
+  const retryRuntimeReconnect = () => {
+    runtimeContextIdRef.current = null
+    setRuntimeState("reconnecting")
+    window.dispatchEvent(new Event("myopenpanels:runtime-check"))
+  }
 
   return (
     <main
@@ -866,6 +894,9 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           <TypesettingPanel
             chromeContent={projectChrome}
             key={`${appState.project.id}:typesetting`}
+            onManageSkillModule={(moduleKind) =>
+              skillManager.open("add", moduleKind)
+            }
             onOpenAgentTasks={(taskIds) => openAgentTaskList("all", taskIds)}
             onStateSaved={handleTypesettingStateSaved}
             panelId={appState.panel.id}
@@ -879,7 +910,10 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           <PublishingPanel
             chromeContent={projectChrome}
             key={`${appState.project.id}:publishing`}
-            onAddSkill={() => skillManager.open("add", "publishing")}
+            onAddSkill={() => skillManager.open("add", "release")}
+            onManageSkillModule={(moduleKind) =>
+              skillManager.open("add", moduleKind)
+            }
             onOpenAgentTasks={(taskIds) => openAgentTaskList("all", taskIds)}
             onOpenManualTask={manualTaskInstructions.open}
             onStateSaved={handlePublishingStateSaved}
@@ -931,7 +965,8 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           onCheckUpdate={checkUpdateFromBadge}
           onDismissUpdateError={dismissUpdateError}
           onRefreshUpdate={refreshUpdateNow}
-          onRetryConnect={retryUpdateReconnect}
+          onRetryRuntimeConnect={retryRuntimeReconnect}
+          onRetryUpdateConnect={retryUpdateReconnect}
           onToggleAgentPanel={() => {
             if (!isTraceOpen) {
               setAgentPanelTab("tasks")

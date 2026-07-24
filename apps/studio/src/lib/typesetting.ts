@@ -8,12 +8,17 @@ import type {
   TypesettingPublicationTitle,
   TypesettingState,
 } from "../types"
+import { taskCanCancel, taskDisplayPhase } from "./task-status"
 
 export const TYPESETTING_ASSET_DRAG_TYPE =
   "application/x-myopenpanels-canvas-asset"
 export const TYPESETTING_AUTOSAVE_DELAY_MS = 500
 export const TYPESETTING_COVER_IMAGE_ACCEPT =
   ".png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif"
+export const TYPESETTING_COVER_MEDIA_ACCEPT = [
+  TYPESETTING_COVER_IMAGE_ACCEPT,
+  ".mp4,.mov,.m4v,.webm,video/mp4,video/quicktime,video/webm",
+].join(",")
 
 const TYPESETTING_COVER_IMAGE_MIME_TYPES = new Set([
   "image/gif",
@@ -27,6 +32,17 @@ const TYPESETTING_COVER_IMAGE_EXTENSIONS = new Set([
   "jpg",
   "png",
   "webp",
+])
+const TYPESETTING_COVER_VIDEO_MIME_TYPES = new Set([
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
+])
+const TYPESETTING_COVER_VIDEO_EXTENSIONS = new Set([
+  "m4v",
+  "mov",
+  "mp4",
+  "webm",
 ])
 
 export function isInsertableTypesettingDocument(document: {
@@ -49,6 +65,22 @@ export function isSupportedTypesettingCoverImage(file: {
   }
   const extension = file.name.split(".").pop()?.toLowerCase()
   return Boolean(extension && TYPESETTING_COVER_IMAGE_EXTENSIONS.has(extension))
+}
+
+export function isSupportedTypesettingCoverMedia(file: {
+  name: string
+  type: string
+}): boolean {
+  if (isSupportedTypesettingCoverImage(file)) return true
+  if (TYPESETTING_COVER_VIDEO_MIME_TYPES.has(file.type.toLowerCase())) {
+    return true
+  }
+  const extension = file.name.split(".").pop()?.toLowerCase()
+  return Boolean(extension && TYPESETTING_COVER_VIDEO_EXTENSIONS.has(extension))
+}
+
+export function isTypesettingCoverVideo(cover: { mimeType: string }): boolean {
+  return cover.mimeType.toLowerCase().startsWith("video/")
 }
 
 export type TypesettingCoverTaskDisplayStatus =
@@ -100,26 +132,8 @@ export function publicationTitleRequestPayload({
 export function publicationTitleTaskStatus(
   task: ProjectTask
 ): PublicationTitleTaskDisplayStatus {
-  if (task.status === "succeeded") return "saving"
-  if (task.status === "failed") return "failed"
-  if (
-    task.status === "cancelled" ||
-    task.status === "stale" ||
-    task.status === "superseded"
-  ) {
-    return "cancelled"
-  }
-  if (
-    task.status === "running" ||
-    task.status === "claimed" ||
-    task.status === "reserved" ||
-    task.status === "converting" ||
-    task.status === "indexing" ||
-    task.status === "cancel_requested"
-  ) {
-    return "running"
-  }
-  return "waiting"
+  const phase = taskDisplayPhase(task)
+  return phase === "succeeded" ? "saving" : phase
 }
 
 export function publicationLayoutRequestPayload({
@@ -150,38 +164,12 @@ export function publicationLayoutRequestPayload({
 export function publicationLayoutTaskStatus(
   task: ProjectTask
 ): TypesettingLayoutTaskDisplayStatus {
-  if (task.status === "succeeded") return "completed"
-  if (task.status === "failed") return "failed"
-  if (
-    task.status === "cancelled" ||
-    task.status === "stale" ||
-    task.status === "superseded"
-  ) {
-    return "cancelled"
-  }
-  if (
-    task.status === "running" ||
-    task.status === "claimed" ||
-    task.status === "reserved" ||
-    task.status === "converting" ||
-    task.status === "indexing" ||
-    task.status === "cancel_requested"
-  ) {
-    return "running"
-  }
-  return "waiting"
+  const phase = taskDisplayPhase(task)
+  return phase === "succeeded" ? "completed" : phase
 }
 
 export function isTypesettingLayoutTaskActive(task: ProjectTask): boolean {
-  return [
-    "queued",
-    "reserved",
-    "claimed",
-    "running",
-    "converting",
-    "indexing",
-    "cancel_requested",
-  ].includes(task.status)
+  return taskCanCancel(task)
 }
 
 export function latestTypesettingLayoutTask(
@@ -230,23 +218,8 @@ export function publicationCoverRequestPayload({
 export function publicationCoverTaskStatus(
   task: ProjectTask
 ): TypesettingCoverTaskDisplayStatus {
-  if (task.status === "succeeded") return "saving"
-  if (task.status === "failed") return "failed"
-  if (
-    task.status === "cancelled" ||
-    task.status === "stale" ||
-    task.status === "superseded"
-  ) {
-    return "cancelled"
-  }
-  if (
-    task.status === "running" ||
-    task.status === "claimed" ||
-    task.status === "reserved"
-  ) {
-    return "running"
-  }
-  return "waiting"
+  const phase = taskDisplayPhase(task)
+  return phase === "succeeded" ? "saving" : phase
 }
 
 export function emptyTypesettingDocument(): JSONContent {

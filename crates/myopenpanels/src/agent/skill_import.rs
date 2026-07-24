@@ -198,7 +198,12 @@ pub fn import_skills_from_url(
                 Ok(vec![value.to_owned()])
             })
             .transpose()?
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "skill_module_required",
+                    "Choose a Skill module before installation.",
+                )
+            })?;
         selected.push((candidate, module_kinds));
     }
 
@@ -427,7 +432,7 @@ fn install_skill_package(
             manifest["createdAt"] = created_at.clone();
         }
         manifest["updatedAt"] = json!(crate::control::now_iso());
-        atomic_replace_device_skill(&package_root, Path::new(&listing.local_dir), &manifest)?;
+        atomic_replace_skill_package(&package_root, Path::new(&listing.local_dir), &manifest)?;
         clear_ignored_device_mismatches(paths, &listing.skill.name)?;
         let replaced = managed_skill_listing(paths, &listing.skill.id)?;
         return Ok(json!({
@@ -463,7 +468,7 @@ fn install_skill_package(
         origin,
         provenance.as_ref(),
     );
-    atomic_copy_device_skill(&package_root, &target, &manifest)?;
+    atomic_install_skill_package(&package_root, &target, &manifest)?;
     let installed = managed_skill_listing(paths, &skill_id)?;
     Ok(json!({
         "status": "installed",
@@ -763,7 +768,7 @@ fn validate_imported_skill(root: &Path) -> Result<(String, String), CliError> {
             "SKILL.md must have YAML frontmatter with string name and description fields.",
         )
     })?;
-    external_custom_skill_from_source(&source, "SKILL.md", "import-validation")
+    validate_portable_custom_skill_source(&source, "SKILL.md", "import-validation")
         .map_err(|error| invalid_skill_import(error.message()))?;
     if !valid_imported_skill_name(&name) || description.len() > MAX_SKILL_DESCRIPTION_BYTES {
         return Err(invalid_skill_import(

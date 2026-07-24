@@ -18,6 +18,7 @@ import {
   moduleLabel,
   scannedSkillAssignments,
   skillUpdatePresentation,
+  visibleInstalledSkillCount,
 } from "./SkillManager"
 import { shouldAutoCheckSkillUpdates } from "./useSkillUpdates"
 
@@ -43,7 +44,7 @@ describe("SkillManagerDialog", () => {
         canEdit: true,
         kind: "custom",
       })
-    ).toEqual(["open", "delete"])
+    ).toEqual(["open", "modules", "delete"])
   })
 
   it("offers updates only when the source has changed", () => {
@@ -71,6 +72,7 @@ describe("SkillManagerDialog", () => {
 
     expect(managedSkillActionIds(skill, state)).toEqual([
       "open",
+      "modules",
       "update",
       "delete",
     ])
@@ -114,7 +116,29 @@ describe("SkillManagerDialog", () => {
     expect(installedSkillCountLabel(23, "en")).toBe("23 installed Skills")
   })
 
-  it("allows URL scans without a module while requiring one for local imports", () => {
+  it("excludes hidden MyOpenPanels system Skills from the installed count", () => {
+    const skill = {
+      canCheckUpdates: false,
+      canDelete: false,
+      canEdit: false,
+      description: "Description",
+      id: "shared-skill",
+      kind: "preset",
+      localDir: "/tmp/shared-skill",
+      moduleKinds: ["writing", "publishing"],
+      name: "Shared Skill",
+    } satisfies ManagedProjectSkill
+
+    expect(
+      visibleInstalledSkillCount([
+        { kind: "writing", skills: [skill] },
+        { kind: "publishing", skills: [skill] },
+      ])
+    ).toBe(1)
+    expect(visibleInstalledSkillCount([])).toBe(0)
+  })
+
+  it("requires a module before installing any Skill source", () => {
     expect(
       canInstallSkill({
         folderFileCount: 0,
@@ -123,7 +147,7 @@ describe("SkillManagerDialog", () => {
         url: "https://github.com/example/skill",
         zipSelected: false,
       })
-    ).toBe(true)
+    ).toBe(false)
     expect(
       canInstallSkill({
         folderFileCount: 0,

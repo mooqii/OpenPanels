@@ -209,7 +209,7 @@ pub fn write_page(
     };
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
     if task_id.is_none() {
-        let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space.id);
+        let mutation_key = wiki_mutation_key(&wiki.project.id);
         crate::tasks::supersede_active_wiki_mutations(paths, &wiki.project.id, &mutation_key)?;
     }
     if task_id.is_none() {
@@ -252,7 +252,7 @@ pub fn write_page(
     state_object_mut(&mut wiki.state)?.insert("activeWikiSpaceId".to_owned(), json!(space.id));
     state_object_mut(&mut wiki.state)?.insert("activeWikiPagePath".to_owned(), json!(page_path));
     let task = if task_id.is_none() {
-        let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space.id);
+        let mutation_key = wiki_mutation_key(&wiki.project.id);
         Some(create_wiki_maintenance_task(
             &wiki.state,
             &mut wiki.tasks,
@@ -294,7 +294,7 @@ pub fn rename_page(
 ) -> Result<Value, CliError> {
     let mut wiki = get_wiki_bootstrap(paths)?;
     let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
-    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space.id);
+    let mutation_key = wiki_mutation_key(&wiki.project.id);
     crate::tasks::supersede_active_wiki_mutations(paths, &wiki.project.id, &mutation_key)?;
     if page_path != next_page_path {
         crate::content::rename_active_file(
@@ -352,7 +352,7 @@ pub fn maintain_wiki_space(
 ) -> Result<Value, CliError> {
     let mut wiki = get_wiki_bootstrap(paths)?;
     let space = resolve_wiki_space(&wiki.state, wiki_space_id)?;
-    let mutation_key = wiki_mutation_key(&wiki.project.id, &wiki.panel.id, &space.id);
+    let mutation_key = wiki_mutation_key(&wiki.project.id);
     let task = create_wiki_maintenance_task(
         &wiki.state,
         &mut wiki.tasks,

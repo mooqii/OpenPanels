@@ -1,9 +1,8 @@
 use crate::agent as agent_resources;
 use crate::bridge;
 use crate::content::{
-    self, BeginOperationRequest, PrepareOperationRequest, PrepareSkillRequest, ReadFileRequest,
-    SkillReadRequest, StageFileRequest, TaskContextRequest,
-    PublishingCheckpointRequest,
+    self, PrepareSkillRequest, PublishingCheckpointRequest, ReadFileRequest, SkillReadRequest,
+    StageFileRequest, TaskContextRequest,
 };
 use crate::control::{
     create_project, delete_project, ensure_project_bootstrap, now_iso, open_runtime_panel,
@@ -43,7 +42,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
@@ -52,6 +51,7 @@ mod wiki_api;
 use wiki_api::*;
 
 static STUDIO_DIST: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../apps/studio/dist");
+const MAX_PROJECT_EVENT_STREAMS: usize = 2;
 const PROJECT_EVENT_POLL_INTERVAL_MS: u64 = 350;
 
 #[derive(Clone)]
@@ -60,6 +60,7 @@ struct AppState {
     host: String,
     paths: MyOpenPanelsPaths,
     port: u16,
+    project_event_slots: Arc<Semaphore>,
     static_dir: Option<PathBuf>,
 }
 
@@ -207,6 +208,7 @@ fn build_router(
         .route("/api/tasks/{task_id}/archive", post(api_task_archive))
         .route("/api/agent/skills", get(api_agent_skills))
         .route("/api/skills", get(api_skills))
+        .route("/api/skills/preset-locale", axum::routing::put(api_preset_skill_locale))
         .route("/api/skills/recommended", get(api_recommended_skills))
         .route(
             "/api/skills/recommended/{catalog_id}/install",
@@ -226,6 +228,10 @@ fn build_router(
         .route("/api/skills/{skill_id}/update", post(api_update_skill))
         .route("/api/device/skills", get(api_device_skills))
         .route("/api/device/skills/install", post(api_install_device_skill))
+        .route(
+            "/api/skills/{skill_id}/modules",
+            put(api_set_skill_modules),
+        )
         .route(
             "/api/skills/{skill_id}/modules/{module_kind}",
             delete(api_remove_skill_module),
@@ -312,15 +318,6 @@ fn build_router(
             "/api/writing/draft",
             axum::routing::put(api_writing_save_draft),
         )
-        .route("/api/writing/skills", get(api_writing_skills))
-        .route(
-            "/api/writing/skills/{skill_id}",
-            get(api_writing_skill_files).delete(api_delete_writing_skill),
-        )
-        .route(
-            "/api/writing/skills/{skill_id}/file",
-            axum::routing::put(api_write_writing_skill_file),
-        )
         .route("/api/writing/requests", post(api_writing_create_request))
         .route(
             "/api/writing/distillation-requests",
@@ -386,10 +383,6 @@ fn build_router(
             post(api_publish_my_document),
         )
         .route(
-            "/api/my-documents/{document_id}/retry",
-            post(api_retry_my_document),
-        )
-        .route(
             "/api/my-documents/{document_id}/revise",
             post(api_revise_my_document),
         )
@@ -451,14 +444,6 @@ fn build_router(
         .route("/api/task-broker/v3/stage", post(api_broker_stage))
         .route("/api/task-broker/v3/read", post(api_broker_read))
         .route(
-            "/api/task-broker/v3/operations/begin",
-            post(api_broker_begin_operation),
-        )
-        .route(
-            "/api/task-broker/v3/operations/prepare",
-            post(api_broker_prepare_operation),
-        )
-        .route(
             "/api/task-broker/v3/skills/prepare",
             post(api_broker_prepare_skill),
         )
@@ -483,6 +468,7 @@ fn build_router(
             host,
             paths,
             port,
+            project_event_slots: Arc::new(Semaphore::new(MAX_PROJECT_EVENT_STREAMS)),
             static_dir,
         }))
 }

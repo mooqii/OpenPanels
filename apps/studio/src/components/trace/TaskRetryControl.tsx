@@ -1,8 +1,9 @@
 import { Button } from "@heroui/react"
 import { Copy, RefreshCw } from "lucide-react"
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { copyTextToClipboard } from "../../lib/clipboard"
+import { taskCanRetry } from "../../lib/task-status"
 import type { MyOpenPanelsBuildInfo, ProjectTask } from "../../types"
 import { formatTaskError, retryTaskAgentMessage } from "./trace-utils"
 
@@ -20,8 +21,9 @@ export function TaskRetryControl({
   const [error, setError] = useState<string | null>(null)
   const [isRetrying, setIsRetrying] = useState(false)
   const [retryTaskId, setRetryTaskId] = useState<string | null>(null)
+  const retryInFlight = useRef(false)
 
-  if (task.status !== "failed") return null
+  if (!taskCanRetry(task)) return null
 
   const runtime = buildInfo ?? {
     channel: "release" as const,
@@ -31,8 +33,10 @@ export function TaskRetryControl({
   const agentMessage = retryTaskAgentMessage(task.id, locale, runtime)
 
   const retryTask = async () => {
-    if (isRetrying || retryTaskId) return
+    if (retryInFlight.current) return
+    retryInFlight.current = true
     setError(null)
+    setRetryTaskId(null)
     setIsRetrying(true)
     try {
       const response = await fetch(
@@ -53,6 +57,7 @@ export function TaskRetryControl({
     } catch (cause) {
       setError(formatTaskError(cause))
     } finally {
+      retryInFlight.current = false
       setIsRetrying(false)
     }
   }
@@ -67,14 +72,14 @@ export function TaskRetryControl({
       <div className="op-agent-task__retry-actions">
         <Button
           aria-label={t`Retry task`}
-          isDisabled={Boolean(retryTaskId)}
+          isDisabled={isRetrying}
           isPending={isRetrying}
           onPress={retryTask}
           size="sm"
           variant="primary"
         >
           <RefreshCw size={14} />
-          {retryTaskId ? t`Retry queued` : t`Retry task`}
+          {t`Retry task`}
         </Button>
         <Button
           aria-label={t`Copy Agent message`}

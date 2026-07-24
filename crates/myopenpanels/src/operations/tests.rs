@@ -30,6 +30,8 @@ mod tests {
             "projectId": "session:test",
             "panelId": "panel:test",
             "panelKind": "canvas",
+            "targetId": "shape:test",
+            "baseRevision": 0,
             "guideId": null,
             "target": {},
             "input": {},
@@ -67,7 +69,7 @@ mod tests {
                 Some("2026-01-15T23:30:00.001Z"),
             ),
             (
-                "operation:retryable-failed",
+                "operation:old-failed",
                 "failed",
                 Some("2026-01-01T00:00:00.000Z"),
             ),
@@ -79,7 +81,7 @@ mod tests {
             operation["panelId"] = json!(bootstrap.panel.id);
             operation["panelKind"] = json!(bootstrap.panel.kind);
             storage
-                .write_agent_operation(&operation)
+                .write_direct_operation(&operation)
                 .expect("operation");
             let operation_dir = paths
                 .storage_dir
@@ -88,6 +90,9 @@ mod tests {
             fs::create_dir_all(&operation_dir).expect("operation dir");
             fs::write(operation_dir.join("reference.png"), b"reference").expect("reference");
         }
+        let abandoned = paths.storage_dir.join("operations/operation_orphaned");
+        fs::create_dir_all(&abandoned).expect("abandoned operation dir");
+        fs::write(abandoned.join("artifact.tmp"), b"orphaned").expect("orphaned artifact");
 
         cleanup_artifacts_with_storage(
             &paths,
@@ -106,10 +111,11 @@ mod tests {
         assert!(!operation_dir("operation:old-completed").exists());
         assert!(!operation_dir("operation:old-cancelled").exists());
         assert!(operation_dir("operation:recent-completed").exists());
-        assert!(operation_dir("operation:retryable-failed").exists());
+        assert!(!operation_dir("operation:old-failed").exists());
         assert!(operation_dir("operation:active").exists());
+        assert!(!abandoned.exists());
         assert!(storage
-            .read_agent_operation("operation:old-completed")
+            .read_direct_operation("operation:old-completed")
             .expect("read operation")
             .is_some());
     }
@@ -168,6 +174,64 @@ mod tests {
     }
 
     #[test]
+    fn failed_direct_operations_do_not_leave_pending_targets() {
+        let (_temp, paths) = test_paths();
+        ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+
+        let canvas_started =
+            begin_canvas(&paths, Some(128.0), Some(128.0), false, None).expect("canvas begin");
+        let canvas_operation_id = canvas_started["operation"]["id"].as_str().unwrap();
+        let placeholder_id = canvas_started["operation"]["targetId"].as_str().unwrap();
+        finish_canvas(
+            &paths,
+            canvas_operation_id,
+            "failed",
+            Some("generation failed"),
+        )
+        .expect("canvas fail");
+        let canvas_project_id = canvas_started["operation"]["projectId"].as_str().unwrap();
+        let canvas_panel_id = canvas_started["operation"]["panelId"].as_str().unwrap();
+        let canvas_state = Storage::open(&paths)
+            .unwrap()
+            .read_panel_state(canvas_project_id, canvas_panel_id)
+            .unwrap()
+            .unwrap();
+        assert!(canvas_state["store"][placeholder_id].is_null());
+        assert_eq!(
+            inspect(&paths, canvas_operation_id).unwrap()["status"],
+            "failed"
+        );
+
+        let document_started =
+            begin_my_document(&paths, "Failed draft", "markdown", None).expect("document begin");
+        let document_operation_id = document_started["operation"]["id"].as_str().unwrap();
+        let document_id = document_started["operation"]["targetId"].as_str().unwrap();
+        finish_my_document(
+            &paths,
+            document_operation_id,
+            "failed",
+            Some("writing failed"),
+        )
+        .expect("document fail");
+        let document_project_id = document_started["operation"]["projectId"].as_str().unwrap();
+        let document_panel_id = document_started["operation"]["panelId"].as_str().unwrap();
+        let document_state = Storage::open(&paths)
+            .unwrap()
+            .read_panel_state(document_project_id, document_panel_id)
+            .unwrap()
+            .unwrap();
+        assert!(!document_state["myDocuments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|document| document["id"].as_str() == Some(document_id)));
+        assert_eq!(
+            inspect(&paths, document_operation_id).unwrap()["status"],
+            "failed"
+        );
+    }
+
+    #[test]
     fn my_document_write_completes_against_original_project_after_restart_or_switch() {
         let (_temp, paths) = test_paths();
         let wiki_bootstrap =
@@ -195,11 +259,37 @@ mod tests {
             wiki_bootstrap.project.id
         );
         assert_eq!(completed["document"]["contentVersion"], 1);
-        assert_eq!(completed["document"]["writeOperation"]["status"], "completed");
+        assert!(completed["document"].get("writeOperation").is_none());
         assert_eq!(
             inspect(&paths, &operation_id).unwrap()["status"],
             "completed"
         );
+        let document_id = completed["document"]["id"].as_str().unwrap();
+        let active_path = paths
+            .storage_dir
+            .join("projects")
+            .join(sanitize_path_part(&wiki_bootstrap.project.id))
+            .join("content/my_document")
+            .join(sanitize_path_part(document_id))
+            .join("active.json");
+        fs::remove_file(&active_path).expect("simulate interrupted activation");
+        assert!(crate::content::active_resource_descriptor(
+            &paths,
+            &wiki_bootstrap.project.id,
+            crate::content::ResourceKind::MyDocument,
+            document_id,
+        )
+        .unwrap()
+        .is_none());
+        crate::content::recover_filesystem(&paths).expect("recover direct operation content");
+        assert!(crate::content::active_resource_descriptor(
+            &paths,
+            &wiki_bootstrap.project.id,
+            crate::content::ResourceKind::MyDocument,
+            document_id,
+        )
+        .unwrap()
+        .is_some());
     }
 
     #[test]
@@ -253,59 +343,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn retry_recovers_a_failed_write_whose_content_was_already_written() {
-        let (_temp, paths) = test_paths();
-        let bootstrap =
-            ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
-        let started = begin_my_document(&paths, "Report", "markdown", None).expect("begin");
-        let operation_id = started["operation"]["id"].as_str().unwrap().to_owned();
-        let document_id = started["document"]["id"].as_str().unwrap().to_owned();
-        crate::content::commit_immediate_text(
-            &paths,
-            &bootstrap.project.id,
-            Some(&bootstrap.panel.id),
-            crate::content::ResourceKind::MyDocument,
-            &document_id,
-            "content.md",
-            b"# Already written\n",
-            "text/markdown",
-            true,
-        )
-        .expect("content");
-
-        let storage = Storage::open(&paths).expect("storage");
-        let mut state = storage
-            .read_panel_state(&bootstrap.project.id, &bootstrap.panel.id)
-            .expect("read state")
-            .expect("wiki state");
-        let document = state["myDocuments"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .find(|document| document["id"].as_str() == Some(document_id.as_str()))
-            .unwrap();
-        document["contentVersion"] = json!(1);
-        document["wordCount"] = json!(15);
-        storage
-            .write_panel_state(&bootstrap.project.id, &bootstrap.panel.id, &state)
-            .expect("write state");
-        finish_my_document(
-            &paths,
-            &operation_id,
-            "failed",
-            Some("Content version conflict"),
-        )
-        .expect("fail operation");
-
-        let retried = retry_my_document(&paths, &document_id).expect("retry");
-
-        assert_eq!(retried["retryMode"], "recovered");
-        assert_eq!(retried["document"]["writeOperation"]["status"], "completed");
-        assert_eq!(retried["document"]["contentVersion"], 1);
-        assert_eq!(
-            inspect(&paths, &operation_id).unwrap()["status"],
-            "completed"
-        );
-    }
 }

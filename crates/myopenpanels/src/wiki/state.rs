@@ -5,6 +5,7 @@ use std::env;
 pub(super) struct WikiBootstrapValue {
     pub(super) panel: crate::types::Panel,
     pub(super) project: crate::types::Project,
+    pub(super) revision: i64,
     pub(super) state: Value,
     pub(super) tasks: Vec<Value>,
 }
@@ -30,6 +31,7 @@ pub(super) fn get_wiki_bootstrap(
     let wiki = WikiBootstrapValue {
         project: bootstrap.project,
         panel: bootstrap.panel,
+        revision: bootstrap.revision,
         state,
         tasks,
     };
@@ -60,8 +62,8 @@ pub(super) fn get_wiki_target(
             "Operation target is not a Wiki panel",
         ));
     }
-    let state = storage
-        .read_panel_state(project_id, panel_id)?
+    let (state, revision) = storage
+        .read_panel_state_snapshot(project_id, panel_id)?
         .ok_or_else(|| {
             CliError::with_code(
                 "target_not_found",
@@ -72,6 +74,7 @@ pub(super) fn get_wiki_target(
     let wiki = WikiBootstrapValue {
         project,
         panel,
+        revision,
         state,
         tasks,
     };
@@ -146,6 +149,15 @@ mod tests {
     use super::*;
     use crate::control::{create_project, ensure_project_bootstrap};
     use crate::paths::resolve_myopenpanels_paths;
+
+    #[test]
+    fn wiki_mutations_share_one_project_wide_serialization_key() {
+        assert_eq!(wiki_mutation_key("project:alpha"), "wiki:project:alpha");
+        assert_ne!(
+            wiki_mutation_key("project:alpha"),
+            wiki_mutation_key("project:beta")
+        );
+    }
 
     #[test]
     fn new_wiki_does_not_create_an_index_page() {
@@ -305,7 +317,7 @@ pub(super) fn create_wiki_maintenance_task(
             && task.get("wikiSpaceId").and_then(Value::as_str) == Some(space.id.as_str())
             && matches!(
                 task.get("status").and_then(Value::as_str),
-                Some("waiting" | "queued" | "failed")
+                Some("queued" | "failed")
             )
     }) {
         append_unique_value(existing, "changeEvents", change_event.clone());
@@ -346,8 +358,8 @@ fn append_unique_value(task: &mut Value, field: &str, value: Value) {
     }
 }
 
-pub(super) fn wiki_mutation_key(project_id: &str, panel_id: &str, wiki_space_id: &str) -> String {
-    format!("wiki:{project_id}:{panel_id}:{wiki_space_id}")
+pub(super) fn wiki_mutation_key(project_id: &str) -> String {
+    format!("wiki:{project_id}")
 }
 
 pub(super) fn create_ingestion_state(task: &Value, markdown_version: i64) -> Value {
@@ -358,16 +370,6 @@ pub(super) fn create_ingestion_state(task: &Value, markdown_version: i64) -> Val
         "error": null,
         "updatedAt": task.get("updatedAt").cloned().unwrap_or_else(|| json!(now_iso())),
     })
-}
-
-pub(super) fn task_mut<'a>(
-    tasks: &'a mut [Value],
-    task_id: &str,
-) -> Result<&'a mut Value, CliError> {
-    tasks
-        .iter_mut()
-        .find(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
-        .ok_or_else(|| CliError::new(format!("Wiki task not found: {task_id}")))
 }
 
 pub(super) fn task_value<'a>(tasks: &'a [Value], task_id: &str) -> Result<&'a Value, CliError> {

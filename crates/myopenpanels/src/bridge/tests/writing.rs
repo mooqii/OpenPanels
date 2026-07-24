@@ -63,15 +63,14 @@
         .expect("writing request");
         let mut task = created["tasks"][0].clone();
         let raw_content = "# Captured raw source\n";
-        let mut legacy_raw_snapshot = raw["document"].clone();
-        legacy_raw_snapshot["snapshotContent"] = json!(raw_content);
-        legacy_raw_snapshot["snapshotHash"] = json!(format!(
+        let mut raw_snapshot = raw["document"].clone();
+        raw_snapshot["snapshotContent"] = json!(raw_content);
+        raw_snapshot["snapshotHash"] = json!(format!(
             "{:x}",
             Sha256::digest(raw_content.as_bytes())
         ));
         task["input"]["contextSnapshot"]["rawDocuments"] =
-            json!([legacy_raw_snapshot]);
-        task["workflowRunId"] = json!("workflow:noise");
+            json!([raw_snapshot]);
         task["mutationKey"] = json!("writing:noise");
         task["executionGeneration"] = json!(17);
         let workspace = temp.path().join("execution");
@@ -115,7 +114,6 @@
         assert!(prompt.len() <= MAX_AGENT_PROMPT_BYTES);
 
         let custom_command_input = serde_json::to_string_pretty(&task).expect("raw task JSON");
-        assert!(custom_command_input.contains("workflow:noise"));
         assert!(custom_command_input.contains("contextSnapshot"));
 
         crate::wiki::write_page(

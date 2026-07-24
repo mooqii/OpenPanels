@@ -26,7 +26,7 @@ Intent routing:
 4. Heartbeat long work through `task handoff heartbeat`. Stop immediately when
    heartbeat or a work command returns `execution_fenced`.
 5. Finish through `task handoff complete` or `task handoff fail`. The Runtime
-   validates the result, creates any Operation, stages outputs, completes the
+   validates the result, stages declared outputs, and completes the
    Task, and immediately returns the next Bundle when the scope can continue.
 6. Exit only at `complete` or `blocked`; use `task handoff stop` to abandon and
    release active work. Do not run low-level claim, complete, fail, or release

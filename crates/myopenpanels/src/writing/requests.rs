@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 const WRITING_TASK_CAPABILITY_KEY: &str = "writing.execute";
 const WRITING_DISTILLATION_TASK_CAPABILITY_KEY: &str = "skill.writing.distill";
@@ -672,4 +672,79 @@ pub fn create_distillation_request_with_skill(
         &state,
     )?;
     Ok(json!({ "task": task, "state": state, "revision": revision }))
+}
+
+pub(crate) fn recapture_retry_skill_snapshot(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+) -> Result<Option<Value>, CliError> {
+    let task_type = task.get("type").and_then(Value::as_str).unwrap_or("");
+    let mut input = task.get("input").cloned().unwrap_or(Value::Null);
+    match task_type {
+        "write_my_document" => {
+            let skill_id = retry_skill_id(&input, "writingSkillId", "writingSkillSnapshot")?;
+            let project_id = task
+                .get("projectId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| CliError::new("Retry Task is missing its Project id."))?;
+            let skill =
+                crate::agent::writing_agent_skill_for_project(paths, project_id, &skill_id)?;
+            let markdown = read_retry_skill_markdown(&skill.local_path)?;
+            input["writingSkillId"] = json!(skill.skill.id);
+            input["writingSkill"] = json!({
+                "id": skill.skill.id,
+                "name": skill.skill.name,
+                "description": skill.skill.description,
+                "source": skill.source,
+            });
+            input["writingSkillSnapshot"] = json!({
+                "id": skill.skill.id,
+                "markdown": markdown,
+                "contentHash": format!("{:x}", Sha256::digest(markdown.as_bytes())),
+            });
+        }
+        "distill_writing_skill" => {
+            let skill_id =
+                retry_skill_id(&input, "distillerSkillId", "distillerSkillSnapshot")?;
+            let skill = crate::agent::writing_distillation_agent_skill(paths, &skill_id)?;
+            let markdown = read_retry_skill_markdown(&skill.local_path)?;
+            input["distillerSkillId"] = json!(skill.skill.id);
+            input["distillerSkillSnapshot"] = json!({
+                "id": skill.skill.id,
+                "name": skill.skill.name,
+                "source": skill.source,
+                "markdown": markdown,
+                "contentHash": format!("{:x}", Sha256::digest(markdown.as_bytes())),
+            });
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(input))
+}
+
+fn retry_skill_id(
+    input: &Value,
+    skill_id_key: &str,
+    snapshot_key: &str,
+) -> Result<String, CliError> {
+    input
+        .get(skill_id_key)
+        .and_then(Value::as_str)
+        .or_else(|| {
+            input
+                .pointer(&format!("/{snapshot_key}/id"))
+                .and_then(Value::as_str)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| CliError::new("The original Task does not identify its required Skill."))
+}
+
+fn read_retry_skill_markdown(path: &str) -> Result<String, CliError> {
+    fs::read_to_string(path).map_err(|error| {
+        CliError::new(format!(
+            "The required Skill package could not be read from {path}: {error}"
+        ))
+    })
 }

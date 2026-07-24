@@ -5,20 +5,19 @@ import {
 } from "./wiki-selection"
 
 describe("Wiki agent selection", () => {
-  it("ignores legacy Wiki and raw-document fields in the Documents panel", () => {
-    const legacy = {
+  it("keeps only the Documents panel selection fields", () => {
+    const selection = {
       isWikiSelected: true,
       selectedMyDocumentIds: ["my-document:1"],
-      selectedRawDocumentIds: ["raw:1"],
     }
 
-    expect(normalizeWikiAgentSelection(legacy, false)).toEqual({
+    expect(normalizeWikiAgentSelection(selection, false)).toEqual({
       isWikiSelected: false,
       selectedMyDocumentIds: ["my-document:1"],
     })
     expect(
       wikiAgentSelectionRequest(
-        normalizeWikiAgentSelection(legacy, false),
+        normalizeWikiAgentSelection(selection, false),
         false
       )
     ).toEqual({ selectedMyDocumentIds: ["my-document:1"] })

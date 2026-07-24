@@ -607,6 +607,82 @@ fn snapshot_skill_package(
     Ok(files)
 }
 
+pub(crate) fn recapture_retry_skill_snapshot(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    retry_task_id: &str,
+) -> Result<Option<Value>, CliError> {
+    let task_type = task.get("type").and_then(Value::as_str).unwrap_or("");
+    if !is_publishing_task_type(task_type) {
+        return Ok(None);
+    }
+    let mut input = task.get("input").cloned().unwrap_or(Value::Null);
+    let skill_id = input
+        .get("publishingSkillId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            input
+                .pointer("/publishingSkillSnapshot/id")
+                .and_then(Value::as_str)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| CliError::new("The original Task does not identify its required Skill."))?;
+    let skill = crate::agent::publishing_skill(paths, &skill_id)?;
+    let target = publishing_target_for_skill(&skill)?;
+    if target.task_type != task_type {
+        return Err(CliError::with_code(
+            "publishing_skill_target_mismatch",
+            format!(
+                "Publishing Skill {} cannot execute a {task_type} retry.",
+                skill.skill.id
+            ),
+        ));
+    }
+    let project_id = task
+        .get("projectId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::new("Retry Task is missing its Project id."))?;
+    let panel_id = task
+        .get("panelId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::new("Retry Task is missing its origin Panel id."))?;
+    let release_id = input
+        .get("releaseId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::new("Retry Task is missing its Release id."))?;
+    let storage = Storage::open(paths)?;
+    let files = snapshot_skill_package(
+        &storage,
+        project_id,
+        panel_id,
+        release_id,
+        retry_task_id,
+        Path::new(&skill.local_dir),
+    )?;
+    if !files
+        .iter()
+        .any(|file| file.get("path").and_then(Value::as_str) == Some("SKILL.md"))
+    {
+        return Err(CliError::new(
+            "The Skill package does not contain SKILL.md.",
+        ));
+    }
+    let content_hash = hash_file_manifest(&files);
+    input["publishingSkillId"] = json!(skill.skill.id);
+    input["publishingSkillSnapshot"] = json!({
+        "id": skill.skill.id,
+        "name": skill.skill.name,
+        "source": skill.source,
+        "contentHash": content_hash,
+        "files": files,
+    });
+    Ok(Some(input))
+}
+
 fn collect_regular_files(
     root: &Path,
     directory: &Path,
@@ -741,10 +817,7 @@ pub(crate) fn checkpoint_attempt_for_broker(
             "Publishing checkpoint requires a supported publishing Task.",
         ));
     }
-    if !matches!(
-        task.get("status").and_then(Value::as_str),
-        Some("reserved" | "running" | "claimed")
-    ) {
+    if !matches!(task.get("status").and_then(Value::as_str), Some("running")) {
         return Err(CliError::with_code(
             "task_not_claimed",
             "Claim the publishing Task before checkpointing it.",
@@ -779,11 +852,11 @@ pub(crate) fn checkpoint_attempt_for_broker(
     Ok(json!({ "taskId": task_id, "attemptId": attempt_id, "phase": phase, "revision": revision }))
 }
 
-pub fn prepare_task_completion(
+pub(crate) fn prepare_task_completion(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
     result: Option<Value>,
-) -> Result<Option<(String, Value)>, CliError> {
+) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
     let task = crate::tasks::inspect_task(paths, task_id)?["task"].clone();
     let result = result.ok_or_else(|| {
         CliError::with_code("invalid_output", "Publishing Task result is missing.")
@@ -812,11 +885,10 @@ pub fn prepare_task_completion(
         ));
     }
     let storage = Storage::open(paths)?;
-    let mut state = normalize_state(
-        storage
-            .read_panel_state(project_id, panel_id)?
-            .unwrap_or_else(empty_state),
-    );
+    let (state, base_revision) = storage
+        .read_panel_state_snapshot(project_id, panel_id)?
+        .ok_or_else(|| CliError::with_code("target_not_found", "Publishing state not found."))?;
+    let mut state = normalize_state(state);
     let attempt = find_attempt_mut(&mut state, attempt_id)?;
     attempt["phase"] = json!("completed");
     attempt["outcome"] = result.get("outcome").cloned().unwrap_or(Value::Null);
@@ -825,7 +897,11 @@ pub fn prepare_task_completion(
     attempt["remoteUrl"] = result.get("remoteUrl").cloned().unwrap_or(Value::Null);
     attempt["publishedAt"] = result.get("publishedAt").cloned().unwrap_or(Value::Null);
     attempt["completedAt"] = json!(now_iso());
-    Ok(Some((panel_id.to_owned(), state)))
+    Ok(Some(crate::tasks::PreparedPanelState::new(
+        panel_id,
+        base_revision,
+        state,
+    )))
 }
 
 fn find_attempt_mut<'a>(state: &'a mut Value, attempt_id: &str) -> Result<&'a mut Value, CliError> {
@@ -1008,7 +1084,7 @@ mod tests {
     #[test]
     fn publishing_uses_the_selected_title_alternative() {
         let publication = json!({
-            "title": "Legacy title",
+            "title": "Existing title",
             "selectedTitleId": "title:channel",
             "titles": [
                 { "id": "title:primary", "value": "Primary title" },

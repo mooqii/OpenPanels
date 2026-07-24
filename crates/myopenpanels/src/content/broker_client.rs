@@ -6,14 +6,6 @@ pub fn broker_read_file(request: &ReadFileRequest) -> Result<Value, CliError> {
     broker_json("/api/task-broker/v3/read", request)
 }
 
-pub fn broker_prepare_operation(request: &PrepareOperationRequest) -> Result<Value, CliError> {
-    broker_json("/api/task-broker/v3/operations/prepare", request)
-}
-
-pub fn broker_begin_operation(request: &BeginOperationRequest) -> Result<Value, CliError> {
-    broker_json("/api/task-broker/v3/operations/begin", request)
-}
-
 pub fn broker_prepare_skill(request: &PrepareSkillRequest) -> Result<Value, CliError> {
     broker_json("/api/task-broker/v3/skills/prepare", request)
 }

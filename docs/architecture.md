@@ -1,5 +1,10 @@
 # MyOpenPanels Architecture
 
+The conceptual contract for Tasks, Operations, Procedures, CLI commands,
+panels, module capabilities, and Skill layers is defined in
+[`core-concepts.md`](core-concepts.md). Planned convergence work is tracked in
+[`core-optimization-plan.md`](core-optimization-plan.md).
+
 ## Product boundary
 
 MyOpenPanels is a local, single-user application with one Studio process per
@@ -40,8 +45,7 @@ names appear only where the operation actually concerns panel UI or selection.
 
 ## Database model
 
-The current schema contains 16 application tables. Seven are shared
-infrastructure and nine model stable domain resources:
+The current schema contains 17 application tables:
 
 | Table | Responsibility |
 | --- | --- |
@@ -51,6 +55,7 @@ infrastructure and nine model stable domain resources:
 | `panel_selections` | Selection JSON and its independent revision |
 | `settings` | Generic `key + value_json` user overrides |
 | `change_scopes` | Catalog, UI, resource, Task, and settings revisions used by Studio live synchronization |
+| `direct_operations` | Target-bound direct Agent interactions and their four-state lifecycle |
 | `tasks` | Durable work, dependency, lease, fencing, result, and execution summaries |
 | `resources` | Stable identity, ownership, lifecycle, and revision for every durable domain resource |
 | `documents` | Wiki sources, My Documents, drafts, and articles |
@@ -63,16 +68,19 @@ infrastructure and nine model stable domain resources:
 | `releases` | Release snapshot, platform result, remote reference, and publication link |
 
 There are no persisted Workflow Runs, dependency graphs, Task Attempts, Task
-Events, Agent Targets, Agent Routes, Agent Operations, Model Gateway
-connections, content objects, or staging sessions. A Task may have one
+Events, Agent Routes, Model Gateway connections, content objects, or staging
+sessions. Direct Operations are small SQLite records because their lifecycle
+must commit atomically with the placeholder, pending document, or completed
+resource projection they own. They remain multi-command direct interaction
+sessions, not scheduled Task entities. A Task may have one
 `depends_on_task_id`; mutation ordering is derived from `mutation_key` and Task
 creation order. Up to three execution summaries are embedded in the Task row.
 
 `panels.ui_state_json` contains only presentation and interaction state such as
 the active resource, filters, draft form values, and selected Skill. Documents,
 Wiki spaces, Canvas snapshots, publications, releases, and Task status are not
-stored in that JSON. Compatibility API responses compose those domain rows into
-the panel-shaped JSON expected by the current Studio.
+stored in that JSON. Domain API responses compose those rows into the
+panel-shaped JSON consumed by Studio.
 
 Panel selection writes update only `panel_selections` and its
 `panel_selection` change scope. They never modify Canvas state revision,
@@ -83,6 +91,8 @@ Canvas `snapshotVersion`, or cause the Canvas editor to rebuild.
 Every database mutation and its matching `change_scopes` revision commit in the
 same SQLite transaction. Resource creation or deletion, Task-resource links,
 and cancellation of work invalidated by a deletion also commit together.
+Direct Operation begin and completion commit the Operation row and its panel or
+resource mutation together after revalidating the bound target and revision.
 Claiming uses an `IMMEDIATE` transaction so concurrent workers cannot claim the
 same Task. A successful claim changes the Task to `running`, increments
 `attempt_count`, advances `execution_generation`, and installs a hashed
@@ -123,6 +133,13 @@ the Task result and relevant domain resource revision. A conflict leaves the
 previous active pointer unchanged. Wiki spaces are one resource, so all files
 in a Wiki update move together.
 
+Direct My Document Operations use the same immutable revision preparation
+under their Operation artifact directory. The completed Operation and document
+projection commit first; pointer publication follows, and startup recovery can
+publish the exact revision named by that completed Operation. Direct Canvas
+assets are materialized before their asset row, Canvas snapshot, and completed
+Operation commit in one database transaction.
+
 Binary assets use the same project-scoped content boundary with a compact
 versioned layout:
 
@@ -151,8 +168,8 @@ resource version.
 `tasks.status` is authoritative for execution. Wiki source indexing is derived
 from three facts: the source content version, the version recorded in
 `wiki_source_ingestions`, and the latest related Task. There is no separately
-persisted `pending`, `running`, or `indexed` document status. The compatibility
-response computes those labels when it composes Wiki state, so changing or
+persisted `pending`, `running`, or `indexed` document status. The domain
+projection computes those labels when it composes Wiki state, so changing or
 archiving a Task cannot leave a stale status string inside panel JSON.
 
 Deleting a resource soft-deletes the `resources` row and cancels every linked

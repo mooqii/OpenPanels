@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type {
+  ProjectTask,
+  TaskStatus,
   TypesettingCanvasAsset,
   TypesettingPublicationImage,
   TypesettingState,
@@ -13,6 +15,8 @@ import {
   groupTypesettingAssets,
   isInsertableTypesettingDocument,
   isSupportedTypesettingCoverImage,
+  isSupportedTypesettingCoverMedia,
+  isTypesettingCoverVideo,
   isTypesettingDocumentEmpty,
   isTypesettingLayoutTaskActive,
   latestTypesettingLayoutTask,
@@ -38,10 +42,10 @@ import {
 } from "./typesetting"
 
 describe("Typesetting state", () => {
-  it("normalizes malformed state and accepts complete schema v2 data", () => {
-    expect(normalizePanelState("typesetting", {})).toEqual({
-      publications: [],
-    })
+  it("rejects malformed state and accepts complete schema v2 data", () => {
+    expect(() => normalizePanelState("typesetting", {})).toThrow(
+      "malformed typesetting panel state"
+    )
     const publication = createTypesettingPublication(
       "publication:1",
       "2026-07-14T00:00:00Z"
@@ -308,9 +312,12 @@ describe("Typesetting assets and persistence", () => {
     expect(covers).toEqual([first, second])
   })
 
-  it("accepts only supported cover image formats", () => {
+  it("accepts supported cover image and video formats", () => {
     expect(
       isSupportedTypesettingCoverImage({ name: "cover.PNG", type: "" })
+    ).toBe(true)
+    expect(
+      isSupportedTypesettingCoverMedia({ name: "cover.PNG", type: "" })
     ).toBe(true)
     expect(
       isSupportedTypesettingCoverImage({
@@ -319,15 +326,49 @@ describe("Typesetting assets and persistence", () => {
       })
     ).toBe(true)
     expect(
+      isSupportedTypesettingCoverMedia({
+        name: "cover.mp4",
+        type: "",
+      })
+    ).toBe(true)
+    expect(
+      isSupportedTypesettingCoverMedia({
+        name: "cover.bin",
+        type: "video/webm",
+      })
+    ).toBe(true)
+    expect(
+      isSupportedTypesettingCoverImage({
+        name: "cover.mp4",
+        type: "video/mp4",
+      })
+    ).toBe(false)
+    expect(
       isSupportedTypesettingCoverImage({
         name: "cover.svg",
         type: "image/svg+xml",
       })
     ).toBe(false)
     expect(
-      isSupportedTypesettingCoverImage({
+      isSupportedTypesettingCoverMedia({
+        name: "cover.svg",
+        type: "image/svg+xml",
+      })
+    ).toBe(false)
+    expect(
+      isSupportedTypesettingCoverMedia({
         name: "notes.txt",
         type: "text/plain",
+      })
+    ).toBe(false)
+    expect(
+      isTypesettingCoverVideo({
+        mimeType: "video/mp4",
+      })
+    ).toBe(true)
+    expect(
+      isTypesettingCoverVideo({
+        mimeType: "image/png",
       })
     ).toBe(false)
   })
@@ -498,11 +539,7 @@ describe("Typesetting layout tasks", () => {
     expect(isTypesettingLayoutTaskActive(layoutTask("cancelled"))).toBe(false)
     expect(isTypesettingLayoutTaskActive(layoutTask("queued"))).toBe(true)
     expect(isTypesettingLayoutTaskActive(layoutTask("running"))).toBe(true)
-    expect(isTypesettingLayoutTaskActive(layoutTask("cancel_requested"))).toBe(
-      true
-    )
-    expect(isTypesettingLayoutTaskActive(layoutTask("archived"))).toBe(false)
-    expect(isTypesettingLayoutTaskActive(layoutTask("completed"))).toBe(false)
+    expect(isTypesettingLayoutTaskActive(layoutTask("superseded"))).toBe(false)
   })
 
   it("selects the latest layout task for the publication", () => {
@@ -594,7 +631,7 @@ function canvasAsset(
   }
 }
 
-function task(status: string) {
+function task(status: TaskStatus): ProjectTask {
   return {
     createdAt: "2026-07-21T00:00:00Z",
     id: `task:${status}`,
@@ -609,6 +646,6 @@ function task(status: string) {
   }
 }
 
-function layoutTask(status: string) {
+function layoutTask(status: TaskStatus): ProjectTask {
   return { ...task(status), type: "format_publication_content" }
 }

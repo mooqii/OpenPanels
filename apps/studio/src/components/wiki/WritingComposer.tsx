@@ -33,7 +33,8 @@ import {
   writingSkillSelectionError,
 } from "../../lib/writing"
 import type {
-  AgentSkillListing,
+  ManagedProjectSkill,
+  ManagedSkillModule,
   MyDocument,
   MyOpenPanelsTransport,
   ProjectTask,
@@ -102,16 +103,16 @@ export function WritingComposer({
     selectedRevisionWritingSkillId
   )
   const draft = mode === "revise" ? revisionDraft : createDraft
-  const [writingSkills, setWritingSkills] = useState<AgentSkillListing[]>([])
+  const [writingSkills, setWritingSkills] = useState<ManagedProjectSkill[]>([])
   const [distillationSkills, setDistillationSkills] = useState<
-    AgentSkillListing[]
+    ManagedProjectSkill[]
   >([])
   const [skillFilesDialog, setSkillFilesDialog] = useState<{
     files: SkillTextFile[]
-    skill: AgentSkillListing
+    skill: ManagedProjectSkill
   } | null>(null)
   const [pendingDeleteSkill, setPendingDeleteSkill] =
-    useState<AgentSkillListing | null>(null)
+    useState<ManagedProjectSkill | null>(null)
   const [isDeletingSkill, setIsDeletingSkill] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -139,17 +140,21 @@ export function WritingComposer({
 
   useEffect(() => {
     let isCancelled = false
-    apiJson<{
-      distillationSkills?: AgentSkillListing[]
-      skills?: AgentSkillListing[]
-    }>(
+    apiJson<{ modules: ManagedSkillModule[] }>(
       transport.apiBase,
-      `/api/writing/skills?taskVersion=${encodeURIComponent(distillationTaskVersion)}&skillsRevision=${skillsRevision}`
+      `/api/skills?taskVersion=${encodeURIComponent(distillationTaskVersion)}&skillsRevision=${skillsRevision}`
     )
       .then((data) => {
         if (!isCancelled) {
-          setWritingSkills(data.skills ?? [])
-          setDistillationSkills(data.distillationSkills ?? [])
+          setWritingSkills(
+            data.modules.find((module) => module.kind === "writing")?.skills ??
+              []
+          )
+          setDistillationSkills(
+            data.modules.find(
+              (module) => module.kind === "writing-distillation"
+            )?.skills ?? []
+          )
         }
       })
       .catch((skillError) => {
@@ -205,9 +210,7 @@ export function WritingComposer({
     selection.selectedMyDocumentIds.includes(document.id)
   )
   const unreadySourceCount = selectedMyDocuments.filter(
-    (document) =>
-      document.writeOperation !== undefined &&
-      document.writeOperation.status !== "completed"
+    (document) => document.writeOperation !== undefined
   ).length
   const selectedSourceCount = selectedMyDocuments.length
   const selectedReferenceCount =
@@ -219,7 +222,7 @@ export function WritingComposer({
   )
   const hasValidReferenceSelection = referenceSelectionError === null
   const hasValidDistillationSkillSelection = distillationSkills.some(
-    (item) => item.skill.id === selectedDistillationSkillId
+    (item) => item.id === selectedDistillationSkillId
   )
 
   const submit = useCallback(async () => {
@@ -330,10 +333,10 @@ export function WritingComposer({
   )
 
   const openSkillFiles = useCallback(
-    async (skill: AgentSkillListing) => {
+    async (skill: ManagedProjectSkill) => {
       const payload = await apiJson<{ files?: SkillTextFile[] }>(
         transport.apiBase,
-        `/api/skills/${encodeURIComponent(skill.skill.id)}`
+        `/api/skills/${encodeURIComponent(skill.id)}`
       )
       setSkillFilesDialog({ files: payload.files ?? [], skill })
     },
@@ -345,7 +348,7 @@ export function WritingComposer({
       if (!skillFilesDialog) return
       await apiJson(
         transport.apiBase,
-        `/api/skills/${encodeURIComponent(skillFilesDialog.skill.skill.id)}/file`,
+        `/api/skills/${encodeURIComponent(skillFilesDialog.skill.id)}/file`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
@@ -372,20 +375,19 @@ export function WritingComposer({
     try {
       await apiJson(
         transport.apiBase,
-        `/api/skills/${encodeURIComponent(pendingDeleteSkill.skill.id)}`,
+        `/api/skills/${encodeURIComponent(pendingDeleteSkill.id)}`,
         { method: "DELETE" }
       )
-      const deletedId = pendingDeleteSkill.skill.id
+      const deletedId = pendingDeleteSkill.id
       setWritingSkills((current) =>
-        current.filter((item) => item.skill.id !== deletedId)
+        current.filter((item) => item.id !== deletedId)
       )
       setDistillationSkills((current) =>
-        current.filter((item) => item.skill.id !== deletedId)
+        current.filter((item) => item.id !== deletedId)
       )
       if (selectedDistillationSkillId === deletedId) {
         setSelectedDistillationSkillId(
-          distillationSkills.find((item) => item.skill.id !== deletedId)?.skill
-            .id ?? ""
+          distillationSkills.find((item) => item.id !== deletedId)?.id ?? ""
         )
       }
       setSelectedCreateWritingSkillIds((current) =>
@@ -471,7 +473,7 @@ export function WritingComposer({
   }
 
   const renderSkillList = (
-    items: AgentSkillListing[],
+    items: ManagedProjectSkill[],
     selectedIds: string[],
     onToggle: (skillId: string, isSelected: boolean) => void,
     inputIdPrefix: string,
@@ -479,31 +481,29 @@ export function WritingComposer({
   ) => (
     <div className="op-writing-skills__list">
       {items.map((item) => (
-        <div className="op-writing-skill" key={item.skill.id}>
+        <div className="op-writing-skill" key={item.id}>
           <Button
-            aria-label={`${t`Select Writing Skill`}: ${item.skill.name}`}
-            aria-pressed={selectedIds.includes(item.skill.id)}
+            aria-label={`${t`Select Writing Skill`}: ${item.name}`}
+            aria-pressed={selectedIds.includes(item.id)}
             className="op-writing-skill__selector"
-            id={`${inputIdPrefix}-${item.skill.id}`}
+            id={`${inputIdPrefix}-${item.id}`}
             isIconOnly
-            onPress={() =>
-              onToggle(item.skill.id, !selectedIds.includes(item.skill.id))
-            }
+            onPress={() => onToggle(item.id, !selectedIds.includes(item.id))}
             variant="ghost"
           >
             <span aria-hidden />
           </Button>
           <div className="op-writing-skill__body">
             <span className="op-writing-skill__title">
-              <strong title={item.skill.name}>{item.skill.name}</strong>
+              <strong title={item.name}>{item.name}</strong>
             </span>
             <span className="op-writing-skill__description">
-              {item.skill.description}
+              {item.description}
             </span>
           </div>
           <Dropdown>
             <Button
-              aria-label={`${t`Writing Skill actions`}: ${item.skill.name}`}
+              aria-label={`${t`Writing Skill actions`}: ${item.name}`}
               className="op-writing-skill__menu"
               isIconOnly
               size="sm"
@@ -523,27 +523,29 @@ export function WritingComposer({
                   }
                 }}
               >
-                {item.source === "builtin" ? (
-                  <Dropdown.Item id="view" textValue={t`View`}>
-                    <Eye size={14} />
-                    <Label>{t`View`}</Label>
-                  </Dropdown.Item>
-                ) : (
+                {item.canEdit ? (
                   <>
                     <Dropdown.Item id="edit" textValue={t`Edit`}>
                       <Pencil size={14} />
                       <Label>{t`Edit`}</Label>
                     </Dropdown.Item>
                     <Separator />
-                    <Dropdown.Item
-                      id="delete"
-                      textValue={t`Delete`}
-                      variant="danger"
-                    >
-                      <Trash2 size={14} />
-                      <Label>{t`Delete`}</Label>
-                    </Dropdown.Item>
+                    {item.canDelete ? (
+                      <Dropdown.Item
+                        id="delete"
+                        textValue={t`Delete`}
+                        variant="danger"
+                      >
+                        <Trash2 size={14} />
+                        <Label>{t`Delete`}</Label>
+                      </Dropdown.Item>
+                    ) : null}
                   </>
+                ) : (
+                  <Dropdown.Item id="view" textValue={t`View`}>
+                    <Eye size={14} />
+                    <Label>{t`View`}</Label>
+                  </Dropdown.Item>
                 )}
               </Dropdown.Menu>
             </Dropdown.Popover>
@@ -857,8 +859,8 @@ export function WritingComposer({
           files={skillFilesDialog.files}
           onClose={() => setSkillFilesDialog(null)}
           onSave={saveSkillFile}
-          readOnly={skillFilesDialog.skill.source === "builtin"}
-          title={skillFilesDialog.skill.skill.name}
+          readOnly={!skillFilesDialog.skill.canEdit}
+          title={skillFilesDialog.skill.name}
         />
       ) : null}
       {pendingDeleteSkill ? (

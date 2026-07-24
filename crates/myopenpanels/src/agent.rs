@@ -10,5 +10,6 @@ include!("agent/skill_import.rs");
 include!("agent/skill_updates.rs");
 include!("agent/recommended_skills.rs");
 include!("agent/skill_management_tests.rs");
+include!("agent/skill_package_service_tests.rs");
 include!("agent/recommended_skills_tests.rs");
 include!("agent/tests.rs");

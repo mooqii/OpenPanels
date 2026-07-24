@@ -31,6 +31,33 @@ mod tests {
             .clone()
     }
 
+    fn write_custom_cover_skill(paths: &MyOpenPanelsPaths, skill_id: &str, marker: &str) {
+        let directory = paths.storage_dir.join("skills").join(skill_id);
+        std::fs::create_dir_all(directory.join("references")).expect("skill dir");
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!(
+                "---\nname: {skill_id}\ndescription: Test cover generation.\n---\n\nGenerate a cover.\n"
+            ),
+        )
+        .expect("SKILL.md");
+        std::fs::write(directory.join("references/retry-marker.txt"), marker)
+            .expect("retry marker");
+        std::fs::write(
+            directory.join("manifest.json"),
+            serde_json::to_vec_pretty(&json!({
+                "source": "custom",
+                "skillId": skill_id,
+                "name": "Retryable Cover",
+                "binding": {
+                    "moduleKinds": ["publication-cover"],
+                },
+            }))
+            .expect("manifest"),
+        )
+        .expect("manifest file");
+    }
+
     fn add_canvas_asset(
         paths: &MyOpenPanelsPaths,
         project_id: &str,
@@ -317,6 +344,105 @@ mod tests {
     }
 
     #[test]
+    fn retry_recaptures_the_current_cover_skill_before_creating_each_task() {
+        let (_temp, paths) = test_paths();
+        let bootstrap = create_project(&paths, Some("Cover retry")).expect("project");
+        let typesetting_panel = panel_id(&bootstrap, PanelKind::Typesetting);
+        let storage = Storage::open(&paths).expect("storage");
+        storage
+            .write_panel_state(
+                &bootstrap.project.id,
+                &typesetting_panel,
+                &json!({
+                    "publications": [{
+                        "id": "publication:retry-cover",
+                        "title": "Retry cover",
+                        "covers": [],
+                        "content": {
+                            "type": "doc",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{ "type": "text", "text": "Fresh snapshot" }]
+                            }]
+                        },
+                        "createdAt": "2026-07-24T00:00:00Z",
+                        "updatedAt": "2026-07-24T00:00:00Z"
+                    }]
+                }),
+            )
+            .expect("typesetting state");
+        let skill_id = "custom-retry-cover";
+        write_custom_cover_skill(&paths, skill_id, "version one");
+        let created = create_cover_request(
+            &paths,
+            "publication:retry-cover",
+            skill_id,
+            "",
+            "cover-request:retry",
+        )
+        .expect("cover request");
+        let original_id = created["task"]["id"].as_str().expect("task id");
+        storage
+            .connection()
+            .execute(
+                "UPDATE tasks SET status = 'failed', completed_at = ? WHERE id = ?",
+                rusqlite::params![crate::control::now_iso(), original_id],
+            )
+            .expect("fail original task");
+
+        write_custom_cover_skill(&paths, skill_id, "version two");
+        let retried = crate::tasks::retry_task(&paths, original_id).expect("retry task");
+        let retry_id = retried["task"]["id"].as_str().expect("retry id");
+        let original_marker = created["task"]["input"]["coverSkillSnapshot"]["files"]
+            .as_array()
+            .expect("original files")
+            .iter()
+            .find(|file| file["path"] == "references/retry-marker.txt")
+            .and_then(|file| file["assetRef"].as_str())
+            .expect("original marker");
+        let retry_marker = retried["task"]["input"]["coverSkillSnapshot"]["files"]
+            .as_array()
+            .expect("retry files")
+            .iter()
+            .find(|file| file["path"] == "references/retry-marker.txt")
+            .and_then(|file| file["assetRef"].as_str())
+            .expect("retry marker");
+        assert_ne!(retry_id, original_id);
+        assert_ne!(retry_marker, original_marker);
+        assert!(retry_marker.contains(&format!("cover-tasks/{retry_id}/skill")));
+        assert_eq!(
+            storage.read_asset(original_marker).expect("original marker"),
+            b"version one"
+        );
+        assert_eq!(
+            storage.read_asset(retry_marker).expect("retry marker"),
+            b"version two"
+        );
+
+        let second_retry =
+            crate::tasks::retry_task(&paths, original_id).expect("second retry task");
+        assert_ne!(second_retry["task"]["id"], retried["task"]["id"]);
+
+        std::fs::remove_dir_all(paths.storage_dir.join("skills").join(skill_id))
+            .expect("remove required skill");
+        let task_count = storage
+            .list_tasks(&bootstrap.project.id)
+            .expect("tasks before failed retry")
+            .len();
+        let error = crate::tasks::retry_task(&paths, original_id)
+            .expect_err("retry without the required Skill Snapshot");
+        assert_eq!(error.code(), Some("task_retry_skill_snapshot_failed"));
+        assert!(error.message().contains("required Skill Snapshot"));
+        assert_eq!(
+            storage
+                .list_tasks(&bootstrap.project.id)
+                .expect("tasks after failed retry")
+                .len(),
+            task_count
+        );
+    }
+
+    #[test]
     fn title_request_appends_generated_candidates_without_changing_selection() {
         let (_temp, paths) = test_paths();
         let bootstrap = create_project(&paths, Some("Titles")).expect("project");
@@ -416,9 +542,10 @@ mod tests {
                 "artifacts": [{ "titles": generated }]
             }
         });
-        let (_, completed_state) = prepare_task_completion(&paths, task_id, Some(result.clone()))
+        let completed_state = prepare_task_completion(&paths, task_id, Some(result.clone()))
             .expect("prepare title completion")
-            .expect("panel state");
+            .expect("panel state")
+            .state;
         let publication = &completed_state["publications"][0];
         let titles = publication["titles"].as_array().expect("titles");
         assert_eq!(titles.len(), 5);
@@ -434,9 +561,10 @@ mod tests {
         storage
             .write_panel_state(&bootstrap.project.id, &typesetting_panel, &completed_state)
             .expect("persist titles");
-        let (_, repeated_state) = prepare_task_completion(&paths, task_id, Some(result))
+        let repeated_state = prepare_task_completion(&paths, task_id, Some(result))
             .expect("repeat title completion")
-            .expect("panel state");
+            .expect("panel state")
+            .state;
         assert_eq!(
             repeated_state["publications"][0]["titles"]
                 .as_array()
@@ -643,9 +771,10 @@ mod tests {
         storage
             .write_panel_state(&bootstrap.project.id, &typesetting_panel, &title_changed)
             .expect("title edit");
-        let (_, completed) = prepare_task_completion(&paths, task_id, Some(result.clone()))
+        let completed = prepare_task_completion(&paths, task_id, Some(result.clone()))
             .expect("prepare completion")
-            .expect("panel state");
+            .expect("panel state")
+            .state;
         assert_eq!(
             completed["publications"][0]["title"],
             json!("Edited while layout ran")
@@ -709,34 +838,44 @@ mod tests {
                     "mimeType": "image/png",
                     "width": 1200,
                     "height": 900
+                }, {
+                    "assetRef": format!("projects/{}/content/asset/asset:cover-2/1/cover-2.png", bootstrap.project.id),
+                    "resourceId": "asset:cover-2",
+                    "fileName": format!("cover-tasks/{task_id}/cover-2.png"),
+                    "mimeType": "image/png",
+                    "width": 1200,
+                    "height": 900
                 }]
             }
         });
-        let (_, completed_state) = prepare_task_completion(&paths, task_id, Some(result.clone()))
+        let completed_state = prepare_task_completion(&paths, task_id, Some(result.clone()))
             .expect("prepare completion")
-            .expect("panel state");
+            .expect("panel state")
+            .state;
         let covers = completed_state["publications"][0]["covers"]
             .as_array()
             .expect("covers");
-        assert_eq!(covers.len(), 1);
+        assert_eq!(covers.len(), 2);
         assert_eq!(covers[0]["source"]["taskId"], json!(task_id));
         assert_eq!(
             covers[0]["source"]["skillId"],
             json!(DEFAULT_COVER_SKILL_ID)
         );
+        assert_eq!(covers[1]["source"]["taskId"], json!(task_id));
 
         storage
             .write_panel_state(&bootstrap.project.id, &typesetting_panel, &completed_state)
             .expect("persist prepared state");
-        let (_, repeated_state) = prepare_task_completion(&paths, task_id, Some(result.clone()))
+        let repeated_state = prepare_task_completion(&paths, task_id, Some(result.clone()))
             .expect("repeat completion")
-            .expect("panel state");
+            .expect("panel state")
+            .state;
         assert_eq!(
             repeated_state["publications"][0]["covers"]
                 .as_array()
                 .expect("covers")
                 .len(),
-            1
+            2
         );
 
         storage

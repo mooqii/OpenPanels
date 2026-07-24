@@ -10,24 +10,26 @@ pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cl
         ));
     }
     let project_id = task["task"]["projectId"].as_str().unwrap_or_default();
-    match task_queue_adapter(task["task"]["queue"].as_str().unwrap_or(""))? {
-        TaskQueueAdapter::Wiki => crate::wiki::cancel_task(paths, task_id)?,
-        TaskQueueAdapter::Writing => crate::writing::cancel_task(paths, task_id)?,
-        TaskQueueAdapter::Publication => crate::publication::cancel_task(paths, task_id)?,
-        TaskQueueAdapter::Release => crate::release::cancel_task(paths, task_id)?,
+    let domain = task_domain(task["task"]["queue"].as_str().unwrap_or(""))?;
+    let panel_state = match domain {
+        TaskDomain::Wiki | TaskDomain::Publication => None,
+        TaskDomain::Writing => crate::writing::prepare_task_cancellation(paths, task_id)?,
+        TaskDomain::Release => crate::release::prepare_task_cancellation(paths, task_id)?,
     };
     finalize_task_runtime(
         paths,
         project_id,
         task_id,
         "cancelled",
-        None,
+        TaskOutputPlan::completed(None, panel_state),
         Some(json!({ "code": "user_cancelled" })),
         None,
         None,
         None,
-        None,
     )?;
+    if domain == TaskDomain::Writing {
+        crate::writing::cleanup_uncommitted_writing_skill(paths, task_id)?;
+    }
     inspect_task_in_session(paths, project_id, task_id)
 }
 

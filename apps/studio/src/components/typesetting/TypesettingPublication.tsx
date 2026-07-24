@@ -21,6 +21,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Eye,
   GripVertical,
   LoaderCircle,
   PanelLeft,
@@ -40,10 +41,12 @@ import {
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiUrl } from "../../lib/api"
 import { randomId } from "../../lib/id"
+import { taskIsSucceeded } from "../../lib/task-status"
 import {
   addPublicationTitle,
   appendTypesettingTags,
-  isSupportedTypesettingCoverImage,
+  isSupportedTypesettingCoverMedia,
+  isTypesettingCoverVideo,
   isTypesettingDocumentEmpty,
   isTypesettingLayoutTaskActive,
   latestTypesettingLayoutTask,
@@ -72,6 +75,7 @@ import type {
   TypesettingPublication,
   TypesettingPublicationImage,
 } from "../../types"
+import { ImagePreviewDialog } from "../ImagePreviewDialog"
 import { TypesettingAddCoverDialog } from "./TypesettingAddCoverDialog"
 import { TypesettingCoverTaskDialog } from "./TypesettingCoverTaskDialog"
 import { TypesettingLayoutDialog } from "./TypesettingLayoutDialog"
@@ -149,12 +153,10 @@ export function PublicationModeHeader({
         </Button>
       ) : null}
       <Tabs
-        className="op-typesetting-mode-tabs"
         onSelectionChange={(key) =>
           onViewChange(key === "preview" ? "preview" : "edit")
         }
         selectedKey={view}
-        variant="secondary"
       >
         <Tabs.ListContainer>
           <Tabs.List aria-label={t`Publication view`}>
@@ -186,6 +188,7 @@ export function PublicationDetail({
   onDelete,
   onFlushSave,
   onInsertHandlerChange,
+  onManageSkillModule,
   onOpenAgentTasks,
   onOpenLibrary,
   onPreview,
@@ -210,6 +213,7 @@ export function PublicationDetail({
       | ((title: string, content: string, format: "markdown" | "text") => void)
       | null
   ) => void
+  onManageSkillModule: (moduleKind: string) => void
   onOpenAgentTasks: (taskIds: string[]) => void
   onOpenLibrary?: () => void
   onPreview: () => void
@@ -236,6 +240,10 @@ export function PublicationDetail({
   const [lastSavedAt, setLastSavedAt] = useState(publication.updatedAt)
   const [isCoverDialogOpen, setIsCoverDialogOpen] = useState(false)
   const [isAddCoverDialogOpen, setIsAddCoverDialogOpen] = useState(false)
+  const [previewedCover, setPreviewedCover] = useState<{
+    alt: string
+    src: string
+  } | null>(null)
   const [isInsertImageDialogOpen, setIsInsertImageDialogOpen] = useState(false)
   const [isTitleDialogOpen, setIsTitleDialogOpen] = useState(false)
   const [isTitleListExpanded, setIsTitleListExpanded] = useState(false)
@@ -332,7 +340,7 @@ export function PublicationDetail({
   const visibleCoverTasks = coverTasks.filter(
     (task) =>
       !generatedTaskIds.has(task.id) &&
-      (task.status !== "succeeded" || createdCoverTaskIds.has(task.id))
+      (!taskIsSucceeded(task) || createdCoverTaskIds.has(task.id))
   )
   const layoutTasks = useMemo(() => {
     const byId = new Map(tasks.map((task) => [task.id, task]))
@@ -387,8 +395,7 @@ export function PublicationDetail({
   )
   const visibleTitleTask =
     titleTasks.find(
-      (task) =>
-        task.status !== "succeeded" || !generatedTitleTaskIds.has(task.id)
+      (task) => !(taskIsSucceeded(task) && generatedTitleTaskIds.has(task.id))
     ) ?? null
 
   const imageExtension = useMemo(
@@ -578,7 +585,7 @@ export function PublicationDetail({
       setAssetError(null)
       if (!asset) {
         const supported = Array.from(event.dataTransfer.files).filter(
-          isSupportedTypesettingCoverImage
+          isSupportedTypesettingCoverMedia
         )
         if (supported.length === 0 || isCoverUploading) return
         setIsCoverUploading(true)
@@ -599,7 +606,7 @@ export function PublicationDetail({
           }))
         }
         setIsCoverUploading(false)
-        if (failed) setAssetError(t`Failed to upload some images`)
+        if (failed) setAssetError(t`Failed to upload some media`)
         return
       }
       try {
@@ -887,7 +894,7 @@ export function PublicationDetail({
           <div className="op-typesetting-section__heading">
             <div>
               <span>{t`Covers`}</span>
-              <small>{t`The first image is used in the project list.`}</small>
+              <small>{t`The first cover is used in the project list.`}</small>
             </div>
             <div className="op-typesetting-section__actions">
               <Button
@@ -954,6 +961,14 @@ export function PublicationDetail({
                       event.dataTransfer.dropEffect = "move"
                     }}
                     onDragStart={(event) => {
+                      if (
+                        (event.target as HTMLElement).closest(
+                          "button, [role='button']"
+                        )
+                      ) {
+                        event.preventDefault()
+                        return
+                      }
                       setDraggedCoverIndex(index)
                       event.dataTransfer.effectAllowed = "move"
                       event.dataTransfer.setData(
@@ -982,14 +997,33 @@ export function PublicationDetail({
                       setDraggedCoverIndex(null)
                     }}
                   >
-                    <img
-                      alt={cover.fileName}
-                      draggable={false}
+                    <PublicationCoverMedia
+                      cover={cover}
                       src={apiUrl(transport.apiBase, cover.src).toString()}
                     />
                     <span className="op-publication-cover__grip">
                       <GripVertical size={14} />
                     </span>
+                    {isTypesettingCoverVideo(cover) ? null : (
+                      <Button
+                        aria-label={t`View cover`}
+                        className="op-publication-cover__view"
+                        isIconOnly
+                        onPress={() =>
+                          setPreviewedCover({
+                            alt: cover.fileName,
+                            src: apiUrl(
+                              transport.apiBase,
+                              cover.src
+                            ).toString(),
+                          })
+                        }
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <Eye size={14} />
+                      </Button>
+                    )}
                     <div className="op-publication-cover__actions">
                       <Button
                         aria-label={t`Move cover left`}
@@ -1065,13 +1099,13 @@ export function PublicationDetail({
                     <span className="op-publication-cover-task__icon">
                       <Spinner size="sm" />
                     </span>
-                    <strong>{t`Uploading images`}</strong>
+                    <strong>{t`Uploading media`}</strong>
                   </div>
                 ) : null}
               </div>
             ) : (
               <div className="op-typesetting-drop-empty">
-                <span>{t`Drag Canvas assets or image files here to add covers.`}</span>
+                <span>{t`Drag Canvas assets or image/video files here to add covers.`}</span>
               </div>
             )}
           </div>
@@ -1186,6 +1220,7 @@ export function PublicationDetail({
       <TypesettingLayoutDialog
         isOpen={isLayoutDialogOpen}
         onFlushSave={onFlushSave}
+        onManageSkills={() => onManageSkillModule("publication-layout")}
         onOpenChange={setIsLayoutDialogOpen}
         onTaskCreated={(task) => {
           setCreatedLayoutTasks((current) => [
@@ -1200,6 +1235,7 @@ export function PublicationDetail({
       <PublicationTitleTaskDialog
         isOpen={isTitleDialogOpen}
         onFlushSave={onFlushSave}
+        onManageSkills={() => onManageSkillModule("publication-title")}
         onOpenChange={setIsTitleDialogOpen}
         onTaskCreated={(task) => {
           setCreatedTitleTasks((current) => [
@@ -1214,6 +1250,7 @@ export function PublicationDetail({
       <TypesettingCoverTaskDialog
         isOpen={isCoverDialogOpen}
         onFlushSave={onFlushSave}
+        onManageSkills={() => onManageSkillModule("publication-cover")}
         onOpenChange={setIsCoverDialogOpen}
         onTaskCreated={(task) => {
           setCreatedCoverTasks((current) => [
@@ -1224,8 +1261,38 @@ export function PublicationDetail({
         publication={publication}
         transport={transport}
       />
+      {previewedCover ? (
+        <ImagePreviewDialog
+          alt={previewedCover.alt}
+          closeLabel={t`Close`}
+          onClose={() => setPreviewedCover(null)}
+          src={previewedCover.src}
+        />
+      ) : null}
     </div>
   )
+}
+
+function PublicationCoverMedia({
+  cover,
+  src,
+}: {
+  cover: TypesettingPublicationImage
+  src: string
+}) {
+  if (isTypesettingCoverVideo(cover)) {
+    return (
+      <video
+        aria-label={cover.fileName}
+        draggable={false}
+        muted
+        playsInline
+        preload="metadata"
+        src={src}
+      />
+    )
+  }
+  return <img alt={cover.fileName} draggable={false} src={src} />
 }
 
 function TitleTaskStatus({

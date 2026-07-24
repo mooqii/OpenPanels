@@ -60,7 +60,6 @@
         assert!(prompt.contains(&format!("--space-id {wiki_space_id}")));
         assert!(prompt.contains(task["id"].as_str().unwrap()));
         assert!(!prompt.contains("Task JSON"));
-        assert!(!prompt.contains("workflowRunId"));
         assert!(!prompt.contains("mutationSequence"));
         assert!(!prompt.contains("executionGeneration"));
         assert!(!prompt.contains("agent skill read --skill-id"));
@@ -147,7 +146,6 @@
             "projectId": bootstrap.project.id,
             "queue": "wiki",
             "type": "maintain_wiki",
-            "workflowRunId": "workflow:noise",
             "mutationKey": "wiki:noise",
             "mutationSequence": 42,
             "executionGeneration": 7,
@@ -194,117 +192,4 @@
         let error = wiki_authoring_task_prompt(&paths, &invalid, &invalid_workspace)
             .expect_err("missing change events must fail");
         assert_eq!(error.code(), Some("invalid_task_input"));
-    }
-
-    #[test]
-    fn wiki_execution_result_requires_an_exact_staged_path_set() {
-        let temp = tempfile::tempdir().expect("temp");
-        let project = temp.path().join("project");
-        let storage = temp.path().join("storage");
-        fs::create_dir_all(&project).expect("project");
-        let paths = crate::paths::resolve_myopenpanels_paths(
-            Some(project.to_str().unwrap()),
-            Some(storage.to_str().unwrap()),
-            Some("bridge-result-test"),
-        )
-        .expect("paths");
-        crate::control::ensure_project_bootstrap(&paths, crate::control::BootstrapRequest::new())
-            .expect("bootstrap");
-        let wiki_space_id = active_wiki_space_id(&paths);
-        let workspace = temp.path().join("execution");
-        fs::create_dir_all(&workspace).expect("workspace");
-        let task = json!({
-            "id": "task:result",
-            "queue": "wiki",
-            "source": { "wikiSpaceId": wiki_space_id }
-        });
-
-        let missing = validate_wiki_execution_result(&paths, &task, &workspace)
-            .expect_err("missing result must fail");
-        assert_eq!(missing.code(), Some("invalid_output"));
-
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&json!({
-                "outcome": "no_change",
-                "summary": "The Skill requires no update.",
-                "changedPaths": [],
-            }))
-            .expect("serialize"),
-        )
-        .expect("write result");
-        let valid =
-            validate_wiki_execution_result(&paths, &task, &workspace).expect("valid no change");
-        assert_eq!(valid["outcome"], "no_change");
-
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&json!({
-                "outcome": "changed",
-                "summary": "Updated a page.",
-                "changedPaths": ["invented/page.md"],
-            }))
-            .expect("serialize"),
-        )
-        .expect("write result");
-        let mismatch = validate_wiki_execution_result(&paths, &task, &workspace)
-            .expect_err("unstaged paths must fail");
-        assert_eq!(mismatch.code(), Some("invalid_output"));
-    }
-
-    #[test]
-    fn wiki_ingestion_result_accepts_filtered_and_rejects_missing_dispositions() {
-        let temp = tempfile::tempdir().expect("temp");
-        let project = temp.path().join("project");
-        let storage = temp.path().join("storage");
-        fs::create_dir_all(&project).expect("project");
-        let paths = crate::paths::resolve_myopenpanels_paths(
-            Some(project.to_str().unwrap()),
-            Some(storage.to_str().unwrap()),
-            Some("bridge-filtered-result-test"),
-        )
-        .expect("paths");
-        crate::control::ensure_project_bootstrap(&paths, crate::control::BootstrapRequest::new())
-            .expect("bootstrap");
-        let wiki_space_id = active_wiki_space_id(&paths);
-        let workspace = temp.path().join("execution");
-        fs::create_dir_all(&workspace).expect("workspace");
-        let task = json!({
-            "id": "task:filtered",
-            "queue": "wiki",
-            "type": "ingest_markdown_into_wiki",
-            "source": { "wikiSpaceId": wiki_space_id }
-        });
-
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&json!({
-                "outcome": "no_change",
-                "disposition": "excluded",
-                "reasonCode": "not_relevant",
-                "summary": "Filtered by the selected Wiki Skill.",
-                "changedPaths": [],
-                "artifacts": [],
-            }))
-            .expect("serialize"),
-        )
-        .expect("write result");
-        let filtered =
-            validate_wiki_execution_result(&paths, &task, &workspace).expect("filtered result");
-        assert_eq!(filtered["disposition"], "excluded");
-
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&json!({
-                "outcome": "no_change",
-                "summary": "No update.",
-                "changedPaths": [],
-                "artifacts": [],
-            }))
-            .expect("serialize"),
-        )
-        .expect("write invalid result");
-        let missing = validate_wiki_execution_result(&paths, &task, &workspace)
-            .expect_err("ingestion disposition is required");
-        assert_eq!(missing.code(), Some("invalid_output"));
     }

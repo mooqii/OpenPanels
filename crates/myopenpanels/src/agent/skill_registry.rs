@@ -1,4 +1,6 @@
-fn load_agent_skill_dirs() -> Result<Vec<(AgentSkill, &'static Dir<'static>)>, CliError> {
+fn load_agent_skill_dirs(
+    locale: &str,
+) -> Result<Vec<(AgentSkill, &'static Dir<'static>)>, CliError> {
     let registry: BuiltinSkillRegistry =
         serde_json::from_str(BUILTIN_SKILL_REGISTRY).map_err(to_cli_error)?;
     let mut registered_ids = BTreeSet::new();
@@ -24,13 +26,14 @@ fn load_agent_skill_dirs() -> Result<Vec<(AgentSkill, &'static Dir<'static>)>, C
         &SYSTEM_SKILLS,
         &mut system_registrations,
         false,
+        "",
         &mut seen,
         &mut skills,
     )?;
-    load_registered_skill_dirs(
+    load_registered_preset_skill_dirs(
         &PRESET_SKILLS,
         &mut preset_registrations,
-        true,
+        locale,
         &mut seen,
         &mut skills,
     )?;
@@ -84,47 +87,102 @@ fn insert_builtin_registration(
     Ok(())
 }
 
+fn load_registered_preset_skill_dirs(
+    root: &'static Dir<'static>,
+    registrations: &mut BTreeMap<String, BuiltinSkillRegistration>,
+    locale: &str,
+    seen: &mut BTreeSet<String>,
+    skills: &mut Vec<(AgentSkill, &'static Dir<'static>)>,
+) -> Result<(), CliError> {
+    let package_dirs = registrations.keys().cloned().collect::<Vec<_>>();
+    for package_dir in package_dirs {
+        let localized_path = Path::new(locale).join(&package_dir);
+        let directory = (!locale.is_empty())
+            .then(|| root.get_dir(&localized_path))
+            .flatten()
+            .or_else(|| root.get_dir(&package_dir))
+            .ok_or_else(|| {
+                CliError::new(format!(
+                    "Built-in Skill registry package is missing: {package_dir}"
+                ))
+            })?;
+        load_registered_skill_dir(
+            root,
+            directory,
+            registrations,
+            true,
+            locale,
+            seen,
+            skills,
+        )?;
+    }
+    Ok(())
+}
+
 fn load_registered_skill_dirs(
     root: &'static Dir<'static>,
     registrations: &mut BTreeMap<String, BuiltinSkillRegistration>,
     is_preset: bool,
+    locale: &str,
     seen: &mut BTreeSet<String>,
     skills: &mut Vec<(AgentSkill, &'static Dir<'static>)>,
 ) -> Result<(), CliError> {
     for dir in root.dirs() {
-        let skill_path = dir.path().join("SKILL.md");
-        let file = root.get_file(&skill_path).ok_or_else(|| {
-            CliError::new(format!(
-                "MyOpenPanels agent skill is missing SKILL.md: {}",
-                dir.path().display()
-            ))
-        })?;
-        let source = std::str::from_utf8(file.contents()).map_err(to_cli_error)?;
-        let package_dir = dir
-            .path()
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        let registration = registrations.remove(package_dir).ok_or_else(|| {
-            CliError::new(format!(
-                "Built-in Skill package is not registered: {package_dir}"
-            ))
-        })?;
-        if is_preset {
-            reject_platform_contract_in_embedded_skill(dir)?;
-        }
-        let skill = registered_builtin_skill(
-            parse_portable_skill(source, &skill_path.display().to_string())?,
-            &registration,
+        load_registered_skill_dir(
+            root,
+            dir,
+            registrations,
+            is_preset,
+            locale,
+            seen,
+            skills,
         )?;
-        if !seen.insert(skill.metadata.id.clone()) {
-            return Err(CliError::new(format!(
-                "Duplicate MyOpenPanels agent skill id: {}",
-                skill.metadata.id
-            )));
-        }
-        skills.push((skill, dir));
     }
+    Ok(())
+}
+
+fn load_registered_skill_dir(
+    root: &'static Dir<'static>,
+    dir: &'static Dir<'static>,
+    registrations: &mut BTreeMap<String, BuiltinSkillRegistration>,
+    is_preset: bool,
+    locale: &str,
+    seen: &mut BTreeSet<String>,
+    skills: &mut Vec<(AgentSkill, &'static Dir<'static>)>,
+) -> Result<(), CliError> {
+    let skill_path = dir.path().join("SKILL.md");
+    let file = root.get_file(&skill_path).ok_or_else(|| {
+        CliError::new(format!(
+            "MyOpenPanels agent skill is missing SKILL.md: {}",
+            dir.path().display()
+        ))
+    })?;
+    let source = std::str::from_utf8(file.contents()).map_err(to_cli_error)?;
+    let package_dir = dir
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let registration = registrations.remove(package_dir).ok_or_else(|| {
+        CliError::new(format!(
+            "Built-in Skill package is not registered: {package_dir}"
+        ))
+    })?;
+    if is_preset {
+        reject_platform_contract_in_embedded_skill(dir)?;
+    }
+    let skill = registered_builtin_skill(
+        parse_portable_skill(source, &skill_path.display().to_string())?,
+        &registration,
+        locale,
+    )?;
+    if !seen.insert(skill.metadata.id.clone()) {
+        return Err(CliError::new(format!(
+            "Duplicate MyOpenPanels agent skill id: {}",
+            skill.metadata.id
+        )));
+    }
+    skills.push((skill, dir));
     Ok(())
 }
 

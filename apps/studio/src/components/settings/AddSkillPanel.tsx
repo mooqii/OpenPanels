@@ -55,7 +55,7 @@ const ASSOCIATION_MODULES = [
   "publication-cover",
   "publication-title",
   "publication-layout",
-  "publishing",
+  "release",
 ] as const
 
 export function canInstallSkill(input: {
@@ -65,8 +65,8 @@ export function canInstallSkill(input: {
   url: string
   zipSelected: boolean
 }) {
-  if (input.sourceType === "url") return input.url.trim().length > 0
   if (!input.moduleKind) return false
+  if (input.sourceType === "url") return input.url.trim().length > 0
   if (input.sourceType === "folder") return input.folderFileCount > 0
   return input.zipSelected
 }
@@ -133,9 +133,12 @@ export function AddSkillPanel({
     url,
     zipSelected: zipFile !== null,
   })
+  const canScanUrl = url.trim().length > 0
 
   const canInstallUrlSkills =
-    scannedSkills.length > 0 && scannedUrl === url.trim()
+    scannedSkills.length > 0 &&
+    scannedUrl === url.trim() &&
+    scannedSkills.every((skill) => Boolean(urlSkillModules[skill.subpath]))
 
   const scanUrl = useCallback(async () => {
     const nextUrl = url.trim()
@@ -300,7 +303,7 @@ export function AddSkillPanel({
                 />
               </div>
               <Button
-                isDisabled={!canInstall}
+                isDisabled={!canScanUrl}
                 isPending={isScanningUrl}
                 onPress={scanUrl}
                 variant="secondary"
@@ -324,7 +327,7 @@ export function AddSkillPanel({
                           scannedSkills.length === 1 ? "Skill" : "Skills"
                         } found`}
                   </strong>
-                  <span>{t`Choose a feature module for each Skill, or leave it unassociated.`}</span>
+                  <span>{t`Choose a feature module for each Skill before installation.`}</span>
                 </div>
                 <Button isPending={isImporting} onPress={install}>
                   <Plus size={15} />
@@ -361,18 +364,12 @@ export function AddSkillPanel({
                         <Select.Value>
                           {urlSkillModules[skill.subpath]
                             ? moduleLabel(urlSkillModules[skill.subpath], t)
-                            : t`Do not associate`}
+                            : t`Select a feature module`}
                         </Select.Value>
                         <Select.Indicator />
                       </Select.Trigger>
                       <Select.Popover>
                         <ListBox>
-                          <ListBox.Item
-                            id="unassociated"
-                            textValue={t`Do not associate`}
-                          >
-                            {t`Do not associate`}
-                          </ListBox.Item>
                           {ASSOCIATION_MODULES.map((kind) => (
                             <ListBox.Item
                               id={kind}

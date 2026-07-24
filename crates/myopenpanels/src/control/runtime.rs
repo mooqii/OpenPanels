@@ -690,42 +690,12 @@ fn is_typesetting_image(image: &Value) -> bool {
 }
 
 fn resolve_writing_state(state: Option<Value>) -> Result<PanelStateResolution, CliError> {
-    let Some(mut state) = state else {
+    let Some(state) = state else {
         return Ok(PanelStateResolution {
             state: empty_writing_state(),
             changed: true,
         });
     };
-    let mut changed = false;
-    if state.get("mode").and_then(Value::as_str) == Some("refine") {
-        state["mode"] = json!("distill");
-        changed = true;
-    }
-    if state.get("distillationName").is_none() {
-        if let Some(value) = state.get("refinementName").cloned() {
-            state["distillationName"] = value;
-            changed = true;
-        }
-    }
-    if state.get("selectedDistillationSkillId").is_none() {
-        if let Some(value) = state.get("selectedRefinementSkillId").cloned() {
-            state["selectedDistillationSkillId"] = value;
-            changed = true;
-        }
-    }
-    if state
-        .get("selectedDistillationSkillId")
-        .and_then(Value::as_str)
-        == Some("writing-refinement-default")
-    {
-        state["selectedDistillationSkillId"] =
-            json!(crate::writing::DEFAULT_WRITING_DISTILLATION_SKILL_ID);
-        changed = true;
-    }
-    if let Some(object) = state.as_object_mut() {
-        changed |= object.remove("refinementName").is_some();
-        changed |= object.remove("selectedRefinementSkillId").is_some();
-    }
     let valid = state.get("draft").is_some_and(Value::is_string)
         && state.get("distillationName").is_some_and(Value::is_string)
         && matches!(
@@ -745,7 +715,7 @@ fn resolve_writing_state(state: Option<Value>) -> Result<PanelStateResolution, C
     if valid {
         Ok(PanelStateResolution {
             state,
-            changed,
+            changed: false,
         })
     } else {
         Err(CliError::new("Malformed writing panel state."))

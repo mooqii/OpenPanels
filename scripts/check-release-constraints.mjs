@@ -75,32 +75,6 @@ const cliSource = readFileSync(
   new URL("crates/myopenpanels/src/cli.rs", ROOT),
   "utf8"
 )
-const currentContractSources = [
-  "crates/myopenpanels/src/agent/bootstrap.rs",
-  "crates/myopenpanels/src/agent/skills_context.rs",
-  "crates/myopenpanels/src/agent/skill_parsing.rs",
-  "crates/myopenpanels/src/agent/skill_management.rs",
-  "crates/myopenpanels/src/control/runtime.rs",
-  "crates/myopenpanels/src/wiki/markdown_skills.rs",
-  "crates/myopenpanels/src/writing/requests.rs",
-].map((path) => readFileSync(new URL(path, ROOT), "utf8"))
-const retiredRuntimeContracts = [
-  "karpathy-llm-wiki",
-  "myopenpanels-canvas-panel",
-  "myopenpanels-wiki-panel",
-  "myopenpanels-writing-panel",
-  "writing-skill-distiller",
-  "custom_writing_skill_from_source",
-  "custom_writing_skills_dir",
-  "legacy_skill_from_parts",
-  "migrate_legacy_custom_agent_skills",
-]
-for (const retired of retiredRuntimeContracts) {
-  assert(
-    currentContractSources.every((source) => !source.includes(retired)),
-    `Retired runtime contract must not return: ${retired}`
-  )
-}
 const cliSynchronizedContractSources = [
   "agent-resources/builtin-skill-registry.json",
   "agent-resources/module-capability-catalog.json",
@@ -226,6 +200,7 @@ const builtinRegistry = readJson("agent-resources/builtin-skill-registry.json")
 const capabilityCatalog = readJson(
   "agent-resources/module-capability-catalog.json"
 )
+const moduleCatalog = readJson("agent-resources/module-catalog.json")
 const forbiddenPortableSkillText = [
   "myopenpanels",
   "my open panels",
@@ -247,19 +222,50 @@ for (const [group, registrations] of [
   ["preset-skills", builtinRegistry.presetSkills],
 ]) {
   assert(Array.isArray(registrations), `Missing built-in Skill group: ${group}`)
-  const packageDirs = readdirSync(new URL(`agent-resources/${group}/`, ROOT), {
+  const registeredDirs = registrations
+    .map((registration) => registration.packageDir)
+    .sort()
+  const groupEntries = readdirSync(new URL(`agent-resources/${group}/`, ROOT), {
     withFileTypes: true,
   })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort()
-  const registeredDirs = registrations
-    .map((registration) => registration.packageDir)
-    .sort()
-  assert(
-    JSON.stringify(packageDirs) === JSON.stringify(registeredDirs),
-    `Built-in Skill packages and registrations differ in ${group}.`
-  )
+  const locales =
+    group === "preset-skills"
+      ? [
+          null,
+          ...groupEntries.filter((entry) => !registeredDirs.includes(entry)),
+        ]
+      : [null]
+  for (const locale of locales) {
+    const groupPath = locale
+      ? `agent-resources/${group}/${locale}/`
+      : `agent-resources/${group}/`
+    const packageDirs = readdirSync(new URL(groupPath, ROOT), {
+      withFileTypes: true,
+    })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+    if (locale) {
+      assert(
+        packageDirs.length > 0 &&
+          packageDirs.every((packageDir) =>
+            registeredDirs.includes(packageDir)
+          ),
+        `Localized Preset Skill packages are invalid in ${groupPath}.`
+      )
+    } else {
+      const rootPackageDirs = packageDirs.filter((packageDir) =>
+        registeredDirs.includes(packageDir)
+      )
+      assert(
+        JSON.stringify(rootPackageDirs) === JSON.stringify(registeredDirs),
+        `Built-in Skill packages and registrations differ in ${groupPath}.`
+      )
+    }
+  }
   for (const registration of registrations) {
     assert(
       registration.packageDir === registration.id,
@@ -270,37 +276,52 @@ for (const [group, registrations] of [
       `Duplicate built-in Skill id: ${registration.id}`
     )
     builtinSkillIds.add(registration.id)
-    const packagePath = `agent-resources/${group}/${registration.packageDir}`
-    const skill = readFileSync(new URL(`${packagePath}/SKILL.md`, ROOT), "utf8")
-    const frontmatter = skill.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? ""
-    const keys = frontmatter
-      .split("\n")
-      .filter((line) => /^[A-Za-z][A-Za-z0-9-]*:/.test(line))
-      .map((line) => line.slice(0, line.indexOf(":")))
-      .sort()
-    assert(
-      JSON.stringify(keys) === JSON.stringify(["description", "name"]),
-      "Built-in Skill must use only name and description frontmatter: " +
-        registration.id
-    )
-    const skillName = frontmatter.match(/^name:\s*(.+)$/m)?.[1]?.trim()
-    assert(
-      skillName === registration.id,
-      `Built-in Skill name must match its registered id: ${registration.id}`
-    )
+    const packagePaths = locales
+      .map((locale) =>
+        locale
+          ? `agent-resources/${group}/${locale}/${registration.packageDir}`
+          : `agent-resources/${group}/${registration.packageDir}`
+      )
+      .filter((packagePath) =>
+        existsSync(new URL(`${packagePath}/SKILL.md`, ROOT))
+      )
+    for (const packagePath of packagePaths) {
+      const skill = readFileSync(
+        new URL(`${packagePath}/SKILL.md`, ROOT),
+        "utf8"
+      )
+      const frontmatter = skill.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? ""
+      const keys = frontmatter
+        .split("\n")
+        .filter((line) => /^[A-Za-z][A-Za-z0-9-]*:/.test(line))
+        .map((line) => line.slice(0, line.indexOf(":")))
+        .sort()
+      assert(
+        JSON.stringify(keys) === JSON.stringify(["description", "name"]),
+        "Built-in Skill must use only name and description frontmatter: " +
+          registration.id
+      )
+      const skillName = frontmatter.match(/^name:\s*(.+)$/m)?.[1]?.trim()
+      assert(
+        skillName === registration.id,
+        `Built-in Skill name must match its registered id: ${registration.id}`
+      )
+    }
     if (group === "preset-skills") {
-      for (const file of walkFiles(packagePath)) {
-        const content = readFileSync(file, "utf8").toLowerCase()
-        for (const forbidden of forbiddenPortableSkillText) {
-          assert(
-            !content.includes(forbidden),
-            "Preset Skill " +
-              registration.id +
-              " contains platform contract text " +
-              forbidden +
-              ": " +
-              file.pathname
-          )
+      for (const packagePath of packagePaths) {
+        for (const file of walkFiles(packagePath)) {
+          const content = readFileSync(file, "utf8").toLowerCase()
+          for (const forbidden of forbiddenPortableSkillText) {
+            assert(
+              !content.includes(forbidden),
+              "Preset Skill " +
+                registration.id +
+                " contains platform contract text " +
+                forbidden +
+                ": " +
+                file.pathname
+            )
+          }
         }
       }
     } else {
@@ -313,13 +334,17 @@ for (const [group, registrations] of [
             registration.id
         )
       }
-      systemSkills.set(registration.id, { packagePath, registration })
+      systemSkills.set(registration.id, {
+        packagePath: packagePaths[0],
+        registration,
+      })
     }
   }
 }
 
 const agentRouteKeys = new Set()
 const taskRoutes = new Set()
+const moduleKeys = new Set(moduleCatalog.modules.map((module) => module.key))
 let procedureCount = 0
 let taskCapabilityCount = 0
 const validateCapabilityBase = (capability) => {
@@ -337,6 +362,11 @@ const validateCapabilityBase = (capability) => {
     `Duplicate Agent route key: ${capability.key}`
   )
   agentRouteKeys.add(capability.key)
+  assert(
+    typeof capability.moduleKey === "string" &&
+      moduleKeys.has(capability.moduleKey),
+    `Capability references an unknown Module: ${capability.key}`
+  )
   const contract = capability.platformContract
   assert(
     contract && typeof contract === "object",

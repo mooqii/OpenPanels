@@ -25,6 +25,7 @@ import type {
 
 export function PublicationTitleTaskDialog({
   isOpen,
+  onManageSkills,
   onFlushSave,
   onOpenChange,
   onTaskCreated,
@@ -32,6 +33,7 @@ export function PublicationTitleTaskDialog({
   transport,
 }: {
   isOpen: boolean
+  onManageSkills?: () => void
   onFlushSave: () => Promise<void>
   onOpenChange: (open: boolean) => void
   onTaskCreated: (task: ProjectTask) => void
@@ -133,7 +135,23 @@ export function PublicationTitleTaskDialog({
           </Modal.Header>
           <Modal.Body>
             <div className="op-publication-cover-dialog__field">
-              <Label>{t`Title Skill`}</Label>
+              <div className="op-publication-cover-dialog__field-heading">
+                <Label>{t`Title Skill`}</Label>
+                {onManageSkills ? (
+                  <Button
+                    className="op-publication-cover-dialog__manage-skill"
+                    isDisabled={isSubmitting}
+                    onPress={() => {
+                      onOpenChange(false)
+                      onManageSkills()
+                    }}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {t`Manage Skill`}
+                  </Button>
+                ) : null}
+              </div>
               {isLoading ? (
                 <div className="op-publication-cover-dialog__loading">
                   <Spinner size="sm" />
@@ -142,6 +160,8 @@ export function PublicationTitleTaskDialog({
               ) : skills.length ? (
                 <Select
                   aria-label={t`Title Skill`}
+                  className="op-publication-cover-dialog__select"
+                  fullWidth
                   onSelectionChange={(key) => setSelectedSkillId(String(key))}
                   selectedKey={selectedSkillId}
                 >
@@ -149,7 +169,7 @@ export function PublicationTitleTaskDialog({
                     <Select.Value />
                     <Select.Indicator />
                   </Select.Trigger>
-                  <Select.Popover>
+                  <Select.Popover className="op-publication-cover-dialog__skill-popover">
                     <ListBox>
                       {skills.map((item) => (
                         <ListBox.Item

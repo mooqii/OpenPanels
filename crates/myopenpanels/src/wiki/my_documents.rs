@@ -236,7 +236,14 @@ pub fn create_my_document(
     Ok(json!({ "document": document, "state": wiki.state }))
 }
 
-pub fn begin_my_document_for_target(
+pub(crate) struct PreparedMyDocumentMutation {
+    pub(crate) base_content_version: u64,
+    pub(crate) base_panel_revision: i64,
+    pub(crate) document: Value,
+    pub(crate) state: Value,
+}
+
+pub(crate) fn prepare_begin_my_document_for_target(
     paths: &MyOpenPanelsPaths,
     project_id: &str,
     panel_id: &str,
@@ -245,7 +252,7 @@ pub fn begin_my_document_for_target(
     format: &str,
     document_id: Option<&str>,
     replace_placeholder_title: bool,
-) -> Result<Value, CliError> {
+) -> Result<PreparedMyDocumentMutation, CliError> {
     let mut wiki = get_wiki_target(paths, project_id, panel_id)?;
     let now = now_iso();
     if let Some(document_id) = document_id {
@@ -259,16 +266,16 @@ pub fn begin_my_document_for_target(
                     json!(format!("{}.{}", sanitize_file_name(title), extension));
             }
         }
-        document["writeOperation"] = json!({
-            "operationId": operation_id,
-            "status": "writing",
-            "error": null,
-        });
+        document["writeOperation"] = json!({ "operationId": operation_id });
         document["updatedAt"] = json!(now);
         let version = document["contentVersion"].as_u64().unwrap_or(0);
         let document = document.clone();
-        save_wiki_state(paths, &wiki)?;
-        return Ok(json!({ "document": document, "baseContentVersion": version }));
+        return Ok(PreparedMyDocumentMutation {
+            base_content_version: version,
+            base_panel_revision: wiki.revision,
+            document,
+            state: wiki.state,
+        });
     }
     let extension = if format == "text" { "txt" } else { "md" };
     let mime_type = if format == "text" {
@@ -291,24 +298,43 @@ pub fn begin_my_document_for_target(
         "threadId": null,
         "publishHistory": [],
         "wordCount": 0,
-        "writeOperation": { "operationId": operation_id, "status": "writing", "error": null },
+        "writeOperation": { "operationId": operation_id },
         "createdAt": now,
         "updatedAt": now,
     });
     state_array_mut(&mut wiki.state, "myDocuments")?.insert(0, document.clone());
-    save_wiki_state(paths, &wiki)?;
-    Ok(json!({ "document": document, "baseContentVersion": 0 }))
+    Ok(PreparedMyDocumentMutation {
+        base_content_version: 0,
+        base_panel_revision: wiki.revision,
+        document,
+        state: wiki.state,
+    })
 }
 
-pub fn complete_my_document_for_target(
+pub(crate) fn my_document_content_descriptor(
+    file_name: &str,
+) -> Result<(&'static str, &'static str, &'static str), CliError> {
+    let (format, mime_type) = my_document_format(file_name, None)?;
+    let content_ref = if format == "markdown" {
+        "content.md"
+    } else {
+        "content.txt"
+    };
+    Ok((format, mime_type, content_ref))
+}
+
+pub(crate) fn prepare_complete_my_document_for_target(
     paths: &MyOpenPanelsPaths,
     project_id: &str,
     panel_id: &str,
+    operation_id: &str,
     document_id: &str,
     base_content_version: u64,
     file_name: &str,
+    content_ref: &str,
+    committed_content_version: u64,
     content: &[u8],
-) -> Result<Value, CliError> {
+) -> Result<PreparedMyDocumentMutation, CliError> {
     let text = std::str::from_utf8(content).map_err(|_| {
         CliError::with_code(
             "invalid_my_document",
@@ -317,129 +343,126 @@ pub fn complete_my_document_for_target(
     })?;
     let (format, mime_type) = my_document_format(file_name, None)?;
     let mut wiki = get_wiki_target(paths, project_id, panel_id)?;
-    let current_version = find_my_document(&wiki.state, document_id)?["contentVersion"]
-        .as_u64()
-        .unwrap_or(0);
+    let current_document = find_my_document(&wiki.state, document_id)?;
+    let current_version = current_document["contentVersion"].as_u64().unwrap_or(0);
     if current_version != base_content_version {
         return Err(CliError::with_code("content_conflict", format!("My Document changed from version {base_content_version} to {current_version}")));
     }
-    let extension = Path::new(file_name)
-        .extension()
-        .and_then(|v| v.to_str())
-        .unwrap_or(if format == "markdown" { "md" } else { "txt" });
-    let content_ref = format!("content.{extension}");
-    crate::content::commit_immediate_text(
-        paths,
-        &wiki.project.id,
-        Some(&wiki.panel.id),
-        crate::content::ResourceKind::MyDocument,
-        document_id,
-        &format!("content.{extension}"),
-        content,
-        &mime_type,
-        true,
-    )?;
+    if current_document
+        .pointer("/writeOperation/operationId")
+        .and_then(Value::as_str)
+        != Some(operation_id)
+    {
+        return Err(CliError::with_code(
+            "operation_target_mismatch",
+            "The My Document is no longer bound to this Direct Operation.",
+        ));
+    }
+    if committed_content_version != base_content_version + 1 {
+        return Err(CliError::with_code(
+            "content_conflict",
+            "Prepared My Document content has an unexpected version.",
+        ));
+    }
     let document = find_my_document_mut(&mut wiki.state, document_id)?;
     document["contentRef"] = json!(content_ref);
-    document["contentVersion"] = json!(base_content_version + 1);
+    document["contentVersion"] = json!(committed_content_version);
     document["format"] = json!(format);
     document["mimeType"] = json!(mime_type);
     document["originalFileName"] = json!(sanitize_file_name(file_name));
     document["wordCount"] = json!(character_count(text));
-    document["writeOperation"] = json!({ "status": "completed", "error": null });
+    document
+        .as_object_mut()
+        .map(|object| object.remove("writeOperation"));
     document["updatedAt"] = json!(now_iso());
     let document = document.clone();
-    save_wiki_state(paths, &wiki)?;
-    Ok(json!({ "document": document, "state": wiki.state }))
+    Ok(PreparedMyDocumentMutation {
+        base_content_version,
+        base_panel_revision: wiki.revision,
+        document,
+        state: wiki.state,
+    })
 }
 
-pub fn finish_my_document_operation(
+pub(crate) fn prepare_finish_my_document_operation(
     paths: &MyOpenPanelsPaths,
     project_id: &str,
     panel_id: &str,
+    operation_id: &str,
     document_id: &str,
-    status: &str,
-    message: Option<&str>,
-) -> Result<(), CliError> {
+) -> Result<PreparedMyDocumentMutation, CliError> {
     let mut wiki = get_wiki_target(paths, project_id, panel_id)?;
-    if status == "cancelled" {
-        let documents = state_array_mut(&mut wiki.state, "myDocuments")?;
-        if let Some(index) = documents
-            .iter()
-            .position(|d| d["id"].as_str() == Some(document_id))
-        {
-            if documents[index]["contentVersion"].as_u64().unwrap_or(0) == 0
-                && !documents[index]["taskId"].is_string()
-            {
-                documents.remove(index);
-            } else {
-                documents[index]
-                    .as_object_mut()
-                    .map(|object| object.remove("writeOperation"));
-                documents[index]["updatedAt"] = json!(now_iso());
-            }
-        }
-    } else {
-        let document = find_my_document_mut(&mut wiki.state, document_id)?;
-        let operation_id = document
-            .pointer("/writeOperation/operationId")
-            .cloned()
-            .unwrap_or(Value::Null);
-        document["writeOperation"] = json!({
-            "operationId": operation_id,
-            "status": status,
-            "error": message,
-        });
-        document["updatedAt"] = json!(now_iso());
+    let base_content_version = find_my_document(&wiki.state, document_id)?["contentVersion"]
+        .as_u64()
+        .unwrap_or(0);
+    if find_my_document(&wiki.state, document_id)?
+        .pointer("/writeOperation/operationId")
+        .and_then(Value::as_str)
+        != Some(operation_id)
+    {
+        return Err(CliError::with_code(
+            "operation_target_mismatch",
+            "The My Document is no longer bound to this Direct Operation.",
+        ));
     }
-    save_wiki_state(paths, &wiki)
+    let documents = state_array_mut(&mut wiki.state, "myDocuments")?;
+    if let Some(index) = documents
+        .iter()
+        .position(|d| d["id"].as_str() == Some(document_id))
+    {
+        if documents[index]["contentVersion"].as_u64().unwrap_or(0) == 0
+            && !documents[index]["taskId"].is_string()
+        {
+            documents.remove(index);
+        } else {
+            documents[index]
+                .as_object_mut()
+                .map(|object| object.remove("writeOperation"));
+            documents[index]["updatedAt"] = json!(now_iso());
+        }
+    }
+    let document = wiki
+        .state
+        .get("myDocuments")
+        .and_then(Value::as_array)
+        .and_then(|documents| {
+            documents
+                .iter()
+                .find(|document| document["id"].as_str() == Some(document_id))
+        })
+        .cloned()
+        .unwrap_or(Value::Null);
+    Ok(PreparedMyDocumentMutation {
+        base_content_version,
+        base_panel_revision: wiki.revision,
+        document,
+        state: wiki.state,
+    })
 }
 
-pub fn remove_pending_writing_document(
+pub(crate) fn prepare_pending_writing_document_removal(
     paths: &MyOpenPanelsPaths,
     project_id: &str,
     panel_id: &str,
     document_id: &str,
-) -> Result<(), CliError> {
+) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
     let mut wiki = get_wiki_target(paths, project_id, panel_id)?;
     let documents = state_array_mut(&mut wiki.state, "myDocuments")?;
     let Some(index) = documents
         .iter()
         .position(|document| document["id"].as_str() == Some(document_id))
     else {
-        return Ok(());
+        return Ok(None);
     };
     if documents[index]["contentVersion"].as_u64().unwrap_or(0) > 0 {
-        return Ok(());
+        return Ok(None);
     }
     documents.remove(index);
-    save_wiki_state(paths, &wiki)
-}
-
-pub fn recover_my_document_for_target(
-    paths: &MyOpenPanelsPaths,
-    project_id: &str,
-    panel_id: &str,
-    document_id: &str,
-    operation_id: Option<&str>,
-) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_target(paths, project_id, panel_id)?;
-    let document = find_my_document_mut(&mut wiki.state, document_id)?;
-    if document["contentVersion"].as_u64().unwrap_or(0) == 0 {
-        return Err(CliError::with_code(
-            "my_document_write_retry_unavailable",
-            "The failed document has no saved content to recover.",
-        ));
-    }
-    document["writeOperation"] = json!({
-        "operationId": operation_id,
-        "status": "completed",
-        "error": null,
-    });
-    document["updatedAt"] = json!(now_iso());
-    let document = document.clone();
-    save_wiki_state(paths, &wiki)?;
-    Ok(json!({ "document": document, "state": wiki.state }))
+    Ok(Some(crate::tasks::PreparedPanelState::new(
+        &wiki.panel.id,
+        wiki.revision,
+        wiki.state,
+    )))
 }
 
 pub fn read_my_document(
@@ -550,13 +573,6 @@ pub fn write_my_document(
     document["mimeType"] = json!(normalized_mime_type);
     document["originalFileName"] = json!(sanitize_file_name(file_name));
     document["wordCount"] = json!(character_count(text));
-    if document
-        .pointer("/writeOperation/status")
-        .and_then(Value::as_str)
-        == Some("failed")
-    {
-        document["writeOperation"] = json!({ "status": "completed", "error": null });
-    }
     document["updatedAt"] = json!(now);
     let document = document.clone();
     save_wiki_state(paths, &wiki)?;
@@ -572,9 +588,8 @@ pub fn write_my_document_for_agent(
 ) -> Result<Value, CliError> {
     let wiki = get_wiki_bootstrap(paths)?;
     if find_my_document(&wiki.state, document_id)?
-        .pointer("/writeOperation/status")
-        .and_then(Value::as_str)
-        == Some("writing")
+        .get("writeOperation")
+        .is_some()
     {
         return Err(CliError::with_code(
             "my_document_write_in_progress",

@@ -208,7 +208,7 @@ pub fn update_managed_skill(
     manifest["origin"] = json!(next_provenance.source_locator);
     manifest["provenance"] = serde_json::to_value(&next_provenance).map_err(to_cli_error)?;
     manifest["updatedAt"] = json!(crate::control::now_iso());
-    atomic_replace_device_skill(
+    atomic_replace_skill_package(
         &prepared.root,
         Path::new(&listing.local_dir),
         &manifest,
@@ -346,19 +346,14 @@ fn read_skill_manifest(listing: &AgentSkillListing) -> Result<Value, CliError> {
 
 fn write_skill_manifest(listing: &AgentSkillListing, manifest: &Value) -> Result<(), CliError> {
     let path = PathBuf::from(&listing.local_dir).join("manifest.json");
-    let temporary = path.with_file_name(format!(
-        ".manifest-{}",
-        crate::ids::random_base64url_96()
-    ));
-    fs::write(
-        &temporary,
+    atomic_write_skill_file(
+        &path,
         format!(
             "{}\n",
             serde_json::to_string_pretty(manifest).map_err(to_cli_error)?
-        ),
+        )
+        .as_bytes(),
     )
-    .map_err(to_cli_error)?;
-    fs::rename(temporary, path).map_err(to_cli_error)
 }
 
 fn unmanaged_skill_update_state(skill_id: &str) -> SkillUpdateState {

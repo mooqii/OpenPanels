@@ -72,12 +72,6 @@ pub(crate) enum TaskOutputAction {
         mime_type: String,
         metadata: Value,
     },
-    PrepareMyDocument {
-        document_id: String,
-        title: String,
-        document_format: String,
-        artifact: TaskOutputArtifact,
-    },
     PrepareWritingSkill {
         skill_id: String,
         artifact: TaskOutputArtifact,
@@ -135,6 +129,8 @@ pub(crate) struct PreparedExecutionBundle {
     pub task: Value,
     pub bundle: ExecutionBundle,
 }
+
+const MAX_PUBLICATION_COVER_ARTIFACTS: usize = 8;
 
 const TASK_HANDLERS: &[TaskHandlerDefinition] = &[
     TaskHandlerDefinition {
@@ -817,8 +813,8 @@ fn output_contract(handler: &TaskHandlerDefinition, workspace: &Path) -> Value {
         }]),
         "handler.publication.cover-generation" => json!([{
             "role": "publication-cover",
-            "relativePaths": ["outputs/cover.png"],
-            "count": 1,
+            "relativePathPattern": "outputs/cover*.png",
+            "count": { "minimum": 1, "maximum": MAX_PUBLICATION_COVER_ARTIFACTS },
             "mediaTypes": ["image/png"],
         }]),
         "handler.publication.title-generation" => json!([{
@@ -911,8 +907,8 @@ mod task_handler_registry_tests {
             .collect::<Vec<_>>();
         for route in &routes {
             assert!(
-                crate::tasks::task_queue_has_lifecycle_adapter(&route.queue),
-                "Task Handler {} has no lifecycle adapter for queue {}",
+                crate::tasks::task_queue_has_domain(&route.queue),
+                "Task Handler {} has no domain implementation for queue {}",
                 route.handler_key,
                 route.queue
             );

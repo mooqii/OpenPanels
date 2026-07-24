@@ -497,7 +497,7 @@ pub fn validate_content_write(
                 && task.get("type").and_then(Value::as_str) == Some(LAYOUT_TASK_TYPE)
                 && !matches!(
                     task.get("status").and_then(Value::as_str),
-                    Some("failed" | "succeeded" | "cancelled" | "stale" | "superseded")
+                    Some("failed" | "succeeded" | "cancelled" | "superseded")
                 )
         })
         .filter_map(|task| {
@@ -607,6 +607,101 @@ fn snapshot_skill_package(
     }
     files.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
     Ok(files)
+}
+
+pub(crate) fn recapture_retry_skill_snapshot(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    retry_task_id: &str,
+) -> Result<Option<Value>, CliError> {
+    let task_type = task.get("type").and_then(Value::as_str).unwrap_or("");
+    let input = task.get("input").cloned().unwrap_or(Value::Null);
+    let (skill_id_key, snapshot_key, task_directory, skill) = match task_type {
+        COVER_TASK_TYPE => {
+            let skill_id = retry_skill_id(&input, "coverSkillId", "coverSkillSnapshot")?;
+            (
+                "coverSkillId",
+                "coverSkillSnapshot",
+                "cover-tasks",
+                crate::agent::publication_cover_skill(paths, &skill_id)?,
+            )
+        }
+        TITLE_TASK_TYPE => {
+            let skill_id = retry_skill_id(&input, "titleSkillId", "titleSkillSnapshot")?;
+            (
+                "titleSkillId",
+                "titleSkillSnapshot",
+                "title-tasks",
+                crate::agent::publication_title_skill(paths, &skill_id)?,
+            )
+        }
+        LAYOUT_TASK_TYPE => {
+            let skill_id = retry_skill_id(&input, "layoutSkillId", "layoutSkillSnapshot")?;
+            (
+                "layoutSkillId",
+                "layoutSkillSnapshot",
+                "layout-tasks",
+                crate::agent::publication_layout_skill(paths, &skill_id)?,
+            )
+        }
+        _ => return Ok(None),
+    };
+    let project_id = task
+        .get("projectId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::new("Retry Task is missing its Project id."))?;
+    let panel_id = task
+        .get("panelId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::new("Retry Task is missing its origin Panel id."))?;
+    let storage = Storage::open(paths)?;
+    let files = snapshot_skill_package(
+        &storage,
+        project_id,
+        panel_id,
+        retry_task_id,
+        task_directory,
+        Path::new(&skill.local_dir),
+    )?;
+    if !files
+        .iter()
+        .any(|file| file.get("path").and_then(Value::as_str) == Some("SKILL.md"))
+    {
+        return Err(CliError::new(
+            "The Skill package does not contain SKILL.md.",
+        ));
+    }
+    let content_hash = hash_file_manifest(&files);
+    let mut refreshed = input;
+    refreshed[skill_id_key] = json!(skill.skill.id);
+    refreshed[snapshot_key] = json!({
+        "id": skill.skill.id,
+        "name": skill.skill.name,
+        "source": skill.source,
+        "contentHash": content_hash,
+        "files": files,
+    });
+    Ok(Some(refreshed))
+}
+
+fn retry_skill_id(
+    input: &Value,
+    skill_id_key: &str,
+    snapshot_key: &str,
+) -> Result<String, CliError> {
+    input
+        .get(skill_id_key)
+        .and_then(Value::as_str)
+        .or_else(|| {
+            input
+                .pointer(&format!("/{snapshot_key}/id"))
+                .and_then(Value::as_str)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| CliError::new("The original Task does not identify its required Skill."))
 }
 
 fn collect_regular_files(

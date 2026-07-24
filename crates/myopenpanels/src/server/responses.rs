@@ -11,7 +11,7 @@ fn with_build_info(payload: impl Serialize, state: &AppState) -> Value {
                 .unwrap_or_else(|_| json!({ "status": "idle" })),
         );
         if let Ok(operations) = Storage::open(&state.paths)
-            .and_then(|storage| storage.list_agent_operations(Some(&state.paths.context_id), None))
+            .and_then(|storage| storage.list_direct_operations(Some(&state.paths.context_id), None))
         {
             object.insert("agentOperations".to_owned(), json!(operations));
         }
@@ -134,7 +134,6 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "publication_not_found"
             | "publication_cover_skill_not_found"
             | "publication_layout_skill_not_found"
-            | "writing_skill_file_not_found"
             | "skill_not_found"
             | "recommended_skill_not_found"
             | "device_skill_not_found"
@@ -172,7 +171,7 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             StatusCode::UNPROCESSABLE_ENTITY
         }
         Some(
-            "skill_read_only" | "writing_skill_read_only" | "skill_update_unavailable",
+            "skill_read_only" | "skill_update_unavailable",
         ) => StatusCode::FORBIDDEN,
         Some(
             "invalid_target"
@@ -186,6 +185,7 @@ fn status_for_cli_error(error: &CliError) -> StatusCode {
             | "writing_skill_name_too_long"
             | "invalid_skill_module"
             | "invalid_skill_package"
+            | "invalid_preset_skill_locale"
             | "invalid_recommended_skill_catalog"
             | "recommended_skill_name_mismatch"
             | "invalid_publishing_request"

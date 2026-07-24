@@ -399,14 +399,6 @@ const SPECS: &[CommandDefinition] = &[
         false
     ),
     spec!(
-        "writing.write",
-        ["writing", "write"],
-        "Begin My Document writing",
-        "writing",
-        "task",
-        true
-    ),
-    spec!(
         "writing.distillation.read",
         ["writing", "distillation", "read"],
         "Read a submitted Writing Skill distillation",

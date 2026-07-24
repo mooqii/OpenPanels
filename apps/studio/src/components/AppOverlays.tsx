@@ -28,7 +28,8 @@ export function AppOverlays({
   onCheckUpdate,
   onDismissUpdateError,
   onRefreshUpdate,
-  onRetryConnect,
+  onRetryRuntimeConnect,
+  onRetryUpdateConnect,
   onToggleAgentPanel,
   onUpdate,
   pendingTaskCount,
@@ -47,7 +48,8 @@ export function AppOverlays({
   onCheckUpdate: (options?: { refresh?: boolean }) => void
   onDismissUpdateError: () => void
   onRefreshUpdate: () => void
-  onRetryConnect: () => void
+  onRetryRuntimeConnect: () => void
+  onRetryUpdateConnect: () => void
   onToggleAgentPanel: () => void
   onUpdate: () => void
   pendingTaskCount: number
@@ -105,12 +107,15 @@ export function AppOverlays({
         errorMessage={updateError}
         onDismissError={onDismissUpdateError}
         onRefresh={onRefreshUpdate}
-        onRetryConnect={onRetryConnect}
+        onRetryConnect={onRetryUpdateConnect}
         onUpdate={onUpdate}
         status={updateStatus}
       />
       {updateAction ? null : (
-        <StudioRuntimeStatus onRetry={onRetryConnect} state={runtimeState} />
+        <StudioRuntimeStatus
+          onRetry={onRetryRuntimeConnect}
+          state={runtimeState}
+        />
       )}
     </>
   )

@@ -9,8 +9,10 @@ Preset Skill packages.
 ## Capability Model
 
 Schema v2 stores every capability in one `capabilities` collection. Each entry
-has a stable key, optional panel kind, platform contract, Local Skill policy,
-and a tagged invocation contract.
+has a stable key, required owning `moduleKey`, optional panel kind, platform
+contract, Local Skill policy, and a tagged invocation contract. `moduleKey`
+owns capability classification; `panelKind` only declares panel context and
+must not be used as a module or Task-queue classification.
 
 - `procedure`: an Agent Procedure bootstrapped with
   `agent bootstrap --procedure <key>`. It declares a selection policy and CLI
@@ -42,11 +44,13 @@ longer select their own platform reference files.
 | Surface | Direct Procedures | Task Capabilities | Task Routes |
 | --- | ---: | ---: | ---: |
 | Canvas | 5 | 0 | 0 |
-| Wiki | 3 | 0 | 0 |
-| Writing | 1 | 0 | 0 |
-| Typesetting | 0 | 0 | 0 |
-| Publishing | 0 | 0 | 0 |
-| Generic Task queue | 10 | 9 | 10 |
+| Wiki | 4 | 2 | 3 |
+| My Document | 4 | 0 | 0 |
+| Writing | 1 | 1 | 1 |
+| Typesetting | 1 | 3 | 3 |
+| Publishing | 0 | 1 | 2 |
+| Skills | 0 | 1 | 1 |
+| Task queue | 4 | 1 | 0 |
 | Total | 19 | 9 | 10 |
 <!-- END GENERATED CAPABILITY MATRIX -->
 
@@ -60,6 +64,7 @@ Handler.
 At CLI startup and in release checks:
 
 - capability keys are globally unique;
+- every capability references an existing Module Catalog key;
 - the owning System Skill exists and supports the declared panel kind;
 - every System Skill reference is relative, unique, and embedded in the package;
 - every direct Procedure resolves to registered CLI command descriptors;
@@ -76,4 +81,7 @@ At CLI startup and in release checks:
 The catalog owns identity, routing, references, and Skill policy. CLI Command
 Registry remains authoritative for command syntax. Task Handlers remain
 authoritative for input materialization, dynamic instructions, output
-validation, and finalization. No generic execution engine is introduced.
+validation, and finalization. Exact Procedure Bootstrap joins these sources
+into one target-bound response containing the owning System Skill and
+references, selection, resource versions, execution contract, and only its
+registered command descriptors. No generic execution engine is introduced.

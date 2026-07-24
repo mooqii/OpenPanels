@@ -9,10 +9,11 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
 
-    const TABLES: [&str; 16] = [
+    const TABLES: [&str; 17] = [
         "assets",
         "canvas_documents",
         "change_scopes",
+        "direct_operations",
         "documents",
         "panel_selections",
         "panels",
@@ -151,6 +152,180 @@ mod tests {
                 .expect("foreign keys"),
             0
         );
+    }
+
+    #[test]
+    fn legacy_storage_is_archived_before_the_current_baseline_is_created() {
+        let temp = tempdir().expect("tempdir");
+        let storage_dir = temp.path().join(".myopenpanels");
+        fs::create_dir_all(storage_dir.join("content")).expect("storage");
+        fs::write(storage_dir.join("content").join("legacy.txt"), "preserved")
+            .expect("legacy content");
+        let database_path = storage_dir.join(DATABASE_FILE_NAME);
+        let connection = Connection::open(&database_path).expect("legacy database");
+        connection
+            .execute_batch("CREATE TABLE legacy_records (value TEXT NOT NULL);")
+            .expect("legacy schema");
+        connection
+            .execute("INSERT INTO legacy_records VALUES ('preserved')", [])
+            .expect("legacy row");
+        drop(connection);
+
+        let paths = paths_for(storage_dir.clone());
+        let storage = Storage::open(&paths).expect("current storage");
+        assert_eq!(
+            schema_version(storage.connection()).expect("current version"),
+            CURRENT_SCHEMA_VERSION
+        );
+        drop(storage);
+
+        let backup_parent = temp.path().join(".myopenpanels-backups");
+        let backup_dir = fs::read_dir(&backup_parent)
+            .expect("backup parent")
+            .next()
+            .expect("backup entry")
+            .expect("backup directory")
+            .path();
+        assert_eq!(
+            fs::read_to_string(backup_dir.join("content").join("legacy.txt"))
+                .expect("archived content"),
+            "preserved"
+        );
+        let archived = Connection::open(backup_dir.join(DATABASE_FILE_NAME))
+            .expect("archived database");
+        assert_eq!(
+            archived
+                .query_row("SELECT value FROM legacy_records", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .expect("archived row"),
+            "preserved"
+        );
+    }
+
+    #[test]
+    fn task_storage_accepts_only_canonical_statuses() {
+        for status in [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "superseded",
+        ] {
+            assert_eq!(canonical_task_status(status).expect("status"), status);
+        }
+        let error = canonical_task_status("claimed").expect_err("noncanonical status");
+        assert_eq!(error.code(), Some("invalid_task_status"));
+    }
+
+    #[test]
+    fn direct_operation_storage_accepts_only_bound_canonical_records() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        let (project, panel) = project_and_panel(&storage, PanelKind::Canvas);
+        for status in ["active", "completed", "failed", "cancelled"] {
+            let completed_at = (status != "active").then_some("2026-01-01T00:01:00.000Z");
+            storage
+                .write_direct_operation(&json!({
+                    "id": format!("operation:{status}"),
+                    "ownerContextId": "test",
+                    "intent": "canvas.image.generate",
+                    "status": status,
+                    "projectId": project.id,
+                    "panelId": panel.id,
+                    "targetId": format!("shape:{status}"),
+                    "baseRevision": 1,
+                    "createdAt": "2026-01-01T00:00:00.000Z",
+                    "updatedAt": "2026-01-01T00:01:00.000Z",
+                    "completedAt": completed_at,
+                }))
+                .expect("canonical direct operation");
+        }
+        let invalid = json!({
+            "id": "operation:prepared",
+            "ownerContextId": "test",
+            "intent": "canvas.image.generate",
+            "status": "prepared",
+            "projectId": project.id,
+            "panelId": panel.id,
+            "targetId": "shape:prepared",
+            "baseRevision": 1,
+            "createdAt": "2026-01-01T00:00:00.000Z",
+            "updatedAt": "2026-01-01T00:00:00.000Z",
+            "completedAt": null,
+        });
+        assert_eq!(
+            storage
+                .write_direct_operation(&invalid)
+                .expect_err("unsupported direct operation status")
+                .code(),
+            Some("invalid_operation_status")
+        );
+        let mut missing_binding = invalid;
+        missing_binding["status"] = json!("active");
+        missing_binding
+            .as_object_mut()
+            .unwrap()
+            .remove("targetId");
+        assert_eq!(
+            storage
+                .write_direct_operation(&missing_binding)
+                .expect_err("missing target binding")
+                .code(),
+            Some("invalid_operation")
+        );
+    }
+
+    #[test]
+    fn direct_operation_and_panel_state_roll_back_together() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let mut storage = Storage::open(&paths).expect("storage");
+        let (project, panel) = project_and_panel(&storage, PanelKind::Canvas);
+        let base_state = json!({ "store": {} });
+        let base_revision = storage
+            .write_panel_state(&project.id, &panel.id, &base_state)
+            .expect("base state");
+        let tx = storage
+            .connection_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("transaction");
+        Storage::write_panel_state_if_revision_in_transaction(
+            &tx,
+            &project.id,
+            &panel.id,
+            base_revision,
+            &json!({ "store": { "shape:pending": {} } }),
+        )
+        .expect("pending panel state");
+        let invalid_operation = json!({
+            "id": "operation:invalid",
+            "ownerContextId": "test",
+            "intent": "canvas.image.generate",
+            "status": "prepared",
+            "projectId": project.id,
+            "panelId": panel.id,
+            "targetId": "shape:pending",
+            "baseRevision": base_revision,
+            "createdAt": "2026-01-01T00:00:00.000Z",
+            "updatedAt": "2026-01-01T00:00:00.000Z",
+            "completedAt": null,
+        });
+        Storage::write_direct_operation_in_transaction(&tx, &invalid_operation)
+            .expect_err("invalid operation");
+        tx.rollback().expect("rollback");
+        assert_eq!(
+            storage
+                .read_panel_state(&project.id, &panel.id)
+                .expect("panel state"),
+            Some(base_state)
+        );
+        assert!(storage
+            .read_direct_operation("operation:invalid")
+            .expect("operation")
+            .is_none());
     }
 
     #[test]
@@ -382,16 +557,6 @@ mod tests {
         )));
         assert!(written.file_path.is_file());
         assert!(!storage.project_dir(&project.id).join("panels").exists());
-        assert_eq!(
-            storage
-                .asset_path(&format!(
-                    "projects/{}/panels/{}/assets/cover.png",
-                    project.id, panel.id
-                ))
-                .expect_err("legacy asset ref must be rejected")
-                .code(),
-            Some("invalid_asset_ref")
-        );
         drop(storage);
 
         let reopened = Storage::open(&paths).expect("reopened storage");

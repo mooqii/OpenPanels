@@ -355,6 +355,23 @@
   min-height: 22px;
 }
 
+.op-agent-task__status {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.op-agent-task__status-spinner {
+  flex: 0 0 auto;
+  animation: op-agent-task-status-spin 1.2s linear infinite;
+}
+
+@keyframes op-agent-task-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .op-agent-task__delete {
   width: 26px;
   min-width: 26px;

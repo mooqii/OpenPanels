@@ -1,7 +1,8 @@
 pub fn sync_builtin_agent_skills(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
+    let locale = preset_skill_locale(paths)?;
     let skills_dir = paths.storage_dir.join("skills");
     fs::create_dir_all(&skills_dir).map_err(to_cli_error)?;
-    for (skill, skill_dir) in load_agent_skill_dirs()? {
+    for (skill, skill_dir) in load_agent_skill_dirs(&locale)? {
         let local_dir = skills_dir.join(&skill.metadata.id);
         if local_dir.exists() {
             fs::remove_dir_all(&local_dir).map_err(to_cli_error)?;
@@ -10,6 +11,58 @@ pub fn sync_builtin_agent_skills(paths: &MyOpenPanelsPaths) -> Result<(), CliErr
         extract_embedded_dir_contents(skill_dir, skill_dir.path(), &local_dir)?;
     }
     Ok(())
+}
+
+pub fn set_preset_skill_locale(
+    paths: &MyOpenPanelsPaths,
+    locale: &str,
+) -> Result<String, CliError> {
+    let locale = normalize_preset_skill_locale(locale)?;
+    let storage = crate::storage::Storage::open(paths)?;
+    let current = storage
+        .read_setting(
+            PRESET_SKILL_LOCALE_NAMESPACE,
+            PRESET_SKILL_LOCALE_KEY,
+        )?
+        .map(|raw| serde_json::from_str::<String>(&raw).map_err(to_cli_error))
+        .transpose()?
+        .unwrap_or_default();
+    if current != locale {
+        storage.write_setting(
+            PRESET_SKILL_LOCALE_NAMESPACE,
+            PRESET_SKILL_LOCALE_KEY,
+            &serde_json::to_string(&locale).map_err(to_cli_error)?,
+        )?;
+    }
+    sync_builtin_agent_skills(paths)?;
+    Ok(locale)
+}
+
+fn preset_skill_locale(paths: &MyOpenPanelsPaths) -> Result<String, CliError> {
+    let Some(raw) = crate::storage::Storage::open(paths)?.read_setting(
+        PRESET_SKILL_LOCALE_NAMESPACE,
+        PRESET_SKILL_LOCALE_KEY,
+    )? else {
+        return Ok(String::new());
+    };
+    let locale = serde_json::from_str::<String>(&raw).map_err(to_cli_error)?;
+    normalize_preset_skill_locale(&locale)
+}
+
+fn normalize_preset_skill_locale(locale: &str) -> Result<String, CliError> {
+    let locale = locale.trim();
+    if locale.is_empty()
+        || Path::new(locale).components().count() != 1
+        || !locale
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return Err(CliError::with_code(
+            "invalid_preset_skill_locale",
+            format!("Unsupported Preset Skill locale: {locale}"),
+        ));
+    }
+    Ok(locale.to_owned())
 }
 
 pub fn list_agent_skills(paths: &MyOpenPanelsPaths) -> Result<Vec<AgentSkillListing>, CliError> {
@@ -32,15 +85,29 @@ pub(crate) fn list_agent_skills_for_project(
 pub fn list_writing_agent_skills(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<AgentSkillListing>, CliError> {
-    Ok(list_agent_skills(paths)?
+    list_agent_skills_for_module(paths, "writing")
+}
+
+pub(crate) fn list_agent_skills_for_module(
+    paths: &MyOpenPanelsPaths,
+    module_kind: &str,
+) -> Result<Vec<AgentSkillListing>, CliError> {
+    let bootstrap = read_project_bootstrap(paths, BootstrapRequest::new())?;
+    list_agent_skills_for_module_in_project(paths, &bootstrap.project.id, module_kind)
+}
+
+fn list_agent_skills_for_module_in_project(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    module_kind: &str,
+) -> Result<Vec<AgentSkillListing>, CliError> {
+    validate_custom_module(module_kind)?;
+    Ok(list_agent_skills_for_project(paths, project_id)?
         .into_iter()
-        .filter(|item| {
-            metadata_matches(
-                &item.skill.applies_to,
-                &item.skill.task_types,
-                Some("writing"),
-                Some("write_my_document"),
-            )
+        .filter(|listing| {
+            managed_skill_module_kinds(listing)
+                .iter()
+                .any(|candidate| candidate == module_kind)
         })
         .collect())
 }
@@ -50,21 +117,8 @@ pub(crate) fn wiki_agent_skill_for_project(
     project_id: &str,
     skill_id: &str,
 ) -> Result<AgentSkillListing, CliError> {
-    load_agent_skills(paths, project_id)?
+    list_agent_skills_for_module_in_project(paths, project_id, "wiki-update")?
         .into_iter()
-        .filter(|item| {
-            metadata_matches(
-                &item.metadata.applies_to,
-                &item.metadata.task_types,
-                Some("wiki"),
-                Some("ingest_markdown_into_wiki"),
-            ) && item
-                .metadata
-                .task_types
-                .iter()
-                .any(|task_type| task_type == "maintain_wiki")
-        })
-        .map(|skill| agent_skill_listing(paths, project_id, skill.metadata))
         .find(|item| item.skill.id == skill_id)
         .ok_or_else(|| {
             CliError::with_code(
@@ -87,17 +141,8 @@ pub(crate) fn writing_agent_skill_for_project(
     project_id: &str,
     skill_id: &str,
 ) -> Result<AgentSkillListing, CliError> {
-    load_agent_skills(paths, project_id)?
+    list_agent_skills_for_module_in_project(paths, project_id, "writing")?
         .into_iter()
-        .filter(|item| {
-            metadata_matches(
-                &item.metadata.applies_to,
-                &item.metadata.task_types,
-                Some("writing"),
-                Some("write_my_document"),
-            )
-        })
-        .map(|skill| agent_skill_listing(paths, project_id, skill.metadata))
         .find(|item| item.skill.id == skill_id)
         .ok_or_else(|| {
             CliError::with_code(
@@ -363,7 +408,8 @@ fn load_agent_skills(
     paths: &MyOpenPanelsPaths,
     _project_id: &str,
 ) -> Result<Vec<AgentSkill>, CliError> {
-    let builtin = load_agent_skill_dirs()?
+    let locale = preset_skill_locale(paths)?;
+    let builtin = load_agent_skill_dirs(&locale)?
         .into_iter()
         .map(|(skill, _dir)| skill)
         .collect::<Vec<_>>();
@@ -534,6 +580,7 @@ fn portable_skill_from_parts(
 fn registered_builtin_skill(
     mut skill: AgentSkill,
     registration: &BuiltinSkillRegistration,
+    locale: &str,
 ) -> Result<AgentSkill, CliError> {
     if skill.metadata.id != registration.id {
         return Err(CliError::new(format!(
@@ -542,8 +589,13 @@ fn registered_builtin_skill(
         )));
     }
     skill.metadata.applies_to = registration.applies_to.clone();
-    skill.metadata.load_when = registration.load_when.clone();
-    skill.metadata.name = registration.name.clone();
+    let localization = registration.localizations.get(locale);
+    skill.metadata.load_when = localization
+        .map(|value| value.load_when.clone())
+        .unwrap_or_else(|| registration.load_when.clone());
+    skill.metadata.name = localization
+        .map(|value| value.name.clone())
+        .unwrap_or_else(|| registration.name.clone());
     skill.metadata.requires_commands = registration.requires_commands.clone();
     skill.metadata.source = registration.source.clone();
     skill.metadata.task_types = registration.task_types.clone();
@@ -660,7 +712,7 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
         .filter(|task| {
             task.get("status")
                 .and_then(Value::as_str)
-                .is_some_and(|status| ["queued", "claimed", "running", "failed"].contains(&status))
+                .is_some_and(|status| ["queued", "running", "failed"].contains(&status))
         })
         .collect::<Vec<_>>();
     let next_task = tasks
@@ -707,7 +759,7 @@ fn wiki_summary(bootstrap: &ProjectBootstrap, selection: Option<&Value>) -> Valu
         "agentSkillId": selected_agent_skill_id(state),
         "nextTaskAgentSkillId": next_task.as_ref().and_then(|task| task.get("agentSkillId")).and_then(Value::as_str).unwrap_or_else(|| selected_agent_skill_id(state)),
         "available": state.get("wikiSpaces").and_then(Value::as_array).is_some_and(|spaces| !spaces.is_empty()),
-        "selected": selection.and_then(|value| value.get("selection")).and_then(|value| value.get("isWikiSelected")).or_else(|| selection.and_then(|value| value.get("isWikiSelected"))).and_then(Value::as_bool).unwrap_or(false),
+        "selected": selection.and_then(|value| value.get("selection")).and_then(|value| value.get("isWikiSelected")).and_then(Value::as_bool).unwrap_or(false),
         "wikiSpaceId": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("wikiSpaceId")).cloned().unwrap_or_else(|| json!(active_space_id)),
         "wikiTitle": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("title")).cloned().or_else(|| active_space.and_then(|space| space.get("title")).cloned()).unwrap_or_else(|| json!("Wiki")),
         "pageCount": selection.and_then(|value| value.get("wiki")).and_then(|value| value.get("pageCount")).cloned().unwrap_or_else(|| json!(active_space.and_then(|space| space.get("pageIndex")).and_then(Value::as_array).map(Vec::len).unwrap_or(0))),

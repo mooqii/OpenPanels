@@ -450,7 +450,7 @@ deepseek/model-b
     }
 
     #[test]
-    fn normalizes_legacy_acp_model_shape() {
+    fn normalizes_acp_model_list_shape() {
         let models = json!({
             "currentModelId": "openai-codex:gpt-5.4",
             "availableModels": [

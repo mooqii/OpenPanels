@@ -1,12 +1,23 @@
 import type { StoreSnapshot } from "../canvas"
+import type { MyOpenPanelsPanel, MyOpenPanelsPanelKind } from "../protocol"
 import type { AppState, BootstrapResponse } from "../types"
 import {
   canvasRevisionFromState,
   canvasSnapshotFromState,
   normalizeBootstrap,
+  normalizePanelState,
   normalizeSnapshot,
+  replaceAppPanelState,
   serializeBootstrapForCompare,
 } from "./api"
+
+export interface ActivePanelResponse {
+  activePanelId: string
+  activePanelKind: MyOpenPanelsPanelKind
+  panel: MyOpenPanelsPanel
+  revision?: number
+  state: unknown
+}
 
 export interface LiveProjectMergeInput {
   current: AppState
@@ -21,6 +32,33 @@ export interface LiveProjectMergeResult {
   canvasSnapshot: StoreSnapshot | null
   changed: boolean
   shouldReloadCanvas: boolean
+}
+
+export function mergeActivePanelResponse(
+  current: AppState,
+  response: ActivePanelResponse
+): AppState {
+  const normalizedState = normalizePanelState(
+    response.panel.kind,
+    response.state
+  )
+  return {
+    ...current,
+    activePanelId: response.activePanelId,
+    activePanelKind: response.activePanelKind,
+    panel: response.panel,
+    panels: current.panels.map((snapshot) =>
+      snapshot.panel.id === response.panel.id
+        ? {
+            ...replaceAppPanelState(snapshot, normalizedState),
+            panel: response.panel,
+            revision: response.revision ?? snapshot.revision,
+          }
+        : snapshot
+    ),
+    revision: response.revision ?? current.revision,
+    state: normalizedState,
+  }
 }
 
 export function canvasAssetStoreKey(
@@ -104,8 +142,8 @@ function preserveCanvasCamera(
     replaced = true
     return {
       ...snapshot,
-      state: {
-        ...normalizeSnapshot(snapshot.state as StoreSnapshot),
+      moduleState: {
+        ...normalizeSnapshot(snapshot.moduleState as StoreSnapshot),
         camera,
       },
     }
@@ -116,8 +154,8 @@ function preserveCanvasCamera(
     panels,
     state:
       next.panel.kind === "canvas"
-        ? (panels.find(({ panel }) => panel.id === next.panel.id)?.state ??
-          next.state)
+        ? (panels.find(({ panel }) => panel.id === next.panel.id)
+            ?.moduleState ?? next.state)
         : next.state,
   }
 }
@@ -134,7 +172,7 @@ function replaceCanvasSnapshot(
     return {
       ...snapshot,
       revision: canvasRevision,
-      state: canvasSnapshot,
+      moduleState: canvasSnapshot,
     }
   })
   if (!replaced) return appState

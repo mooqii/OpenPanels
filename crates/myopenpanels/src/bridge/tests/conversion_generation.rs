@@ -34,7 +34,6 @@
             .into_iter()
             .find(|task| task["type"] == "convert_document_to_markdown")
             .expect("conversion task");
-        task["workflowRunId"] = json!("workflow:noise");
         task["executionGeneration"] = json!(9);
         task["leaseOwner"] = json!("target:noise");
         let workspace = temp.path().join("execution");
@@ -72,7 +71,6 @@
         assert!(prompt.len() <= MAX_AGENT_PROMPT_BYTES);
 
         let custom_command_input = serde_json::to_string_pretty(&materialized).expect("task json");
-        assert!(custom_command_input.contains("workflow:noise"));
         assert!(custom_command_input.contains("executionInputs"));
         let serialized_task: Value =
             serde_json::from_str(&custom_command_input).expect("serialized task");
@@ -328,222 +326,7 @@
     }
 
     #[test]
-    fn conversion_result_must_match_the_single_staged_markdown() {
-        use base64::Engine as _;
-
-        let _env_lock = crate::TASK_BROKER_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let temp = tempfile::tempdir().expect("temp");
-        let project = temp.path().join("project");
-        let storage = temp.path().join("storage");
-        fs::create_dir_all(&project).expect("project");
-        let paths = crate::paths::resolve_myopenpanels_paths(
-            Some(project.to_str().unwrap()),
-            Some(storage.to_str().unwrap()),
-            Some("bridge-conversion-result-test"),
-        )
-        .expect("paths");
-        let bootstrap = crate::control::ensure_project_bootstrap(
-            &paths,
-            crate::control::BootstrapRequest::new(),
-        )
-        .expect("bootstrap");
-        let wiki_space_id = active_wiki_space_id(&paths);
-        let uploaded = crate::wiki::add_raw_document(
-            &paths,
-            "source.pdf",
-            Some("Source"),
-            Some("application/pdf"),
-            "user",
-            Some(&wiki_space_id),
-            b"pdf fixture",
-        )
-        .expect("raw document");
-        let document_id = uploaded["document"]["id"].as_str().expect("document id");
-        let task = crate::storage::Storage::open(&paths)
-            .expect("storage")
-            .list_tasks(&bootstrap.project.id)
-            .expect("tasks")
-            .into_iter()
-            .find(|task| task["type"] == "convert_document_to_markdown")
-            .expect("conversion task");
-        let _broker = crate::content::enable_test_task_broker();
-        let target = crate::tasks::register_target(
-            &paths,
-            crate::tasks::TargetRegistration {
-                name: "conversion-validator",
-                host: Some("test"),
-                project_id: None,
-                capabilities: vec!["wiki.convertDocument".to_owned()],
-                priority: 0,
-                max_concurrency: 1,
-                model_gateway_connection_id: None,
-            },
-        )
-        .expect("target");
-        let claim = crate::tasks::claim_task(
-            &paths,
-            task["id"].as_str().expect("task id"),
-            target["target"]["id"].as_str().expect("target id"),
-        )
-        .expect("claim");
-        let workspace = temp.path().join("execution");
-        fs::create_dir_all(&workspace).expect("workspace");
-        let denied = crate::content::authorize_agent_broker_capability(
-            &paths,
-            claim["executionToken"].as_str().expect("execution token"),
-            "content.write",
-        )
-        .expect_err("conversion Agent cannot stage through the Broker");
-        assert_eq!(denied.code(), Some("task_handler_command_not_allowed"));
-        let missing = validate_conversion_execution_result(&paths, &task, &workspace)
-            .expect_err("missing result must fail");
-        assert_eq!(missing.code(), Some("invalid_output"));
-        fs::write(workspace.join(EXECUTION_RESULT_FILE), b"not json").expect("invalid result");
-        let malformed = validate_conversion_execution_result(&paths, &task, &workspace)
-            .expect_err("malformed result must fail");
-        assert_eq!(malformed.code(), Some("invalid_output"));
-
-        let valid_result = json!({
-            "outcome": "converted",
-            "summary": "Converted the source faithfully.",
-            "output": {
-                "documentId": document_id,
-                "logicalPath": "source.md"
-            }
-        });
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&valid_result).expect("serialize"),
-        )
-        .expect("result");
-        let unstaged = validate_conversion_execution_result(&paths, &task, &workspace)
-            .expect_err("a declared result without staged Markdown must fail");
-        assert_eq!(unstaged.code(), Some("invalid_output"));
-
-        crate::content::stage_file(
-            &paths,
-            claim["executionToken"].as_str().expect("execution token"),
-            &crate::content::StageFileRequest {
-                resource_kind: crate::content::ResourceKind::WikiMarkdown
-                    .as_str()
-                    .to_owned(),
-                resource_key: document_id.to_owned(),
-                logical_path: "source.md".to_owned(),
-                content_base64: base64::engine::general_purpose::STANDARD.encode(b"# Converted\n"),
-                mime_type: "text/markdown".to_owned(),
-                metadata: json!({ "documentId": document_id }),
-            },
-        )
-        .expect("stage markdown");
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&valid_result).expect("serialize"),
-        )
-        .expect("result");
-
-        let result =
-            validate_conversion_execution_result(&paths, &task, &workspace).expect("valid result");
-        assert_eq!(result["outcome"], "converted");
-
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&json!({
-                "outcome": "converted",
-                "summary": "Converted the wrong source.",
-                "output": {
-                    "documentId": "raw:wrong",
-                    "logicalPath": "source.md"
-                }
-            }))
-            .expect("serialize"),
-        )
-        .expect("result");
-        let mismatch = validate_conversion_execution_result(&paths, &task, &workspace)
-            .expect_err("mismatched result must fail");
-        assert_eq!(mismatch.code(), Some("invalid_output"));
-
-        let non_utf8 = crate::content::stage_file(
-            &paths,
-            claim["executionToken"].as_str().expect("execution token"),
-            &crate::content::StageFileRequest {
-                resource_kind: crate::content::ResourceKind::WikiMarkdown
-                    .as_str()
-                    .to_owned(),
-                resource_key: document_id.to_owned(),
-                logical_path: "invalid.md".to_owned(),
-                content_base64: base64::engine::general_purpose::STANDARD.encode([0xff]),
-                mime_type: "text/markdown".to_owned(),
-                metadata: json!({ "documentId": document_id }),
-            },
-        )
-        .expect_err("non-UTF-8 Markdown must fail at staging");
-        assert_eq!(non_utf8.code(), Some("content_too_large"));
-
-        crate::content::stage_file(
-            &paths,
-            claim["executionToken"].as_str().expect("execution token"),
-            &crate::content::StageFileRequest {
-                resource_kind: crate::content::ResourceKind::WikiMarkdown
-                    .as_str()
-                    .to_owned(),
-                resource_key: document_id.to_owned(),
-                logical_path: "source.md".to_owned(),
-                content_base64: base64::engine::general_purpose::STANDARD.encode(b""),
-                mime_type: "text/markdown".to_owned(),
-                metadata: json!({ "documentId": document_id }),
-            },
-        )
-        .expect("stage empty Markdown");
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&valid_result).expect("serialize"),
-        )
-        .expect("result");
-        let empty = validate_conversion_execution_result(&paths, &task, &workspace)
-            .expect_err("empty Markdown must fail");
-        assert_eq!(empty.code(), Some("invalid_output"));
-
-        crate::content::stage_file(
-            &paths,
-            claim["executionToken"].as_str().expect("execution token"),
-            &crate::content::StageFileRequest {
-                resource_kind: crate::content::ResourceKind::WikiMarkdown
-                    .as_str()
-                    .to_owned(),
-                resource_key: document_id.to_owned(),
-                logical_path: "source.md".to_owned(),
-                content_base64: base64::engine::general_purpose::STANDARD.encode(b"# Converted\n"),
-                mime_type: "text/markdown".to_owned(),
-                metadata: json!({ "documentId": document_id }),
-            },
-        )
-        .expect("restore Markdown");
-        crate::content::stage_file(
-            &paths,
-            claim["executionToken"].as_str().expect("execution token"),
-            &crate::content::StageFileRequest {
-                resource_kind: crate::content::ResourceKind::WikiMarkdown
-                    .as_str()
-                    .to_owned(),
-                resource_key: document_id.to_owned(),
-                logical_path: "extra.md".to_owned(),
-                content_base64: base64::engine::general_purpose::STANDARD.encode(b"# Extra\n"),
-                mime_type: "text/markdown".to_owned(),
-                metadata: json!({ "documentId": document_id }),
-            },
-        )
-        .expect("stage extra Markdown");
-        let multiple = validate_conversion_execution_result(&paths, &task, &workspace)
-            .expect_err("multiple staged Markdown files must fail");
-        assert_eq!(multiple.code(), Some("invalid_output"));
-    }
-
-    #[test]
-    fn my_document_write_requires_one_matching_prepared_operation() {
-        use base64::Engine as _;
-
+    fn my_document_write_stages_one_validated_artifact_without_an_operation() {
         let _env_lock = crate::TASK_BROKER_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -595,70 +378,65 @@
         .expect("claim");
         let execution_token = claim["executionToken"].as_str().expect("execution token");
         let workspace = temp.path().join("execution");
-        fs::create_dir_all(&workspace).expect("workspace");
-        let valid_result = |operation_id: &str| {
-            json!({
-                "outcome": "written",
-                "summary": "Wrote the requested plain-text document.",
-                "output": {
-                    "documentId": document_id,
-                    "operationId": operation_id,
-                    "logicalPath": "content.txt"
-                }
-            })
-        };
-
-        let missing = validate_my_document_write_execution_result(&paths, &task, &workspace)
-            .expect_err("missing result must fail");
+        fs::create_dir_all(workspace.join("outputs")).expect("workspace");
+        let claimed_task = claim["task"].clone();
+        let missing = build_my_document_write_output_plan(
+            &paths,
+            &claimed_task,
+            &workspace,
+            claim["attemptId"].as_str().expect("attempt id"),
+            claim["executionGeneration"]
+                .as_i64()
+                .expect("execution generation"),
+            &json!({}),
+        )
+        .expect_err("missing result must fail");
         assert_eq!(missing.code(), Some("invalid_output"));
 
-        let started =
-            crate::operations::begin_writing_for_broker(&paths, task_id, "Plain result", "text")
-                .expect("begin operation");
-        let operation_id = started["operation"]["id"].as_str().expect("operation id");
+        fs::write(
+            workspace.join("outputs/document.txt"),
+            "Written plain text\n",
+        )
+        .expect("artifact");
         fs::write(
             workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&valid_result(operation_id)).expect("serialize"),
+            serde_json::to_vec(&json!({
+                "outcome": "written",
+                "summary": "Wrote the requested plain-text document.",
+                "title": "Plain result",
+                "artifacts": [{
+                    "role": "my-document",
+                    "relativePath": "outputs/document.txt"
+                }]
+            }))
+            .expect("serialize"),
         )
         .expect("result");
-        let unstaged = validate_my_document_write_execution_result(&paths, &task, &workspace)
-            .expect_err("unprepared result must fail");
-        assert_eq!(unstaged.code(), Some("invalid_output"));
-
-        crate::content::prepare_operation(
+        let prepared = prepare_task_output_plan(
             &paths,
-            execution_token,
-            &crate::content::PrepareOperationRequest {
-                operation_id: operation_id.to_owned(),
-                file_name: "document.txt".to_owned(),
-                content_base64: base64::engine::general_purpose::STANDARD
-                    .encode(b"Written plain text\n"),
-            },
+            &claimed_task,
+            &workspace,
+            claimed_task["handlerKey"].as_str().expect("handler"),
+            "bundle:test",
+            claim["attemptId"].as_str().expect("attempt id"),
+            claim["executionGeneration"]
+                .as_i64()
+                .expect("execution generation"),
         )
-        .expect("prepare operation");
-        let result =
-            validate_my_document_write_execution_result(&paths, &task, &workspace).expect("valid result");
-        assert_eq!(result["outcome"], "written");
-
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&valid_result("operation:wrong")).expect("serialize"),
-        )
-        .expect("mismatched result");
-        let mismatch = validate_my_document_write_execution_result(&paths, &task, &workspace)
-            .expect_err("mismatched Operation must fail");
-        assert_eq!(mismatch.code(), Some("invalid_output"));
-
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&valid_result(operation_id)).expect("serialize"),
-        )
-        .expect("restore result");
+        .expect("output plan");
+        let applied = apply_task_output_plan(&paths, execution_token, &prepared.plan)
+            .expect("apply output plan");
+        assert_eq!(applied["artifacts"].as_array().map(Vec::len), Some(1));
+        assert!(crate::storage::Storage::open(&paths)
+            .expect("storage")
+            .list_direct_operations(None, None)
+            .expect("operations")
+            .is_empty());
         crate::tasks::complete_task(
             &paths,
             task_id,
             claim["leaseToken"].as_str().expect("lease token"),
-            Some(result),
+            Some(prepared.result),
         )
         .expect("complete task");
         let completed =

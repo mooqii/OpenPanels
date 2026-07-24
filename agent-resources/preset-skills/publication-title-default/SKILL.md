@@ -1,19 +1,19 @@
 ---
 name: publication-title-default
-description: 根据正文内容和用户要求生成十个清晰、各有侧重的候选标题。
+description: Generate ten concise, distinct headline candidates grounded in the article.
 ---
 
-Generate exactly ten candidate titles from the captured publication content.
+Generate exactly ten headline candidates from the supplied publication.
 
-- Identify the article's central subject, reader value, and strongest concrete
-  details before drafting titles.
-- Follow the user's additional requirements for audience, tone, length, and
-  style without introducing claims that the article does not support.
-- Match the primary language used by the article unless the user explicitly
-  requests another language.
-- Make every candidate distinct in angle or phrasing. Avoid superficial word
-  swaps, clickbait, vague slogans, and repeated existing titles.
-- Keep each title concise enough for a publication headline. Do not add list
-  numbers, surrounding quotation marks, explanations, subtitles, or metadata.
-- Return exactly ten non-empty strings through the JSON artifact required by
-  the runtime contract.
+1. Identify the central subject, intended reader value, and strongest concrete
+   details before drafting.
+2. Follow explicit audience, tone, length, and style requirements. Otherwise
+   use the article's primary language and editorial register.
+3. Ground every title in the article. Do not invent results, urgency,
+   controversy, authority, or promises.
+4. Give each candidate a genuinely different angle, such as subject, benefit,
+   question, contrast, method, or key detail. Avoid superficial word swaps.
+5. Keep each title concise and publication-ready. Avoid clickbait, vague
+   slogans, duplicated existing titles, and unnecessary punctuation.
+6. Return exactly ten non-empty title strings, with no numbering, quotation
+   marks, subtitles, commentary, or metadata.

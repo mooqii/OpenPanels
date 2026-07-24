@@ -17,6 +17,7 @@ import {
   tryOpenBrowserWindow,
   wikiRawOriginalUrl,
 } from "../../lib/api"
+import { taskCanRetry } from "../../lib/task-status"
 import { sortMyDocumentsByActivity } from "../../lib/writing"
 import type {
   AgentSkillListing,
@@ -867,14 +868,19 @@ export function useWikiPanelController({
       setRetryingMyDocumentId(document.id)
       setMyDocumentRetryError(null)
       try {
-        const path =
-          writingTask?.status === "failed"
-            ? `/api/tasks/${encodeURIComponent(writingTask.id)}/retry`
+        const taskId =
+          writingTask && taskCanRetry(writingTask)
+            ? writingTask.id
             : document.conversion?.status === "failed" &&
                 document.conversion.taskId
-              ? `/api/tasks/${encodeURIComponent(document.conversion.taskId)}/retry`
-              : `/api/my-documents/${encodeURIComponent(document.id)}/retry`
-        await apiJson(transport.apiBase, path, { method: "POST" })
+              ? document.conversion.taskId
+              : null
+        if (!taskId) return
+        await apiJson(
+          transport.apiBase,
+          `/api/tasks/${encodeURIComponent(taskId)}/retry`,
+          { method: "POST" }
+        )
         await onReload()
       } catch (error) {
         console.error("Failed to retry My Document", error)

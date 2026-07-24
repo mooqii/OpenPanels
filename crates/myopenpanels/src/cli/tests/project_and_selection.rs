@@ -77,12 +77,10 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
             &bootstrap.project.id,
             &wiki_panel.panel.id,
             &json!({
-                "isWikiSelected": true,
-                "selectedRawDocumentIds": [document["id"]],
                 "selectedMyDocumentIds": [],
             }),
         )
-        .expect("legacy selection");
+        .expect("selection");
     let revision_after = Storage::open(&paths)
         .expect("storage")
         .read_panel_state_revision(&bootstrap.project.id, &wiki_panel.panel.id)
@@ -108,10 +106,6 @@ fn wiki_selection_and_query_context_are_agent_facing_without_panel_state_churn()
     assert!(selection["value"]["selection"]
         .get("isWikiSelected")
         .is_none());
-    assert!(selection["value"]["selection"]
-        .get("selectedRawDocumentIds")
-        .is_none());
-    assert!(selection["value"].get("selectedRawDocuments").is_none());
     assert_eq!(
         selection["value"]["wiki"]["localAccess"]["status"],
         "on_demand"

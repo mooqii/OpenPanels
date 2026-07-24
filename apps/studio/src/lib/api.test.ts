@@ -1,9 +1,76 @@
 import { describe, expect, it, vi } from "vitest"
+import type { MyOpenPanelsPanelKind } from "../protocol"
+import type { BootstrapResponse, ProjectTask } from "../types"
 import {
+  appPanelState,
   myDocumentOriginalUrl,
+  normalizeBootstrap,
+  normalizePanelState,
   originalPreviewKind,
   tryOpenBrowserWindow,
 } from "./api"
+
+describe("Studio bootstrap contracts", () => {
+  it.each([
+    ["canvas", {}],
+    ["wiki", { rawDocuments: [], wikiSpaces: [] }],
+    ["writing", { mode: "create" }],
+    ["typesetting", {}],
+    ["publishing", { releases: [] }],
+  ] satisfies [
+    MyOpenPanelsPanelKind,
+    unknown,
+  ][])("surfaces malformed %s state instead of replacing it with empty data", (kind, state) => {
+    expect(() => normalizePanelState(kind, state)).toThrow(
+      `malformed ${kind} panel state`
+    )
+  })
+
+  it("rejects non-canonical Task statuses at the bootstrap boundary", () => {
+    const task = projectTask()
+    expect(() =>
+      normalizeBootstrap(
+        bootstrap(
+          "canvas",
+          {
+            currentPageId: null,
+            openedGroupId: null,
+            selectedShapeIds: [],
+            store: {},
+          },
+          [{ ...task, status: "claimed" as ProjectTask["status"] }]
+        )
+      )
+    ).toThrow('unsupported Task status "claimed"')
+  })
+
+  it("keeps Wiki UI state separate from hydrated resources", () => {
+    const state = {
+      activeRawDocumentId: null,
+      activeWikiPagePath: "index.md",
+      activeWikiSpaceId: "wiki:1",
+      myDocuments: [],
+      rawDocuments: [],
+      ruleSets: [],
+      wikiSpaces: [],
+    }
+    const normalized = normalizeBootstrap(bootstrap("wiki", state))
+    const snapshot = normalized.panels[0]
+
+    expect(snapshot.uiState).toEqual({
+      activeRawDocumentId: null,
+      activeWikiPagePath: "index.md",
+      activeWikiSpaceId: "wiki:1",
+      ruleSets: [],
+    })
+    expect(snapshot.moduleState).toEqual({
+      myDocuments: [],
+      rawDocuments: [],
+      wikiSpaces: [],
+    })
+    expect(appPanelState(snapshot)).toEqual(state)
+  })
+})
 
 describe("myDocumentOriginalUrl", () => {
   it("targets the immutable imported source", () => {
@@ -16,6 +83,52 @@ describe("myDocumentOriginalUrl", () => {
     )
   })
 })
+
+function bootstrap(
+  kind: MyOpenPanelsPanelKind,
+  state: unknown,
+  tasks: ProjectTask[] = []
+): BootstrapResponse {
+  const panel = {
+    createdAt: "2026-07-24T00:00:00Z",
+    id: `panel:${kind}`,
+    kind,
+    projectId: "project:1",
+    title: kind,
+    updatedAt: "2026-07-24T00:00:00Z",
+  }
+  return {
+    activePanelId: panel.id,
+    activePanelKind: kind,
+    panel,
+    panels: [{ panel, revision: 1, state }],
+    project: {
+      createdAt: "2026-07-24T00:00:00Z",
+      id: "project:1",
+      panelIds: [panel.id],
+      title: "Project",
+      updatedAt: "2026-07-24T00:00:00Z",
+    },
+    revision: 1,
+    state,
+    tasks,
+  }
+}
+
+function projectTask(): ProjectTask {
+  return {
+    createdAt: "2026-07-24T00:00:00Z",
+    id: "task:1",
+    panelId: "panel:canvas",
+    panelKind: "canvas",
+    projectId: "project:1",
+    queue: "canvas",
+    status: "queued",
+    targetId: "canvas:1",
+    type: "canvas_image_generate",
+    updatedAt: "2026-07-24T00:00:00Z",
+  }
+}
 
 describe("originalPreviewKind", () => {
   it("previews plain-text documents in the current window", () => {

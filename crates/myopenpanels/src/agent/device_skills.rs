@@ -170,15 +170,23 @@ fn validated_device_skill(
         CliError::with_code("device_skill_not_found", "Device Skill directory is unavailable.")
     })?;
     let mut instances = discover_device_skill_instances(paths)?;
-    instances
+    let skill = instances
         .remove(&requested)
-        .map(|skill| (requested, skill))
         .ok_or_else(|| {
             CliError::with_code(
                 "device_skill_not_found",
                 "Device Skill is no longer present in a known Skill directory.",
             )
-        })
+        })?;
+    let source = fs::read_to_string(requested.join("SKILL.md")).map_err(|_| {
+        CliError::with_code(
+            "invalid_skill_package",
+            "Device SKILL.md must be a valid UTF-8 text file.",
+        )
+    })?;
+    validate_portable_custom_skill_source(&source, "SKILL.md", "device-validation")?;
+    collect_skill_package_files(&requested, &requested, 0, &mut Vec::new())?;
+    Ok((requested, skill))
 }
 
 fn skill_package_hash(root: &Path) -> Result<String, CliError> {

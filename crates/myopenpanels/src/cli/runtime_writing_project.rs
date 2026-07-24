@@ -11,19 +11,6 @@ fn run_writing_command(parsed: &Invocation, stdout: &mut impl Write) -> Result<(
                 &format!("Writing request {task_id}"),
             )
         }
-        "writing.write" => {
-            let task_id = required_flag(parsed, "task-id")?;
-            let title = required_flag(parsed, "title")?;
-            let document_format = string_flag(parsed, "document-format").unwrap_or("markdown");
-            if !matches!(document_format, "markdown" | "text") {
-                return Err(CliError::with_code(
-                    "invalid_argument",
-                    "Writing document format must be markdown or text.",
-                ));
-            }
-            let result = operations::begin_writing(&paths, task_id, title, document_format)?;
-            write_result(parsed, stdout, &result, "Started My Document write")
-        }
         "writing.distillation.read" => {
             let task_id = required_flag(parsed, "task-id")?;
             let result = crate::writing::read_distillation(&paths, task_id)?;

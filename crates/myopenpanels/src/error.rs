@@ -193,7 +193,7 @@ fn category_for_code(code: &str) -> CliErrorCategory {
         || code.ends_with("_unavailable")
         || matches!(
             code,
-            "browser_open_failed" | "studio_transition_busy" | "queue_adapter_missing"
+            "browser_open_failed" | "studio_transition_busy" | "task_domain_missing"
         )
     {
         return CliErrorCategory::Unavailable;

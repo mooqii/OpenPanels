@@ -24,7 +24,9 @@ static BUILTIN_SKILL_REGISTRY: &str = include_str!(concat!(
 ));
 pub const PANELS_SKILL_ID: &str = "myopenpanels-panels";
 pub const TASK_QUEUE_SKILL_ID: &str = "myopenpanels-task-queue";
-pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 8192;
+pub const MAX_BOOTSTRAP_ENVELOPE_BYTES: usize = 16 * 1024;
+const PRESET_SKILL_LOCALE_NAMESPACE: &str = "skill_management";
+const PRESET_SKILL_LOCALE_KEY: &str = "preset_locale";
 
 pub(crate) fn embedded_system_skill_text(
     system_skill_id: &str,
@@ -99,12 +101,21 @@ struct BuiltinSkillRegistration {
     applies_to: Vec<String>,
     id: String,
     load_when: Vec<String>,
+    #[serde(default)]
+    localizations: BTreeMap<String, BuiltinSkillLocalization>,
     name: String,
     package_dir: String,
     requires_commands: Vec<String>,
     source: String,
     task_types: Vec<String>,
     tokens: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BuiltinSkillLocalization {
+    load_when: Vec<String>,
+    name: String,
 }
 
 pub fn agent_bootstrap(
@@ -116,14 +127,19 @@ pub fn agent_bootstrap(
     if let Some(update) =
         crate::agent_control::pending_entry_skill_update_with_storage(paths, &storage)?
     {
-        return Ok(entry_skill_update_bootstrap(paths, &bootstrap, &update));
+        return Ok(entry_skill_update_bootstrap(
+            paths,
+            &bootstrap,
+            &update,
+            procedure,
+        ));
     }
     if let Some(procedure) = procedure {
         return agent_procedure_bootstrap(paths, &bootstrap, procedure);
     }
     sync_builtin_agent_skills(paths)?;
     let skills = load_agent_skills(paths, &bootstrap.project.id)?;
-    let operations = storage.list_agent_operations(Some(&paths.context_id), Some("active"))?;
+    let operations = storage.list_direct_operations(Some(&paths.context_id), Some("active"))?;
     let focus_revision = crate::control::read_focus_revision(paths)?;
     let focus = json!({
         "focusRevision": focus_revision,
@@ -371,6 +387,7 @@ fn entry_skill_update_bootstrap(
     paths: &MyOpenPanelsPaths,
     bootstrap: &ProjectBootstrap,
     update: &crate::agent_control::EntrySkillUpdate,
+    procedure: Option<&str>,
 ) -> Value {
     let host_action = json!({
         "id": "entry-skill.ensure",
@@ -399,11 +416,13 @@ fn entry_skill_update_bootstrap(
     );
     acknowledge_action["id"] = json!("entry-skill.acknowledge");
     acknowledge_action["required"] = json!(true);
-    let mut rerun_action = project_command_action(
-        paths,
-        "agent.bootstrap.read",
-        vec!["--format".to_owned(), "json".to_owned()],
-    );
+    let mut rerun_args = Vec::new();
+    if let Some(procedure) = procedure {
+        rerun_args.extend(["--procedure".to_owned(), procedure.to_owned()]);
+    }
+    rerun_args.extend(["--format".to_owned(), "json".to_owned()]);
+    let mut rerun_action =
+        project_command_action(paths, "agent.bootstrap.read", rerun_args);
     rerun_action["id"] = json!("agent.bootstrap.refresh");
     json!({
         "bootstrapBudget": {
@@ -627,7 +646,7 @@ fn compact_task_summary(bootstrap: &ProjectBootstrap) -> Value {
         .filter(|task| {
             matches!(
                 task.get("status").and_then(Value::as_str),
-                Some("reserved" | "running" | "claimed" | "converting" | "indexing")
+                Some("running")
             )
         })
         .count();

@@ -1,17 +1,21 @@
 ---
 name: publication-layout-default
-description: 在不改写正文的前提下整理标题层级、段落、列表、引用和重点样式。
+description: Improve editorial structure and readability without changing the article's text, links, or images.
 ---
 
-Format the captured publication content for clear editorial reading.
+Format the supplied publication for clear editorial reading.
 
-- Preserve every text character in its original order. Do not rewrite, add,
-  remove, summarize, translate, or correct the article.
-- Preserve every image and link, including its target and relative position.
-- Use headings only for text that already functions as a section heading.
-- Improve paragraph boundaries and use bullet lists, ordered lists, or
-  blockquotes only when the existing content clearly calls for them.
-- Use bold and italic sparingly to clarify existing emphasis. Do not add visual
-  decoration for its own sake.
-- Keep the output compatible with the TipTap document schema required by the
-  runtime contract and write only the requested JSON artifact.
+1. Preserve every text character in its original order. Do not rewrite,
+   correct, translate, summarize, add, or remove text.
+2. Preserve every link and image, including its target, content, and relative
+   position.
+3. Normalize paragraph boundaries and whitespace only where structure is
+   unambiguous.
+4. Apply heading levels only to text that already functions as a heading.
+   Maintain a coherent hierarchy without promoting ordinary prose.
+5. Use lists and blockquotes only when the existing content already expresses
+   list or quotation structure.
+6. Use bold and italic sparingly to preserve or clarify existing emphasis.
+   Avoid decorative styling that changes the article's meaning.
+7. Return only the structured document requested by the caller. Verify that
+   text, links, and images are lossless before finishing.

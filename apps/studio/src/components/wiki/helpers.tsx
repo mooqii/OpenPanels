@@ -8,7 +8,7 @@ import {
   Sparkles,
 } from "lucide-react"
 import { useMyOpenPanelsI18n } from "../../canvas"
-import type { WikiRawDocument } from "../../types"
+import type { ProjectTask, WikiRawDocument } from "../../types"
 
 export type WikiTaskListFilter = "active" | "done" | "pending"
 
@@ -267,22 +267,22 @@ export function formatWikiTaskType(
 }
 
 export function formatWikiTaskStatus(
-  status: string,
+  status: ProjectTask["status"],
   t: (input: TemplateStringsArray | string, ...values: unknown[]) => string
 ) {
   switch (status) {
     case "queued":
       return t`Queued`
-    case "claimed":
-      return t`Claimed`
     case "running":
       return t`Running`
     case "failed":
       return t`Failed`
     case "succeeded":
       return t`Succeeded`
-    case "stale":
-      return t`Stale`
+    case "cancelled":
+      return t`Cancelled`
+    case "superseded":
+      return t`Superseded`
     default:
       return status
   }

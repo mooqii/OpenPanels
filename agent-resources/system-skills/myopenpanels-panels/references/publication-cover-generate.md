@@ -8,12 +8,15 @@ Task.
    missing value from current panel state.
 2. Read the captured title, body, complete Cover Skill package, and additional
    requirements from their bound inputs.
-3. Use an available image-generation tool to create one real PNG bitmap. Do not
+3. Use an available image-generation tool to create one or more real PNG bitmaps. Do not
    substitute SVG, HTML, a manually scripted drawing, or an unrelated image.
-4. Write exactly one non-empty `publication-cover` artifact at the declared
-   path and the exact ExecutionResult at its declared path.
+4. Write each non-empty PNG as a separate `publication-cover` artifact under
+   `outputs/`, using `outputs/cover.png` first and `outputs/cover-2.png`,
+   `outputs/cover-3.png`, and so on for alternatives. Write the exact
+   ExecutionResult at its declared path.
 5. Do not add the cover to Typesetting state yourself. The Runtime validates
-   the PNG, stores it, links it to the captured publication, and completes the
+   every PNG, stores it, links it to the captured publication, and completes the
    Task.
 
-Never create extra image variants or reuse an artifact from another Attempt.
+Never create contact sheets, mockups, non-PNG variants, or reuse an artifact
+from another Attempt.

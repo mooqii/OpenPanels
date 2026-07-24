@@ -264,6 +264,7 @@ export function useTypesettingStateEditor({
 
   const uploadAsset = useCallback(
     async (file: File): Promise<TypesettingPublicationImage> => {
+      const mimeType = file.type || mimeTypeFromFileName(file.name)
       const uploaded = await apiJson<UploadedTypesettingAsset>(
         transport.apiBase,
         "/api/assets",
@@ -272,8 +273,8 @@ export function useTypesettingStateEditor({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             dataUrl: await fileToDataUrl(file),
-            fileName: file.name || "image.png",
-            mimeType: file.type || "image/png",
+            fileName: assetUploadFileName(file, mimeType),
+            mimeType,
             originPanelId: panelId,
           }),
         }
@@ -299,6 +300,41 @@ export function useTypesettingStateEditor({
     updatePublication,
     uploadAsset,
   }
+}
+
+function assetUploadFileName(file: File, mimeType: string): string {
+  if (!file.name) return defaultAssetFileName(mimeType)
+  const extension = file.name.split(".").pop()?.toLowerCase()
+  if (
+    extension &&
+    ["gif", "jpeg", "jpg", "m4v", "mov", "mp4", "png", "webm", "webp"].includes(
+      extension
+    )
+  ) {
+    return file.name
+  }
+  return defaultAssetFileName(mimeType)
+}
+
+function defaultAssetFileName(mimeType: string): string {
+  if (mimeType === "image/gif") return "image.gif"
+  if (mimeType === "image/jpeg") return "image.jpg"
+  if (mimeType === "image/webp") return "image.webp"
+  if (mimeType === "video/mp4") return "video.mp4"
+  if (mimeType === "video/quicktime") return "video.mov"
+  if (mimeType === "video/webm") return "video.webm"
+  return "image.png"
+}
+
+function mimeTypeFromFileName(fileName: string): string {
+  const extension = fileName.split(".").pop()?.toLowerCase()
+  if (extension === "mp4" || extension === "m4v") return "video/mp4"
+  if (extension === "mov") return "video/quicktime"
+  if (extension === "webm") return "video/webm"
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg"
+  if (extension === "webp") return "image/webp"
+  if (extension === "gif") return "image/gif"
+  return "image/png"
 }
 
 async function savePublications(

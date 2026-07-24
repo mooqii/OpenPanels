@@ -31,7 +31,7 @@ fn hydrate_wiki_state(
     }
     let mut projected_my_documents = Vec::with_capacity(my_documents.len());
     for mut document in my_documents {
-        project_my_document_status(&mut document, &tasks);
+        project_my_document_status(&mut document, &tasks)?;
         projected_my_documents.push(document);
     }
     state["rawDocuments"] = Value::Array(projected_raw);
@@ -245,21 +245,14 @@ fn project_wiki_source_status(
     let conversion = document_tasks
         .iter()
         .find(|task| task.task_type == "convert_document_to_markdown");
-    let conversion_status = match conversion.map(|task| task.status.as_str()) {
-        Some("running") => "converting",
-        Some("failed") => "failed",
-        Some("cancelled" | "superseded") => "cancelled",
-        Some("succeeded") => "ready",
-        Some(_) => "queued",
-        None if document.get("markdownRef").is_some_and(Value::is_string) => "not_required",
-        None => "queued",
-    };
-    document["conversion"] = json!({
-        "status": conversion_status,
-        "taskId": conversion.map(|task| task.id.as_str()),
-        "error": conversion.filter(|task| matches!(task.status.as_str(), "failed" | "cancelled" | "superseded")).map(|task| task.error.clone()),
-        "updatedAt": conversion.map(|task| task.updated_at.as_str()).unwrap_or_else(|| document.get("updatedAt").and_then(Value::as_str).unwrap_or("")),
-    });
+    document["conversion"] = project_conversion(
+        conversion,
+        document.get("markdownRef").is_some_and(Value::is_string),
+        document
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    )?;
 
     let document_version = document
         .get("markdownVersion")
@@ -324,7 +317,15 @@ fn project_wiki_source_status(
                 Some("queued") if dependency_waiting => "waiting",
                 Some("queued") => "queued",
                 Some("succeeded") => "unrecorded",
-                _ => "unscheduled",
+                Some(status) => {
+                    return Err(CliError::with_code(
+                        "invalid_task_status",
+                        format!(
+                            "Unsupported Task status in Wiki ingestion projection: {status}"
+                        ),
+                    ));
+                }
+                None => "unscheduled",
             }
         };
         let derived_error = if !processed_current
@@ -370,24 +371,102 @@ fn project_wiki_source_status(
 fn project_my_document_status(
     document: &mut Value,
     tasks: &BTreeMap<String, Vec<StoredTaskProjection>>,
-) {
+) -> Result<(), CliError> {
     let document_id = document.get("id").and_then(Value::as_str).unwrap_or("");
     let document_tasks = tasks.get(document_id).map(Vec::as_slice).unwrap_or(&[]);
     if let Some(task) = document_tasks
         .iter()
         .find(|task| task.task_type == "convert_document_to_markdown")
     {
-        document["conversion"] = json!({
-            "status": match task.status.as_str() {
-                "running" => "converting",
-                "succeeded" => "ready",
-                "failed" => "failed",
-                "cancelled" | "superseded" => "cancelled",
-                _ => "queued",
-            },
-            "taskId": task.id,
-            "error": if matches!(task.status.as_str(), "failed" | "cancelled" | "superseded") { task.error.clone() } else { Value::Null },
-            "updatedAt": task.updated_at,
-        });
+        document["conversion"] = project_conversion(
+            Some(task),
+            false,
+            document
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        )?;
+    }
+    Ok(())
+}
+
+fn project_conversion(
+    task: Option<&StoredTaskProjection>,
+    ready_without_task: bool,
+    fallback_updated_at: &str,
+) -> Result<Value, CliError> {
+    let status = match task.map(|task| task.status.as_str()) {
+        Some("queued") => "queued",
+        Some("running") => "converting",
+        Some("succeeded") => "ready",
+        Some("failed") => "failed",
+        Some("cancelled" | "superseded") => "cancelled",
+        Some(status) => {
+            return Err(CliError::with_code(
+                "invalid_task_status",
+                format!("Unsupported Task status in Wiki projection: {status}"),
+            ));
+        }
+        None if ready_without_task => "not_required",
+        None => "queued",
+    };
+    Ok(json!({
+        "status": status,
+        "taskId": task.map(|task| task.id.as_str()),
+        "error": task.filter(|task| matches!(task.status.as_str(), "failed" | "cancelled" | "superseded")).map(|task| task.error.clone()),
+        "updatedAt": task.map(|task| task.updated_at.as_str()).unwrap_or(fallback_updated_at),
+    }))
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::{project_conversion, StoredTaskProjection};
+    use serde_json::json;
+
+    #[test]
+    fn wiki_conversion_uses_the_canonical_task_status_projection() {
+        let cases = [
+            ("queued", "queued"),
+            ("running", "converting"),
+            ("succeeded", "ready"),
+            ("failed", "failed"),
+            ("cancelled", "cancelled"),
+            ("superseded", "cancelled"),
+        ];
+        for (task_status, expected) in cases {
+            let task = task(task_status);
+            let projection =
+                project_conversion(Some(&task), false, "fallback").expect("projection");
+            assert_eq!(projection["status"], expected);
+        }
+        assert_eq!(
+            project_conversion(None, true, "fallback").expect("projection")["status"],
+            "not_required"
+        );
+        assert_eq!(
+            project_conversion(None, false, "fallback").expect("projection")["status"],
+            "queued"
+        );
+    }
+
+    #[test]
+    fn wiki_conversion_rejects_a_noncanonical_task_status() {
+        let task = task("claimed");
+        let error = project_conversion(Some(&task), false, "fallback")
+            .expect_err("noncanonical status must fail");
+        assert_eq!(error.code(), Some("invalid_task_status"));
+    }
+
+    fn task(status: &str) -> StoredTaskProjection {
+        StoredTaskProjection {
+            id: "task:1".to_owned(),
+            task_type: "convert_document_to_markdown".to_owned(),
+            status: status.to_owned(),
+            depends_on_task_id: None,
+            input: json!({}),
+            source: json!({}),
+            error: json!(null),
+            updated_at: "2026-07-24T00:00:00Z".to_owned(),
+        }
     }
 }

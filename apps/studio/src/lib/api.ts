@@ -1,6 +1,7 @@
 import type { CanvasSelectionSnapshot, StoreSnapshot } from "../canvas"
 import type { MyOpenPanelsPanelKind, MyOpenPanelsProject } from "../protocol"
 import type {
+  AppPanelStateSnapshot,
   AppState,
   BootstrapResponse,
   MyDocument,
@@ -16,18 +17,27 @@ import type {
   WikiRawDocument,
   WikiState,
 } from "../types"
+import { PanelStateContractError } from "./bootstrap-contract"
+import { assertCanonicalTaskStatuses } from "./task-status"
 
 export function normalizeBootstrap(data: BootstrapResponse): AppState {
+  assertCanonicalTaskStatuses(data.tasks ?? [])
+  if (data.agentWorker?.currentTask) {
+    assertCanonicalTaskStatuses([data.agentWorker.currentTask])
+  }
   const panels =
-    data.panels?.map((snapshot) => ({
-      panel: snapshot.panel,
-      revision: snapshot.revision ?? 0,
-      state: normalizePanelState(snapshot.panel.kind, snapshot.state),
-    })) ?? []
+    data.panels?.map((snapshot) =>
+      normalizeAppPanelSnapshot(
+        snapshot.panel,
+        snapshot.revision ?? 0,
+        snapshot.state
+      )
+    ) ?? []
   const activePanel =
     panels.find(({ panel }) => panel.id === data.activePanelId)?.panel ??
     data.panel
   const activeState = normalizePanelState(activePanel.kind, data.state)
+  const activeSnapshot = splitPanelState(activePanel.kind, activeState)
   const normalizedPanels = panels.some(
     ({ panel }) => panel.id === activePanel.id
   )
@@ -38,7 +48,7 @@ export function normalizeBootstrap(data: BootstrapResponse): AppState {
               revision:
                 snapshot.revision ??
                 (activePanel.id === data.panel.id ? data.revision : 0),
-              state: activeState,
+              ...activeSnapshot,
             }
           : snapshot
       )
@@ -46,7 +56,7 @@ export function normalizeBootstrap(data: BootstrapResponse): AppState {
         {
           panel: activePanel,
           revision: activePanel.id === data.panel.id ? data.revision : 0,
-          state: activeState,
+          ...activeSnapshot,
         },
         ...panels,
       ]
@@ -70,21 +80,44 @@ export function normalizePanelState(
   state: unknown
 ): unknown {
   if (kind === "canvas") {
+    if (!isCanvasState(state)) throw new PanelStateContractError(kind)
     return normalizeSnapshot(state as StoreSnapshot)
   }
   if (kind === "wiki") {
-    return isWikiState(state) ? state : emptyWikiState()
+    if (!isWikiState(state)) throw new PanelStateContractError(kind)
+    return state
   }
   if (kind === "writing") {
     return normalizeWritingState(state)
   }
   if (kind === "typesetting") {
-    return isTypesettingState(state) ? state : emptyTypesettingState()
+    if (!isTypesettingState(state)) throw new PanelStateContractError(kind)
+    return state
   }
   if (kind === "publishing") {
-    return isPublishingState(state) ? state : emptyPublishingState()
+    if (!isPublishingState(state)) throw new PanelStateContractError(kind)
+    return state
   }
-  return state ?? {}
+  throw new PanelStateContractError(kind)
+}
+
+export function appPanelState(snapshot: AppPanelStateSnapshot): unknown {
+  return composePanelState(
+    snapshot.panel.kind,
+    snapshot.uiState,
+    snapshot.moduleState
+  )
+}
+
+export function replaceAppPanelState(
+  snapshot: AppPanelStateSnapshot,
+  state: unknown
+): AppPanelStateSnapshot {
+  const normalized = normalizePanelState(snapshot.panel.kind, state)
+  return {
+    ...snapshot,
+    ...splitPanelState(snapshot.panel.kind, normalized),
+  }
 }
 
 export function canvasSnapshotFromState(
@@ -92,7 +125,7 @@ export function canvasSnapshotFromState(
 ): StoreSnapshot | null {
   const snapshot = appState.panels.find(
     ({ panel }) => panel.kind === "canvas"
-  )?.state
+  )?.moduleState
   return snapshot ? normalizeSnapshot(snapshot as StoreSnapshot) : null
 }
 
@@ -105,19 +138,17 @@ export function canvasRevisionFromState(appState: AppState): number {
 }
 
 export function wikiStateFromAppState(appState: AppState): WikiState {
-  const state = appState.panels.find(
-    ({ panel }) => panel.kind === "wiki"
-  )?.state
-  return isWikiState(state) ? state : emptyWikiState()
+  const state = appState.panels.find(({ panel }) => panel.kind === "wiki")
+  if (!state) throw new PanelStateContractError("wiki")
+  return appPanelState(state) as WikiState
 }
 
 export function writingStateFromAppState(
   appState: AppState
 ): import("../types").WritingState {
-  const state = appState.panels.find(
-    ({ panel }) => panel.kind === "writing"
-  )?.state
-  return normalizeWritingState(state)
+  const state = appState.panels.find(({ panel }) => panel.kind === "writing")
+  if (!state) throw new PanelStateContractError("writing")
+  return appPanelState(state) as import("../types").WritingState
 }
 
 export function typesettingStateFromAppState(
@@ -125,8 +156,9 @@ export function typesettingStateFromAppState(
 ): TypesettingState {
   const state = appState.panels.find(
     ({ panel }) => panel.kind === "typesetting"
-  )?.state
-  return isTypesettingState(state) ? state : emptyTypesettingState()
+  )
+  if (!state) throw new PanelStateContractError("typesetting")
+  return appPanelState(state) as TypesettingState
 }
 
 export function typesettingRevisionFromAppState(appState: AppState): number {
@@ -139,10 +171,9 @@ export function typesettingRevisionFromAppState(appState: AppState): number {
 export function publishingStateFromAppState(
   appState: AppState
 ): PublishingState {
-  const state = appState.panels.find(
-    ({ panel }) => panel.kind === "publishing"
-  )?.state
-  return normalizePublishingState(state)
+  const state = appState.panels.find(({ panel }) => panel.kind === "publishing")
+  if (!state) throw new PanelStateContractError("publishing")
+  return appPanelState(state) as PublishingState
 }
 
 export function publishingRevisionFromAppState(appState: AppState): number {
@@ -152,20 +183,6 @@ export function publishingRevisionFromAppState(appState: AppState): number {
   )
 }
 
-export function emptyTypesettingState(): TypesettingState {
-  return {
-    publications: [],
-  }
-}
-
-export function emptyPublishingState(): PublishingState {
-  return {
-    releases: [],
-    selectedPublicationId: null,
-    selectedSkillIds: { xiaohongshu: "release-xiaohongshu" },
-  }
-}
-
 export function isPublishingState(state: unknown): state is PublishingState {
   return (
     typeof state === "object" &&
@@ -173,11 +190,6 @@ export function isPublishingState(state: unknown): state is PublishingState {
     Array.isArray((state as { releases?: unknown }).releases) &&
     typeof (state as PublishingState).selectedSkillIds?.xiaohongshu === "string"
   )
-}
-
-function normalizePublishingState(state: unknown): PublishingState {
-  if (isPublishingState(state)) return state
-  return emptyPublishingState()
 }
 
 export function isTypesettingState(state: unknown): state is TypesettingState {
@@ -316,22 +328,8 @@ export function emptyWritingState(): import("../types").WritingState {
 export function normalizeWritingState(
   state: unknown
 ): import("../types").WritingState {
-  if (typeof state !== "object" || state === null) {
-    return emptyWritingState()
-  }
-  const legacy = state as Record<string, unknown>
-  const selectedDistillationSkillId =
-    legacy.selectedDistillationSkillId ?? legacy.selectedRefinementSkillId
-  const normalized = {
-    ...legacy,
-    distillationName: legacy.distillationName ?? legacy.refinementName,
-    mode: legacy.mode === "refine" ? "distill" : legacy.mode,
-    selectedDistillationSkillId:
-      selectedDistillationSkillId === "writing-refinement-default"
-        ? "writing-distillation-default"
-        : selectedDistillationSkillId,
-  }
-  return isWritingState(normalized) ? normalized : emptyWritingState()
+  if (!isWritingState(state)) throw new PanelStateContractError("writing")
+  return state
 }
 
 export function isWritingState(
@@ -364,18 +362,6 @@ export function isWritingState(
   )
 }
 
-export function emptyWikiState(): WikiState {
-  return {
-    rawDocuments: [],
-    myDocuments: [],
-    ruleSets: [],
-    wikiSpaces: [],
-    activeRawDocumentId: null,
-    activeWikiSpaceId: null,
-    activeWikiPagePath: null,
-  }
-}
-
 export function isWikiState(state: unknown): state is WikiState {
   return (
     typeof state === "object" &&
@@ -395,18 +381,83 @@ export function serializeBootstrapForCompare(appState: AppState): string {
     agentWorker: appState.agentWorker ?? { status: "idle" },
     agentOperations: appState.agentOperations ?? [],
     project: appState.project,
-    states: appState.panels.map(({ panel, state }) => ({
-      id: panel.id,
-      kind: panel.kind,
-      state:
-        panel.kind === "canvas"
-          ? serializeSnapshotForCompare(
-              normalizeSnapshot(state as StoreSnapshot)
-            )
-          : state,
-    })),
+    states: appState.panels.map((snapshot) => {
+      const state = appPanelState(snapshot)
+      return {
+        id: snapshot.panel.id,
+        kind: snapshot.panel.kind,
+        state:
+          snapshot.panel.kind === "canvas"
+            ? serializeSnapshotForCompare(
+                normalizeSnapshot(state as StoreSnapshot)
+              )
+            : state,
+      }
+    }),
     tasks: appState.tasks ?? [],
   })
+}
+
+function isCanvasState(state: unknown): boolean {
+  return (
+    typeof state === "object" &&
+    state !== null &&
+    !Array.isArray(state) &&
+    typeof (state as { store?: unknown }).store === "object" &&
+    (state as { store?: unknown }).store !== null &&
+    !Array.isArray((state as { store?: unknown }).store)
+  )
+}
+
+function normalizeAppPanelSnapshot(
+  panel: AppPanelStateSnapshot["panel"],
+  revision: number,
+  state: unknown
+): AppPanelStateSnapshot {
+  const normalized = normalizePanelState(panel.kind, state)
+  return {
+    panel,
+    revision,
+    ...splitPanelState(panel.kind, normalized),
+  }
+}
+
+function splitPanelState(
+  kind: MyOpenPanelsPanelKind,
+  state: unknown
+): Pick<AppPanelStateSnapshot, "moduleState" | "uiState"> {
+  const source = state as Record<string, unknown>
+  if (kind === "canvas") {
+    return { moduleState: state, uiState: {} }
+  }
+  if (kind === "wiki") {
+    const { myDocuments, rawDocuments, wikiSpaces, ...uiState } = source
+    return {
+      moduleState: { myDocuments, rawDocuments, wikiSpaces },
+      uiState,
+    }
+  }
+  if (kind === "typesetting") {
+    const { publications, ...uiState } = source
+    return { moduleState: { publications }, uiState }
+  }
+  if (kind === "publishing") {
+    const { releases, ...uiState } = source
+    return { moduleState: { releases }, uiState }
+  }
+  return { moduleState: {}, uiState: state }
+}
+
+function composePanelState(
+  kind: MyOpenPanelsPanelKind,
+  uiState: unknown,
+  moduleState: unknown
+): unknown {
+  if (kind === "canvas") return moduleState
+  return {
+    ...(uiState as Record<string, unknown>),
+    ...(moduleState as Record<string, unknown>),
+  }
 }
 
 export function normalizeSnapshot(snapshot: StoreSnapshot): StoreSnapshot {

@@ -41,7 +41,9 @@ export interface AgentOperation {
   updatedAt: string
 }
 
-export interface AppState extends BootstrapResponse {}
+export interface AppState extends Omit<BootstrapResponse, "panels"> {
+  panels: AppPanelStateSnapshot[]
+}
 
 export interface AgentWorkerStatus {
   currentTask?: ProjectTask | null
@@ -197,6 +199,14 @@ export interface TraceSnapshotResponse {
   nextSeq: number
 }
 
+export type TaskStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "superseded"
+
 export interface ProjectTask {
   archivedAt?: string | null
   attempt?: number
@@ -252,7 +262,7 @@ export interface ProjectTask {
   result?: unknown
   retryAfter?: string | null
   source?: unknown
-  status: string
+  status: TaskStatus
   targetId: string
   terminalReason?: unknown
   type: string
@@ -278,6 +288,13 @@ export interface PanelStateSnapshot {
   panel: MyOpenPanelsPanel
   revision: number
   state: unknown
+}
+
+export interface AppPanelStateSnapshot {
+  moduleState: unknown
+  panel: MyOpenPanelsPanel
+  revision: number
+  uiState: unknown
 }
 
 export interface WikiState {
@@ -466,9 +483,7 @@ export interface MyDocument {
   updatedAt: string
   wordCount?: number | null
   writeOperation?: {
-    error: string | null
-    operationId?: string
-    status: "writing" | "completed" | "failed"
+    operationId: string
   }
 }
 
@@ -598,7 +613,7 @@ export interface WikiRawDocument {
       disposition?: "already_covered" | "excluded" | "included" | null
       markdownVersion?: number
       reasonCode?: string | null
-      status: string
+      status: WikiIngestionStatus
       summary?: string | null
       taskId: string | null
       updatedAt?: string
@@ -616,6 +631,18 @@ export interface WikiRawDocument {
   updatedAt: string
   wordCount?: number | null
 }
+
+export type WikiIngestionStatus =
+  | "cancelled"
+  | "covered"
+  | "failed"
+  | "filtered"
+  | "ingested"
+  | "ingesting"
+  | "queued"
+  | "unrecorded"
+  | "unscheduled"
+  | "waiting"
 
 export interface WikiSpace {
   id: string

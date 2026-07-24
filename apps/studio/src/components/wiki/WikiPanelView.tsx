@@ -131,10 +131,7 @@ export function WikiPanelView(
                     ? latestWritingTaskForDocument(writing.tasks, document)
                     : null
                   const writingStatus = writingDocumentStatus(writingTask)
-                  const isWriting =
-                    document.writeOperation?.status === "writing"
-                  const writeFailed =
-                    document.writeOperation?.status === "failed"
+                  const isWriting = document.writeOperation !== undefined
                   const conversion = myDocumentConversionDisplay(document)
                   const conversionFailed = conversion.isFailed
                   const isContentLocked = isWriting || conversion.isLocked
@@ -172,24 +169,9 @@ export function WikiPanelView(
                     : document.writeOperation
                       ? {
                           doneIcon: "sparkles",
-                          filter:
-                            document.writeOperation.status === "writing"
-                              ? "active"
-                              : document.writeOperation.status === "failed"
-                                ? "pending"
-                                : "done",
-                          kind:
-                            document.writeOperation.status === "writing"
-                              ? "running"
-                              : document.writeOperation.status === "failed"
-                                ? "failed"
-                                : "done",
-                          label:
-                            document.writeOperation.status === "writing"
-                              ? t`Writing`
-                              : document.writeOperation.status === "failed"
-                                ? t`Failed`
-                                : t`Succeeded`,
+                          filter: "active",
+                          kind: "running",
+                          label: t`Writing`,
                           taskId: document.taskId,
                         }
                       : document.conversion &&
@@ -295,9 +277,7 @@ export function WikiPanelView(
                       }
                       transport={transport}
                     >
-                      {writingStatus === "failed" ||
-                      writeFailed ||
-                      conversionFailed ? (
+                      {writingStatus === "failed" || conversionFailed ? (
                         <Tooltip closeDelay={0} delay={0}>
                           <Button
                             aria-label={

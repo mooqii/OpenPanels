@@ -243,35 +243,3 @@ pub(crate) fn supersede_active_wiki_mutations(
     tx.commit().map_err(to_cli_error)?;
     Ok(ids)
 }
-
-pub(crate) fn supersede_task_for_content_conflict(
-    paths: &MyOpenPanelsPaths,
-    task_id: &str,
-    resource_id: &str,
-) -> Result<Value, CliError> {
-    let task = inspect_task(paths, task_id)?;
-    let project_id = task["task"]["projectId"].as_str().unwrap_or_default();
-    if matches!(
-        task["task"]["status"].as_str(),
-        Some("succeeded" | "cancelled" | "superseded")
-    ) {
-        return Ok(task);
-    }
-    let storage = Storage::open(paths)?;
-    let tx = storage.connection().unchecked_transaction().map_err(to_cli_error)?;
-    let now = crate::control::now_iso();
-    let reason = json!({ "code": "content_conflict", "resourceId": resource_id });
-    tx.execute(
-        r#"
-        UPDATE tasks SET status = 'superseded', error_json = ?, execution_generation = execution_generation + 1,
-          execution_token_hash = NULL, lease_owner = NULL, lease_expires_at = NULL,
-          heartbeat_at = NULL, completed_at = ?, updated_at = ? WHERE id = ?
-        "#,
-        params![reason.to_string(), now, now, task_id],
-    )
-    .map_err(to_cli_error)?;
-    crate::content::abandon_task_staging_in_transaction(&tx, task_id, &now)?;
-    crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
-    tx.commit().map_err(to_cli_error)?;
-    inspect_task_in_session(paths, project_id, task_id)
-}

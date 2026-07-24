@@ -40,11 +40,11 @@ impl Storage {
                 .get("updatedAt")
                 .and_then(Value::as_str)
                 .unwrap_or(&created_at);
-            let status = normalize_task_status(
+            let status = canonical_task_status(
                 task.get("status")
                     .and_then(Value::as_str)
                     .unwrap_or("queued"),
-            );
+            )?;
             let depends_on = task
                 .get("dependsOnTaskId")
                 .and_then(Value::as_str)
@@ -467,14 +467,17 @@ fn task_value_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     }))
 }
 
-fn normalize_task_status(status: &str) -> &'static str {
-    match status {
-        "succeeded" => "succeeded",
-        "failed" => "failed",
-        "cancelled" | "cancel_requested" => "cancelled",
-        "stale" | "superseded" => "superseded",
-        "reserved" | "running" | "claimed" | "converting" | "indexing" => "running",
-        _ => "queued",
+fn canonical_task_status(status: &str) -> Result<&str, CliError> {
+    if matches!(
+        status,
+        "queued" | "running" | "succeeded" | "failed" | "cancelled" | "superseded"
+    ) {
+        Ok(status)
+    } else {
+        Err(CliError::with_code(
+            "invalid_task_status",
+            format!("Unsupported Task status: {status}"),
+        ))
     }
 }
 

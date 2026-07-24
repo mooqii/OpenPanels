@@ -5,6 +5,25 @@ async fn api_skills(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PresetSkillLocaleBody {
+    locale: String,
+}
+
+async fn api_preset_skill_locale(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PresetSkillLocaleBody>,
+) -> Response {
+    match crate::agent::set_preset_skill_locale(&state.paths, &body.locale) {
+        Ok(locale) => no_store_response(json_response(
+            StatusCode::OK,
+            &json!({ "locale": locale, "reset": true }),
+        )),
+        Err(error) => json_cli_error(&error),
+    }
+}
+
 async fn api_recommended_skills(State(state): State<Arc<AppState>>) -> Response {
     match crate::agent::recommended_skills(&state.paths) {
         Ok(payload) => no_store_response(json_response(StatusCode::OK, &payload)),
@@ -260,6 +279,23 @@ async fn api_remove_skill_module(
     Path((skill_id, module_kind)): Path<(String, String)>,
 ) -> Response {
     match crate::agent::remove_skill_module(&state.paths, &skill_id, &module_kind) {
+        Ok(payload) => no_store_response(json_response(StatusCode::OK, &payload)),
+        Err(error) => json_cli_error(&error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillModulesBody {
+    module_kinds: Vec<String>,
+}
+
+async fn api_set_skill_modules(
+    State(state): State<Arc<AppState>>,
+    Path(skill_id): Path<String>,
+    Json(body): Json<SkillModulesBody>,
+) -> Response {
+    match crate::agent::set_skill_modules(&state.paths, &skill_id, &body.module_kinds) {
         Ok(payload) => no_store_response(json_response(StatusCode::OK, &payload)),
         Err(error) => json_cli_error(&error),
     }

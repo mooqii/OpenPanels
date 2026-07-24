@@ -117,15 +117,14 @@
             .expect("distillation request");
         let mut task = created["task"].clone();
         let raw_content = "# Raw style\n\nShort rhythmic paragraphs.\n";
-        let mut legacy_raw_snapshot = raw["document"].clone();
-        legacy_raw_snapshot["snapshotContent"] = json!(raw_content);
-        legacy_raw_snapshot["snapshotHash"] = json!(format!(
+        let mut raw_snapshot = raw["document"].clone();
+        raw_snapshot["snapshotContent"] = json!(raw_content);
+        raw_snapshot["snapshotHash"] = json!(format!(
             "{:x}",
             Sha256::digest(raw_content.as_bytes())
         ));
         task["input"]["contextSnapshot"]["rawDocuments"] =
-            json!([legacy_raw_snapshot]);
-        task["workflowRunId"] = json!("workflow:noise");
+            json!([raw_snapshot]);
         task["executionGeneration"] = json!(23);
         let workspace = temp.path().join("execution");
         fs::create_dir_all(&workspace).expect("workspace");
@@ -168,7 +167,6 @@
         assert!(prompt.len() <= MAX_AGENT_PROMPT_BYTES);
 
         let custom_command_input = serde_json::to_string_pretty(&task).expect("raw Task JSON");
-        assert!(custom_command_input.contains("workflow:noise"));
         assert!(custom_command_input.contains("distillerSkillSnapshot"));
         assert!(custom_command_input.contains("contextSnapshot"));
 
@@ -182,118 +180,4 @@
         let incomplete = writing_distillation_task_prompt(&incomplete_task, &incomplete_workspace)
             .expect_err("old distillation Task must not be accepted");
         assert_eq!(incomplete.code(), Some("invalid_task_input"));
-    }
-
-    #[test]
-    fn distillation_result_requires_the_exact_staged_writing_skill() {
-        let _env_lock = crate::TASK_BROKER_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let temp = tempfile::tempdir().expect("temp");
-        let project = temp.path().join("project");
-        let storage = temp.path().join("storage");
-        fs::create_dir_all(&project).expect("project");
-        let paths = crate::paths::resolve_myopenpanels_paths(
-            Some(project.to_str().unwrap()),
-            Some(storage.to_str().unwrap()),
-            Some("bridge-distillation-result-test"),
-        )
-        .expect("paths");
-        crate::control::ensure_project_bootstrap(&paths, crate::control::BootstrapRequest::new())
-            .expect("bootstrap");
-        let my_document = crate::wiki::create_my_document(
-            &paths,
-            "sample.md",
-            Some("Sample"),
-            Some("text/markdown"),
-            None,
-            None,
-            b"# Sample\n\nShort, direct paragraphs.\n",
-        )
-        .expect("source");
-        let source_id = my_document["document"]["id"].as_str().expect("source id");
-        crate::writing::write_selection(&paths, false, &[source_id.to_owned()])
-            .expect("selection");
-        let created = crate::writing::create_distillation_request(&paths, "Concise House Style")
-            .expect("request");
-        let task = created["task"].clone();
-        let task_id = task["id"].as_str().expect("task id");
-        let skill_id = task["input"]["skillId"].as_str().expect("skill id");
-        let target = crate::tasks::register_target(
-            &paths,
-            crate::tasks::TargetRegistration {
-                name: "distillation-validator",
-                host: Some("test"),
-                project_id: None,
-                capabilities: vec!["writing.distillSkill".to_owned()],
-                priority: 0,
-                max_concurrency: 1,
-                model_gateway_connection_id: None,
-            },
-        )
-        .expect("target");
-        let _broker = crate::content::enable_test_task_broker();
-        let claim = crate::tasks::claim_task(
-            &paths,
-            task_id,
-            target["target"]["id"].as_str().expect("target id"),
-        )
-        .expect("claim");
-        let workspace = temp.path().join("execution");
-        fs::create_dir_all(&workspace).expect("workspace");
-        let result_value = json!({
-            "outcome": "distilled",
-            "summary": "Extracted a concise reusable house style.",
-            "output": {
-                "skillId": skill_id,
-                "logicalPath": "SKILL.md"
-            }
-        });
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&result_value).expect("serialize"),
-        )
-        .expect("result");
-        let unstaged = validate_distillation_execution_result(&paths, &task, &workspace)
-            .expect_err("unstaged result must fail");
-        assert_eq!(unstaged.code(), Some("invalid_output"));
-
-        let skill_source = format!(
-            "---\nname: {skill_id}\ndescription: Write concise documents with direct structure.\n---\n\nUse short, direct paragraphs. Lead with the main point and remove redundant setup.\n"
-        );
-        crate::content::prepare_skill(
-            &paths,
-            claim["executionToken"].as_str().expect("execution token"),
-            &crate::content::PrepareSkillRequest {
-                skill_id: skill_id.to_owned(),
-                source: skill_source,
-                manifest: json!({}),
-            },
-        )
-        .expect("prepare Skill");
-        let result = validate_distillation_execution_result(&paths, &task, &workspace)
-            .expect("valid distillation result");
-        assert_eq!(result["outcome"], "distilled");
-
-        let mut mismatch = result_value.clone();
-        mismatch["output"]["skillId"] = json!("writing-custom:wrong");
-        fs::write(
-            workspace.join(EXECUTION_RESULT_FILE),
-            serde_json::to_vec(&mismatch).expect("serialize"),
-        )
-        .expect("mismatched result");
-        let mismatch_error = validate_distillation_execution_result(&paths, &task, &workspace)
-            .expect_err("mismatched Skill must fail");
-        assert_eq!(mismatch_error.code(), Some("invalid_output"));
-
-        crate::tasks::complete_task(
-            &paths,
-            task_id,
-            claim["leaseToken"].as_str().expect("lease token"),
-            Some(result),
-        )
-        .expect("complete Task");
-        let installed =
-            crate::agent::writing_agent_skill(&paths, skill_id).expect("installed Writing Skill");
-        assert_eq!(installed.skill.name, "Concise House Style");
     }

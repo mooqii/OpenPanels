@@ -1,6 +1,7 @@
 import { Button, Tooltip } from "@heroui/react"
 import { Copy } from "lucide-react"
 import { useMyOpenPanelsI18n } from "../../canvas"
+import { taskDisplayPhase } from "../../lib/task-status"
 import type { ProjectTask, TaskExecutionScope } from "../../types"
 import { taskExecutionScope } from "./trace-utils"
 
@@ -12,7 +13,7 @@ export function TaskHandoffControl({
   task: ProjectTask
 }) {
   const { t } = useMyOpenPanelsI18n()
-  if (task.status !== "queued") return null
+  if (taskDisplayPhase(task) !== "waiting") return null
 
   return (
     <div className="op-agent-task__dispatch">

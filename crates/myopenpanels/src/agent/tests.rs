@@ -145,17 +145,27 @@ mod tests {
                 .expect("registered standard system Skill");
         }
         for registration in registry.preset_skills {
-            let directory = PRESET_SKILLS
-                .get_dir(&registration.package_dir)
-                .unwrap_or_else(|| panic!("missing package {}", registration.package_dir));
-            assert_portable_directory(directory, &registration.id);
-            let skill_path = directory.path().join("SKILL.md");
-            let source = PRESET_SKILLS
-                .get_file(&skill_path)
-                .and_then(|file| std::str::from_utf8(file.contents()).ok())
-                .expect("preset SKILL.md");
-            parse_portable_skill(source, &skill_path.display().to_string())
-                .expect("registered portable preset Skill");
+            for locale in [None, Some("zh-CN")] {
+                let package_path = locale
+                    .map(|locale| Path::new(locale).join(&registration.package_dir))
+                    .unwrap_or_else(|| PathBuf::from(&registration.package_dir));
+                let directory = PRESET_SKILLS
+                    .get_dir(&package_path)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "missing package {} for locale {locale:?}",
+                            registration.package_dir
+                        )
+                    });
+                assert_portable_directory(directory, &registration.id);
+                let skill_path = directory.path().join("SKILL.md");
+                let source = PRESET_SKILLS
+                    .get_file(&skill_path)
+                    .and_then(|file| std::str::from_utf8(file.contents()).ok())
+                    .expect("preset SKILL.md");
+                parse_portable_skill(source, &skill_path.display().to_string())
+                    .expect("registered portable preset Skill");
+            }
         }
     }
 
@@ -164,18 +174,11 @@ mod tests {
         let catalog = load_agent_procedures().expect("Agent Procedure catalog");
         let entry_skill = include_str!("../../../../skills/myopenpanels/SKILL.md");
         assert_eq!(catalog.procedures.len(), 19);
-        assert_eq!(catalog.task_handoff_keys.len(), 9);
         for procedure in catalog.procedures {
             assert!(
                 entry_skill.contains(&format!("`{}`", procedure.registration.key)),
                 "Entry Skill is missing {}",
                 procedure.registration.key
-            );
-        }
-        for handoff_key in catalog.task_handoff_keys {
-            assert!(
-                entry_skill.contains(&format!("`{handoff_key}`")),
-                "Entry Skill is missing {handoff_key}"
             );
         }
     }

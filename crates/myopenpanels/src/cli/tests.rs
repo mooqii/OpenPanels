@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::Mutex;
 use std::thread;
@@ -71,7 +71,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
             stderr,
         );
     }
-    let legacy_error = json!({
+    let error_data = json!({
         "code": envelope["error"]["subtype"],
         "error": envelope["error"]["message"],
         "retryable": envelope["error"]["retryable"],
@@ -81,7 +81,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
         code,
         format!(
             "{}\n",
-            serde_json::to_string_pretty(&legacy_error).expect("error")
+            serde_json::to_string_pretty(&error_data).expect("error")
         ),
         String::new(),
     )
@@ -270,6 +270,7 @@ fn tiny_png() -> Vec<u8> {
         .expect("tiny png")
 }
 
+include!("tests/procedure_contract_assertions.rs");
 include!("tests/bootstrap_and_parsing.rs");
 include!("tests/bootstrap_procedure_blockers.rs");
 include!("tests/task_routing.rs");

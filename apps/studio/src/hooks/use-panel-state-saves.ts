@@ -4,6 +4,7 @@ import {
   type SetStateAction,
   useCallback,
 } from "react"
+import { replaceAppPanelState } from "../lib/api"
 import type {
   AppState,
   ProjectTask,
@@ -27,9 +28,8 @@ export function usePanelStateSaves({
           panels: current.panels.map((snapshot) =>
             snapshot.panel.kind === "typesetting"
               ? {
-                  ...snapshot,
+                  ...replaceAppPanelState(snapshot, savedState),
                   revision: savedRevision,
-                  state: savedState,
                 }
               : snapshot
           ),
@@ -68,9 +68,8 @@ export function usePanelStateSaves({
           panels: current.panels.map((snapshot) =>
             snapshot.panel.kind === "publishing"
               ? {
-                  ...snapshot,
+                  ...replaceAppPanelState(snapshot, savedState),
                   revision: savedRevision,
-                  state: savedState,
                 }
               : snapshot
           ),

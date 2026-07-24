@@ -1,24 +1,27 @@
 ---
 name: writing-distillation-default
-description: 从一组文章中归纳可复用的写作风格、结构与表达技巧，并生成独立、可移植的 Writing Skill。
+description: Distill reusable writing decisions from a set of examples into one portable Writing Skill.
 ---
 
-Create one reusable Writing Skill from all provided source documents.
+Create one reusable Writing Skill from the complete set of supplied examples.
 
-1. Read every provided source together rather than treating one example as the
-   whole style.
-2. Analyze the sources together. Extract repeatable guidance about audience,
-   voice, tone, structure, pacing, paragraph and sentence patterns, rhetorical
-   techniques, formatting, and quality checks.
-3. Exclude source-specific subjects, facts, names, quotations, claims, and
-   personal details. Convert useful examples into abstract patterns rather than
-   copying distinctive passages.
-4. Produce one self-contained `SKILL.md` with standard `name` and `description`
-   frontmatter and a non-empty instructional body.
-5. Give the Skill concise, actionable authoring rules. Do not reference the
-   source documents, a host application, storage locations, or execution tools.
-6. Keep the finished Skill focused on creating content. Leave file placement,
-   registration, lifecycle, and delivery to the environment using it.
+1. Read all examples before drawing conclusions. Separate recurring decisions
+   from one-off choices.
+2. Infer actionable patterns for audience, purpose, voice, tone, structure,
+   pacing, paragraph and sentence shape, rhetoric, formatting, openings,
+   endings, and quality control.
+3. Prefer patterns supported by multiple examples. Include a variable pattern
+   only when its trigger or selection rule is clear.
+4. Remove source-specific topics, facts, names, claims, quotations, personal
+   details, and distinctive phrases. Generalize useful examples rather than
+   copying them.
+5. Resolve tensions by stating when each approach applies instead of flattening
+   the sources into vague advice.
+6. Produce one self-contained `SKILL.md` with exactly `name` and `description`
+   frontmatter plus concise, imperative instructions.
+7. Keep the result portable and focused on authoring. Do not mention the source
+   set, host applications, storage, registration, lifecycle, or execution
+   tools.
 
 The finished Skill should reproduce the sources' reusable writing method, not
 their subject matter.

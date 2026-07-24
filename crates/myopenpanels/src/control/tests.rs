@@ -262,7 +262,7 @@ mod tests {
         })));
         assert!(incomplete.is_err());
 
-        let legacy = resolve_writing_state(Some(json!({
+        let retired = resolve_writing_state(Some(json!({
             "createDraft": "Create this",
             "draft": "",
             "mode": "refine",
@@ -272,17 +272,8 @@ mod tests {
             "selectedCreateWritingSkillIds": ["writing-default"],
             "selectedRevisionWritingSkillId": "writing-default",
             "selectedRefinementSkillId": "writing-refinement-default"
-        })))
-        .expect("legacy refinement state");
-        assert!(legacy.changed);
-        assert_eq!(legacy.state["mode"], json!("distill"));
-        assert_eq!(legacy.state["distillationName"], json!("House style"));
-        assert_eq!(
-            legacy.state["selectedDistillationSkillId"],
-            json!("writing-distillation-default")
-        );
-        assert!(legacy.state.get("refinementName").is_none());
-        assert!(legacy.state.get("selectedRefinementSkillId").is_none());
+        })));
+        assert!(retired.is_err());
     }
 
     #[test]

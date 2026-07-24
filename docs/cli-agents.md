@@ -14,12 +14,14 @@ separate.
 
 Before panel work with a clear intent, run `agent bootstrap --procedure <key>
 --format json`. It provides visible focus, the non-activating target, Procedure
-readiness, relevant context, required Skill and reference reads, and only the
+readiness, relevant context, embedded System Skill and reference bodies,
+selection materialization, target versions, execution contract, and only the
 registered command descriptions needed for that Procedure. Use generic `agent
 bootstrap --format json` only when intent is ambiguous or no supported Procedure
-key is known. Execute `actions.required` sequentially, then choose
-`actions.suggested` by their structured conditions. Do not reuse an earlier
-Bootstrap result.
+key is known. An unknown exact key returns generic data with
+`procedureFallback` in the same response. Execute `actions.required`
+sequentially, then choose `actions.suggested` by their structured conditions.
+Do not reuse an earlier Bootstrap result.
 
 Use `agent catalog` for the domain index and `agent catalog --domain <domain>`
 for complete command definitions after generic discovery. Procedure Bootstrap
@@ -35,9 +37,9 @@ workspace paths, identifiers, and work-command parameters so both Agent Message
 and automatic Agent CLI execution can submit one complete instruction set to
 the model. Do not perform separate Catalog or Skill discovery and do not use
 low-level Task lifecycle commands. Write only the declared workspace artifacts;
-the Runtime creates Operations, stages content, and completes the Task. The
-automatic Agent CLI uses the same Bundle, TaskOutputPlan, and Finalizer; only
-its Bridge-managed Delivery Contract differs.
+the Runtime stages content and completes the Task. The automatic Agent CLI uses
+the same Bundle, TaskOutputPlan, and Finalizer; only its Bridge-managed Delivery
+Contract differs.
 
 Automatic Agent CLI workers advertise only capabilities owned by the static Task
 Handler Registry. Unregistered queue/type/capability tuples are not routed and

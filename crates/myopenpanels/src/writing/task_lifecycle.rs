@@ -6,18 +6,6 @@ pub fn panel_selection(
     writing_selection_value(paths, bootstrap)
 }
 
-pub fn claim_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let mut payload = read_writing_task(paths, task_id)?;
-    let attempt = payload["task"]["attempt"].as_i64().unwrap_or(0) + 1;
-    payload["task"]["status"] = json!("running");
-    payload["task"]["attempt"] = json!(attempt);
-    Ok(payload)
-}
-
-pub fn heartbeat_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    read_writing_task(paths, task_id)
-}
-
 pub fn complete_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
     let payload = read_writing_task(paths, task_id)?;
     if payload["task"]["type"].as_str() == Some("distill_writing_skill")
@@ -33,43 +21,13 @@ pub fn complete_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, 
             "Install the distilled custom Writing Skill before completing its Task.",
         ));
     }
-    if payload["task"]["type"].as_str() == Some("write_my_document") {
-        let operations = task_operations(paths, task_id)?;
-        if operations
-            .iter()
-            .any(|operation| operation.get("status").and_then(Value::as_str) == Some("active"))
-        {
-            return Err(CliError::with_code(
-                "writing_operation_active",
-                "Complete the Writing My Document Operation before completing its Task.",
-            ));
-        }
-        let completed = operations.iter().rev().find(|operation| {
-            matches!(
-                operation.get("status").and_then(Value::as_str),
-                Some("prepared" | "completed")
-            ) && operation
-                .pointer("/target/documentId")
-                .and_then(Value::as_str)
-                .is_some_and(|document_id| {
-                    operation.get("status").and_then(Value::as_str) == Some("prepared")
-                        || crate::wiki::read_my_document(paths, document_id).is_ok()
-                })
-        });
-        if completed.is_none() {
-            return Err(CliError::with_code(
-                "invalid_output",
-                "Writing Task completed without a successful My Document Operation and target document.",
-            ));
-        }
-    }
     Ok(payload)
 }
 
 pub(crate) fn prepare_task_completion(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
-) -> Result<Option<(String, Value)>, CliError> {
+) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
     let payload = complete_task(paths, task_id)?;
     if payload["task"]["type"].as_str() != Some("write_my_document") {
         return Ok(None);
@@ -105,8 +63,8 @@ pub(crate) fn prepare_task_completion(
             )
         })?;
     let storage = Storage::open(paths)?;
-    let mut state = storage
-        .read_panel_state(project_id, wiki_panel_id)?
+    let (mut state, base_revision) = storage
+        .read_panel_state_snapshot(project_id, wiki_panel_id)?
         .ok_or_else(|| CliError::with_code("target_not_found", "Wiki state not found."))?;
     let document = state
         .get_mut("myDocuments")
@@ -143,6 +101,28 @@ pub(crate) fn prepare_task_completion(
     } else {
         "text/markdown"
     };
+    let expected_version = payload["task"]
+        .pointer("/input/targetContentVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if base_version != expected_version {
+        return Err(CliError::with_code(
+            "invalid_output",
+            "Staged My Document does not match the Task target version.",
+        ));
+    }
+    if payload["task"].pointer("/input/mode").and_then(Value::as_str) == Some("create")
+        && current_version == 0
+    {
+        if let Some(title) = metadata
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            document["title"] = json!(title);
+        }
+    }
     document["contentRef"] = json!(logical_path);
     document["contentVersion"] = json!(current_version + 1);
     document["format"] = json!(format);
@@ -155,90 +135,50 @@ pub(crate) fn prepare_task_completion(
         .chars()
         .filter(|character| !character.is_whitespace())
         .count());
-    document["writeOperation"] = json!({ "status": "completed", "error": null });
+    document
+        .as_object_mut()
+        .map(|object| object.remove("writeOperation"));
     document["updatedAt"] = json!(now_iso());
-    Ok(Some((wiki_panel_id.to_owned(), state)))
+    Ok(Some(crate::tasks::PreparedPanelState::new(
+        wiki_panel_id,
+        base_revision,
+        state,
+    )))
 }
 
-pub fn fail_task(
+pub(crate) fn prepare_task_cancellation(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
-    message: &str,
-) -> Result<Value, CliError> {
+) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
     let payload = read_writing_task(paths, task_id)?;
-    finish_task_operations(paths, task_id, "failed", message)?;
-    remove_uncommitted_project_skill(paths, &payload["task"])?;
-    Ok(payload)
-}
-
-pub fn release_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let payload = read_writing_task(paths, task_id)?;
-    finish_task_operations(paths, task_id, "cancelled", "Writing task released.")?;
-    remove_uncommitted_project_skill(paths, &payload["task"])?;
-    Ok(payload)
-}
-
-pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let payload = read_writing_task(paths, task_id)?;
-    finish_task_operations(paths, task_id, "cancelled", "Writing task retried.")?;
-    remove_uncommitted_project_skill(paths, &payload["task"])?;
-    Ok(payload)
-}
-
-pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let payload = read_writing_task(paths, task_id)?;
-    finish_task_operations(paths, task_id, "cancelled", "Writing task cancelled.")?;
     let task = &payload["task"];
-    if task.get("type").and_then(Value::as_str) == Some("write_my_document")
-        && task.pointer("/input/mode").and_then(Value::as_str) == Some("create")
+    if task.get("type").and_then(Value::as_str) != Some("write_my_document")
+        || task.pointer("/input/mode").and_then(Value::as_str) != Some("create")
     {
-        if let (Some(project_id), Some(panel_id), Some(document_id)) = (
-            task.get("projectId").and_then(Value::as_str),
-            task.pointer("/source/wikiPanelId").and_then(Value::as_str),
-            task.pointer("/input/targetMyDocumentId")
-                .and_then(Value::as_str),
-        ) {
-            crate::wiki::remove_pending_writing_document(paths, project_id, panel_id, document_id)?;
-        }
+        return Ok(None);
     }
-    remove_uncommitted_project_skill(paths, &payload["task"])?;
-    Ok(payload)
+    let (Some(project_id), Some(panel_id), Some(document_id)) = (
+        task.get("projectId").and_then(Value::as_str),
+        task.pointer("/source/wikiPanelId").and_then(Value::as_str),
+        task.pointer("/input/targetMyDocumentId")
+            .and_then(Value::as_str),
+    ) else {
+        return Ok(None);
+    };
+    crate::wiki::prepare_pending_writing_document_removal(
+        paths,
+        project_id,
+        panel_id,
+        document_id,
+    )
 }
 
-fn active_task_operations<'a>(
-    paths: &MyOpenPanelsPaths,
-    task_id: &'a str,
-) -> Result<impl Iterator<Item = Value> + 'a, CliError> {
-    Ok(task_operations(paths, task_id)?
-        .into_iter()
-        .filter(|operation| operation.get("status").and_then(Value::as_str) == Some("active")))
-}
-
-fn task_operations(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Vec<Value>, CliError> {
-    Ok(Storage::open(paths)?
-        .list_agent_operations(None, None)?
-        .into_iter()
-        .filter(|operation| {
-            operation
-                .pointer("/target/writingTaskId")
-                .and_then(Value::as_str)
-                == Some(task_id)
-        })
-        .collect())
-}
-
-fn finish_task_operations(
+pub(crate) fn cleanup_uncommitted_writing_skill(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
-    status: &str,
-    message: &str,
 ) -> Result<(), CliError> {
-    for operation in active_task_operations(paths, task_id)? {
-        if let Some(operation_id) = operation.get("id").and_then(Value::as_str) {
-            crate::operations::finish_any(paths, operation_id, status, Some(message))?;
-        }
-    }
-    Ok(())
+    let payload = read_writing_task(paths, task_id)?;
+    remove_uncommitted_project_skill(paths, &payload["task"])
 }
 
 fn remove_uncommitted_project_skill(

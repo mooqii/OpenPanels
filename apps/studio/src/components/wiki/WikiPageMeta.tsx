@@ -34,7 +34,7 @@ export function WikiPageMeta({
         }
       })
       .catch(() => {
-        // The page timestamp remains useful if legacy content is unavailable.
+        // The page timestamp remains useful if page content is unavailable.
       })
 
     return () => {

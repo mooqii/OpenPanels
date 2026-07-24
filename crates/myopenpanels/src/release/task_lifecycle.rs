@@ -13,32 +13,10 @@ fn read_publishing_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Valu
     Ok(payload)
 }
 
-// Publishing business phases are checkpoint-driven; the generic Task runtime owns lease status.
-pub fn claim_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    let mut payload = read_publishing_task(paths, task_id)?;
-    let attempt = payload["task"]["attempt"].as_i64().unwrap_or(0) + 1;
-    payload["task"]["status"] = json!("running");
-    payload["task"]["attempt"] = json!(attempt);
-    Ok(payload)
-}
-
-pub fn heartbeat_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    read_publishing_task(paths, task_id)
-}
-
-pub fn fail_task(
+pub(crate) fn prepare_task_cancellation(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
-    _message: &str,
-) -> Result<Value, CliError> {
-    read_publishing_task(paths, task_id)
-}
-
-pub fn release_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
-    read_publishing_task(paths, task_id)
-}
-
-pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, CliError> {
+) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
     let payload = read_publishing_task(paths, task_id)?;
     let task = &payload["task"];
     let project_id = task
@@ -54,11 +32,12 @@ pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cl
         .and_then(Value::as_str)
         .unwrap_or_default();
     let storage = Storage::open(paths)?;
-    let mut state = normalize_state(
-        storage
-            .read_panel_state(project_id, panel_id)?
-            .unwrap_or_else(empty_state),
-    );
+    let (state, base_revision) = storage
+        .read_panel_state_snapshot(project_id, panel_id)?
+        .ok_or_else(|| {
+            CliError::with_code("target_not_found", "Publishing state not found.")
+        })?;
+    let mut state = normalize_state(state);
     let now = now_iso();
     let changed = {
         let attempt = find_attempt_mut(&mut state, attempt_id)?;
@@ -74,14 +53,13 @@ pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cl
             true
         }
     };
-    let revision = if changed {
-        storage.write_panel_state(project_id, panel_id, &state)?
+    if changed {
+        Ok(Some(crate::tasks::PreparedPanelState::new(
+            panel_id,
+            base_revision,
+            state,
+        )))
     } else {
-        storage.read_panel_state_revision(project_id, panel_id)?
-    };
-    Ok(json!({
-        "task": task,
-        "state": state,
-        "revision": revision,
-    }))
+        Ok(None)
+    }
 }

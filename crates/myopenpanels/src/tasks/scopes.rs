@@ -392,6 +392,6 @@ fn scope_task_terminal(task: &Value) -> bool {
     task.get("archivedAt").is_some_and(|value| !value.is_null())
         || matches!(
             task.get("status").and_then(Value::as_str),
-            Some("succeeded" | "cancelled" | "stale" | "superseded" | "archived")
+            Some("succeeded" | "cancelled" | "superseded")
         )
 }

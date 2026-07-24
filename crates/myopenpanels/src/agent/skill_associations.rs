@@ -49,7 +49,7 @@ pub fn install_device_skill(
         vec![module_kind.to_owned()],
         &source_dir,
     )?;
-    atomic_copy_device_skill(&source_dir, &final_dir, &manifest)?;
+    atomic_install_skill_package(&source_dir, &final_dir, &manifest)?;
     managed_skills(paths)
 }
 
@@ -76,6 +76,41 @@ pub fn remove_skill_module(
     Ok(json!({ "deletedSkill": false, "skillId": skill_id, "moduleKind": module_kind }))
 }
 
+pub fn set_skill_modules(
+    paths: &MyOpenPanelsPaths,
+    skill_id: &str,
+    module_kinds: &[String],
+) -> Result<Value, CliError> {
+    let listing = managed_skill_listing(paths, skill_id)?;
+    if managed_skill_kind(&listing)? != "custom" {
+        return Err(CliError::with_code(
+            "skill_read_only",
+            "System and preset Skill associations cannot be changed.",
+        ));
+    }
+    if module_kinds.is_empty() {
+        return Err(CliError::with_code(
+            "skill_module_required",
+            "Choose at least one Skill module.",
+        ));
+    }
+    let mut next = Vec::new();
+    for module_kind in module_kinds {
+        validate_custom_module(module_kind)?;
+        if !next.iter().any(|value| value == module_kind) {
+            next.push(module_kind.to_owned());
+        }
+    }
+    let previous = custom_skill_modules(&listing)?;
+    write_custom_manifest(&listing, next.clone())?;
+    for module_kind in previous {
+        if !next.iter().any(|value| value == &module_kind) {
+            clear_removed_skill_module_selections(paths, skill_id, &module_kind)?;
+        }
+    }
+    Ok(json!({ "skillId": skill_id, "moduleKinds": next }))
+}
+
 pub fn replace_skill_source(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,
@@ -94,7 +129,7 @@ pub fn replace_skill_source(
     let manifest: Value = serde_json::from_slice(&fs::read(PathBuf::from(&listing.local_dir).join("manifest.json")).map_err(to_cli_error)?).map_err(to_cli_error)?;
     let mut manifest = manifest_with_device_provenance(manifest, &source_dir)?;
     manifest["updatedAt"] = json!(crate::control::now_iso());
-    atomic_replace_device_skill(&source_dir, Path::new(&listing.local_dir), &manifest)?;
+    atomic_replace_skill_package(&source_dir, Path::new(&listing.local_dir), &manifest)?;
     clear_ignored_device_mismatches(paths, &listing.skill.name)?;
     managed_skills(paths)
 }
@@ -162,10 +197,7 @@ fn custom_skill_modules(listing: &AgentSkillListing) -> Result<Vec<String>, CliE
         return Ok(modules
             .iter()
             .filter_map(Value::as_str)
-            .map(|module| match module {
-                "writing-refinement" => "writing-distillation".to_owned(),
-                _ => module.to_owned(),
-            })
+            .map(str::to_owned)
             .collect());
     }
     Ok(managed_skill_module_kinds(listing))
@@ -185,7 +217,14 @@ fn write_custom_manifest(listing: &AgentSkillListing, modules: Vec<String>) -> R
     let path = PathBuf::from(&listing.local_dir).join("manifest.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&path).map_err(to_cli_error)?).map_err(to_cli_error)?;
     manifest["binding"] = json!({ "moduleKinds": modules });
-    fs::write(path, format!("{}\n", serde_json::to_string_pretty(&manifest).map_err(to_cli_error)?)).map_err(to_cli_error)
+    atomic_write_skill_file(
+        &path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&manifest).map_err(to_cli_error)?
+        )
+        .as_bytes(),
+    )
 }
 
 fn custom_manifest(
@@ -205,7 +244,11 @@ fn custom_manifest(
     manifest_with_device_provenance(manifest, source_dir)
 }
 
-fn atomic_copy_device_skill(source: &Path, target: &Path, manifest: &Value) -> Result<(), CliError> {
+fn atomic_install_skill_package(
+    source: &Path,
+    target: &Path,
+    manifest: &Value,
+) -> Result<(), CliError> {
     let parent = target.parent().ok_or_else(|| CliError::new("Invalid Skill target path."))?;
     fs::create_dir_all(parent).map_err(to_cli_error)?;
     let staging = parent.join(format!(".skill-import-{}", crate::ids::random_base64url_96()));
@@ -224,10 +267,14 @@ fn atomic_copy_device_skill(source: &Path, target: &Path, manifest: &Value) -> R
     result
 }
 
-fn atomic_replace_device_skill(source: &Path, target: &Path, manifest: &Value) -> Result<(), CliError> {
+fn atomic_replace_skill_package(
+    source: &Path,
+    target: &Path,
+    manifest: &Value,
+) -> Result<(), CliError> {
     let parent = target.parent().ok_or_else(|| CliError::new("Invalid Skill target path."))?;
     let replacement = parent.join(format!(".skill-replace-{}", crate::ids::random_base64url_96()));
-    atomic_copy_device_skill(source, &replacement, manifest)?;
+    atomic_install_skill_package(source, &replacement, manifest)?;
     let backup = parent.join(format!(".skill-backup-{}", crate::ids::random_base64url_96()));
     fs::rename(target, &backup).map_err(to_cli_error)?;
     if let Err(error) = fs::rename(&replacement, target) {
@@ -244,7 +291,7 @@ fn clear_removed_skill_module_selections(paths: &MyOpenPanelsPaths, skill_id: &s
         "writing-distillation" => {
             clear_writing_skill_module_selections(paths, skill_id, false, true)?;
         }
-        "publishing" => clear_publishing_skill_selections(paths, skill_id)?,
+        "release" => clear_publishing_skill_selections(paths, skill_id)?,
         _ => {}
     }
     Ok(())

@@ -80,63 +80,6 @@ struct WritingRequestBody {
     writing_skill_ids: Vec<String>,
 }
 
-async fn api_writing_skills(State(state): State<Arc<AppState>>) -> Response {
-    match (
-        crate::agent::list_writing_agent_skills(&state.paths),
-        crate::agent::list_writing_distillation_agent_skills(&state.paths),
-    ) {
-        (Ok(skills), Ok(distillation_skills)) => json_response(
-            StatusCode::OK,
-            &json!({ "skills": skills, "distillationSkills": distillation_skills }),
-        ),
-        (Err(error), _) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
-        (_, Err(error)) => json_error(StatusCode::INTERNAL_SERVER_ERROR, error.message()),
-    }
-}
-
-async fn api_writing_skill_files(
-    State(state): State<Arc<AppState>>,
-    Path(skill_id): Path<String>,
-) -> Response {
-    match crate::writing::read_skill_files(&state.paths, &skill_id) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WritingSkillFileBody {
-    path: String,
-    content: String,
-}
-
-async fn api_write_writing_skill_file(
-    State(state): State<Arc<AppState>>,
-    Path(skill_id): Path<String>,
-    Json(body): Json<WritingSkillFileBody>,
-) -> Response {
-    match crate::writing::write_custom_skill_file(
-        &state.paths,
-        &skill_id,
-        &body.path,
-        &body.content,
-    ) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
-async fn api_delete_writing_skill(
-    State(state): State<Arc<AppState>>,
-    Path(skill_id): Path<String>,
-) -> Response {
-    match crate::writing::delete_custom_skill(&state.paths, &skill_id) {
-        Ok(payload) => json_response(StatusCode::OK, &payload),
-        Err(error) => json_error(status_for_cli_error(&error), error.message()),
-    }
-}
-
 async fn api_writing_create_request(
     State(state): State<Arc<AppState>>,
     Json(body): Json<WritingRequestBody>,

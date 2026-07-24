@@ -1,4 +1,5 @@
 include!("storage/projects_panels.rs");
+include!("storage/direct_operations.rs");
 include!("storage/domain_state.rs");
 include!("storage/domain_projection.rs");
 include!("storage/domain_resources.rs");

@@ -6,7 +6,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const DATABASE_FILE_NAME: &str = "main.sqlite3";
 
@@ -82,6 +83,7 @@ impl Storage {
     pub fn open(paths: &MyOpenPanelsPaths) -> Result<Self, CliError> {
         fs::create_dir_all(&paths.storage_dir).map_err(to_cli_error)?;
         let database_path = paths.storage_dir.join(DATABASE_FILE_NAME);
+        archive_legacy_storage_if_needed(paths, &database_path)?;
         let mut connection = Connection::open(&database_path).map_err(to_cli_error)?;
         connection
             .execute_batch(
@@ -236,6 +238,22 @@ impl Storage {
         read_composed_panel_state(&self.connection, project_id, panel_id)
     }
 
+    pub(crate) fn read_panel_state_snapshot(
+        &self,
+        project_id: &str,
+        panel_id: &str,
+    ) -> Result<Option<(Value, i64)>, CliError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
+            .map_err(to_cli_error)?;
+        let state = read_composed_panel_state(&tx, project_id, panel_id)?;
+        let revision = state
+            .as_ref()
+            .map(|_| panel_state_revision(&tx, project_id, panel_id))
+            .transpose()?;
+        tx.commit().map_err(to_cli_error)?;
+        Ok(state.zip(revision))
+    }
+
     pub fn write_panel_state(
         &self,
         project_id: &str,
@@ -285,130 +303,25 @@ impl Storage {
         write_decomposed_panel_state(tx, project_id, panel_id, state)
     }
 
-    pub fn write_agent_operation(&self, operation: &Value) -> Result<(), CliError> {
-        let required = |name: &str| -> Result<&str, CliError> {
-            operation
-                .get(name)
-                .and_then(Value::as_str)
-                .ok_or_else(|| CliError::new(format!("Agent operation is missing {name}")))
-        };
-        for name in [
-            "id",
-            "ownerContextId",
-            "intent",
-            "status",
-            "projectId",
-            "panelId",
-            "createdAt",
-            "updatedAt",
-        ] {
-            required(name)?;
+    pub(crate) fn write_panel_state_if_revision_in_transaction(
+        tx: &Transaction<'_>,
+        project_id: &str,
+        panel_id: &str,
+        base_revision: i64,
+        state: &Value,
+    ) -> Result<i64, CliError> {
+        let current_revision = panel_state_revision(tx, project_id, panel_id)?;
+        if current_revision != base_revision {
+            return Err(CliError::with_code(
+                "content_conflict",
+                format!(
+                    "Panel state changed from revision {base_revision} to {current_revision} before Task finalization."
+                ),
+            ));
         }
-        let operation_dir = self
-            .root_dir
-            .join("operation-records");
-        fs::create_dir_all(&operation_dir).map_err(to_cli_error)?;
-        let file_name = format!("{}.json", sanitize_path_part(required("id")?));
-        let path = operation_dir.join(&file_name);
-        let temporary = operation_dir.join(format!("{file_name}.tmp"));
-        fs::write(
-            &temporary,
-            serde_json::to_vec_pretty(operation).map_err(to_cli_error)?,
-        )
-        .map_err(to_cli_error)?;
-        fs::rename(temporary, path).map_err(to_cli_error)
+        Self::write_panel_state_in_transaction(tx, project_id, panel_id, state)
     }
 
-    pub fn read_agent_operation(&self, operation_id: &str) -> Result<Option<Value>, CliError> {
-        let path = self
-            .root_dir
-            .join("operation-records")
-            .join(format!("{}.json", sanitize_path_part(operation_id)));
-        match fs::read(path) {
-            Ok(raw) => serde_json::from_slice(&raw).map(Some).map_err(to_cli_error),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(to_cli_error(error)),
-        }
-    }
-
-    pub fn list_agent_operations(
-        &self,
-        owner_context_id: Option<&str>,
-        status: Option<&str>,
-    ) -> Result<Vec<Value>, CliError> {
-        let root = self.root_dir.join("operation-records");
-        let entries = match fs::read_dir(root) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(to_cli_error(error)),
-        };
-        let mut operations = Vec::new();
-        for entry in entries {
-            let path = entry.map_err(to_cli_error)?.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-            let raw = match fs::read(path) {
-                Ok(raw) => raw,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(to_cli_error(error)),
-            };
-            let operation: Value = serde_json::from_slice(&raw).map_err(to_cli_error)?;
-            if owner_context_id.is_some_and(|owner| {
-                operation.get("ownerContextId").and_then(Value::as_str) != Some(owner)
-            }) || status.is_some_and(|expected| {
-                operation.get("status").and_then(Value::as_str) != Some(expected)
-            }) {
-                continue;
-            }
-            operations.push(operation);
-        }
-        operations.sort_by(|left, right| {
-            right
-                .get("updatedAt")
-                .and_then(Value::as_str)
-                .cmp(&left.get("updatedAt").and_then(Value::as_str))
-                .then_with(|| {
-                    left.get("id")
-                        .and_then(Value::as_str)
-                        .cmp(&right.get("id").and_then(Value::as_str))
-                })
-        });
-        Ok(operations)
-    }
-
-    pub(crate) fn list_terminal_agent_operation_ids_before(
-        &self,
-        completed_before: &str,
-    ) -> Result<Vec<String>, CliError> {
-        let mut operations = self
-            .list_agent_operations(None, None)?
-            .into_iter()
-            .filter(|operation| {
-                matches!(
-                    operation.get("status").and_then(Value::as_str),
-                    Some("completed" | "cancelled")
-                ) && operation
-                    .get("completedAt")
-                    .and_then(Value::as_str)
-                    .is_some_and(|completed_at| completed_at <= completed_before)
-            })
-            .collect::<Vec<_>>();
-        operations.sort_by(|left, right| {
-            left.get("completedAt")
-                .and_then(Value::as_str)
-                .cmp(&right.get("completedAt").and_then(Value::as_str))
-                .then_with(|| {
-                    left.get("id")
-                        .and_then(Value::as_str)
-                        .cmp(&right.get("id").and_then(Value::as_str))
-                })
-        });
-        Ok(operations
-            .into_iter()
-            .filter_map(|operation| operation.get("id").and_then(Value::as_str).map(str::to_owned))
-            .collect())
-    }
 }
 
 fn panel_position(kind: PanelKind) -> i64 {

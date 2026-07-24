@@ -447,7 +447,6 @@ fn handoff_command_intent(command: &[String]) -> Option<&'static str> {
         [domain, resource, action, ..] if domain == "wiki" && resource == "page" && action == "read" => Some("wiki.page.read"),
         [domain, resource, action, ..] if domain == "wiki" && resource == "page" && action == "create" => Some("wiki.page.create"),
         [domain, resource, action, ..] if domain == "wiki" && resource == "page" && action == "update" => Some("wiki.page.update"),
-        [domain, action, ..] if domain == "writing" && action == "write" => Some("writing.write"),
         [domain, resource, action, ..] if domain == "writing" && resource == "skill" && action == "install" => Some("writing.skill.install"),
         [domain, action, ..] if domain == "release" && action == "checkpoint" => Some("release.checkpoint"),
         [domain, action, ..] if domain == "operation" && action == "complete" => Some("operation.complete"),

@@ -1,0 +1,4 @@
+interface:
+  display_name: "微信公众号发布"
+  short_description: "将准备好的内容保存到微信公众号草稿箱。"
+  default_prompt: "使用 $release-wechat-official-account 将准备好的文章保存到当前微信公众号草稿箱。"

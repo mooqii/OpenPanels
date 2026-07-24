@@ -70,22 +70,6 @@ pub struct ReadFileRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PrepareOperationRequest {
-    pub operation_id: String,
-    pub file_name: String,
-    pub content_base64: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BeginOperationRequest {
-    pub task_id: String,
-    pub title: String,
-    pub document_format: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct PrepareSkillRequest {
     pub skill_id: String,
     pub source: String,
@@ -188,7 +172,13 @@ pub(crate) struct PreparedTaskContent {
     pub(crate) commits: Vec<Value>,
     activations: Vec<PreparedActivation>,
     staging_root: Option<PathBuf>,
-    task_id: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedDirectContent {
+    pub(crate) commit: Value,
+    activation: PreparedActivation,
+    staging_root: PathBuf,
 }
 
 #[derive(Debug)]
@@ -400,65 +390,6 @@ pub fn read_file(
     }))
 }
 
-pub fn prepare_operation(
-    paths: &MyOpenPanelsPaths,
-    execution_token: &str,
-    request: &PrepareOperationRequest,
-) -> Result<Value, CliError> {
-    let context = authorize(paths, execution_token)?;
-    let storage = Storage::open(paths)?;
-    let mut operation = storage
-        .read_agent_operation(&request.operation_id)?
-        .ok_or_else(|| CliError::with_code("operation_not_found", "Writing Operation not found."))?;
-    if operation.pointer("/input/taskId").and_then(Value::as_str) != Some(&context.task_id) {
-        return Err(CliError::with_code("execution_fenced", "Operation belongs to another Task."));
-    }
-    let document_id = operation
-        .pointer("/target/documentId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| CliError::with_code("invalid_output", "Operation target is missing."))?;
-    let logical_path = if request.file_name.to_ascii_lowercase().ends_with(".txt") {
-        "content.txt"
-    } else {
-        "content.md"
-    };
-    let staged = stage_file_internal(
-        paths,
-        execution_token,
-        &StageFileRequest {
-            resource_kind: ResourceKind::MyDocument.as_str().to_owned(),
-            resource_key: document_id.to_owned(),
-            logical_path: logical_path.to_owned(),
-            content_base64: request.content_base64.clone(),
-            mime_type: mime_for_path(Path::new(logical_path)),
-            metadata: json!({ "operationId": request.operation_id, "replaceAll": true }),
-        },
-        true,
-    )?;
-    operation["status"] = json!("prepared");
-    operation["updatedAt"] = json!(now_iso());
-    operation["result"] = json!({ "contentHash": staged["contentHash"], "fileName": request.file_name });
-    storage.write_agent_operation(&operation)?;
-    Ok(json!({ "operation": operation, "staged": staged }))
-}
-
-pub fn begin_operation(
-    paths: &MyOpenPanelsPaths,
-    execution_token: &str,
-    request: &BeginOperationRequest,
-) -> Result<Value, CliError> {
-    let context = authorize(paths, execution_token)?;
-    if context.task_id != request.task_id || context.task_type != "write_my_document" {
-        return Err(CliError::with_code("execution_fenced", "Execution cannot begin this Operation."));
-    }
-    crate::operations::begin_writing_for_broker(
-        paths,
-        &request.task_id,
-        &request.title,
-        &request.document_format,
-    )
-}
-
 pub fn publishing_checkpoint(
     paths: &MyOpenPanelsPaths,
     execution_token: &str,
@@ -625,7 +556,6 @@ pub(crate) fn prepare_task_staging_in_transaction(
                 commits: Vec::new(),
                 activations: Vec::new(),
                 staging_root: None,
-                task_id: task_id.to_owned(),
             });
         }
         return Err(CliError::with_code("invalid_output", "Task completed without staged content."));
@@ -672,34 +602,104 @@ pub(crate) fn prepare_task_staging_in_transaction(
         commits,
         activations,
         staging_root: Some(root),
-        task_id: task_id.to_owned(),
     })
 }
 
 pub(crate) fn publish_prepared_task_content(
-    paths: &MyOpenPanelsPaths,
+    _paths: &MyOpenPanelsPaths,
     prepared: PreparedTaskContent,
 ) -> Result<(), CliError> {
     for activation in &prepared.activations {
         write_json_atomic(&activation.active_path, &activation.pointer)?;
     }
-    let operation_storage = Storage::open(paths)?;
-    for mut operation in operation_storage.list_agent_operations(None, Some("prepared"))? {
-        if operation.pointer("/input/taskId").and_then(Value::as_str)
-            != Some(prepared.task_id.as_str())
-        {
-            continue;
-        }
-        operation["status"] = json!("completed");
-        operation["updatedAt"] = json!(now_iso());
-        operation["completedAt"] = operation["updatedAt"].clone();
-        operation["result"]["committed"] = json!(true);
-        operation["result"]["contentCommits"] = json!(prepared.commits);
-        operation_storage.write_agent_operation(&operation)?;
-    }
     if let Some(root) = prepared.staging_root {
         let _ = fs::remove_dir_all(root);
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_direct_text_content(
+    paths: &MyOpenPanelsPaths,
+    operation_id: &str,
+    project_id: &str,
+    panel_id: &str,
+    kind: ResourceKind,
+    resource_key: &str,
+    logical_path: &str,
+    bytes: &[u8],
+    mime_type: &str,
+    base_content_version: u64,
+) -> Result<PreparedDirectContent, CliError> {
+    validate_logical_path(logical_path)?;
+    if bytes.len() > MAX_TEXT_FILE_BYTES || std::str::from_utf8(bytes).is_err() {
+        return Err(CliError::with_code(
+            "invalid_my_document",
+            "My Document content must be bounded UTF-8 text.",
+        ));
+    }
+    let current = read_active_pointer(paths, project_id, kind, resource_key)?;
+    let current_version = current.as_ref().map_or(0, |value| value.content_version);
+    if current_version != base_content_version as i64 {
+        return Err(CliError::with_code(
+            "content_conflict",
+            format!(
+                "Content changed from version {base_content_version} to {current_version}."
+            ),
+        ));
+    }
+    let staging_root = paths
+        .storage_dir
+        .join("operations")
+        .join(sanitize_path_part(operation_id))
+        .join("content-staging");
+    if staging_root.exists() {
+        fs::remove_dir_all(&staging_root).map_err(to_cli_error)?;
+    }
+    let destination = staging_root
+        .join("files")
+        .join(logical_path_buf(logical_path)?);
+    write_materialized_file(&destination, bytes)?;
+    let staged = StagedResource {
+        project_id: project_id.to_owned(),
+        panel_id: panel_id.to_owned(),
+        resource_kind: kind.as_str().to_owned(),
+        resource_key: resource_key.to_owned(),
+        base_revision_id: current.as_ref().map(|value| value.revision_id.clone()),
+        base_content_version: current_version,
+        metadata: json!({ "replaceAll": true }),
+    };
+    let (active_path, pointer) = prepare_staged_resource(
+        paths,
+        &staged,
+        &staging_root,
+        Some((logical_path, mime_type)),
+    )?;
+    let commit = json!({
+        "resourceKind": kind.as_str(),
+        "resourceKey": resource_key,
+        "revisionId": pointer.revision_id,
+        "contentVersion": pointer.content_version,
+        "manifestHash": pointer.manifest_hash,
+    });
+    Ok(PreparedDirectContent {
+        commit,
+        activation: PreparedActivation {
+            active_path,
+            pointer,
+        },
+        staging_root,
+    })
+}
+
+pub(crate) fn publish_prepared_direct_content(
+    prepared: PreparedDirectContent,
+) -> Result<(), CliError> {
+    write_json_atomic(
+        &prepared.activation.active_path,
+        &prepared.activation.pointer,
+    )?;
+    let _ = fs::remove_dir_all(prepared.staging_root);
     Ok(())
 }
 
@@ -709,7 +709,16 @@ pub fn recover_filesystem(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
         let mut statement = storage
             .connection()
             .prepare(
-                "SELECT project_id, result_json FROM tasks WHERE status = 'succeeded' AND result_json IS NOT NULL ORDER BY completed_at, id",
+                r#"
+                SELECT project_id, result_json, completed_at, id
+                FROM tasks
+                WHERE status = 'succeeded' AND result_json IS NOT NULL
+                UNION ALL
+                SELECT project_id, json_extract(operation_json, '$.result'), completed_at, id
+                FROM direct_operations
+                WHERE status = 'completed' AND json_type(operation_json, '$.result') = 'object'
+                ORDER BY completed_at, id
+                "#,
             )
             .map_err(to_cli_error)?;
         let rows = statement
@@ -777,6 +786,13 @@ pub fn recover_filesystem(paths: &MyOpenPanelsPaths) -> Result<(), CliError> {
         let content_dir = project_dir.join("content");
         let _ = fs::remove_dir_all(content_dir.join(".staging"));
         for kind_dir in read_dirs(&content_dir)? {
+            let kind_name = kind_dir
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if ResourceKind::parse(kind_name).is_err() {
+                continue;
+            }
             for resource in read_dirs(&kind_dir)? {
                 retain_active_revision_chain(&resource, &mut retained_revisions)?;
                 for revision in read_dirs(&resource)? {
@@ -1647,5 +1663,39 @@ mod filesystem_recovery_tests {
         );
         assert!(!orphan.exists());
         assert!(!abandoned_stage.exists());
+    }
+
+    #[test]
+    fn startup_recovery_preserves_asset_revisions() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project_dir = temp.path().join("project");
+        let storage_dir = temp.path().join("storage");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let paths = crate::paths::resolve_myopenpanels_paths(
+            Some(project_dir.to_str().unwrap()),
+            Some(storage_dir.to_str().unwrap()),
+            Some("asset-recovery"),
+        )
+        .expect("paths");
+        let bootstrap = ensure_project_bootstrap(&paths, BootstrapRequest::new())
+            .expect("bootstrap");
+        let panel = bootstrap.panels.first().expect("panel");
+        let storage = Storage::open(&paths).expect("storage");
+        let written = storage
+            .write_asset_from_buffer(
+                &bootstrap.project.id,
+                &panel.panel.id,
+                "cover.png",
+                b"cover bytes",
+                false,
+            )
+            .expect("asset");
+
+        recover_filesystem(&paths).expect("recovery");
+
+        assert_eq!(
+            storage.read_asset(&written.asset_ref).expect("asset bytes"),
+            b"cover bytes"
+        );
     }
 }

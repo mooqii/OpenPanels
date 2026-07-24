@@ -7,20 +7,15 @@ import {
   Folder,
   FolderOpen,
   LoaderCircle,
-  Minus,
   Pencil,
-  Plus,
   Trash2,
   X,
 } from "lucide-react"
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
-import {
-  clampImageScale,
-  formatBytes,
-  originalPreviewKind,
-} from "../../lib/api"
+import { formatBytes, originalPreviewKind } from "../../lib/api"
 import type { WikiOriginalPreviewDocument } from "../../types"
+import { ImagePreviewDialog } from "../ImagePreviewDialog"
 
 export interface SkillTextFile {
   content: string
@@ -622,93 +617,6 @@ export function MarkdownDialog({
   )
 }
 
-function ImagePreviewDialog({
-  closeLabel,
-  document,
-  onClose,
-  previewUrl,
-}: {
-  closeLabel: string
-  document: WikiOriginalPreviewDocument
-  onClose: () => void
-  previewUrl: string
-}) {
-  const { t } = useMyOpenPanelsI18n()
-  const [imageScale, setImageScale] = useState(1)
-  const zoomPercentage = Math.round(imageScale * 100)
-
-  return (
-    <Modal.Backdrop
-      className="op-image-preview"
-      isOpen
-      onOpenChange={(isOpen) => {
-        if (!isOpen) onClose()
-      }}
-      variant="opaque"
-    >
-      <Modal.Container size="full">
-        <Modal.Dialog className="op-image-preview__dialog">
-          <div
-            className="op-image-preview__stage"
-            onClick={(event) => {
-              if (event.target === event.currentTarget) onClose()
-            }}
-            onWheel={(event) => {
-              event.preventDefault()
-              setImageScale((current) =>
-                clampImageScale(current + (event.deltaY < 0 ? 0.12 : -0.12))
-              )
-            }}
-          >
-            <img
-              alt={document.title}
-              src={previewUrl}
-              style={{ transform: `scale(${imageScale})` }}
-            />
-          </div>
-          <Button
-            aria-label={closeLabel}
-            className="op-image-preview__close"
-            isIconOnly
-            onPress={onClose}
-            size="md"
-            variant="ghost"
-          >
-            <X size={21} />
-          </Button>
-          <div className="op-image-preview__controls">
-            <Button
-              aria-label={t`Zoom out`}
-              isIconOnly
-              onPress={() =>
-                setImageScale((current) => clampImageScale(current - 0.2))
-              }
-              size="sm"
-              variant="ghost"
-            >
-              <Minus size={15} />
-            </Button>
-            <span className="op-image-preview__zoom-value">
-              {zoomPercentage}%
-            </span>
-            <Button
-              aria-label={t`Zoom in`}
-              isIconOnly
-              onPress={() =>
-                setImageScale((current) => clampImageScale(current + 0.2))
-              }
-              size="sm"
-              variant="ghost"
-            >
-              <Plus size={15} />
-            </Button>
-          </div>
-        </Modal.Dialog>
-      </Modal.Container>
-    </Modal.Backdrop>
-  )
-}
-
 function OriginalTextPreview({
   previewUrl,
   title,
@@ -790,10 +698,10 @@ export function OriginalPreviewDialog({
   if (kind === "image") {
     return (
       <ImagePreviewDialog
+        alt={document.title}
         closeLabel={closeLabel}
-        document={document}
         onClose={onClose}
-        previewUrl={previewUrl}
+        src={previewUrl}
       />
     )
   }

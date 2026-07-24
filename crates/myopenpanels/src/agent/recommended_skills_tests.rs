@@ -73,11 +73,20 @@ mod recommended_skills_tests {
     }
 
     #[test]
-    fn empty_embedded_recommended_catalog_lists_without_network_access() {
+    fn embedded_recommended_catalog_lists_guizang_for_cover_creation_without_network_access() {
         let (_temporary, paths) = test_paths();
         let payload = recommended_skills(&paths).expect("recommended skills");
         assert!(payload.get("schemaVersion").is_none());
-        assert_eq!(payload["skills"], json!([]));
+        let skills = payload["skills"].as_array().expect("skills");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0]["id"], "guizang-social-card-skill");
+        assert_eq!(skills[0]["name"], "guizang-social-card-skill");
+        assert_eq!(
+            skills[0]["sourceUrl"],
+            "https://github.com/op7418/guizang-social-card-skill"
+        );
+        assert_eq!(skills[0]["moduleKinds"], json!(["publication-cover"]));
+        assert_eq!(skills[0]["installStatus"], "notInstalled");
     }
 
     #[test]

@@ -148,19 +148,6 @@ fn normalize_writing(
                 )
             }
         },
-        WritingCommand::Write {
-            task_id,
-            title,
-            document_format,
-        } => {
-            put(flags, "task-id", Some(task_id));
-            put(flags, "title", Some(title));
-            put(flags, "document-format", Some(document_format));
-            (
-                vec!["writing".into(), "write".into()],
-                "writing.write",
-            )
-        }
         WritingCommand::Skill(args) => match args.command {
             WritingSkillCommand::Install {
                 task_id,

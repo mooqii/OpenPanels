@@ -1,3 +1,11 @@
 {
-  "skills": []
+  "skills": [
+    {
+      "id": "guizang-social-card-skill",
+      "name": "guizang-social-card-skill",
+      "description": "生成小红书图文、社交卡片与微信公众号封面对，支持 Editorial 与 Swiss 视觉系统。",
+      "sourceUrl": "https://github.com/op7418/guizang-social-card-skill",
+      "moduleKinds": ["publication-cover"]
+    }
+  ]
 }
