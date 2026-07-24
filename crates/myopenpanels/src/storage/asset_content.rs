@@ -131,7 +131,9 @@ fn resolve_manifest_asset_path(root: &Path, asset_ref: &str) -> Result<Option<Pa
             "Asset object does not match its manifest.",
         ));
     }
-    let materialized = revision.join("materialized").join(&logical_path);
+    let materialized = revision
+        .join("materialized")
+        .join(crate::content::logical_path_buf(&logical_path)?);
     if fs::read(&materialized).ok().as_deref() != Some(bytes.as_slice()) {
         crate::content::write_materialized_file(&materialized, &bytes)?;
     }

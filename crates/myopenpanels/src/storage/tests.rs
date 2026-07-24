@@ -742,7 +742,7 @@ mod tests {
             .write_asset_from_buffer(
                 &project.id,
                 &panel.id,
-                "cover.png",
+                "cover-tasks/task:portable/skill/SKILL.md",
                 b"cover image bytes",
                 false,
             )
@@ -764,6 +764,11 @@ mod tests {
         drop(storage);
 
         let reopened = Storage::open(&paths).expect("reopened storage");
+        assert!(reopened
+            .asset_path(&written.asset_ref)
+            .expect("portable materialized Asset path")
+            .components()
+            .all(|part| !part.as_os_str().to_string_lossy().contains(':')));
         assert_eq!(
             reopened
                 .read_asset_by_id(&project.id, &written.resource_id)

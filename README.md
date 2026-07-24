@@ -74,7 +74,7 @@ content, migration, and local-layout contract for 1.0 is documented in
 
 Install the Rust-native CLI from GitHub Releases, then verify it:
 
-macOS/Linux:
+macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-myopenpanels.sh | sh

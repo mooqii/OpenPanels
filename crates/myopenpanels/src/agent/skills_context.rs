@@ -687,7 +687,10 @@ fn agent_skill_local_paths(
     _project_id: &str,
     skill: &AgentSkillMetadata,
 ) -> (PathBuf, PathBuf) {
-    let local_dir = paths.storage_dir.join("skills").join(&skill.id);
+    let local_dir = paths
+        .storage_dir
+        .join("skills")
+        .join(crate::paths::sanitize_path_part(&skill.id));
     let local_path = local_dir.join("SKILL.md");
     (local_dir, local_path)
 }
