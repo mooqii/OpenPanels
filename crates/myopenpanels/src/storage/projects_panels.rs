@@ -18,6 +18,74 @@ pub struct Storage {
     project_root_dir: PathBuf,
 }
 
+struct StorageOpenLock {
+    _file: fs::File,
+}
+
+fn storage_open_lock_path(paths: &MyOpenPanelsPaths) -> PathBuf {
+    let storage_dir =
+        fs::canonicalize(&paths.storage_dir).unwrap_or_else(|_| paths.storage_dir.clone());
+    let digest = format!("{:x}", Sha256::digest(storage_dir.to_string_lossy().as_bytes()));
+    std::env::temp_dir()
+        .join("myopenpanels-storage-locks")
+        .join(format!("{digest}.lock"))
+}
+
+#[cfg(unix)]
+fn acquire_storage_open_lock(paths: &MyOpenPanelsPaths) -> Result<StorageOpenLock, CliError> {
+    use std::os::fd::AsRawFd;
+
+    let path = storage_open_lock_path(paths);
+    fs::create_dir_all(path.parent().expect("storage lock parent")).map_err(to_cli_error)?;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(to_cli_error)?;
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(StorageOpenLock { _file: file });
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(to_cli_error(error));
+        }
+    }
+}
+
+#[cfg(windows)]
+fn acquire_storage_open_lock(paths: &MyOpenPanelsPaths) -> Result<StorageOpenLock, CliError> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let path = storage_open_lock_path(paths);
+    fs::create_dir_all(path.parent().expect("storage lock parent")).map_err(to_cli_error)?;
+    loop {
+        match fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&path)
+        {
+            Ok(file) => return Ok(StorageOpenLock { _file: file }),
+            Err(error)
+                if matches!(error.raw_os_error(), Some(code) if code == 32 || code == 33) =>
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(to_cli_error(error)),
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn acquire_storage_open_lock(_paths: &MyOpenPanelsPaths) -> Result<StorageOpenLock, CliError> {
+    Err(CliError::new(
+        "This platform does not support MyOpenPanels storage locking.",
+    ))
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PanelStateWriteConflict {
     pub base_revision: i64,
@@ -82,6 +150,7 @@ pub struct ChangeScope {
 impl Storage {
     pub fn open(paths: &MyOpenPanelsPaths) -> Result<Self, CliError> {
         fs::create_dir_all(&paths.storage_dir).map_err(to_cli_error)?;
+        let _open_lock = acquire_storage_open_lock(paths)?;
         let database_path = paths.storage_dir.join(DATABASE_FILE_NAME);
         let mut connection = Connection::open(&database_path).map_err(to_cli_error)?;
         connection
