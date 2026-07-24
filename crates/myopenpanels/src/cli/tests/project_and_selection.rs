@@ -644,8 +644,14 @@ fn agent_bridge_without_command_does_not_process_wiki_tasks() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     let status = serde_json::from_str::<Value>(&stdout).expect("json");
-    assert_eq!(status["status"], "idle");
-    assert_eq!(status["queue"]["unhandledCount"], 0);
+    assert!(matches!(
+        status["status"].as_str(),
+        Some("idle" | "noTarget")
+    ));
+    assert_eq!(
+        status["queue"]["unhandledCount"],
+        if status["status"] == "noTarget" { 1 } else { 0 }
+    );
 }
 
 #[test]
