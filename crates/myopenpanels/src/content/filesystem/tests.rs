@@ -1,5 +1,5 @@
 use super::*;
-use crate::content::commit_immediate_text;
+use crate::content::{active_file_path, commit_immediate_text};
 
 use crate::control::{ensure_project_bootstrap, BootstrapRequest};
 use crate::types::PanelKind;
@@ -28,7 +28,7 @@ fn new_document_content_uses_portable_paths_and_survives_recovery() {
         Some(&wiki_panel.panel.id),
         ResourceKind::MyDocument,
         "my-document:portable",
-        "content.md",
+        "drafts/task:portable/content.md",
         b"portable document",
         "text/markdown",
         true,
@@ -54,7 +54,7 @@ fn new_document_content_uses_portable_paths_and_survives_recovery() {
                 "originalFileName": "content.md",
                 "format": "markdown",
                 "mimeType": "text/markdown",
-                "contentRef": "content.md",
+                "contentRef": "drafts/task:portable/content.md",
                 "contentVersion": 1,
             }],
             "wikiSpaces": [],
@@ -86,6 +86,15 @@ fn new_document_content_uses_portable_paths_and_survives_recovery() {
     assert!(revision_object_path(&revision, &manifest.files[0])
         .expect("content object path")
         .is_file());
+    assert!(active_file_path(
+        &paths,
+        &bootstrap.project.id,
+        ResourceKind::MyDocument,
+        "my-document:portable",
+        "drafts/task:portable/content.md",
+    )
+    .expect("portable materialized path")
+    .is_some());
 
     recover_filesystem(&paths).expect("recovery");
 
@@ -95,7 +104,7 @@ fn new_document_content_uses_portable_paths_and_survives_recovery() {
             &bootstrap.project.id,
             ResourceKind::MyDocument,
             "my-document:portable",
-            "content.md",
+            "drafts/task:portable/content.md",
         )
         .expect("active text")
         .as_deref(),

@@ -1,6 +1,6 @@
 use super::filesystem::{
-    prepare_staged_resource, read_authoritative_pointer, read_dirs, read_json, resource_dir,
-    resource_snapshot_at_revision, revision_dir, revision_object_path, to_cli_error,
+    logical_path_buf, prepare_staged_resource, read_authoritative_pointer, read_dirs, read_json,
+    resource_dir, resource_snapshot_at_revision, revision_dir, revision_object_path, to_cli_error,
     validate_logical_path, write_json_atomic, write_materialized_file, write_staged_file,
     ActivePointer, ContentCommit, ResourceKind, RevisionManifest, StagedResource,
     MAX_STAGING_BYTES, MAX_TEXT_FILE_BYTES,
@@ -45,7 +45,9 @@ pub fn active_file_path(
             "Active content does not match its manifest.",
         ));
     }
-    let materialized = revision.join("materialized").join(logical_path);
+    let materialized = revision
+        .join("materialized")
+        .join(logical_path_buf(logical_path)?);
     let materialized_matches = std::fs::read(&materialized)
         .ok()
         .is_some_and(|value| value == bytes);

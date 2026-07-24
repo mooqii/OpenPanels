@@ -315,14 +315,17 @@ pub fn active_writing_skill_sources(
                 .find(|file| file.logical_path == "manifest.json")
                 .and_then(|file| serde_json::from_slice::<Value>(&file.bytes).ok());
             if let (Some(source), Some(manifest)) = (source, manifest) {
-                let dir = skill.join("materialized").join(&snapshot.revision_id);
+                let dir = skill
+                    .join("materialized")
+                    .join(sanitize_path_part(&snapshot.revision_id));
                 for file in &snapshot.files {
-                    let path = dir.join(&file.logical_path);
+                    let relative = logical_path_buf(&file.logical_path)?;
+                    let path = dir.join(&relative);
                     let matches = fs::read(&path)
                         .ok()
                         .is_some_and(|bytes| bytes == file.bytes);
                     if !matches {
-                        write_materialized_file(&dir.join(&file.logical_path), &file.bytes)?;
+                        write_materialized_file(&dir.join(relative), &file.bytes)?;
                     }
                 }
                 result.push((skill_id, source, manifest, dir.display().to_string()));

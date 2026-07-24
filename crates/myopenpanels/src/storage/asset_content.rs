@@ -74,7 +74,9 @@ fn prepare_asset_revision(
     };
     let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(to_cli_error)?;
     crate::content::write_materialized_file(&revision.join("manifest.json"), &manifest_bytes)?;
-    let materialized = revision.join("materialized").join(logical_path);
+    let materialized = revision
+        .join("materialized")
+        .join(crate::content::logical_path_buf(logical_path)?);
     crate::content::write_materialized_file(&materialized, bytes)?;
     Ok((
         revision,
