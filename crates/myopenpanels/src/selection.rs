@@ -763,40 +763,9 @@ fn summarize_asset(asset: &Value) -> Value {
 }
 
 fn read_asset_base64(storage_dir: &Path, asset_ref: &str) -> Result<String, CliError> {
-    let asset_path = asset_path(storage_dir, asset_ref)?;
+    let asset_path = crate::storage::resolve_asset_path(storage_dir, asset_ref)?;
     let bytes = fs::read(asset_path).map_err(to_cli_error)?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
-}
-
-fn asset_path(storage_dir: &Path, asset_ref: &str) -> Result<PathBuf, CliError> {
-    let parts = asset_ref.split('/').collect::<Vec<_>>();
-    if parts.len() < 7
-        || parts[0] != "projects"
-        || parts[1].is_empty()
-        || parts[2] != "content"
-        || parts[3] != "asset"
-        || parts[4].is_empty()
-        || parts[5]
-            .parse::<u64>()
-            .ok()
-            .filter(|version| *version > 0)
-            .is_none()
-        || parts[6..].iter().any(|part| part.is_empty())
-    {
-        return Err(CliError::with_code(
-            "invalid_asset_ref",
-            "Asset reference must use projects/<project>/content/asset/<asset>/<version>/<file>.",
-        ));
-    }
-    let mut path = PathBuf::from(storage_dir);
-    for part in parts {
-        path.push(sanitize_path_part(part));
-    }
-    if path.starts_with(storage_dir) {
-        Ok(path)
-    } else {
-        Err(CliError::new("Asset path escapes storage directory."))
-    }
 }
 
 fn mime_type_for_file(path: &str) -> String {

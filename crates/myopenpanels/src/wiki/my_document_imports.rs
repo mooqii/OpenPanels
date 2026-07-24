@@ -123,9 +123,21 @@ pub fn import_my_document(
         "createdAt": now,
         "updatedAt": now,
     });
-    state_array_mut(&mut wiki.state, "myDocuments")?.insert(0, document.clone());
-    save_wiki_state(paths, &wiki)?;
-    let mut payload = json!({ "document": document, "state": wiki.state });
+    let tasks = conversion_task
+        .as_ref()
+        .map(|task| vec![task.clone()])
+        .unwrap_or_default();
+    crate::content::create_my_document_with_pending_content(
+        paths,
+        &wiki.project.id,
+        &wiki.panel.id,
+        &tasks,
+        &document,
+    )?;
+    let state = Storage::open(paths)?
+        .read_panel_state(&wiki.project.id, &wiki.panel.id)?
+        .unwrap_or_else(|| json!({}));
+    let mut payload = json!({ "document": document, "state": state });
     if let Some(task) = conversion_task.take() {
         payload["task"] = task;
     }
@@ -239,6 +251,33 @@ mod my_document_import_tests {
         let context = wiki_context(&paths).expect("context");
         assert_eq!(context["state"]["rawDocuments"], json!([]));
         assert_eq!(context["state"]["wikiSpaces"][0]["pageIndex"], json!([]));
+    }
+
+    #[test]
+    fn stale_wiki_projection_cannot_delete_a_new_my_document() {
+        let (_temp, paths) = test_paths("stale-wiki-my-document");
+        let before = get_wiki_bootstrap(&paths).expect("initial Wiki");
+        let created = create_my_document(
+            &paths,
+            "notes.md",
+            Some("Notes"),
+            Some("text/markdown"),
+            None,
+            None,
+            b"# Notes",
+        )
+        .expect("create");
+        let document_id = created["document"]["id"].as_str().expect("document id");
+
+        Storage::open(&paths)
+            .expect("storage")
+            .write_panel_state(&before.project.id, &before.panel.id, &before.state)
+            .expect("stale Wiki write");
+
+        assert_eq!(
+            read_my_document(&paths, document_id).expect("preserved document")["content"],
+            "# Notes"
+        );
     }
 
     #[test]

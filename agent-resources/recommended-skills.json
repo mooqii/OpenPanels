@@ -6,6 +6,13 @@
       "description": "生成小红书图文、社交卡片与微信公众号封面对，支持 Editorial 与 Swiss 视觉系统。",
       "sourceUrl": "https://github.com/op7418/guizang-social-card-skill",
       "moduleKinds": ["publication-cover"]
+    },
+    {
+      "id": "khazix-writer",
+      "name": "khazix-writer",
+      "description": "以「数字生命卡兹克」的个人风格撰写微信公众号长文，适合基于素材写作、续写与扩写。",
+      "sourceUrl": "https://github.com/KKKKhazix/khazix-skills/tree/main/khazix-writer",
+      "moduleKinds": ["writing"]
     }
   ]
 }

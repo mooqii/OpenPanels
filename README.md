@@ -65,6 +65,11 @@ release data in `~/.myopenpanels/`; this is intentionally a new, empty storage
 location and does not migrate or delete data from the previous platform-specific
 directory. Set `MYOPENPANELS_STORAGE_DIR` explicitly to override either location.
 
+Core ownership is documented in
+[`docs/core-concepts.md`](docs/core-concepts.md). The database, immutable
+content, migration, and local-layout contract for 1.0 is documented in
+[`docs/storage-contract.md`](docs/storage-contract.md).
+
 ## Install
 
 Install the Rust-native CLI from GitHub Releases, then verify it:

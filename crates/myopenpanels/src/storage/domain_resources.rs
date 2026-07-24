@@ -24,17 +24,28 @@ fn persist_publications(
         let source_document_id = publication
             .get("sourceDocumentId")
             .and_then(Value::as_str)
-            .filter(|id| resource_exists(connection, id).unwrap_or(false));
+            .filter(|id| resource_exists(connection, project_id, id).unwrap_or(false));
         let cover_document_id = publication
             .get("coverDocumentId")
             .and_then(Value::as_str)
-            .filter(|id| resource_exists(connection, id).unwrap_or(false));
-        let content_version = publication
+            .filter(|id| resource_exists(connection, project_id, id).unwrap_or(false));
+        let config_version = publication
             .get("contentVersion")
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        let config_json = serde_json::to_string(publication).map_err(to_cli_error)?;
-        let content_hash = hash_text(&config_json);
+        let config_json = serde_json::to_string(&strip_fields(
+            publication,
+            &[
+                "id",
+                "title",
+                "sourceDocumentId",
+                "coverDocumentId",
+                "contentVersion",
+                "createdAt",
+                "updatedAt",
+            ],
+        ))
+        .map_err(to_cli_error)?;
         let current = connection
             .query_row(
                 "SELECT p.config_json, p.position, r.title, r.deleted_at, r.revision FROM publications p JOIN resources r ON r.id = p.resource_id WHERE p.resource_id = ?",
@@ -73,25 +84,24 @@ fn persist_publications(
             .execute(
                 r#"
                 INSERT INTO publications (
-                  resource_id, source_document_id, cover_document_id, active_revision_id,
-                  content_version, content_hash, selected_title, position, config_json
-                ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
+                  project_id, resource_id, source_document_id, cover_document_id,
+                  config_version, selected_title, position, config_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(resource_id) DO UPDATE SET
+                  project_id = excluded.project_id,
                   source_document_id = excluded.source_document_id,
                   cover_document_id = excluded.cover_document_id,
-                  active_revision_id = excluded.active_revision_id,
-                  content_version = excluded.content_version,
-                  content_hash = excluded.content_hash,
+                  config_version = excluded.config_version,
                   selected_title = excluded.selected_title,
                   position = excluded.position,
                   config_json = excluded.config_json
                 "#,
                 params![
+                    project_id,
                     id,
                     source_document_id,
                     cover_document_id,
-                    content_version,
-                    content_hash,
+                    config_version,
                     selected_title,
                     position as i64,
                     config_json,
@@ -119,7 +129,9 @@ fn hydrate_publications(
     let mut statement = connection
         .prepare(
             r#"
-            SELECT p.config_json FROM publications p
+            SELECT p.config_json, r.id, r.title, p.source_document_id,
+                   p.cover_document_id, p.config_version, r.created_at, r.updated_at
+            FROM publications p
             JOIN resources r ON r.id = p.resource_id
             WHERE r.project_id = ? AND r.deleted_at IS NULL
             ORDER BY p.position ASC, r.id ASC
@@ -127,11 +139,31 @@ fn hydrate_publications(
         )
         .map_err(to_cli_error)?;
     let publications = statement
-        .query_map([project_id], |row| row.get::<_, String>(0))
+        .query_map([project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })
         .map_err(to_cli_error)?
         .map(|row| {
-            row.map_err(to_cli_error)
-                .and_then(|raw| serde_json::from_str(&raw).map_err(to_cli_error))
+            let (raw, id, title, source_id, cover_id, config_version, created_at, updated_at) =
+                row.map_err(to_cli_error)?;
+            let mut value = serde_json::from_str::<Value>(&raw).map_err(to_cli_error)?;
+            value["id"] = json!(id);
+            value["title"] = json!(title);
+            value["sourceDocumentId"] = source_id.map_or(Value::Null, Value::String);
+            value["coverDocumentId"] = cover_id.map_or(Value::Null, Value::String);
+            value["contentVersion"] = json!(config_version);
+            value["createdAt"] = json!(created_at);
+            value["updatedAt"] = json!(updated_at);
+            Ok(value)
         })
         .collect::<Result<Vec<Value>, CliError>>()?;
     let has_state = !publications.is_empty();
@@ -162,7 +194,7 @@ fn persist_releases(
         else {
             continue;
         };
-        if !resource_exists(connection, publication_id)? {
+        if !resource_exists(connection, project_id, publication_id)? {
             continue;
         }
         active.insert(id.to_owned());
@@ -170,29 +202,19 @@ fn persist_releases(
             .get("platform")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
+        let source_updated_at = release.get("sourceUpdatedAt").and_then(Value::as_str);
         let attempts = release
             .get("attempts")
             .cloned()
             .unwrap_or_else(|| json!([]));
-        let request_key = attempts
-            .as_array()
-            .and_then(|items| items.last())
-            .and_then(|attempt| attempt.get("requestId"))
-            .and_then(Value::as_str);
-        let remote_url = attempts
-            .as_array()
-            .into_iter()
-            .flatten()
-            .rev()
-            .find_map(|attempt| attempt.get("remoteUrl").and_then(Value::as_str));
-        let published_at = attempts
-            .as_array()
-            .into_iter()
-            .flatten()
-            .rev()
-            .find_map(|attempt| attempt.get("publishedAt").and_then(Value::as_str));
-        let release_base = strip_fields(release, &["attempts"]);
-        let release_json = serde_json::to_string(&release_base).map_err(to_cli_error)?;
+        let mut snapshot = release
+            .get("snapshot")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        if let Some(snapshot) = snapshot.as_object_mut() {
+            snapshot.remove("title");
+        }
+        let snapshot_json = serde_json::to_string(&snapshot).map_err(to_cli_error)?;
         let result_json =
             serde_json::to_string(&json!({ "attempts": attempts })).map_err(to_cli_error)?;
         let title = release
@@ -201,7 +223,14 @@ fn persist_releases(
             .unwrap_or("");
         let current = connection
             .query_row(
-                "SELECT l.release_json, l.result_json, l.position, r.deleted_at, r.revision FROM releases l JOIN resources r ON r.id = l.resource_id WHERE l.resource_id = ?",
+                r#"
+                SELECT l.snapshot_json, l.result_json, l.position, r.deleted_at,
+                       r.revision, l.publication_id, l.platform_key,
+                       l.source_updated_at, r.title
+                FROM releases l
+                JOIN resources r ON r.id = l.resource_id
+                WHERE l.resource_id = ?
+                "#,
                 [id],
                 |row| Ok((
                     row.get::<_, String>(0)?,
@@ -209,15 +238,23 @@ fn persist_releases(
                     row.get::<_, i64>(2)?,
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(8)?,
                 )),
             )
             .optional()
             .map_err(to_cli_error)?;
         if current.as_ref().is_some_and(|value| {
-            value.0 == release_json
+            value.0 == snapshot_json
                 && value.1.as_deref() == Some(result_json.as_str())
                 && value.2 == position as i64
                 && value.3.is_none()
+                && value.5 == publication_id
+                && value.6 == platform
+                && value.7.as_deref() == source_updated_at
+                && value.8 == title
         }) {
             revision = revision.max(current.expect("checked").4);
             continue;
@@ -237,30 +274,27 @@ fn persist_releases(
             .execute(
                 r#"
                 INSERT INTO releases (
-                  resource_id, publication_id, platform_key, request_key,
-                  published_revision_id, remote_ref, remote_url, position,
-                  release_json, result_json, published_at, archived_at
-                ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, NULL)
+                  project_id, resource_id, publication_id, platform_key,
+                  source_updated_at, position, snapshot_json, result_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(resource_id) DO UPDATE SET
+                  project_id = excluded.project_id,
                   publication_id = excluded.publication_id,
                   platform_key = excluded.platform_key,
-                  request_key = excluded.request_key,
-                  remote_url = excluded.remote_url,
+                  source_updated_at = excluded.source_updated_at,
                   position = excluded.position,
-                  release_json = excluded.release_json,
-                  result_json = excluded.result_json,
-                  published_at = excluded.published_at
+                  snapshot_json = excluded.snapshot_json,
+                  result_json = excluded.result_json
                 "#,
                 params![
+                    project_id,
                     id,
                     publication_id,
                     platform,
-                    request_key,
-                    remote_url,
+                    source_updated_at,
                     position as i64,
-                    release_json,
+                    snapshot_json,
                     result_json,
-                    published_at,
                 ],
             )
             .map_err(to_cli_error)?;
@@ -285,7 +319,10 @@ fn hydrate_releases(
     let mut statement = connection
         .prepare(
             r#"
-            SELECT l.release_json, l.result_json FROM releases l
+            SELECT l.snapshot_json, l.result_json, r.id, l.platform_key,
+                   l.publication_id, l.source_updated_at, r.title,
+                   r.created_at, r.updated_at
+            FROM releases l
             JOIN resources r ON r.id = l.resource_id
             WHERE r.project_id = ? AND r.deleted_at IS NULL
             ORDER BY l.position ASC, r.id ASC
@@ -297,20 +334,47 @@ fn hydrate_releases(
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
             ))
         })
         .map_err(to_cli_error)?;
     let releases = rows
         .map(|row| {
-            let (release, result) = row.map_err(to_cli_error)?;
-            let mut value = serde_json::from_str::<Value>(&release).map_err(to_cli_error)?;
+            let (
+                snapshot,
+                result,
+                id,
+                platform,
+                publication_id,
+                source_updated_at,
+                title,
+                created_at,
+                updated_at,
+            ) = row.map_err(to_cli_error)?;
+            let mut snapshot =
+                serde_json::from_str::<Value>(&snapshot).map_err(to_cli_error)?;
+            snapshot["title"] = json!(title);
             let attempts = result
                 .as_deref()
                 .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
                 .and_then(|result| result.get("attempts").cloned())
                 .unwrap_or_else(|| json!([]));
-            value["attempts"] = attempts;
-            Ok(value)
+            Ok(json!({
+                "id": id,
+                "platform": platform,
+                "sourcePublicationId": publication_id,
+                "sourceUpdatedAt": source_updated_at,
+                "snapshot": snapshot,
+                "attempts": attempts,
+                "createdAt": created_at,
+                "updatedAt": updated_at,
+            }))
         })
         .collect::<Result<Vec<Value>, CliError>>()?;
     let has_state = !releases.is_empty();
@@ -439,21 +503,57 @@ fn cancel_tasks_for_resource_in_transaction(
         "resourceId": resource_id,
     })
     .to_string();
-    let changed = connection
-        .execute(
-            r#"
-            UPDATE tasks SET status = 'cancelled', error_json = ?,
-              execution_generation = execution_generation + 1,
-              execution_token_hash = NULL, lease_owner = NULL, lease_expires_at = NULL,
-              heartbeat_at = NULL, current_runner_key = NULL,
-              completed_at = ?, updated_at = ?
-            WHERE project_id = ? AND status IN ('queued', 'running')
-              AND id IN (SELECT task_id FROM task_resources WHERE resource_id = ?)
-            "#,
-            params![reason, now, now, project_id, resource_id],
-        )
-        .map_err(to_cli_error)?;
-    Ok(changed > 0)
+    let task_ids = {
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT DISTINCT task.id
+                FROM tasks task
+                JOIN task_resources link
+                  ON link.project_id = task.project_id
+                 AND link.task_id = task.id
+                WHERE task.project_id = ? AND link.resource_id = ?
+                  AND task.status IN ('queued', 'running')
+                ORDER BY task.created_at, task.id
+                "#,
+            )
+            .map_err(to_cli_error)?;
+        let collected = statement
+            .query_map(params![project_id, resource_id], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(to_cli_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_cli_error)?;
+        collected
+    };
+    for task_id in &task_ids {
+        connection
+            .execute(
+                r#"
+                UPDATE tasks SET status = 'cancelled', error_json = ?,
+                  execution_generation = execution_generation + 1,
+                  execution_token_hash = NULL, lease_owner = NULL,
+                  lease_expires_at = NULL, heartbeat_at = NULL,
+                  current_runner_key = NULL, completed_at = ?, updated_at = ?
+                WHERE project_id = ? AND id = ?
+                  AND status IN ('queued', 'running')
+                "#,
+                params![reason, now, now, project_id, task_id],
+            )
+            .map_err(to_cli_error)?;
+        crate::content::abandon_task_staging_in_transaction(connection, task_id, now)?;
+    }
+    for task_id in &task_ids {
+        crate::tasks::terminate_task_descendants_in_transaction(
+            connection,
+            project_id,
+            task_id,
+            "cancelled",
+            now,
+        )?;
+    }
+    Ok(!task_ids.is_empty())
 }
 
 fn sync_task_resources_for_project(
@@ -502,8 +602,15 @@ fn sync_task_resources_for_project(
             let captured_version = resource_content_version(connection, &resource_id)?;
             connection
                 .execute(
-                    "INSERT OR IGNORE INTO task_resources (task_id, resource_id, role, captured_version, created_at) VALUES (?, ?, ?, ?, ?)",
-                    params![task_id, resource_id, role, captured_version, created_at],
+                    "INSERT OR IGNORE INTO task_resources (project_id, task_id, resource_id, role, captured_version, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    params![
+                        project_id,
+                        task_id,
+                        resource_id,
+                        role,
+                        captured_version,
+                        created_at
+                    ],
                 )
                 .map_err(to_cli_error)?;
         }
@@ -583,23 +690,27 @@ fn resource_content_version(
         .query_row(
             r#"
             SELECT COALESCE(
-              (SELECT content_version FROM documents WHERE resource_id = ?),
-              (SELECT content_version FROM wiki_spaces WHERE resource_id = ?),
+              (SELECT content_version FROM resources WHERE id = ?
+                AND active_content_revision_id IS NOT NULL),
               (SELECT state_revision FROM canvas_documents WHERE resource_id = ?),
-              (SELECT content_version FROM publications WHERE resource_id = ?)
+              0
             )
             "#,
-            params![resource_id, resource_id, resource_id, resource_id],
+            params![resource_id, resource_id],
             |row| row.get::<_, Option<i64>>(0),
         )
         .map_err(to_cli_error)
 }
 
-fn resource_exists(connection: &Connection, resource_id: &str) -> Result<bool, CliError> {
+fn resource_exists(
+    connection: &Connection,
+    project_id: &str,
+    resource_id: &str,
+) -> Result<bool, CliError> {
     connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM resources WHERE id = ? AND deleted_at IS NULL)",
-            [resource_id],
+            "SELECT EXISTS(SELECT 1 FROM resources WHERE project_id = ? AND id = ? AND deleted_at IS NULL)",
+            params![project_id, resource_id],
             |row| row.get(0),
         )
         .map_err(to_cli_error)

@@ -297,18 +297,24 @@ pub(crate) fn complete_task(
     result: Option<Value>,
 ) -> Result<Value, CliError> {
     let lease = verify_lease(paths, task_id, lease_token)?;
-    let prepared_panel_state =
+    let (prepared_panel_state, prepared_my_document) =
         match task_domain(lease["queue"].as_str().unwrap_or(""))? {
-            TaskDomain::Wiki => {
-                crate::wiki::prepare_task_completion(paths, task_id, result.clone())?
-            }
-            TaskDomain::Writing => crate::writing::prepare_task_completion(paths, task_id)?,
-            TaskDomain::Publication => {
-                crate::publication::prepare_task_completion(paths, task_id, result.clone())?
-            }
-            TaskDomain::Release => {
-                crate::release::prepare_task_completion(paths, task_id, result.clone())?
-            }
+            TaskDomain::Wiki => (
+                crate::wiki::prepare_task_completion(paths, task_id, result.clone())?,
+                None,
+            ),
+            TaskDomain::Writing => (
+                None,
+                crate::writing::prepare_task_completion(paths, task_id)?,
+            ),
+            TaskDomain::Publication => (
+                crate::publication::prepare_task_completion(paths, task_id, result.clone())?,
+                None,
+            ),
+            TaskDomain::Release => (
+                crate::release::prepare_task_completion(paths, task_id, result.clone())?,
+                None,
+            ),
         };
     let project_id = lease["projectId"].as_str().unwrap_or_default();
     finalize_task_runtime(
@@ -316,7 +322,7 @@ pub(crate) fn complete_task(
         project_id,
         task_id,
         "succeeded",
-        TaskOutputPlan::completed(result, prepared_panel_state),
+        TaskOutputPlan::completed(result, prepared_panel_state, prepared_my_document, None),
         None,
         None,
         None,
@@ -498,10 +504,13 @@ pub fn retry_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cli
     ).map_err(to_cli_error)?;
     tx.execute(
         r#"
-        INSERT INTO task_resources (task_id, resource_id, role, captured_version, created_at)
-        SELECT ?, resource_id, role, captured_version, ? FROM task_resources WHERE task_id = ?
+        INSERT INTO task_resources (
+          project_id, task_id, resource_id, role, captured_version, created_at
+        )
+        SELECT project_id, ?, resource_id, role, captured_version, ?
+        FROM task_resources WHERE project_id = ? AND task_id = ?
         "#,
-        params![new_id, now, task_id],
+        params![new_id, now, project_id, task_id],
     )
     .map_err(to_cli_error)?;
     crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;

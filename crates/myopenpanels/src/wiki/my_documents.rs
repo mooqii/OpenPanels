@@ -154,29 +154,6 @@ pub fn list_my_documents(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {
     list_my_documents_with_access(paths)
 }
 
-fn my_document_format(
-    file_name: &str,
-    mime_type: Option<&str>,
-) -> Result<(&'static str, &'static str), CliError> {
-    let extension = Path::new(file_name)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match extension.as_str() {
-        "md" | "markdown"
-            if mime_type.is_none_or(|value| value == "text/markdown" || value == "text/plain") =>
-        {
-            Ok(("markdown", "text/markdown"))
-        }
-        "txt" if mime_type.is_none_or(|value| value == "text/plain") => Ok(("text", "text/plain")),
-        _ => Err(CliError::with_code(
-            "invalid_my_document",
-            "My Documents must be UTF-8 .md, .markdown, or .txt files.",
-        )),
-    }
-}
-
 pub fn create_my_document(
     paths: &MyOpenPanelsPaths,
     file_name: &str,
@@ -192,8 +169,9 @@ pub fn create_my_document(
             "My Document content must be valid UTF-8.",
         )
     })?;
-    let (format, normalized_mime_type) = my_document_format(file_name, mime_type)?;
-    let mut wiki = match task_id {
+    let (format, normalized_mime_type) =
+        crate::my_document::document_format(file_name, mime_type)?;
+    let wiki = match task_id {
         Some(task_id) => get_wiki_task_target(paths, task_id)?,
         None => get_wiki_bootstrap(paths)?,
     };
@@ -231,9 +209,17 @@ pub fn create_my_document(
         "createdAt": now,
         "updatedAt": now,
     });
-    state_array_mut(&mut wiki.state, "myDocuments")?.insert(0, document.clone());
-    save_wiki_state(paths, &wiki)?;
-    Ok(json!({ "document": document, "state": wiki.state }))
+    crate::content::create_my_document_with_pending_content(
+        paths,
+        &wiki.project.id,
+        &wiki.panel.id,
+        &[],
+        &document,
+    )?;
+    let state = Storage::open(paths)?
+        .read_panel_state(&wiki.project.id, &wiki.panel.id)?
+        .unwrap_or_else(|| json!({}));
+    Ok(json!({ "document": document, "state": state }))
 }
 
 pub(crate) struct PreparedMyDocumentMutation {
@@ -311,18 +297,6 @@ pub(crate) fn prepare_begin_my_document_for_target(
     })
 }
 
-pub(crate) fn my_document_content_descriptor(
-    file_name: &str,
-) -> Result<(&'static str, &'static str, &'static str), CliError> {
-    let (format, mime_type) = my_document_format(file_name, None)?;
-    let content_ref = if format == "markdown" {
-        "content.md"
-    } else {
-        "content.txt"
-    };
-    Ok((format, mime_type, content_ref))
-}
-
 pub(crate) fn prepare_complete_my_document_for_target(
     paths: &MyOpenPanelsPaths,
     project_id: &str,
@@ -335,46 +309,25 @@ pub(crate) fn prepare_complete_my_document_for_target(
     committed_content_version: u64,
     content: &[u8],
 ) -> Result<PreparedMyDocumentMutation, CliError> {
-    let text = std::str::from_utf8(content).map_err(|_| {
-        CliError::with_code(
-            "invalid_my_document",
-            "My Document content must be valid UTF-8.",
-        )
-    })?;
-    let (format, mime_type) = my_document_format(file_name, None)?;
+    let (format, mime_type) = crate::my_document::document_format(file_name, None)?;
     let mut wiki = get_wiki_target(paths, project_id, panel_id)?;
-    let current_document = find_my_document(&wiki.state, document_id)?;
-    let current_version = current_document["contentVersion"].as_u64().unwrap_or(0);
-    if current_version != base_content_version {
-        return Err(CliError::with_code("content_conflict", format!("My Document changed from version {base_content_version} to {current_version}")));
-    }
-    if current_document
-        .pointer("/writeOperation/operationId")
-        .and_then(Value::as_str)
-        != Some(operation_id)
-    {
-        return Err(CliError::with_code(
-            "operation_target_mismatch",
-            "The My Document is no longer bound to this Direct Operation.",
-        ));
-    }
-    if committed_content_version != base_content_version + 1 {
-        return Err(CliError::with_code(
-            "content_conflict",
-            "Prepared My Document content has an unexpected version.",
-        ));
-    }
     let document = find_my_document_mut(&mut wiki.state, document_id)?;
-    document["contentRef"] = json!(content_ref);
-    document["contentVersion"] = json!(committed_content_version);
-    document["format"] = json!(format);
-    document["mimeType"] = json!(mime_type);
-    document["originalFileName"] = json!(sanitize_file_name(file_name));
-    document["wordCount"] = json!(character_count(text));
-    document
-        .as_object_mut()
-        .map(|object| object.remove("writeOperation"));
-    document["updatedAt"] = json!(now_iso());
+    crate::my_document::apply_content_update(
+        document,
+        crate::my_document::ContentUpdate {
+            expected_version: base_content_version,
+            committed_version: committed_content_version,
+            content_ref,
+            format,
+            mime_type,
+            original_file_name: Some(file_name),
+            title: None,
+            content,
+            required_operation_id: Some(operation_id),
+            clear_write_operation: true,
+            updated_at: &now_iso(),
+        },
+    )?;
     let document = document.clone();
     Ok(PreparedMyDocumentMutation {
         base_content_version,
@@ -544,39 +497,83 @@ pub fn write_my_document(
     mime_type: Option<&str>,
     content: &[u8],
 ) -> Result<Value, CliError> {
-    let text = std::str::from_utf8(content).map_err(|_| {
-        CliError::with_code(
-            "invalid_my_document",
-            "My Document content must be valid UTF-8.",
-        )
-    })?;
-    let (format, normalized_mime_type) = my_document_format(file_name, mime_type)?;
+    write_my_document_internal(paths, document_id, file_name, mime_type, content, None)
+}
+
+fn write_my_document_internal(
+    paths: &MyOpenPanelsPaths,
+    document_id: &str,
+    file_name: &str,
+    mime_type: Option<&str>,
+    content: &[u8],
+    title: Option<&str>,
+) -> Result<Value, CliError> {
+    let (format, normalized_mime_type) =
+        crate::my_document::document_format(file_name, mime_type)?;
     let mut wiki = get_wiki_bootstrap(paths)?;
     let extension = if format == "markdown" { "md" } else { "txt" };
     let content_ref = format!("content.{extension}");
-    crate::content::commit_immediate_text(
+    let current_version = find_my_document(&wiki.state, document_id)?["contentVersion"]
+        .as_u64()
+        .unwrap_or(0);
+    let write_id = create_id("my-document-write");
+    let prepared_content = crate::content::prepare_direct_text_content(
         paths,
+        &write_id,
         &wiki.project.id,
-        Some(&wiki.panel.id),
+        &wiki.panel.id,
         crate::content::ResourceKind::MyDocument,
         document_id,
-        &format!("content.{extension}"),
+        &content_ref,
         content,
         &normalized_mime_type,
-        true,
+        current_version,
     )?;
     let now = now_iso();
     let document = find_my_document_mut(&mut wiki.state, document_id)?;
-    document["contentRef"] = json!(content_ref);
-    document["contentVersion"] = json!(document["contentVersion"].as_u64().unwrap_or(0) + 1);
-    document["format"] = json!(format);
-    document["mimeType"] = json!(normalized_mime_type);
-    document["originalFileName"] = json!(sanitize_file_name(file_name));
-    document["wordCount"] = json!(character_count(text));
-    document["updatedAt"] = json!(now);
+    crate::my_document::apply_content_update(
+        document,
+        crate::my_document::ContentUpdate {
+            expected_version: current_version,
+            committed_version: prepared_content.commit.content_version as u64,
+            content_ref: &content_ref,
+            format,
+            mime_type: normalized_mime_type,
+            original_file_name: Some(file_name),
+            title,
+            content,
+            required_operation_id: None,
+            clear_write_operation: false,
+            updated_at: &now,
+        },
+    )?;
     let document = document.clone();
-    save_wiki_state(paths, &wiki)?;
-    Ok(json!({ "document": document, "state": wiki.state }))
+    let mut storage = Storage::open(paths)?;
+    let tx = storage
+        .connection_mut()
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(to_cli_error)?;
+    Storage::write_my_document_content_in_transaction(
+        &tx,
+        &wiki.project.id,
+        current_version,
+        &document,
+    )?;
+    Storage::write_content_commit_in_transaction(
+        &tx,
+        &wiki.project.id,
+        &prepared_content.commit,
+    )?;
+    tx.commit().map_err(to_cli_error)?;
+    crate::content::publish_prepared_direct_content(prepared_content)?;
+    let _ = fs::remove_dir(
+        paths
+            .storage_dir
+            .join("operations")
+            .join(sanitize_path_part(&write_id)),
+    );
+    let state = get_wiki_target(paths, &wiki.project.id, &wiki.panel.id)?.state;
+    Ok(json!({ "document": document, "state": state }))
 }
 
 pub fn write_my_document_for_agent(
@@ -609,8 +606,14 @@ pub fn rename_my_document_file(
         .as_str()
         .ok_or_else(|| CliError::new("My Document content is invalid."))?;
     let mime_type = existing["document"]["mimeType"].as_str();
-    write_my_document(paths, document_id, file_name, mime_type, content.as_bytes())?;
-    rename_my_document(paths, document_id, &title_from_file_name(file_name))
+    write_my_document_internal(
+        paths,
+        document_id,
+        file_name,
+        mime_type,
+        content.as_bytes(),
+        Some(&title_from_file_name(file_name)),
+    )
 }
 
 pub fn rename_my_document(
@@ -625,60 +628,60 @@ pub fn rename_my_document(
             "My Document title cannot be empty.",
         ));
     }
-    let mut wiki = get_wiki_bootstrap(paths)?;
-    let document = find_my_document_mut(&mut wiki.state, document_id)?;
-    document["title"] = json!(title);
-    document["updatedAt"] = json!(now_iso());
-    let document = document.clone();
-    save_wiki_state(paths, &wiki)?;
-    Ok(json!({ "document": document, "state": wiki.state }))
+    let wiki = get_wiki_bootstrap(paths)?;
+    find_my_document(&wiki.state, document_id)?;
+    Storage::open(paths)?.rename_my_document_resource(
+        &wiki.project.id,
+        &wiki.panel.id,
+        document_id,
+        title,
+    )?;
+    let state = get_wiki_target(paths, &wiki.project.id, &wiki.panel.id)?.state;
+    let document = find_my_document(&state, document_id)?.clone();
+    Ok(json!({ "document": document, "state": state }))
 }
 
 pub fn delete_my_document(
     paths: &MyOpenPanelsPaths,
     document_id: &str,
 ) -> Result<Value, CliError> {
-    let mut wiki = get_wiki_bootstrap(paths)?;
+    let wiki = get_wiki_bootstrap(paths)?;
     let storage = Storage::open(paths)?;
-    let documents = state_array_mut(&mut wiki.state, "myDocuments")?;
-    let index = documents
-        .iter()
-        .position(|document| document["id"].as_str() == Some(document_id))
-        .ok_or_else(|| {
-            CliError::with_code(
-                "not_found",
-                format!("Wiki My Document not found: {document_id}"),
-            )
-        })?;
-    let document = documents.remove(index);
-    save_wiki_state(paths, &wiki)?;
+    let document = find_my_document(&wiki.state, document_id)?.clone();
+    storage.delete_my_document_resource(&wiki.project.id, &wiki.panel.id, document_id)?;
     crate::content::archive_resource(
         paths,
         Some(&wiki.project.id),
         crate::content::ResourceKind::MyDocument,
         document_id,
     )?;
-    if let Some(mut selection) = storage.read_panel_selection(&wiki.project.id, &wiki.panel.id)? {
-        if let Some(selected_ids) = selection
-            .get_mut("selectedMyDocumentIds")
-            .and_then(Value::as_array_mut)
-        {
-            selected_ids.retain(|value| value.as_str() != Some(document_id));
-            selection["updatedAt"] = json!(now_iso());
-            storage.write_panel_selection(&wiki.project.id, &wiki.panel.id, &selection)?;
-        }
-    }
-    Ok(json!({ "document": document, "state": wiki.state }))
+    let state = get_wiki_target(paths, &wiki.project.id, &wiki.panel.id)?.state;
+    Ok(json!({ "document": document, "state": state }))
 }
 
-pub fn publish_my_document(
+pub(crate) fn publish_my_document_into_wiki(
     paths: &MyOpenPanelsPaths,
     document_id: &str,
     wiki_space_id: Option<&str>,
 ) -> Result<Value, CliError> {
-    let my_document = read_my_document(paths, document_id)?;
-    let document = &my_document["document"];
+    let content_snapshot = read_my_document(paths, document_id)?;
+    let snapshot_version = content_snapshot["document"]["contentVersion"]
+        .as_u64()
+        .unwrap_or(1);
+    let content = content_snapshot["content"]
+        .as_str()
+        .unwrap_or("")
+        .as_bytes()
+        .to_vec();
+    let mut wiki = get_wiki_bootstrap(paths)?;
+    let document = find_my_document(&wiki.state, document_id)?.clone();
     let version = document["contentVersion"].as_u64().unwrap_or(1);
+    if version != snapshot_version {
+        return Err(CliError::with_code(
+            "content_conflict",
+            "My Document changed while its publication was being prepared.",
+        ));
+    }
     let already_published = document["publishHistory"]
         .as_array()
         .is_some_and(|history| {
@@ -692,8 +695,9 @@ pub fn publish_my_document(
             format!("My Document version {version} is already published."),
         ));
     }
-    let raw = add_raw_document(
+    let raw_document = prepare_raw_document(
         paths,
+        &mut wiki,
         document["originalFileName"]
             .as_str()
             .unwrap_or("document.md"),
@@ -701,13 +705,12 @@ pub fn publish_my_document(
         document["mimeType"].as_str(),
         "agent",
         wiki_space_id,
-        my_document["content"].as_str().unwrap_or("").as_bytes(),
+        &content,
     )?;
-    let raw_document_id = raw["document"]["id"]
+    let raw_document_id = raw_document["id"]
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    let mut wiki = get_wiki_bootstrap(paths)?;
     let my_document = find_my_document_mut(&mut wiki.state, document_id)?;
     state_array_mut(my_document, "publishHistory")?.push(json!({
         "documentVersion": version,
@@ -715,10 +718,24 @@ pub fn publish_my_document(
         "publishedAt": now_iso(),
     }));
     let my_document = my_document.clone();
-    save_wiki_state(paths, &wiki)?;
+    save_wiki_state_if_revision(paths, &wiki)?;
+    trace::record_simple(
+        "task",
+        "wiki",
+        Some("document"),
+        format!(
+            "Imported {}",
+            raw_document["title"].as_str().unwrap_or("document")
+        ),
+        Some(format!(
+            "Imported {}",
+            raw_document["title"].as_str().unwrap_or("document")
+        )),
+        Some(json!({ "document": raw_document.clone() })),
+    );
     Ok(json!({
         "document": my_document,
-        "rawDocument": raw["document"],
+        "rawDocument": raw_document,
         "state": wiki.state,
     }))
 }

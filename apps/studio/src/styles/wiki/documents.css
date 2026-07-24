@@ -472,6 +472,14 @@
   pointer-events: auto;
 }
 
+.op-my-document-meta__generated {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  line-height: 1;
+  color: var(--success);
+}
+
 .op-my-document-open {
   position: absolute;
   inset: 0;

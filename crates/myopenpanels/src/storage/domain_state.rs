@@ -326,6 +326,24 @@ fn persist_wiki_state(
             )?);
         }
     }
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT r.id
+            FROM resources r
+            JOIN documents d ON d.resource_id = r.id
+            WHERE r.project_id = ? AND r.deleted_at IS NULL
+              AND d.document_kind = 'my_document'
+            "#,
+        )
+        .map_err(to_cli_error)?;
+    for id in statement
+        .query_map([project_id], |row| row.get::<_, String>(0))
+        .map_err(to_cli_error)?
+    {
+        active_documents.insert(id.map_err(to_cli_error)?);
+    }
+    drop(statement);
     revision = revision.max(soft_delete_missing_resources(
         connection,
         project_id,
@@ -477,32 +495,25 @@ fn persist_document(
         .and_then(Value::as_str)
         .unwrap_or("");
     let is_my_document = document_kind == "my_document";
-    let original_revision_id = if is_my_document {
+    let original_content_ref = if is_my_document {
         document.pointer("/importSource/originalRef")
     } else {
         document.get("originalRef")
     }
     .and_then(Value::as_str);
-    let active_revision_id = if is_my_document {
+    let active_content_ref = if is_my_document {
         document.get("contentRef")
     } else {
         document.get("markdownRef")
     }
     .and_then(Value::as_str);
-    let content_version = if is_my_document {
+    let logical_content_version = if is_my_document {
         document.get("contentVersion")
     } else {
         document.get("markdownVersion")
     }
     .and_then(Value::as_i64)
     .unwrap_or(0);
-    let content_hash = if is_my_document {
-        document.pointer("/importSource/sha256")
-    } else {
-        document.get("sha256")
-    }
-    .and_then(Value::as_str)
-    .unwrap_or("");
     let character_count = document.get("wordCount").and_then(Value::as_i64);
     let metadata = strip_fields(
         document,
@@ -514,6 +525,9 @@ fn persist_document(
             "originalFileName",
             "markdownVersion",
             "contentVersion",
+            "contentRevisionId",
+            "contentManifestHash",
+            "contentHash",
             "wordCount",
             "createdAt",
             "updatedAt",
@@ -522,42 +536,13 @@ fn persist_document(
         ],
     );
     let metadata_json = serde_json::to_string(&metadata).map_err(to_cli_error)?;
-    let row_hash = hash_text(
-        &json!({
-            "title": title,
-            "kind": document_kind,
-            "mediaType": media_type,
-            "source": source,
-            "file": original_file_name,
-            "original": original_revision_id,
-            "active": active_revision_id,
-            "version": content_version,
-            "hash": content_hash,
-            "characters": character_count,
-            "position": position,
-            "metadata": metadata,
-        })
-        .to_string(),
-    );
-    let current_hash = connection
-        .query_row(
-            "SELECT content_hash FROM documents WHERE resource_id = ?",
-            [id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(to_cli_error)?;
-    let stored_hash = if content_hash.is_empty() {
-        row_hash.as_str()
-    } else {
-        content_hash
-    };
     let current_shape = connection
         .query_row(
             r#"
             SELECT r.title, d.document_kind, d.media_type, d.source, d.original_file_name,
-                   d.original_revision_id, d.active_revision_id, d.content_version,
-                   d.content_hash, d.character_count, d.position, d.metadata_json, r.deleted_at
+                   d.original_content_ref, d.active_content_ref,
+                   d.logical_content_version, d.character_count, d.position,
+                   d.metadata_json, r.deleted_at
             FROM documents d JOIN resources r ON r.id = d.resource_id WHERE d.resource_id = ?
             "#,
             [id],
@@ -571,11 +556,10 @@ fn persist_document(
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, i64>(7)?,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, Option<i64>>(9)?,
-                    row.get::<_, i64>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ]))
             },
         )
@@ -587,10 +571,9 @@ fn persist_document(
         media_type,
         source,
         original_file_name,
-        original_revision_id,
-        active_revision_id,
-        content_version,
-        stored_hash,
+        original_content_ref,
+        active_content_ref,
+        logical_content_version,
         character_count,
         position as i64,
         metadata_json,
@@ -620,18 +603,17 @@ fn persist_document(
             r#"
             INSERT INTO documents (
               resource_id, document_kind, media_type, source, original_file_name,
-              original_revision_id, active_revision_id, content_version, content_hash,
-              character_count, position, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              original_content_ref, active_content_ref,
+              logical_content_version, character_count, position, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(resource_id) DO UPDATE SET
               document_kind = excluded.document_kind,
               media_type = excluded.media_type,
               source = excluded.source,
               original_file_name = excluded.original_file_name,
-              original_revision_id = excluded.original_revision_id,
-              active_revision_id = excluded.active_revision_id,
-              content_version = excluded.content_version,
-              content_hash = excluded.content_hash,
+              original_content_ref = excluded.original_content_ref,
+              active_content_ref = excluded.active_content_ref,
+              logical_content_version = excluded.logical_content_version,
               character_count = excluded.character_count,
               position = excluded.position,
               metadata_json = excluded.metadata_json
@@ -642,18 +624,142 @@ fn persist_document(
                 media_type,
                 source,
                 original_file_name,
-                original_revision_id,
-                active_revision_id,
-                content_version,
-                stored_hash,
+                original_content_ref,
+                active_content_ref,
+                logical_content_version,
                 character_count,
                 position as i64,
                 metadata_json,
             ],
         )
         .map_err(to_cli_error)?;
-    let _ = current_hash;
     Ok(revision)
+}
+
+impl Storage {
+    pub(crate) fn delete_my_document_resource(
+        &self,
+        project_id: &str,
+        panel_id: &str,
+        document_id: &str,
+    ) -> Result<(), CliError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+            .map_err(to_cli_error)?;
+        let now = crate::control::now_iso();
+        Self::delete_my_document_in_transaction(&tx, project_id, panel_id, document_id)?;
+        if cancel_tasks_for_resource_in_transaction(
+            &tx,
+            project_id,
+            document_id,
+            "prerequisite_deleted",
+            &now,
+        )? {
+            record_scope(&tx, "tasks", Some(project_id), None)?;
+        }
+        let selection = tx
+            .query_row(
+                "SELECT selection_json FROM panel_selections WHERE project_id = ? AND panel_id = ?",
+                params![project_id, panel_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(to_cli_error)?
+            .map(|raw| serde_json::from_str::<Value>(&raw).map_err(to_cli_error))
+            .transpose()?;
+        if let Some(mut selection) = selection {
+            if let Some(selected_ids) = selection
+                .get_mut("selectedMyDocumentIds")
+                .and_then(Value::as_array_mut)
+            {
+                let previous_len = selected_ids.len();
+                selected_ids.retain(|value| value.as_str() != Some(document_id));
+                if selected_ids.len() != previous_len {
+                    selection["updatedAt"] = json!(now);
+                    Self::write_panel_selection_in_transaction(
+                        &tx,
+                        project_id,
+                        panel_id,
+                        &selection,
+                    )?;
+                }
+            }
+        }
+        sync_task_resources_for_project(&tx, project_id)?;
+        tx.commit().map_err(to_cli_error)
+    }
+
+    pub(crate) fn write_my_document_content_in_transaction(
+        connection: &Connection,
+        project_id: &str,
+        expected_content_version: u64,
+        document: &Value,
+    ) -> Result<i64, CliError> {
+        let document_id = document
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new("My Document id is required."))?;
+        let current = connection
+            .query_row(
+                r#"
+                SELECT r.project_id, r.kind, d.document_kind,
+                       d.logical_content_version, d.position
+                FROM documents d
+                JOIN resources r ON r.id = d.resource_id
+                WHERE d.resource_id = ? AND r.deleted_at IS NULL
+                "#,
+                [document_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(to_cli_error)?
+            .ok_or_else(|| {
+                CliError::with_code(
+                    "target_not_found",
+                    format!("My Document not found: {document_id}"),
+                )
+            })?;
+        if current.0 != project_id || current.1 != "document" || current.2 != "my_document" {
+            return Err(CliError::with_code(
+                "resource_identity_conflict",
+                "The My Document target belongs to another Project or module.",
+            ));
+        }
+        if current.3 != expected_content_version as i64 {
+            return Err(CliError::with_code(
+                "content_conflict",
+                format!(
+                    "My Document changed from version {expected_content_version} to {}",
+                    current.3
+                ),
+            ));
+        }
+        if document
+            .get("contentVersion")
+            .and_then(Value::as_u64)
+            != Some(expected_content_version + 1)
+        {
+            return Err(CliError::with_code(
+                "content_conflict",
+                "Prepared My Document metadata has an unexpected version.",
+            ));
+        }
+        persist_document(
+            connection,
+            project_id,
+            "",
+            "my_document",
+            current.4.max(0) as usize,
+            document,
+        )
+    }
 }
 
 fn persist_wiki_space(
@@ -668,15 +774,26 @@ fn persist_wiki_space(
         .and_then(Value::as_str)
         .ok_or_else(|| CliError::new("Wiki space id is required."))?;
     let title = space.get("title").and_then(Value::as_str).unwrap_or("Wiki");
-    let active_revision_id = space.get("rootRef").and_then(Value::as_str);
+    let root_ref = space.get("rootRef").and_then(Value::as_str);
     let selected_skill_id = space.get("agentSkillId").and_then(Value::as_str);
-    let metadata = strip_fields(space, &["id", "title", "createdAt", "updatedAt"]);
+    let metadata = strip_fields(
+        space,
+        &[
+            "id",
+            "title",
+            "contentVersion",
+            "contentRevisionId",
+            "contentManifestHash",
+            "contentHash",
+            "createdAt",
+            "updatedAt",
+        ],
+    );
     let metadata_json = serde_json::to_string(&metadata).map_err(to_cli_error)?;
-    let content_hash = hash_text(&metadata_json);
     let current = connection
         .query_row(
             r#"
-            SELECT w.content_version, w.content_hash, w.position, w.metadata_json,
+            SELECT r.content_version, w.root_ref, w.position, w.metadata_json,
                    r.title, r.deleted_at, r.revision
             FROM wiki_spaces w JOIN resources r ON r.id = w.resource_id
             WHERE w.resource_id = ?
@@ -685,7 +802,7 @@ fn persist_wiki_space(
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
@@ -697,7 +814,7 @@ fn persist_wiki_space(
         .optional()
         .map_err(to_cli_error)?;
     if current.as_ref().is_some_and(|value| {
-        value.1 == content_hash
+        value.1.as_deref() == root_ref
             && value.2 == position as i64
             && value.3 == metadata_json
             && value.4 == title
@@ -706,7 +823,7 @@ fn persist_wiki_space(
         let value = current.expect("checked");
         return Ok((value.6, value.0));
     }
-    let content_version = current.as_ref().map(|value| value.0 + 1).unwrap_or(1);
+    let content_version = current.as_ref().map(|value| value.0).unwrap_or(0);
     let revision = record_resource_scope(connection, project_id, panel_id, id)?;
     upsert_resource(
         connection,
@@ -722,22 +839,17 @@ fn persist_wiki_space(
         .execute(
             r#"
             INSERT INTO wiki_spaces (
-              resource_id, active_revision_id, content_version, content_hash,
-              selected_skill_id, position, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+              resource_id, root_ref, selected_skill_id, position, metadata_json
+            ) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(resource_id) DO UPDATE SET
-              active_revision_id = excluded.active_revision_id,
-              content_version = excluded.content_version,
-              content_hash = excluded.content_hash,
+              root_ref = excluded.root_ref,
               selected_skill_id = excluded.selected_skill_id,
               position = excluded.position,
               metadata_json = excluded.metadata_json
             "#,
             params![
                 id,
-                active_revision_id,
-                content_version,
-                content_hash,
+                root_ref,
                 selected_skill_id,
                 position as i64,
                 metadata_json,

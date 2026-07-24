@@ -7,10 +7,14 @@ pub struct WrittenAsset {
 
 pub(crate) struct PreparedAssetWrite {
     pub(crate) asset_ref: String,
+    pub(crate) base_content_version: i64,
     pub(crate) content_hash: String,
     pub(crate) content_version: i64,
     pub(crate) file_name: String,
     pub(crate) file_path: PathBuf,
+    pub(crate) manifest_hash: String,
+    pub(crate) revision_dir: PathBuf,
+    pub(crate) revision_id: String,
     pub(crate) resource_id: String,
     pub(crate) size_bytes: i64,
 }

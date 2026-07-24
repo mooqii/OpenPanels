@@ -12,16 +12,19 @@ pub fn cancel_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, Cl
     let project_id = task["task"]["projectId"].as_str().unwrap_or_default();
     let domain = task_domain(task["task"]["queue"].as_str().unwrap_or(""))?;
     let panel_state = match domain {
-        TaskDomain::Wiki | TaskDomain::Publication => None,
-        TaskDomain::Writing => crate::writing::prepare_task_cancellation(paths, task_id)?,
         TaskDomain::Release => crate::release::prepare_task_cancellation(paths, task_id)?,
+        _ => None,
+    };
+    let my_document_deletion = match domain {
+        TaskDomain::Writing => crate::writing::prepare_task_cancellation(paths, task_id)?,
+        _ => None,
     };
     finalize_task_runtime(
         paths,
         project_id,
         task_id,
         "cancelled",
-        TaskOutputPlan::completed(None, panel_state),
+        TaskOutputPlan::completed(None, panel_state, None, my_document_deletion),
         Some(json!({ "code": "user_cancelled" })),
         None,
         None,

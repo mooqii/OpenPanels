@@ -265,13 +265,13 @@ mod tests {
             "completed"
         );
         let document_id = completed["document"]["id"].as_str().unwrap();
-        let active_path = paths
-            .storage_dir
-            .join("projects")
-            .join(sanitize_path_part(&wiki_bootstrap.project.id))
-            .join("content/my_document")
-            .join(sanitize_path_part(document_id))
-            .join("active.json");
+        let active_path = crate::content::resource_dir(
+            &paths,
+            &wiki_bootstrap.project.id,
+            crate::content::ResourceKind::MyDocument,
+            document_id,
+        )
+        .join("active.json");
         fs::remove_file(&active_path).expect("simulate interrupted activation");
         assert!(crate::content::active_resource_descriptor(
             &paths,
@@ -280,7 +280,8 @@ mod tests {
             document_id,
         )
         .unwrap()
-        .is_none());
+        .is_some());
+        assert!(!active_path.exists());
         crate::content::recover_filesystem(&paths).expect("recover direct operation content");
         assert!(crate::content::active_resource_descriptor(
             &paths,
@@ -290,6 +291,7 @@ mod tests {
         )
         .unwrap()
         .is_some());
+        assert!(active_path.exists());
     }
 
     #[test]
@@ -317,6 +319,32 @@ mod tests {
             .expect_err("content conflict");
         assert_eq!(error.code(), Some("content_conflict"));
         assert_eq!(inspect(&paths, operation_id).unwrap()["status"], "active");
+    }
+
+    #[test]
+    fn my_document_completion_ignores_unrelated_wiki_state_changes() {
+        let (_temp, paths) = test_paths();
+        ensure_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+        let started = begin_my_document(&paths, "Report", "markdown", None).expect("begin");
+        let operation_id = started["operation"]["id"].as_str().unwrap();
+        crate::my_document::create_my_document(
+            &paths,
+            "notes.md",
+            Some("Notes"),
+            None,
+            None,
+            None,
+            b"# Unrelated notes",
+        )
+        .expect("unrelated document");
+
+        let file = paths.storage_dir.join("agent-report.md");
+        fs::write(&file, "# Agent report").expect("file");
+        let completed = complete_my_document(&paths, operation_id, file.to_str().unwrap())
+            .expect("resource-scoped completion");
+
+        assert_eq!(completed["document"]["contentVersion"], 1);
+        assert_eq!(inspect(&paths, operation_id).unwrap()["status"], "completed");
     }
 
     #[test]

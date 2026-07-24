@@ -99,10 +99,31 @@ pub(super) fn save_wiki_state(
     paths: &MyOpenPanelsPaths,
     wiki: &WikiBootstrapValue,
 ) -> Result<(), CliError> {
-    let storage = Storage::open(paths)?;
-    storage.upsert_tasks(&wiki.project.id, &wiki.panel.id, "wiki", &wiki.tasks)?;
+    save_wiki_state_with_revision_check(paths, wiki, false)
+}
+
+pub(super) fn save_wiki_state_if_revision(
+    paths: &MyOpenPanelsPaths,
+    wiki: &WikiBootstrapValue,
+) -> Result<(), CliError> {
+    save_wiki_state_with_revision_check(paths, wiki, true)
+}
+
+fn save_wiki_state_with_revision_check(
+    paths: &MyOpenPanelsPaths,
+    wiki: &WikiBootstrapValue,
+    check_revision: bool,
+) -> Result<(), CliError> {
     let persisted_state = wiki.state.clone();
-    storage.write_panel_state(&wiki.project.id, &wiki.panel.id, &persisted_state)?;
+    crate::content::write_panel_state_and_tasks_with_pending_content(
+        paths,
+        &wiki.project.id,
+        &wiki.panel.id,
+        check_revision.then_some(wiki.revision),
+        "wiki",
+        &wiki.tasks,
+        &persisted_state,
+    )?;
     Ok(())
 }
 
@@ -246,6 +267,35 @@ mod tests {
                 .expect("focused bootstrap")
                 .active_panel_kind,
             PanelKind::Typesetting
+        );
+    }
+
+    #[test]
+    fn page_content_update_owns_index_and_space_timestamp() {
+        let mut state = json!({
+            "wikiSpaces": [{
+                "id": "wiki:1",
+                "pageIndex": [],
+                "updatedAt": "old"
+            }]
+        });
+        apply_page_content_update(
+            &mut state,
+            "wiki:1",
+            "notes/report.md",
+            "# Report\n\nThe current result.",
+            None,
+            "2026-01-01T00:00:00.000Z",
+        )
+        .expect("page update");
+
+        assert_eq!(
+            state["wikiSpaces"][0]["pageIndex"][0]["title"],
+            "Report"
+        );
+        assert_eq!(
+            state["wikiSpaces"][0]["updatedAt"],
+            "2026-01-01T00:00:00.000Z"
         );
     }
 }
@@ -473,7 +523,7 @@ pub(super) fn resolve_wiki_space(
     Ok(WikiSpaceValue { id, value })
 }
 
-pub(super) fn upsert_page_index(
+pub(super) fn apply_page_content_update(
     state: &mut Value,
     wiki_space_id: &str,
     page_path: &str,
@@ -515,6 +565,7 @@ pub(super) fn upsert_page_index(
     } else {
         page_index.push(item);
     }
+    space["updatedAt"] = json!(updated_at);
     Ok(())
 }
 
@@ -556,7 +607,7 @@ pub(super) fn wiki_page_path(
 ) -> Result<PathBuf, CliError> {
     let pages_dir = materialization_dir
         .join("wikis")
-        .join(sanitize_path_part(wiki_space_id))
+        .join(crate::paths::stable_path_key(wiki_space_id))
         .join("pages");
     let mut path = pages_dir.clone();
     for part in page_path.split('/') {

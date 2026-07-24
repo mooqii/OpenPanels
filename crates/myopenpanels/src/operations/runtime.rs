@@ -90,9 +90,16 @@ fn commit_direct_panel_state(
     state: &Value,
     expected_panel_revision: i64,
     bind_resulting_revision: bool,
+    removed_my_document_id: Option<&str>,
 ) -> Result<i64, CliError> {
-    let project_id = operation["projectId"].as_str().unwrap_or_default();
-    let panel_id = operation["panelId"].as_str().unwrap_or_default();
+    let project_id = operation["projectId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let panel_id = operation["panelId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     let mut storage = Storage::open(paths)?;
     let tx = storage
         .connection_mut()
@@ -100,13 +107,21 @@ fn commit_direct_panel_state(
         .map_err(to_cli_error)?;
     let revision = Storage::write_panel_state_if_revision_in_transaction(
         &tx,
-        project_id,
-        panel_id,
+        &project_id,
+        &panel_id,
         expected_panel_revision,
         state,
     )?;
     if bind_resulting_revision {
         operation["baseRevision"] = json!(revision);
+    }
+    if let Some(document_id) = removed_my_document_id {
+        Storage::delete_my_document_in_transaction(
+            &tx,
+            &project_id,
+            &panel_id,
+            document_id,
+        )?;
     }
     Storage::write_direct_operation_in_transaction(&tx, operation)?;
     tx.commit().map_err(to_cli_error)?;
@@ -278,6 +293,7 @@ pub fn begin_canvas(
         &prepared.state,
         prepared.base_revision,
         true,
+        None,
     )?;
     Ok(
         json!({ "operation": operation, "panelSkill": panel_skill, "nextAction": "Read the Panels Skill and returned Canvas references, generate the bitmap, then run operation complete with the captured operation id." }),
@@ -388,7 +404,7 @@ pub fn complete_canvas(
             return Err(error);
         }
     };
-    let prepared_asset_path = prepared.asset.file_path.clone();
+    let prepared_asset_revision = prepared.asset.revision_dir.clone();
     let mut storage = Storage::open(paths)?;
     let committed = (|| {
         let tx = storage
@@ -414,7 +430,7 @@ pub fn complete_canvas(
         tx.commit().map_err(to_cli_error)
     })();
     if let Err(error) = committed {
-        let _ = fs::remove_file(prepared_asset_path);
+        let _ = fs::remove_dir_all(prepared_asset_revision);
         return Err(error);
     }
     let result = operation["result"].clone();
@@ -486,6 +502,7 @@ pub fn finish_canvas(
         &prepared.state,
         expected_revision,
         false,
+        None,
     )?;
     Ok(operation)
 }
@@ -534,6 +551,7 @@ pub fn begin_my_document(
         &prepared.state,
         prepared.base_panel_revision,
         false,
+        None,
     )?;
     Ok(
         json!({ "operation": operation, "panelSkill": panel_skill, "document": prepared.document, "nextAction": "Read the Panels Skill and returned Wiki references, write the result file, then run operation complete with the captured operation id." }),
@@ -591,9 +609,7 @@ pub fn complete_my_document(
         mime_type,
         base_content_version,
     )?;
-    let committed_content_version = prepared_content.commit["contentVersion"]
-        .as_u64()
-        .unwrap_or(0);
+    let committed_content_version = prepared_content.commit.content_version as u64;
     let prepared_document = match crate::my_document::prepare_complete_my_document_for_target(
         paths,
         &project_id,
@@ -630,12 +646,16 @@ pub fn complete_my_document(
         .connection_mut()
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(to_cli_error)?;
-    Storage::write_panel_state_if_revision_in_transaction(
+    Storage::write_my_document_content_in_transaction(
         &tx,
         &project_id,
-        &panel_id,
-        prepared_document.base_panel_revision,
-        &prepared_document.state,
+        base_content_version,
+        &prepared_document.document,
+    )?;
+    Storage::write_content_commit_in_transaction(
+        &tx,
+        &project_id,
+        &prepared_content.commit,
     )?;
     Storage::write_direct_operation_in_transaction(&tx, &operation)?;
     tx.commit().map_err(to_cli_error)?;
@@ -697,6 +717,7 @@ pub fn finish_my_document(
         &prepared.state,
         prepared.base_panel_revision,
         false,
+        prepared.document.is_null().then_some(document_id.as_str()),
     )?;
     Ok(operation)
 }

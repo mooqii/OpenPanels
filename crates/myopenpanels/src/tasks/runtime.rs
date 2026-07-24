@@ -140,33 +140,7 @@ fn finalize_task_runtime(
     .map_err(to_cli_error)?;
 
     if matches!(status, "failed" | "cancelled" | "superseded") {
-        let reason = json!({
-            "code": "prerequisite_failed",
-            "prerequisiteTaskId": task_id,
-            "prerequisiteStatus": status,
-        });
-        let dependent_status = if status == "failed" {
-            "failed"
-        } else {
-            "cancelled"
-        };
-        tx.execute(
-            r#"
-            UPDATE tasks SET status = ?, error_json = ?, completed_at = ?,
-              execution_generation = execution_generation + 1,
-              execution_token_hash = NULL, lease_owner = NULL, lease_expires_at = NULL,
-              heartbeat_at = NULL, current_runner_key = NULL, updated_at = ?
-            WHERE depends_on_task_id = ? AND status IN ('queued', 'running')
-            "#,
-            params![
-                dependent_status,
-                reason.to_string(),
-                now,
-                now,
-                task_id
-            ],
-        )
-        .map_err(to_cli_error)?;
+        terminate_task_descendants_in_transaction(&tx, project_id, task_id, status, &now)?;
     }
 
     if let Some(panel_state) = output_plan.panel_state {
@@ -178,12 +152,122 @@ fn finalize_task_runtime(
             &panel_state.state,
         )?;
     }
+    if let Some(prepared) = output_plan.my_document_content {
+        Storage::write_my_document_content_in_transaction(
+            &tx,
+            project_id,
+            prepared.expected_content_version,
+            &prepared.document,
+        )?;
+    }
+    if let Some(prepared) = output_plan.my_document_deletion {
+        Storage::delete_my_document_in_transaction(
+            &tx,
+            project_id,
+            &prepared.panel_id,
+            &prepared.document_id,
+        )?;
+    }
+    if let Some(prepared) = &prepared_content {
+        for commit in &prepared.commits {
+            if commit.resource_kind != crate::content::ResourceKind::WritingSkill.as_str() {
+                Storage::write_content_commit_in_transaction(&tx, project_id, commit)?;
+            }
+        }
+    }
     crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
     tx.commit().map_err(to_cli_error)?;
     if let Some(prepared) = prepared_content {
         crate::content::publish_prepared_task_content(paths, prepared)?;
     }
     Ok(())
+}
+
+pub(crate) fn terminate_task_descendants_in_transaction(
+    connection: &rusqlite::Connection,
+    project_id: &str,
+    prerequisite_task_id: &str,
+    prerequisite_status: &str,
+    now: &str,
+) -> Result<Vec<String>, CliError> {
+    let task_ids = {
+        let mut statement = connection
+            .prepare(
+                r#"
+                WITH RECURSIVE descendants(id) AS (
+                  SELECT id
+                  FROM tasks
+                  WHERE project_id = ? AND depends_on_task_id = ?
+                  UNION
+                  SELECT child.id
+                  FROM tasks child
+                  JOIN descendants parent
+                    ON child.depends_on_task_id = parent.id
+                  WHERE child.project_id = ?
+                )
+                SELECT task.id
+                FROM tasks task
+                JOIN descendants ON descendants.id = task.id
+                WHERE task.project_id = ?
+                  AND task.status IN ('queued', 'running')
+                ORDER BY task.created_at, task.id
+                "#,
+            )
+            .map_err(to_cli_error)?;
+        let collected = statement
+            .query_map(
+                params![
+                    project_id,
+                    prerequisite_task_id,
+                    project_id,
+                    project_id
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(to_cli_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_cli_error)?;
+        collected
+    };
+    if task_ids.is_empty() {
+        return Ok(task_ids);
+    }
+    let dependent_status = if prerequisite_status == "failed" {
+        "failed"
+    } else {
+        "cancelled"
+    };
+    let reason = json!({
+        "code": "prerequisite_failed",
+        "prerequisiteTaskId": prerequisite_task_id,
+        "prerequisiteStatus": prerequisite_status,
+    })
+    .to_string();
+    for task_id in &task_ids {
+        connection
+            .execute(
+                r#"
+                UPDATE tasks SET status = ?, error_json = ?, completed_at = ?,
+                  execution_generation = execution_generation + 1,
+                  execution_token_hash = NULL, lease_owner = NULL,
+                  lease_expires_at = NULL, heartbeat_at = NULL,
+                  current_runner_key = NULL, updated_at = ?
+                WHERE project_id = ? AND id = ?
+                  AND status IN ('queued', 'running')
+                "#,
+                params![
+                    dependent_status,
+                    reason,
+                    now,
+                    now,
+                    project_id,
+                    task_id
+                ],
+            )
+            .map_err(to_cli_error)?;
+        crate::content::abandon_task_staging_in_transaction(connection, task_id, now)?;
+    }
+    Ok(task_ids)
 }
 
 #[cfg(test)]
@@ -199,7 +283,12 @@ pub(crate) fn complete_task_with_prepared_panel_state_for_test(
         project_id,
         task_id,
         "succeeded",
-        TaskOutputPlan::completed(Some(json!({ "outcome": "no_change" })), Some(panel_state)),
+        TaskOutputPlan::completed(
+            Some(json!({ "outcome": "no_change" })),
+            Some(panel_state),
+            None,
+            None,
+        ),
         None,
         None,
         None,

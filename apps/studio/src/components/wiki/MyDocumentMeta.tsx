@@ -1,3 +1,4 @@
+import { Sparkle } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiJson } from "../../lib/api"
@@ -82,6 +83,15 @@ export function MyDocumentMeta({
         <span className="op-my-document-meta__status">{status}</span>
       ) : null}
       {hasOriginalFormat || status ? <span aria-hidden="true">·</span> : null}
+      {document.taskId ? (
+        <span
+          aria-label={t`Agent generated`}
+          className="op-my-document-meta__generated"
+          role="img"
+        >
+          <Sparkle aria-hidden size={13} />
+        </span>
+      ) : null}
       {wordCount !== null && wordCount !== undefined ? (
         <>
           <span>

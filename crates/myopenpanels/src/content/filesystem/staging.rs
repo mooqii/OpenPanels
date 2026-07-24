@@ -26,14 +26,11 @@ pub fn staged_files_for_task(
     let mut result = Vec::new();
     for resource_dir in read_dirs(&kind_dir)? {
         let metadata: StagedResource = read_json(&resource_dir.join("resource.json"))?;
-        for file in revision_files(&resource_dir.join("files"))? {
-            if file.0.ends_with(".mopmeta") {
-                continue;
-            }
+        for file in read_staged_files(&resource_dir)? {
             result.push((
                 metadata.resource_key.clone(),
-                file.0,
-                fs::read(file.1).map_err(to_cli_error)?,
+                file.logical_path.clone(),
+                fs::read(staged_file_path(&resource_dir, &file)?).map_err(to_cli_error)?,
                 metadata.metadata.clone(),
             ));
         }
@@ -76,7 +73,16 @@ pub(crate) fn prepare_task_staging_in_transaction(
         for resource_dir in read_dirs(&kind_dir)? {
             let staged: StagedResource = read_json(&resource_dir.join("resource.json"))?;
             let kind = ResourceKind::parse(&staged.resource_kind)?;
-            let current = read_active_pointer(paths, &project_id, kind, &staged.resource_key)?;
+            let current = if kind == ResourceKind::WritingSkill {
+                read_active_pointer(paths, &project_id, kind, &staged.resource_key)?
+            } else {
+                read_authoritative_pointer_from_connection(
+                    tx,
+                    &project_id,
+                    kind,
+                    &staged.resource_key,
+                )?
+            };
             if current.as_ref().map(|value| value.revision_id.as_str())
                 != staged.base_revision_id.as_deref()
                 || current.as_ref().map_or(0, |value| value.content_version)
@@ -98,13 +104,14 @@ pub(crate) fn prepare_task_staging_in_transaction(
     for (staged, resource_dir) in staged_resources {
         let kind = ResourceKind::parse(&staged.resource_kind)?;
         let (active_path, revision) = prepare_staged_resource(paths, &staged, &resource_dir, None)?;
-        commits.push(json!({
-            "resourceKind": kind.as_str(),
-            "resourceKey": staged.resource_key,
-            "revisionId": revision.revision_id,
-            "contentVersion": revision.content_version,
-            "manifestHash": revision.manifest_hash,
-        }));
+        commits.push(ContentCommit {
+            resource_kind: kind.as_str().to_owned(),
+            resource_key: staged.resource_key,
+            revision_id: revision.revision_id.clone(),
+            content_version: revision.content_version,
+            manifest_hash: revision.manifest_hash.clone(),
+            content_hash: revision.content_hash.clone(),
+        });
         activations.push(PreparedActivation {
             active_path,
             pointer: revision,
@@ -155,7 +162,7 @@ pub(crate) fn prepare_direct_text_content(
             "My Document content must be bounded UTF-8 text.",
         ));
     }
-    let current = read_active_pointer(paths, project_id, kind, resource_key)?;
+    let current = read_authoritative_pointer(paths, project_id, kind, resource_key)?;
     let current_version = current.as_ref().map_or(0, |value| value.content_version);
     if current_version != base_content_version as i64 {
         return Err(CliError::with_code(
@@ -171,10 +178,7 @@ pub(crate) fn prepare_direct_text_content(
     if staging_root.exists() {
         fs::remove_dir_all(&staging_root).map_err(to_cli_error)?;
     }
-    let destination = staging_root
-        .join("files")
-        .join(logical_path_buf(logical_path)?);
-    write_materialized_file(&destination, bytes)?;
+    write_staged_file(&staging_root, logical_path, bytes, mime_type, json!({}))?;
     let staged = StagedResource {
         project_id: project_id.to_owned(),
         panel_id: panel_id.to_owned(),
@@ -184,19 +188,15 @@ pub(crate) fn prepare_direct_text_content(
         base_content_version: current_version,
         metadata: json!({ "replaceAll": true }),
     };
-    let (active_path, pointer) = prepare_staged_resource(
-        paths,
-        &staged,
-        &staging_root,
-        Some((logical_path, mime_type)),
-    )?;
-    let commit = json!({
-        "resourceKind": kind.as_str(),
-        "resourceKey": resource_key,
-        "revisionId": pointer.revision_id,
-        "contentVersion": pointer.content_version,
-        "manifestHash": pointer.manifest_hash,
-    });
+    let (active_path, pointer) = prepare_staged_resource(paths, &staged, &staging_root, None)?;
+    let commit = ContentCommit {
+        resource_kind: kind.as_str().to_owned(),
+        resource_key: resource_key.to_owned(),
+        revision_id: pointer.revision_id.clone(),
+        content_version: pointer.content_version,
+        manifest_hash: pointer.manifest_hash.clone(),
+        content_hash: pointer.content_hash.clone(),
+    };
     Ok(PreparedDirectContent {
         commit,
         activation: PreparedActivation {

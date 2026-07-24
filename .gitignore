@@ -3,6 +3,7 @@ node_modules/
 dist/
 target/
 .myopenpanels/
+.myopenpanels-backups/
 .myopenpanels.archive-*/
 .myopenpanels.pre-v1-*/
 .myopenpanels.backup-*/

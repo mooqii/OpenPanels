@@ -73,20 +73,36 @@ mod recommended_skills_tests {
     }
 
     #[test]
-    fn embedded_recommended_catalog_lists_guizang_for_cover_creation_without_network_access() {
+    fn embedded_recommended_catalog_lists_expected_module_associations_without_network_access() {
         let (_temporary, paths) = test_paths();
         let payload = recommended_skills(&paths).expect("recommended skills");
         assert!(payload.get("schemaVersion").is_none());
         let skills = payload["skills"].as_array().expect("skills");
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0]["id"], "guizang-social-card-skill");
-        assert_eq!(skills[0]["name"], "guizang-social-card-skill");
+        assert_eq!(skills.len(), 2);
+
+        let guizang = skills
+            .iter()
+            .find(|skill| skill["id"] == "guizang-social-card-skill")
+            .expect("guizang recommendation");
+        assert_eq!(guizang["name"], "guizang-social-card-skill");
         assert_eq!(
-            skills[0]["sourceUrl"],
+            guizang["sourceUrl"],
             "https://github.com/op7418/guizang-social-card-skill"
         );
-        assert_eq!(skills[0]["moduleKinds"], json!(["publication-cover"]));
-        assert_eq!(skills[0]["installStatus"], "notInstalled");
+        assert_eq!(guizang["moduleKinds"], json!(["publication-cover"]));
+        assert_eq!(guizang["installStatus"], "notInstalled");
+
+        let khazix = skills
+            .iter()
+            .find(|skill| skill["id"] == "khazix-writer")
+            .expect("khazix recommendation");
+        assert_eq!(khazix["name"], "khazix-writer");
+        assert_eq!(
+            khazix["sourceUrl"],
+            "https://github.com/KKKKhazix/khazix-skills/tree/main/khazix-writer"
+        );
+        assert_eq!(khazix["moduleKinds"], json!(["writing"]));
+        assert_eq!(khazix["installStatus"], "notInstalled");
     }
 
     #[test]

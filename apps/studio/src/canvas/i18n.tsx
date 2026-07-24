@@ -24,6 +24,7 @@ export const MYOPENPANELS_LOCALE_LABELS: Record<MyOpenPanelsLocale, string> = {
 const zhCNMessages: Record<string, string> = {
   "Add Image": "添加图片",
   "Agent context": "Agent 上下文",
+  "Agent generated": "Agent 生成",
   Added: "已添加",
   "Add latest version to raw documents": "将最新版本添加到原始文档",
   "Add to raw documents": "添加到原始文档",

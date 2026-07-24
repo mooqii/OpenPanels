@@ -247,8 +247,7 @@ pub fn write_page(
                 .iter()
                 .any(|page| page.get("path").and_then(Value::as_str) == Some(page_path))
         });
-    upsert_page_index(&mut wiki.state, &space.id, page_path, content, title, &now)?;
-    update_wiki_space_timestamp(&mut wiki.state, &space.id, &now)?;
+    apply_page_content_update(&mut wiki.state, &space.id, page_path, content, title, &now)?;
     state_object_mut(&mut wiki.state)?.insert("activeWikiSpaceId".to_owned(), json!(space.id));
     state_object_mut(&mut wiki.state)?.insert("activeWikiPagePath".to_owned(), json!(page_path));
     let task = if task_id.is_none() {

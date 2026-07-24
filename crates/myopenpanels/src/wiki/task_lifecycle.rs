@@ -143,17 +143,26 @@ fn complete_task_internal(
             ));
         }
         let document = find_my_document_mut(&mut wiki.state, document_id)?;
-        let version = document
+        let current_version = document
             .get("contentVersion")
-            .and_then(Value::as_i64)
-            .unwrap_or(0)
-            + 1;
-        document["contentRef"] = json!("content.md");
-        document["contentVersion"] = json!(version);
-        document["format"] = json!("markdown");
-        document["mimeType"] = json!("text/markdown");
-        document["wordCount"] = json!(character_count(markdown));
-        document["updatedAt"] = json!(now);
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        crate::my_document::apply_content_update(
+            document,
+            crate::my_document::ContentUpdate {
+                expected_version: current_version,
+                committed_version: current_version + 1,
+                content_ref: "content.md",
+                format: "markdown",
+                mime_type: "text/markdown",
+                original_file_name: None,
+                title: None,
+                content: bytes,
+                required_operation_id: None,
+                clear_write_operation: false,
+                updated_at: &now,
+            },
+        )?;
     }
     let staged_wiki = crate::content::staged_files_for_task(
         paths,
@@ -164,7 +173,7 @@ fn complete_task_internal(
         let markdown = std::str::from_utf8(bytes).map_err(|_| {
             CliError::with_code("invalid_output", "Wiki pages must be valid UTF-8.")
         })?;
-        upsert_page_index(
+        apply_page_content_update(
             &mut wiki.state,
             wiki_space_id,
             page_path,
@@ -172,7 +181,6 @@ fn complete_task_internal(
             metadata.get("title").and_then(Value::as_str),
             &now,
         )?;
-        update_wiki_space_timestamp(&mut wiki.state, wiki_space_id, &now)?;
     }
     if let Some((wiki_space_id, page_path, _, _)) = staged_wiki.first() {
         state_object_mut(&mut wiki.state)?

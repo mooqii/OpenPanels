@@ -1,6 +1,6 @@
 {
   "name": "myopenpanels-monorepo",
-  "version": "0.4.17",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.26.2",
@@ -17,6 +17,7 @@
     "sync:capabilities": "node scripts/sync-capability-projections.mjs",
     "package:release:cli": "node scripts/package-myopenpanels.mjs",
     "manifest:release:cli": "node scripts/generate-myopenpanels-release-manifest.mjs",
+    "verify:release:cli": "node scripts/verify-myopenpanels-release.mjs",
     "check": "pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
   },
   "devDependencies": {

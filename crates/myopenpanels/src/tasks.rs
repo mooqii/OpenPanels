@@ -27,9 +27,31 @@ impl PreparedPanelState {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedMyDocumentContent {
+    pub(crate) expected_content_version: u64,
+    pub(crate) document: Value,
+}
+
+impl PreparedMyDocumentContent {
+    pub(crate) fn new(expected_content_version: u64, document: Value) -> Self {
+        Self {
+            expected_content_version,
+            document,
+        }
+    }
+}
+
+pub(crate) struct PreparedMyDocumentDeletion {
+    pub(crate) panel_id: String,
+    pub(crate) document_id: String,
+}
+
 struct TaskOutputPlan {
     result: Option<Value>,
     panel_state: Option<PreparedPanelState>,
+    my_document_content: Option<PreparedMyDocumentContent>,
+    my_document_deletion: Option<PreparedMyDocumentDeletion>,
 }
 
 impl TaskOutputPlan {
@@ -37,13 +59,22 @@ impl TaskOutputPlan {
         Self {
             result: None,
             panel_state: None,
+            my_document_content: None,
+            my_document_deletion: None,
         }
     }
 
-    fn completed(result: Option<Value>, panel_state: Option<PreparedPanelState>) -> Self {
+    fn completed(
+        result: Option<Value>,
+        panel_state: Option<PreparedPanelState>,
+        my_document_content: Option<PreparedMyDocumentContent>,
+        my_document_deletion: Option<PreparedMyDocumentDeletion>,
+    ) -> Self {
         Self {
             result,
             panel_state,
+            my_document_content,
+            my_document_deletion,
         }
     }
 }

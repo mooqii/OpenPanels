@@ -430,6 +430,74 @@ fn terminal_conversion_failure_fails_its_dependent_wiki_update() {
 }
 
 #[test]
+fn terminal_task_state_propagates_through_all_dependency_descendants() {
+    let temp = tempfile::tempdir().expect("temp");
+    let project_dir = temp.path().join("project");
+    let storage_dir = temp.path().join("storage");
+    fs::create_dir_all(&project_dir).expect("project");
+    create_cli_project(&project_dir, &storage_dir);
+    let paths = resolve_myopenpanels_paths(
+        Some(project_dir.to_str().unwrap()),
+        Some(storage_dir.to_str().unwrap()),
+        Some("ctx"),
+    )
+    .expect("paths");
+    let bootstrap = read_project_bootstrap(&paths, BootstrapRequest::new()).expect("bootstrap");
+    let wiki_panel = bootstrap
+        .panels
+        .iter()
+        .find(|panel| panel.panel.kind == PanelKind::Wiki)
+        .expect("wiki panel");
+    let storage = Storage::open(&paths).expect("storage");
+    let mut task_ids = Vec::new();
+    for target in ["root", "child", "grandchild"] {
+        let task = storage
+            .insert_task(
+                &bootstrap.project.id,
+                &wiki_panel.panel.id,
+                "wiki",
+                "maintain_wiki",
+                "wiki.maintain",
+                target,
+                &json!({ "changeEvents": [] }),
+                &json!({ "agentSkillId": "wiki-default" }),
+            )
+            .expect("task");
+        task_ids.push(task["id"].as_str().expect("task id").to_owned());
+    }
+    storage
+        .connection()
+        .execute(
+            "UPDATE tasks SET depends_on_task_id = ? WHERE project_id = ? AND id = ?",
+            params![task_ids[0], bootstrap.project.id, task_ids[1]],
+        )
+        .expect("child dependency");
+    storage
+        .connection()
+        .execute(
+            "UPDATE tasks SET depends_on_task_id = ? WHERE project_id = ? AND id = ?",
+            params![task_ids[1], bootstrap.project.id, task_ids[2]],
+        )
+        .expect("grandchild dependency");
+    drop(storage);
+
+    tasks::cancel_task(&paths, &task_ids[0]).expect("cancel root");
+
+    for task_id in &task_ids[1..] {
+        let dependent = tasks::inspect_task(&paths, task_id).expect("dependent");
+        assert_eq!(dependent["task"]["status"], "cancelled");
+        assert_eq!(
+            dependent["task"]["error"]["code"],
+            "prerequisite_failed"
+        );
+        assert_eq!(
+            dependent["task"]["error"]["prerequisiteTaskId"],
+            task_ids[0]
+        );
+    }
+}
+
+#[test]
 fn task_output_plan_conflict_leaves_task_and_panel_unchanged() {
     let temp = tempfile::tempdir().expect("temp");
     let project_dir = temp.path().join("project");

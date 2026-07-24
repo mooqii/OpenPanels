@@ -7,13 +7,14 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 mod broker;
 mod io;
+mod migration;
 mod model;
 mod recovery;
 mod resources;
@@ -27,6 +28,7 @@ pub use resources::*;
 pub use staging::*;
 
 pub(crate) use io::*;
+pub(crate) use migration::*;
 pub(crate) use revisions::*;
 
 #[cfg(test)]

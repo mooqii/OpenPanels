@@ -21,9 +21,11 @@ pnpm run check:release
 
 GitHub tags matching `v*` run `.github/workflows/release-myopenpanels.yml`.
 The workflow currently builds macOS Apple Silicon, macOS Intel, and Windows
-x64 packages. Linux release packages are temporarily disabled. It packages the
-archives, generates `myopenpanels-manifest.json`, and uploads all release assets
-to the matching GitHub Release.
+x64 packages. Linux release packages are temporarily disabled. Before building
+packages it runs the release contract, lint, typecheck, Studio tests, and Studio
+build. It then packages the archives, generates
+`myopenpanels-manifest.json`, verifies the exact target set, archive contents,
+checksums, and sizes, and uploads all assets to a draft GitHub Release.
 
 For local packaging smoke tests:
 
@@ -33,7 +35,25 @@ node scripts/package-myopenpanels.mjs \
   --binary target/debug/myopenpanels \
   --out-dir dist/release
 node scripts/generate-myopenpanels-release-manifest.mjs --out-dir dist/release
+node scripts/verify-myopenpanels-release.mjs dist/release
 ```
+
+The draft Release is published only after the updater smoke test described
+below succeeds.
+
+## Required Update Smoke Test
+
+Before publishing the draft Release, use the latest published CLI with the
+draft candidate manifest and the real archive for the current platform. Verify:
+
+1. the manifest and archive download successfully;
+2. checksum, size, and candidate `--version` validation succeed;
+3. the old executable is replaced by the candidate;
+4. Studio restarts on the same storage directory and port;
+5. the browser reconnects and reports the candidate version.
+
+Unit tests, direct candidate execution, and archive verification do not replace
+this test. Keep the Release as a draft when any step fails.
 
 ## GitHub Release Assets
 
@@ -149,10 +169,12 @@ asset without replacing the running binary. `install-restart` is only invoked
 after user confirmation; it installs the cached update when possible and then
 spawns a delayed replacement studio process on the same host, port, project,
 context id, and static asset override. It normally keeps the selected storage
-directory. As part of the destructive storage-baseline release, a previous
-release's platform-specific default storage argument is redirected to
-`~/.myopenpanels/`; the old directory is left untouched. The new process writes
-the storage-wide `studio/instance.json` before the current server exits.
+directory. During the pre-1.0 storage-location transition, a previous release's
+platform-specific default storage argument is redirected to
+`~/.myopenpanels/`; the old directory is left untouched. Once the stable
+storage contract applies, updates preserve and migrate the selected storage
+directory. The new process writes the storage-wide `studio/instance.json`
+before the current server exits.
 
 Environment controls:
 

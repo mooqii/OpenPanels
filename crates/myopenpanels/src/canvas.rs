@@ -230,7 +230,7 @@ pub fn insert_image_for_target(
 ) -> Result<InsertImagePayload, CliError> {
     let mut prepared =
         prepare_image_for_target(paths, project_id, panel_id, input, select_result, None)?;
-    let prepared_asset_path = prepared.asset.file_path.clone();
+    let prepared_asset_revision = prepared.asset.revision_dir.clone();
     let mut storage = Storage::open(paths)?;
     let committed = (|| {
         let tx = storage
@@ -248,7 +248,7 @@ pub fn insert_image_for_target(
         tx.commit().map_err(to_cli_error)
     })();
     if let Err(error) = committed {
-        let _ = fs::remove_file(prepared_asset_path);
+        let _ = fs::remove_dir_all(prepared_asset_revision);
         return Err(error);
     }
     Ok(prepared.payload)

@@ -64,10 +64,25 @@ impl Storage {
         panel_id: &str,
         selection: &Value,
     ) -> Result<(), CliError> {
-        let selection_json = serde_json::to_string(selection).map_err(to_cli_error)?;
-        let content_hash = hash_text(&selection_json);
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
+        Self::write_panel_selection_in_transaction(
+            &tx,
+            project_id,
+            panel_id,
+            selection,
+        )?;
+        tx.commit().map_err(to_cli_error)
+    }
+
+    pub(crate) fn write_panel_selection_in_transaction(
+        tx: &Transaction<'_>,
+        project_id: &str,
+        panel_id: &str,
+        selection: &Value,
+    ) -> Result<(), CliError> {
+        let selection_json = serde_json::to_string(selection).map_err(to_cli_error)?;
+        let content_hash = hash_text(&selection_json);
         let current = tx.query_row(
             "SELECT revision, content_hash FROM panel_selections WHERE project_id = ? AND panel_id = ?",
             params![project_id, panel_id],
@@ -77,7 +92,6 @@ impl Storage {
             .as_ref()
             .is_some_and(|value| value.1 == content_hash)
         {
-            tx.commit().map_err(to_cli_error)?;
             return Ok(());
         }
         let revision = record_scope(&tx, "panel_selection", Some(project_id), Some(panel_id))?;
@@ -107,7 +121,7 @@ impl Storage {
             ],
         )
         .map_err(to_cli_error)?;
-        tx.commit().map_err(to_cli_error)
+        Ok(())
     }
 
     pub fn read_panel_selection(
@@ -143,8 +157,24 @@ impl Storage {
             .connection
             .unchecked_transaction()
             .map_err(to_cli_error)?;
-        Self::write_prepared_asset_in_transaction(&tx, project_id, panel_id, &prepared)?;
-        tx.commit().map_err(to_cli_error)?;
+        if let Err(error) =
+            Self::write_prepared_asset_in_transaction(&tx, project_id, panel_id, &prepared)
+                .and_then(|_| tx.commit().map_err(to_cli_error))
+        {
+            let _ = fs::remove_dir_all(&prepared.revision_dir);
+            return Err(error);
+        }
+        let _ = crate::content::write_json_atomic(
+            &asset_resource_dir(&self.root_dir, project_id, &prepared.resource_id)
+                .join("active.json"),
+            &crate::content::ActivePointer {
+                revision_id: prepared.revision_id.clone(),
+                content_version: prepared.content_version,
+                manifest_hash: prepared.manifest_hash.clone(),
+                content_hash: prepared.content_hash.clone(),
+                archived: false,
+            },
+        );
         Ok(prepared.written_asset())
     }
 
@@ -164,42 +194,59 @@ impl Storage {
         } else {
             crate::ids::random_id("asset")
         };
-        let current_version = self
+        let current = self
             .connection
             .query_row(
-                "SELECT content_version FROM assets WHERE resource_id = ?",
+                "SELECT project_id, content_version, active_content_revision_id FROM resources WHERE id = ?",
                 [&asset_id],
-                |row| row.get::<_, i64>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
             )
             .optional()
-            .map_err(to_cli_error)?
-            .unwrap_or(0);
-        let content_version = current_version + 1;
-        let canonical_ref = format!(
-            "projects/{}/content/asset/{}/{}/{}",
-            sanitize_logical_path_part(project_id),
-            sanitize_logical_path_part(&asset_id),
-            content_version,
-            file_name
-                .split('/')
-                .map(sanitize_logical_path_part)
-                .collect::<Vec<_>>()
-                .join("/")
-        );
-        let canonical_path = self.asset_path(&canonical_ref)?;
-        if let Some(parent) = canonical_path.parent() {
-            fs::create_dir_all(parent).map_err(to_cli_error)?;
+            .map_err(to_cli_error)?;
+        if current
+            .as_ref()
+            .is_some_and(|(owner, _, _)| owner != project_id)
+        {
+            return Err(CliError::with_code(
+                "resource_identity_conflict",
+                format!("Asset {asset_id} already belongs to another Project."),
+            ));
         }
-        let temporary = canonical_path.with_extension("asset.tmp");
-        fs::write(&temporary, bytes).map_err(to_cli_error)?;
-        fs::rename(&temporary, &canonical_path).map_err(to_cli_error)?;
+        let base_content_version = current.as_ref().map_or(0, |value| value.1);
+        let parent_revision_id = current.and_then(|value| value.2);
+        let content_version = base_content_version + 1;
+        let revision_id = crate::ids::random_id("asset-revision");
+        let mime_type = asset_media_type(&file_name);
+        let (revision_dir, manifest_hash, content_hash, file_path) = prepare_asset_revision(
+            &self.root_dir,
+            project_id,
+            &asset_id,
+            &revision_id,
+            content_version,
+            parent_revision_id,
+            &file_name,
+            mime_type,
+            bytes,
+        )?;
+        let canonical_ref =
+            asset_revision_ref(project_id, &asset_id, &revision_id, &file_name);
         Ok(PreparedAssetWrite {
             resource_id: asset_id,
             asset_ref: canonical_ref,
             file_name,
-            file_path: canonical_path,
+            file_path,
+            revision_dir,
+            revision_id,
+            base_content_version,
             content_version,
-            content_hash: format!("{:x}", Sha256::digest(bytes)),
+            manifest_hash,
+            content_hash,
             size_bytes: bytes.len() as i64,
         })
     }
@@ -212,6 +259,37 @@ impl Storage {
     ) -> Result<(), CliError> {
         let asset_id = &prepared.resource_id;
         let file_name = &prepared.file_name;
+        let current_version = tx
+            .query_row(
+                "SELECT content_version FROM resources WHERE project_id = ? AND id = ?",
+                params![project_id, asset_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(to_cli_error)?
+            .unwrap_or(0);
+        if current_version != prepared.base_content_version {
+            return Err(CliError::with_code(
+                "content_conflict",
+                format!(
+                    "Asset {asset_id} changed from version {} to {current_version}.",
+                    prepared.base_content_version
+                ),
+            ));
+        }
+        let manifest_path = prepared.revision_dir.join("manifest.json");
+        if crate::content::hash_file(&manifest_path)? != prepared.manifest_hash
+            || crate::content::hash_file(
+                &prepared
+                    .revision_dir
+                    .join(format!("objects/{}", prepared.content_hash)),
+            )? != prepared.content_hash
+        {
+            return Err(CliError::with_code(
+                "content_integrity_failed",
+                "Prepared Asset revision failed integrity validation.",
+            ));
+        }
         let revision = record_resource_scope(&tx, project_id, panel_id, &asset_id)?;
         let metadata = json!({ "originPanelId": panel_id });
         upsert_resource(
@@ -226,16 +304,31 @@ impl Storage {
         )?;
         tx.execute(
             r#"
+            UPDATE resources
+            SET active_content_revision_id = ?, content_version = ?,
+                content_manifest_hash = ?, content_hash = ?
+            WHERE project_id = ? AND id = ?
+            "#,
+            params![
+                prepared.revision_id,
+                prepared.content_version,
+                prepared.manifest_hash,
+                prepared.content_hash,
+                project_id,
+                asset_id,
+            ],
+        )
+        .map_err(to_cli_error)?;
+        tx.execute(
+            r#"
             INSERT INTO assets (
-              resource_id, media_type, file_name, active_revision_id, content_version,
-              content_hash, byte_size, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              resource_id, media_type, file_name, active_file_ref,
+              byte_size, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(resource_id) DO UPDATE SET
               media_type = excluded.media_type,
               file_name = excluded.file_name,
-              active_revision_id = excluded.active_revision_id,
-              content_version = excluded.content_version,
-              content_hash = excluded.content_hash,
+              active_file_ref = excluded.active_file_ref,
               byte_size = excluded.byte_size,
               metadata_json = excluded.metadata_json
             "#,
@@ -244,8 +337,6 @@ impl Storage {
                 asset_media_type(&file_name),
                 file_name,
                 prepared.asset_ref,
-                prepared.content_version,
-                prepared.content_hash,
                 prepared.size_bytes,
                 serde_json::to_string(&metadata).map_err(to_cli_error)?,
             ],
@@ -265,8 +356,8 @@ impl Storage {
             .prepare(
                 r#"
                 SELECT r.id, r.title, r.revision, r.created_at, r.updated_at,
-                       a.media_type, a.file_name, a.active_revision_id, a.content_version,
-                       a.content_hash, a.byte_size, a.width, a.height, a.metadata_json
+                       a.media_type, a.file_name, a.active_file_ref, r.content_version,
+                       r.content_hash, a.byte_size, a.width, a.height, a.metadata_json
                 FROM assets a JOIN resources r ON r.id = a.resource_id
                 WHERE r.project_id = ? AND r.deleted_at IS NULL
                 ORDER BY r.updated_at DESC, r.id ASC
@@ -303,7 +394,7 @@ impl Storage {
             .connection
             .query_row(
                 r#"
-                SELECT a.active_revision_id FROM assets a
+                SELECT a.active_file_ref FROM assets a
                 JOIN resources r ON r.id = a.resource_id
                 WHERE r.project_id = ? AND r.id = ? AND r.deleted_at IS NULL
                 "#,
@@ -318,25 +409,7 @@ impl Storage {
     }
 
     pub fn asset_path(&self, asset_ref: &str) -> Result<PathBuf, CliError> {
-        let parts = asset_ref.split('/').collect::<Vec<_>>();
-        if parts.len() < 7
-            || parts[0] != "projects"
-            || parts[1].is_empty()
-            || parts[2] != "content"
-            || parts[3] != "asset"
-            || parts[4].is_empty()
-            || parts[5].parse::<u64>().ok().filter(|version| *version > 0).is_none()
-            || parts[6..].iter().any(|part| part.is_empty())
-        {
-            return Err(CliError::with_code(
-                "invalid_asset_ref",
-                "Asset reference must use projects/<project>/content/asset/<asset>/<version>/<file>.",
-            ));
-        }
-        let mut path = self.root_dir.clone();
-        for part in parts {
-            path.push(sanitize_path_part(part));
-        }
+        let path = resolve_asset_path(&self.root_dir, asset_ref)?;
         if !path.starts_with(&self.root_dir) {
             return Err(CliError::new(
                 "Resolved asset path escapes storage directory.",
@@ -346,9 +419,7 @@ impl Storage {
     }
 
     pub fn project_dir(&self, project_id: &str) -> PathBuf {
-        self.root_dir
-            .join("projects")
-            .join(sanitize_path_part(project_id))
+        project_storage_dir(&self.root_dir, project_id)
     }
 
     pub fn read_change_seq(&self) -> Result<i64, CliError> {

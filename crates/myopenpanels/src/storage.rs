@@ -1,10 +1,16 @@
+include!("storage/directory_layout.rs");
 include!("storage/projects_panels.rs");
 include!("storage/direct_operations.rs");
+include!("storage/content_authority.rs");
 include!("storage/domain_state.rs");
+include!("storage/my_documents.rs");
 include!("storage/domain_projection.rs");
 include!("storage/domain_resources.rs");
 include!("storage/tasks.rs");
+include!("storage/asset_content.rs");
 include!("storage/settings_assets_changes.rs");
 include!("storage/task_records.rs");
 include!("storage/migrations.rs");
+include!("storage/directory_layout_tests.rs");
+include!("storage/migration_tests.rs");
 include!("storage/tests.rs");

@@ -3,9 +3,9 @@
 ## Goal
 
 Converge the current repository on the boundaries in
-[`core-concepts.md`](core-concepts.md) without preserving unreleased legacy
-contracts or introducing a generic workflow engine, broad compatibility layer,
-or excessive runtime validation.
+[`core-concepts.md`](core-concepts.md) and the 1.0 persistence rules in
+[`storage-contract.md`](storage-contract.md) without introducing a generic
+workflow engine, broad compatibility layer, or excessive runtime validation.
 
 The result should provide:
 
@@ -19,8 +19,10 @@ The result should provide:
 
 ## Constraints
 
-- The product has not been released. Old Procedure keys, Task statuses,
-  storage shapes, and API aliases do not require compatibility.
+- The stable 1.0 contract has not been released. Old Procedure keys, Task
+  statuses, and API aliases do not require stable compatibility.
+- Tagged 0.x storage is an explicit migration input. `0001_initial.sql` is no
+  longer rewritten; known data is preserved through ordered migrations.
 - Runtime code is authoritative for current behavior during the refactor.
 - Existing useful domain implementations should be retained rather than
   replaced with a generic abstraction.
@@ -30,17 +32,56 @@ The result should provide:
 - Keep immutable content staging and recovery rather than attempting a
   distributed transaction between SQLite and the filesystem.
 
-## Remaining gaps
+## Completed consistency work
 
 The current repository already has a central Capability Catalog, CLI Command
 Registry, Task Handler Registry, immutable content staging, and shared Task
 Finalizer. Task lifecycle has been normalized, Task/domain completion now uses
-one revision-checked transaction, and Writing Task output is now finalized
-directly from its declared artifact without a nested Operation. The remaining
-inconsistencies are:
+one revision-checked transaction, and Writing Task output is finalized directly
+from its declared artifact without a nested Operation.
 
-1. Wiki authoring paths outside Task finalization still hydrate Tasks into a
-   panel-shaped structure and can upsert Tasks and resources separately.
+Migration 0008 replaces lossy Project and Resource directory keys with bounded
+19-character hash keys and exact ownership descriptors. Its resumable
+filesystem hook migrates Project, content Resource, and Wiki materialization
+directories. Content logical paths no longer use lossy keys: migration 0004
+moves them to exact manifest paths and opaque objects through a resumable
+filesystem journal.
+
+Migration 0007 normalizes Release snapshots: identity, ownership, Publication
+link, platform, title, and timestamps live in columns, while snapshot and
+attempt result JSON contain only their owned payloads. My Document creation,
+import, rename, content update, and deletion now use resource-scoped
+transactions; Wiki state is a composed read model and cannot delete a document
+created from a newer catalog view.
+
+Migration 0005 now gives Assets the same manifest-backed opaque-object layout,
+canonical SQLite pointer, filesystem backup, and resumable migration journal
+as text resources. Immediate creation now uses a pending pointer and commits
+the new relational resource plus its exact content revision atomically before
+publishing `active.json`.
+
+Migration 0006 adds Project ownership to relationship tables, repairs invalid
+0.x links before rebuilding them with composite foreign keys, and rejects Task
+dependency cycles. Terminal prerequisite state, resource deletion, and
+supersession now terminate every queued or running descendant in the
+single-predecessor dependency chain while fencing active executors.
+
+My Document content mutation now has one module-owned field transition used by
+direct writes, Writing Task completion, imported-document conversion, and
+Direct Operation completion. Content metadata and the immutable content pointer
+commit together against the document's expected content version, so unrelated
+Wiki Panel revisions no longer block completion. Direct filename changes also
+update content and title in one transaction. Wiki direct authoring and Wiki Task
+completion share one page-index and space-timestamp mutation.
+
+Publishing a My Document version now prepares one Wiki source revision
+containing both the original file and `source.md`, then commits the source row,
+ingestion Tasks, Task-resource links, content pointer, and My Document
+`publishHistory` in one revision-checked database transaction. A failed
+validation or concurrent Wiki mutation leaves all of them uncommitted and the
+prepared revision recoverable. My Document deletion now soft-deletes only the
+target resource, cancels its dependent Tasks, and removes its selection in one
+transaction instead of resaving the complete Wiki projection.
 
 ## Work package 0: restore a trusted baseline
 
@@ -312,8 +353,8 @@ After the new paths are tested:
 2. Remove old Task status strings and normalizers.
 3. Remove old Writing Skill HTTP aliases.
 4. Remove Task-bound Operation fields and Broker commands.
-5. Remove obsolete storage import paths and recreate the development storage
-   from the clean baseline.
+5. Migrate known tagged 0.x storage, then remove obsolete import adapters after
+   the upgrade fixture passes.
 6. Update architecture and protocol documentation from the resulting code.
 7. Delete tests that assert removed compatibility behavior; do not keep dead
    adapters solely to satisfy old fixtures.

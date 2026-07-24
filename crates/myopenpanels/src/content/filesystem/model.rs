@@ -3,9 +3,11 @@ use super::*;
 pub const MAX_TEXT_FILE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_STAGING_BYTES: i64 = 128 * 1024 * 1024;
 pub const MAX_WIKI_FILES: usize = 10_000;
+pub(crate) const CONTENT_FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ResourceKind {
+    Asset,
     WikiMarkdown,
     WikiSpace,
     MyDocument,
@@ -15,6 +17,7 @@ pub enum ResourceKind {
 impl ResourceKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Asset => "asset",
             Self::WikiMarkdown => "wiki_markdown",
             Self::WikiSpace => "wiki_space",
             Self::MyDocument => "my_document",
@@ -24,6 +27,7 @@ impl ResourceKind {
 
     pub(super) fn parse(value: &str) -> Result<Self, CliError> {
         match value {
+            "asset" => Ok(Self::Asset),
             "wiki_markdown" => Ok(Self::WikiMarkdown),
             "wiki_space" => Ok(Self::WikiSpace),
             "my_document" => Ok(Self::MyDocument),
@@ -111,7 +115,19 @@ pub struct ActiveResourceSnapshot {
     pub revision_id: String,
     pub content_version: i64,
     pub manifest_hash: String,
+    pub content_hash: String,
     pub files: Vec<ActiveResourceFile>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ContentCommit {
+    pub(crate) resource_kind: String,
+    pub(crate) resource_key: String,
+    pub(crate) revision_id: String,
+    pub(crate) content_version: i64,
+    pub(crate) manifest_hash: String,
+    pub(crate) content_hash: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -121,26 +137,46 @@ pub(crate) struct ActivePointer {
     pub(crate) content_version: i64,
     pub(crate) manifest_hash: String,
     #[serde(default)]
+    pub(crate) content_hash: String,
+    #[serde(default)]
     pub(crate) archived: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct RevisionFile {
-    pub(super) logical_path: String,
-    pub(super) content_hash: String,
-    pub(super) size_bytes: i64,
-    pub(super) mime_type: String,
+pub(crate) struct RevisionFile {
+    pub(crate) logical_path: String,
+    #[serde(default)]
+    pub(crate) object_ref: String,
+    pub(crate) content_hash: String,
+    pub(crate) size_bytes: i64,
+    pub(crate) mime_type: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct RevisionManifest {
-    pub(super) revision_id: String,
-    pub(super) content_version: i64,
-    pub(super) parent_revision_id: Option<String>,
-    pub(super) created_at: String,
-    pub(super) files: Vec<RevisionFile>,
+pub(crate) struct RevisionManifest {
+    #[serde(default = "legacy_content_format_version")]
+    pub(crate) format_version: u32,
+    pub(crate) revision_id: String,
+    pub(crate) content_version: i64,
+    pub(crate) parent_revision_id: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) files: Vec<RevisionFile>,
+}
+
+fn legacy_content_format_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StagedFile {
+    pub(super) logical_path: String,
+    pub(super) object_name: String,
+    pub(super) mime_type: String,
+    #[serde(default)]
+    pub(super) metadata: Value,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -157,14 +193,14 @@ pub(crate) struct StagedResource {
 
 #[derive(Debug)]
 pub(crate) struct PreparedTaskContent {
-    pub(crate) commits: Vec<Value>,
+    pub(crate) commits: Vec<ContentCommit>,
     pub(super) activations: Vec<PreparedActivation>,
     pub(super) staging_root: Option<PathBuf>,
 }
 
 #[derive(Debug)]
 pub(crate) struct PreparedDirectContent {
-    pub(crate) commit: Value,
+    pub(crate) commit: ContentCommit,
     pub(super) activation: PreparedActivation,
     pub(super) staging_root: PathBuf,
 }

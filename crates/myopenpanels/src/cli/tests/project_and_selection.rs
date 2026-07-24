@@ -207,6 +207,7 @@ fn my_documents_support_versions_selection_publication_and_deletion() {
         Some("ctx"),
     )
     .expect("paths");
+    let wiki_space_id = active_wiki_space_id(&project_dir, &storage_dir);
     let created = wiki::create_my_document(
         &paths,
         "report.md",
@@ -273,6 +274,41 @@ fn my_documents_support_versions_selection_publication_and_deletion() {
     let first_publish =
         wiki::publish_my_document(&paths, &document_id, None).expect("first publish");
     assert_eq!(first_publish["rawDocument"]["source"], "agent");
+    let first_raw_id = first_publish["rawDocument"]["id"]
+        .as_str()
+        .expect("raw document id");
+    let raw_snapshot = crate::content::active_resource_snapshot(
+        &paths,
+        &bootstrap.project.id,
+        crate::content::ResourceKind::WikiMarkdown,
+        first_raw_id,
+    )
+    .expect("raw content")
+    .expect("active raw content");
+    assert_eq!(raw_snapshot.content_version, 1);
+    let mut raw_paths = raw_snapshot
+        .files
+        .iter()
+        .map(|file| file.logical_path.as_str())
+        .collect::<Vec<_>>();
+    raw_paths.sort_unstable();
+    assert_eq!(raw_paths, vec!["original/report.md", "source.md"]);
+    let ingest_task_id = first_publish["rawDocument"]["ingestionByWikiSpace"]
+        [&wiki_space_id]["taskId"]
+        .as_str()
+        .expect("ingestion task");
+    assert_eq!(
+        Storage::open(&paths)
+            .expect("storage")
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM task_resources WHERE project_id = ? AND task_id = ? AND resource_id = ?",
+                rusqlite::params![bootstrap.project.id, ingest_task_id, first_raw_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("task resource link"),
+        1
+    );
     assert!(wiki::publish_my_document(&paths, &document_id, None).is_err());
 
     let updated = wiki::write_my_document(

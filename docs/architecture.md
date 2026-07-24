@@ -2,8 +2,13 @@
 
 The conceptual contract for Tasks, Operations, Procedures, CLI commands,
 panels, module capabilities, and Skill layers is defined in
-[`core-concepts.md`](core-concepts.md). Planned convergence work is tracked in
-[`core-optimization-plan.md`](core-optimization-plan.md).
+[`core-concepts.md`](core-concepts.md). Persistence ownership, version
+semantics, commit ordering, and local file classes are defined in
+[`storage-contract.md`](storage-contract.md). Planned convergence work is
+tracked in [`core-optimization-plan.md`](core-optimization-plan.md).
+
+This document describes the 1.0 target architecture. The storage contract lists
+the known places where the current 0.x runtime has not converged yet.
 
 ## Product boundary
 
@@ -45,11 +50,26 @@ names appear only where the operation actually concerns panel UI or selection.
 
 ## Database model
 
-The current schema contains 17 application tables:
+The ordered schema currently contains 18 application tables.
+`0001_initial.sql` introduced the 17 domain tables and
+`0002_migration_registry.sql` added migration history,
+`0003_canonical_content_authority.sql` established canonical content pointers
+and removed misleading domain pointer columns, and
+`0004_content_objects.sql` records content format 2 while its journaled hook
+migrates text revisions to opaque objects.
+`0005_asset_objects.sql` applies the same resumable manifest and opaque-object
+layout to binary Assets. `0006_same_project_relationships.sql` adds explicit
+Project ownership to relationship tables, enforces same-Project foreign keys,
+and prevents Task dependency cycles. `0007_release_snapshots.sql` normalizes
+Release identity and ownership facts. `0008_stable_directory_keys.sql` records
+directory layout 2 while its journaled hook moves Project and Resource
+directories to 19-character bounded hash keys with exact logical-ID
+descriptors:
 
 | Table | Responsibility |
 | --- | --- |
-| `storage_meta` | Database identity and the global data revision |
+| `storage_meta` | Database identity, global data revision, and persistent content/directory format versions |
+| `schema_migrations` | Applied migration names, versions, checksums, and timestamps |
 | `projects` | Project identity, title, root path, and timestamps |
 | `panels` | Panel identity, ordering, and UI-only state |
 | `panel_selections` | Selection JSON and its independent revision |
@@ -57,15 +77,19 @@ The current schema contains 17 application tables:
 | `change_scopes` | Catalog, UI, resource, Task, and settings revisions used by Studio live synchronization |
 | `direct_operations` | Target-bound direct Agent interactions and their four-state lifecycle |
 | `tasks` | Durable work, dependency, lease, fencing, result, and execution summaries |
-| `resources` | Stable identity, ownership, lifecycle, and revision for every durable domain resource |
+| `resources` | Stable identity, ownership, lifecycle, domain revision, and canonical active content pointer for every durable domain resource |
 | `documents` | Wiki sources, My Documents, drafts, and articles |
 | `task_resources` | Explicit Task-to-resource roles and captured resource versions |
-| `wiki_spaces` | Wiki aggregate identity, immutable revision pointer, and configuration |
+| `wiki_spaces` | Wiki aggregate identity, root ref, Skill selection, and configuration |
 | `wiki_source_ingestions` | Last source and Wiki versions known to be indexed together, plus disposition |
 | `canvas_documents` | Versioned opaque Canvas snapshots, independent of panel UI state |
-| `assets` | Project-level binary asset metadata and immutable content revision pointer |
-| `publications` | Publication content, source links, title selection, and revision data |
-| `releases` | Release snapshot, platform result, remote reference, and publication link |
+| `assets` | Project-level binary asset metadata and active file ref |
+| `publications` | Publication structured content, source links, title selection, and config version |
+| `releases` | Publication link, platform, captured snapshot payload, and attempt results |
+
+Content revision IDs, versions, manifest hashes, and aggregate content hashes
+have one database owner on `resources`. Domain tables store only module facts
+such as logical refs, root refs, config versions, and metadata.
 
 There are no persisted Workflow Runs, dependency graphs, Task Attempts, Task
 Events, Agent Routes, Model Gateway connections, content objects, or staging
@@ -124,36 +148,71 @@ Immutable content is stored below:
 .myopenpanels/projects/<project>/content/<kind>/<resource>/<revision>/
 ```
 
-Each revision contains a manifest and complete files. A small atomic
-`active.json` pointer selects the current revision. Task output is first written
-under `content/.staging/<task>/<generation>/`, validated against the captured
-base revision, and atomically renamed into its immutable revision directory.
-Only after validation does Task completion publish the new pointer and persist
-the Task result and relevant domain resource revision. A conflict leaves the
-previous active pointer unchanged. Wiki spaces are one resource, so all files
-in a Wiki update move together.
+Each revision contains a manifest and immutable objects. SQLite records the
+active revision. A small atomic `active.json` pointer is a rebuildable projection
+of that database fact. Task output is first written under
+`content/.staging/<task>/<generation>/`, validated against the captured base
+revision, and promoted into its immutable revision directory. Exact logical
+paths live in the manifest; object filenames are content hashes, so Unicode
+paths and formerly colliding sanitized names remain distinct. The
+Task result, domain resource revision, and exact content revision then commit in
+SQLite before pointer publication. A conflict leaves the database and previous
+active pointer unchanged. Wiki spaces are one resource, so all files in a Wiki
+update move together.
 
 Direct My Document Operations use the same immutable revision preparation
 under their Operation artifact directory. The completed Operation and document
-projection commit first; pointer publication follows, and startup recovery can
-publish the exact revision named by that completed Operation. Direct Canvas
-assets are materialized before their asset row, Canvas snapshot, and completed
-Operation commit in one database transaction.
+resource commit first; pointer publication follows, and startup recovery can
+publish the exact revision named by that completed Operation. My Document
+content fields have one module-owned transition shared by direct edits, Writing
+Tasks, imported-document conversion, and Direct Operations. These commits use
+the document content version rather than the containing Wiki Panel revision.
+Direct Canvas assets are materialized before their asset row, Canvas snapshot,
+and completed Operation commit in one database transaction.
 
-Binary assets use the same project-scoped content boundary with a compact
-versioned layout:
+Binary assets use the same project-scoped immutable-revision contract:
 
 ```text
-.myopenpanels/projects/<project>/content/asset/<asset>/<version>/<file>
+.myopenpanels/projects/<project>/content/asset/<asset>/<revision>/
+  manifest.json
+  objects/<object>
 ```
 
-The active asset reference and metadata live in SQLite. Panel directories are
+The active asset revision and metadata live in SQLite. Panel directories are
 not authoritative content storage, and new assets or documents must never be
 written below `projects/<project>/panels/<panel>/`.
 
+Immediate creation of a new Document or Wiki content resource first prepares
+the immutable revision and records a recoverable `pending.json`. The relational
+resource row and canonical content pointer then commit in one transaction.
+`active.json` is published only after that commit; startup recovery completes a
+committed publication or removes an abandoned pending revision.
+
+Publishing a My Document into Wiki is one coordinated mutation. The immutable
+Wiki source revision contains the original file and normalized `source.md`;
+the Wiki source metadata, ingestion Tasks, Task-resource links, content pointer,
+and source My Document publication history commit together. The My Document
+version and Wiki Panel revision are checked before commit, so retry cannot
+silently publish a stale version or split publication history from its source.
+
+Creating or importing a My Document no longer persists a complete Wiki Panel
+projection. It inserts the document resource, optional conversion Task, and
+pending content pointer in one transaction. Rename, content update, and delete
+are also resource-scoped. A stale Wiki projection therefore cannot delete a
+newer project-level My Document.
+
+Release identity, Project ownership, Publication link, platform, title, and
+timestamps are normalized columns. `releases.snapshot_json` contains only the
+captured body, tags, and media payload; `result_json` contains attempt results.
+Migration 0007 removes the former JSON copies and unused latest-attempt
+columns while preserving the Studio read model.
+
 Startup recovery removes abandoned staging directories and may finish a
 database-committed content publication. Unreferenced prepared revisions are
-orphans and can be removed without changing active content.
+orphans and can be removed without changing active content. Recovery validates
+the authoritative manifest, objects, version, and hashes before repairing its
+filesystem pointer; corrupt authoritative content stops startup with an
+integrity error instead of being silently skipped or pruned.
 
 ## Resource and Task coordination
 
@@ -163,7 +222,10 @@ A file is not a Task and the relationship is not assumed to be one-to-one.
 Immutable bytes and revisions live in the content directory.
 `task_resources` explicitly associates any number of Tasks and resources using
 `primary`, `input`, `output`, or `context` roles and records the captured
-resource version.
+resource version. Its Project key and composite foreign keys guarantee that
+both ends belong to the same Project. Publication document links, Release
+publication links, Task predecessors, retry origins, origin panels, and
+resource change scopes follow the same rule.
 
 `tasks.status` is authoritative for execution. Wiki source indexing is derived
 from three facts: the source content version, the version recorded in
@@ -172,39 +234,51 @@ persisted `pending`, `running`, or `indexed` document status. The domain
 projection computes those labels when it composes Wiki state, so changing or
 archiving a Task cannot leave a stale status string inside panel JSON.
 
+Direct Wiki page writes and staged Wiki Task output use the same domain
+mutation for page-index metadata and the Wiki Space timestamp. The transport
+paths remain different, but neither path owns an independent interpretation of
+a written page.
+
 Deleting a resource soft-deletes the `resources` row and cancels every linked
-queued or running Task in the same transaction. Cancellation advances the
-execution generation, clears leases and tokens, and fences already-running
-executors from heartbeat, writes, and completion. Immutable content archival
-and physical cleanup happen after the database commit and are recoverable.
-Archiving is deliberately different: it is a Task-list visibility operation
-allowed only for terminal Tasks, retains the Task and `task_resources` rows,
-and does not alter the resource.
+queued or running Task in the same transaction. A failed, cancelled, or
+superseded prerequisite also terminates every queued or running descendant in
+its dependency chain; dependency cycles are rejected by the database.
+Termination advances the execution generation, clears leases and tokens, and
+fences already-running executors from heartbeat, writes, and completion.
+Immutable content archival and physical cleanup happen after the database
+commit and are recoverable. Archiving is deliberately different: it is a
+Task-list visibility operation allowed only for terminal Tasks, retains the
+Task and `task_resources` rows, and does not alter the resource.
 
 ## Migrations
 
 SQL migrations under `crates/myopenpanels/migrations` are the permanent data
-upgrade history. `0001_initial.sql` is the complete clean-install baseline.
-Every later persistent shape or JSON-format change adds the next immutable,
-strictly consecutive file. The migration registry uses `include_str!`, so all
-migration SQL ships inside the CLI binary.
+upgrade history. `0001_initial.sql` is the shipped 0.x baseline and is now
+immutable. Every later persistent shape or JSON-format change adds the next
+immutable, strictly consecutive file. Clean installations and upgrades run the
+same registry, and all migration SQL ships inside the CLI binary.
 
 `PRAGMA user_version` records only the highest migration that committed. It
-does not replace migration files. Startup validates that the registry is
-contiguous, rejects a database newer than the CLI, creates a consistent backup
-with SQLite's Backup API, and applies each missing migration in its own
-`IMMEDIATE` transaction. The schema/data conversion and `user_version` update
-commit together. A failed migration rolls back that step and leaves both the
-last valid database version and the pre-upgrade backup available.
+does not replace migration files or migration history. Startup validates a
+contiguous checksummed registry, rejects a database newer than the CLI, creates
+a consistent backup with SQLite's Backup API, and applies each missing
+migration in its own `IMMEDIATE` transaction. The schema/data conversion,
+migration-history row, and `user_version` update commit together. A failed
+migration rolls back that step and leaves both the last valid database version
+and the pre-upgrade backup available.
 
-Pre-1.0 storage, including the experimental seven-table database, is first
-backed up as a complete directory. The importer creates the clean domain
-baseline, extracts panel business arrays into domain rows, recreates
-Task-resource links, fences previously running Tasks, and copies immutable
-content into the rebuilt storage directory. An unknown 0.x shape is preserved
-in the backup and skipped rather than guessed. Starting with the 1.0 baseline,
-user data is always preserved by ordered migrations. Released migration files
-are never edited; a correction is a new migration.
+Known 0.x storage is migrated or imported without resetting user data.
+Filesystem conversions use a resumable journal and do not delete source content
+until database and content integrity checks pass. An unknown 0.x shape is
+preserved in backup and rejected rather than guessed. Starting with 1.0, user
+data is always preserved by ordered migrations. Released migration files are
+never edited; a correction is a new migration.
+
+Directory layout 2 uses a 96-bit SHA-256 prefix encoded as base64url for
+19-character Project and Resource directory names. `project.json` and
+`resource.json` preserve exact logical identity and ownership. Migration 0008
+checks the old sanitized namespace for ambiguous Project or Resource IDs before
+moving data.
 
 Schema, constraints, indexes, and persisted JSON shape changes require a
 migration. Retry limits, concurrency defaults, handler behavior, Agent CLI

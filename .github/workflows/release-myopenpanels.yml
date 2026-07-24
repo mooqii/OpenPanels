@@ -10,8 +10,45 @@ permissions:
   contents: write
 
 jobs:
+  quality:
+    name: Release quality gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          MYOPENPANELS_SKIP_NATIVE_INSTALL: "1"
+
+      - name: Check release contract
+        run: pnpm run check:release
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test Studio
+        run: pnpm run test
+
+      - name: Build Studio
+        run: pnpm run build
+
   build:
     name: Build ${{ matrix.target }}
+    needs: quality
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -95,10 +132,17 @@ jobs:
       - name: Generate manifest and checksums
         run: node scripts/generate-myopenpanels-release-manifest.mjs --out-dir dist/release
 
+      - name: Verify release assets
+        run: node scripts/verify-myopenpanels-release.mjs dist/release
+
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME:-v$(node -p "require('./package.json').version")}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v$(node -p "require('./package.json').version")"
+          fi
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "$tag" --draft
           gh release upload "$tag" dist/release/* --clobber

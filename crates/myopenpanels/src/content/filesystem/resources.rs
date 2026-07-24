@@ -7,11 +7,12 @@ pub fn active_resource_descriptor(
     resource_key: &str,
 ) -> Result<Option<Value>, CliError> {
     Ok(
-        read_active_pointer(paths, project_id, kind, resource_key)?.map(|active| {
+        read_authoritative_pointer(paths, project_id, kind, resource_key)?.map(|active| {
             json!({
                 "revisionId": active.revision_id,
                 "contentVersion": active.content_version,
                 "manifestHash": active.manifest_hash,
+                "contentHash": active.content_hash,
             })
         }),
     )
@@ -23,7 +24,7 @@ pub fn active_resource_snapshot(
     kind: ResourceKind,
     resource_key: &str,
 ) -> Result<Option<ActiveResourceSnapshot>, CliError> {
-    let Some(active) = read_active_pointer(paths, project_id, kind, resource_key)? else {
+    let Some(active) = read_authoritative_pointer(paths, project_id, kind, resource_key)? else {
         return Ok(None);
     };
     resource_snapshot_at_revision(paths, project_id, kind, resource_key, &active.revision_id)
@@ -43,16 +44,30 @@ pub(crate) fn resource_snapshot_at_revision(
         return Ok(None);
     }
     let manifest: RevisionManifest = read_json(&manifest_path)?;
+    if manifest.format_version > CONTENT_FORMAT_VERSION {
+        return Err(CliError::with_code(
+            "content_format_too_new",
+            format!(
+                "Content revision {} uses unsupported format version {}.",
+                manifest.revision_id, manifest.format_version
+            ),
+        ));
+    }
+    let content_hash = revision_content_hash(&manifest.files)?;
     let files = manifest
         .files
         .into_iter()
         .map(|file| {
-            let bytes = fs::read(
-                revision
-                    .join("files")
-                    .join(logical_path_buf(&file.logical_path)?),
-            )
-            .map_err(to_cli_error)?;
+            let bytes = fs::read(revision_object_path(&revision, &file)?).map_err(to_cli_error)?;
+            if bytes.len() as i64 != file.size_bytes || hash_bytes(&bytes) != file.content_hash {
+                return Err(CliError::with_code(
+                    "content_integrity_failed",
+                    format!(
+                        "Content file {} does not match revision {}.",
+                        file.logical_path, manifest.revision_id
+                    ),
+                ));
+            }
             Ok(ActiveResourceFile {
                 logical_path: file.logical_path,
                 object_hash: file.content_hash,
@@ -66,8 +81,21 @@ pub(crate) fn resource_snapshot_at_revision(
         revision_id: manifest.revision_id,
         content_version: manifest.content_version,
         manifest_hash: hash_bytes(&fs::read(manifest_path).map_err(to_cli_error)?),
+        content_hash,
         files,
     }))
+}
+
+pub(crate) fn projected_active_resource_snapshot(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    kind: ResourceKind,
+    resource_key: &str,
+) -> Result<Option<ActiveResourceSnapshot>, CliError> {
+    let Some(active) = read_active_pointer(paths, project_id, kind, resource_key)? else {
+        return Ok(None);
+    };
+    resource_snapshot_at_revision(paths, project_id, kind, resource_key, &active.revision_id)
 }
 
 pub(crate) fn resource_snapshot_for_task(
@@ -89,6 +117,7 @@ pub(crate) fn pinned_revision_id<'a>(
     resource_key: &str,
 ) -> Option<&'a str> {
     match kind {
+        ResourceKind::Asset => None,
         ResourceKind::WikiSpace
             if input
                 .pointer("/contextSnapshot/wikiSelection/wikiSpaceId")
@@ -145,30 +174,31 @@ pub fn rename_active_file(
             "Destination content already exists.",
         ));
     }
-    let resource = resource_dir(paths, project_id, kind, resource_key);
     let stage = tempfile::tempdir_in(&paths.storage_dir).map_err(to_cli_error)?;
-    copy_tree(
-        &revision_dir(&resource, &snapshot.revision_id).join("files"),
-        &stage.path().join("files"),
-    )?;
-    let current = stage
-        .path()
-        .join("files")
-        .join(logical_path_buf(current_path)?);
-    let next = stage
-        .path()
-        .join("files")
-        .join(logical_path_buf(next_path)?);
-    if !current.exists() {
+    if !snapshot
+        .files
+        .iter()
+        .any(|file| file.logical_path == current_path)
+    {
         return Err(CliError::with_code(
             "content_unavailable",
             "Source content does not exist.",
         ));
     }
-    if let Some(parent) = next.parent() {
-        fs::create_dir_all(parent).map_err(to_cli_error)?;
+    for file in &snapshot.files {
+        let logical_path = if file.logical_path == current_path {
+            next_path
+        } else {
+            &file.logical_path
+        };
+        write_staged_file(
+            stage.path(),
+            logical_path,
+            &file.bytes,
+            &file.mime_type,
+            json!({}),
+        )?;
     }
-    fs::rename(current, next).map_err(to_cli_error)?;
     let staged = StagedResource {
         project_id: project_id.to_owned(),
         panel_id: String::new(),
@@ -178,11 +208,20 @@ pub fn rename_active_file(
         base_content_version: snapshot.content_version,
         metadata: json!({ "replaceAll": true }),
     };
-    let pointer = commit_staged_resource(paths, &staged, stage.path())?;
+    let (active_path, pointer) = prepare_staged_resource(paths, &staged, stage.path(), None)?;
+    crate::content::publish_immediate_pointer_with_authority(
+        paths,
+        project_id,
+        kind,
+        resource_key,
+        &active_path,
+        &pointer,
+    )?;
     Ok(Some(json!({
         "revisionId": pointer.revision_id,
         "contentVersion": pointer.content_version,
         "manifestHash": pointer.manifest_hash,
+        "contentHash": pointer.content_hash,
     })))
 }
 
@@ -238,8 +277,13 @@ pub fn active_writing_skill_sources(
     paths: &MyOpenPanelsPaths,
 ) -> Result<Vec<(String, String, Value, String)>, CliError> {
     let mut result = Vec::new();
-    let projects = paths.storage_dir.join("projects");
-    for project in read_dirs(&projects)? {
+    let projects = Storage::open(paths)?
+        .list_projects()?
+        .into_iter()
+        .map(|project| project.id)
+        .collect::<Vec<_>>();
+    for project_id in projects {
+        let project = crate::storage::project_storage_dir(&paths.storage_dir, &project_id);
         let skills = project
             .join("content")
             .join(ResourceKind::WritingSkill.as_str());
@@ -251,7 +295,6 @@ pub fn active_writing_skill_sources(
                     .to_string_lossy()
                     .into_owned()
             });
-            let project_id = project.file_name().unwrap_or_default().to_string_lossy();
             let Some(snapshot) = active_resource_snapshot(
                 paths,
                 &project_id,
@@ -272,7 +315,16 @@ pub fn active_writing_skill_sources(
                 .find(|file| file.logical_path == "manifest.json")
                 .and_then(|file| serde_json::from_slice::<Value>(&file.bytes).ok());
             if let (Some(source), Some(manifest)) = (source, manifest) {
-                let dir = revision_dir(&skill, &snapshot.revision_id).join("files");
+                let dir = skill.join("materialized").join(&snapshot.revision_id);
+                for file in &snapshot.files {
+                    let path = dir.join(&file.logical_path);
+                    let matches = fs::read(&path)
+                        .ok()
+                        .is_some_and(|bytes| bytes == file.bytes);
+                    if !matches {
+                        write_materialized_file(&dir.join(&file.logical_path), &file.bytes)?;
+                    }
+                }
                 result.push((skill_id, source, manifest, dir.display().to_string()));
             }
         }
@@ -293,12 +345,11 @@ pub fn writing_skill_project_id(
     paths: &MyOpenPanelsPaths,
     skill_id: &str,
 ) -> Result<Option<String>, CliError> {
-    for project in read_dirs(&paths.storage_dir.join("projects"))? {
-        let project_id = project
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
+    for project_id in Storage::open(paths)?
+        .list_projects()?
+        .into_iter()
+        .map(|project| project.id)
+    {
         if read_active_pointer(paths, &project_id, ResourceKind::WritingSkill, skill_id)?.is_some()
         {
             return Ok(Some(project_id));
@@ -316,14 +367,10 @@ pub fn archive_resource(
     let projects = if let Some(project_id) = project_id {
         vec![project_id.to_owned()]
     } else {
-        read_dirs(&paths.storage_dir.join("projects"))?
+        Storage::open(paths)?
+            .list_projects()?
             .into_iter()
-            .map(|path| {
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            })
+            .map(|project| project.id)
             .collect()
     };
     for project_id in projects {

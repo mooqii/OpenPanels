@@ -8,6 +8,45 @@ pub fn add_raw_document(
     content: &[u8],
 ) -> Result<Value, CliError> {
     let mut wiki = get_wiki_bootstrap(paths)?;
+    let document = prepare_raw_document(
+        paths,
+        &mut wiki,
+        file_name,
+        title,
+        mime_type,
+        source,
+        wiki_space_id,
+        content,
+    )?;
+    save_wiki_state_if_revision(paths, &wiki)?;
+    trace::record_simple(
+        "task",
+        "wiki",
+        Some("document"),
+        format!(
+            "Imported {}",
+            document["title"].as_str().unwrap_or("document")
+        ),
+        Some(format!(
+            "Imported {}",
+            document["title"].as_str().unwrap_or("document")
+        )),
+        Some(json!({ "document": document.clone() })),
+    );
+    Ok(json!({ "document": document, "state": wiki.state }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_raw_document(
+    paths: &MyOpenPanelsPaths,
+    wiki: &mut WikiBootstrapValue,
+    file_name: &str,
+    title: Option<&str>,
+    mime_type: Option<&str>,
+    source: &str,
+    wiki_space_id: Option<&str>,
+    content: &[u8],
+) -> Result<Value, CliError> {
     let now = now_iso();
     let wiki_space = resolve_wiki_space(&wiki.state, wiki_space_id)?;
     let mutation_key = wiki_mutation_key(&wiki.project.id);
@@ -15,37 +54,35 @@ pub fn add_raw_document(
     let document_id = create_id("raw");
     let original_ref = format!("original/{safe_file_name}");
     let markdown_ref = "source.md".to_owned();
-    crate::content::commit_immediate_file(
+    let is_text = is_plain_text_file(&safe_file_name, mime_type);
+    let word_count = if is_text {
+        crate::content::validate_immediate_text_content(content)?;
+        std::str::from_utf8(content).ok().map(character_count)
+    } else {
+        None
+    };
+    let original_mime_type = mime_type.unwrap_or_else(|| mime_type_for_file(file_name));
+    let mut files = vec![crate::content::ImmediateFile {
+        logical_path: &original_ref,
+        content,
+        mime_type: original_mime_type,
+    }];
+    if is_text {
+        files.push(crate::content::ImmediateFile {
+            logical_path: &markdown_ref,
+            content,
+            mime_type: "text/markdown",
+        });
+    }
+    crate::content::commit_immediate_files(
         paths,
         &wiki.project.id,
         Some(&wiki.panel.id),
         crate::content::ResourceKind::WikiMarkdown,
         &document_id,
-        &original_ref,
-        content,
-        mime_type.unwrap_or_else(|| mime_type_for_file(file_name)),
+        &files,
         true,
     )?;
-
-    let is_text = is_plain_text_file(&safe_file_name, mime_type);
-    let word_count = if is_text {
-        std::str::from_utf8(content).ok().map(character_count)
-    } else {
-        None
-    };
-    if is_text {
-        crate::content::commit_immediate_text(
-            paths,
-            &wiki.project.id,
-            Some(&wiki.panel.id),
-            crate::content::ResourceKind::WikiMarkdown,
-            &document_id,
-            "source.md",
-            content,
-            "text/markdown",
-            false,
-        )?;
-    }
 
     let content_hash = sha256_hex(content);
     let mut conversion_task = if is_text {
@@ -169,22 +206,7 @@ pub fn add_raw_document(
     state_array_mut(&mut wiki.state, "rawDocuments")?.insert(0, document.clone());
     state_object_mut(&mut wiki.state)?
         .insert("activeRawDocumentId".to_owned(), document["id"].clone());
-    save_wiki_state(paths, &wiki)?;
-    trace::record_simple(
-        "task",
-        "wiki",
-        Some("document"),
-        format!(
-            "Imported {}",
-            document["title"].as_str().unwrap_or("document")
-        ),
-        Some(format!(
-            "Imported {}",
-            document["title"].as_str().unwrap_or("document")
-        )),
-        Some(json!({ "document": document.clone() })),
-    );
-    Ok(json!({ "document": document, "state": wiki.state }))
+    Ok(document)
 }
 
 pub struct WikiOriginalFile {

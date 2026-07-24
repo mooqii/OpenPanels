@@ -9,7 +9,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
 
-    const TABLES: [&str; 17] = [
+    const TABLES: [&str; 18] = [
         "assets",
         "canvas_documents",
         "change_scopes",
@@ -21,6 +21,7 @@ mod tests {
         "publications",
         "releases",
         "resources",
+        "schema_migrations",
         "settings",
         "storage_meta",
         "task_resources",
@@ -92,15 +93,32 @@ mod tests {
             })
             .expect("database identity");
         assert_eq!(database_id.len(), 32);
-        let schema_fingerprint: String = storage
+        assert!(!column_exists(
+            storage.connection(),
+            "storage_meta",
+            "schema_fingerprint"
+        )
+        .expect("legacy fingerprint column"));
+        let applied = storage
             .connection()
-            .query_row(
-                "SELECT schema_fingerprint FROM storage_meta WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .expect("schema fingerprint");
-        assert_eq!(schema_fingerprint, current_schema_fingerprint());
+            .prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version")
+            .expect("migration query")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("migration rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("migration history");
+        assert_eq!(applied.len(), MIGRATIONS.len());
+        for (actual, expected) in applied.iter().zip(MIGRATIONS) {
+            assert_eq!(actual.0, expected.version);
+            assert_eq!(actual.1, expected.name);
+            assert_eq!(actual.2, migration_checksum(expected));
+        }
         assert_eq!(
             storage
                 .connection()
@@ -123,6 +141,29 @@ mod tests {
                 .expect("panel UI state column"),
             1
         );
+        for column in [
+            "active_content_revision_id",
+            "content_version",
+            "content_manifest_hash",
+            "content_hash",
+        ] {
+            assert!(column_exists(storage.connection(), "resources", column)
+                .expect("canonical resource content column"));
+        }
+        for (table, legacy_column) in [
+            ("documents", "active_revision_id"),
+            ("wiki_spaces", "active_revision_id"),
+            ("assets", "active_revision_id"),
+            ("publications", "active_revision_id"),
+            ("direct_operations", "operation_json"),
+            ("releases", "release_json"),
+            ("releases", "request_key"),
+            ("releases", "remote_url"),
+            ("releases", "published_at"),
+        ] {
+            assert!(!column_exists(storage.connection(), table, legacy_column)
+                .expect("legacy authority column"));
+        }
         assert_eq!(
             storage
                 .connection()
@@ -155,52 +196,90 @@ mod tests {
     }
 
     #[test]
-    fn legacy_storage_is_archived_before_the_current_baseline_is_created() {
+    fn release_snapshot_json_excludes_normalized_facts() {
         let temp = tempdir().expect("tempdir");
-        let storage_dir = temp.path().join(".myopenpanels");
-        fs::create_dir_all(storage_dir.join("content")).expect("storage");
-        fs::write(storage_dir.join("content").join("legacy.txt"), "preserved")
-            .expect("legacy content");
-        let database_path = storage_dir.join(DATABASE_FILE_NAME);
-        let connection = Connection::open(&database_path).expect("legacy database");
-        connection
-            .execute_batch("CREATE TABLE legacy_records (value TEXT NOT NULL);")
-            .expect("legacy schema");
-        connection
-            .execute("INSERT INTO legacy_records VALUES ('preserved')", [])
-            .expect("legacy row");
-        drop(connection);
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        let (project, typesetting) = project_and_panel(&storage, PanelKind::Typesetting);
+        let publishing = Panel {
+            id: "panel:publishing".to_owned(),
+            project_id: project.id.clone(),
+            kind: PanelKind::Publishing,
+            title: "Publishing".to_owned(),
+            created_at: project.created_at.clone(),
+            updated_at: project.updated_at.clone(),
+            state_ref: None,
+        };
+        storage.write_panel(&publishing).expect("publishing panel");
+        storage
+            .write_panel_state(
+                &project.id,
+                &typesetting.id,
+                &json!({
+                    "publications": [{
+                        "id": "publication:test",
+                        "title": "Publication",
+                        "contentVersion": 1,
+                        "content": [],
+                        "createdAt": "2026-01-01T00:00:00.000Z",
+                        "updatedAt": "2026-01-01T00:01:00.000Z"
+                    }]
+                }),
+            )
+            .expect("publication state");
+        let release = json!({
+            "id": "release:test",
+            "platform": "xiaohongshu",
+            "sourcePublicationId": "publication:test",
+            "sourceUpdatedAt": "2026-01-01T00:01:00.000Z",
+            "snapshot": {
+                "title": "Captured title",
+                "bodyText": "Captured body",
+                "tags": ["release"],
+                "media": []
+            },
+            "attempts": [{
+                "id": "attempt:test",
+                "requestId": "request:test",
+                "remoteUrl": null,
+                "publishedAt": null
+            }],
+            "createdAt": "2026-01-01T00:02:00.000Z",
+            "updatedAt": "2026-01-01T00:03:00.000Z"
+        });
+        storage
+            .write_panel_state(
+                &project.id,
+                &publishing.id,
+                &json!({ "releases": [release] }),
+            )
+            .expect("release state");
 
-        let paths = paths_for(storage_dir.clone());
-        let storage = Storage::open(&paths).expect("current storage");
-        assert_eq!(
-            schema_version(storage.connection()).expect("current version"),
-            CURRENT_SCHEMA_VERSION
-        );
-        drop(storage);
+        let raw: String = storage
+            .connection()
+            .query_row(
+                "SELECT snapshot_json FROM releases WHERE resource_id = 'release:test'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("snapshot");
+        let raw = serde_json::from_str::<Value>(&raw).expect("snapshot JSON");
+        assert_eq!(raw["bodyText"], "Captured body");
+        assert!(raw.get("title").is_none());
+        assert!(raw.get("id").is_none());
+        assert!(raw.get("platform").is_none());
+        assert!(raw.get("sourcePublicationId").is_none());
 
-        let backup_parent = temp.path().join(".myopenpanels-backups");
-        let backup_dir = fs::read_dir(&backup_parent)
-            .expect("backup parent")
-            .next()
-            .expect("backup entry")
-            .expect("backup directory")
-            .path();
+        let hydrated = storage.list_releases(&project.id).expect("releases");
+        assert_eq!(hydrated[0]["id"], "release:test");
+        assert_eq!(hydrated[0]["platform"], "xiaohongshu");
         assert_eq!(
-            fs::read_to_string(backup_dir.join("content").join("legacy.txt"))
-                .expect("archived content"),
-            "preserved"
+            hydrated[0]["sourcePublicationId"],
+            "publication:test"
         );
-        let archived = Connection::open(backup_dir.join(DATABASE_FILE_NAME))
-            .expect("archived database");
-        assert_eq!(
-            archived
-                .query_row("SELECT value FROM legacy_records", [], |row| {
-                    row.get::<_, String>(0)
-                })
-                .expect("archived row"),
-            "preserved"
-        );
+        assert_eq!(hydrated[0]["snapshot"]["title"], "Captured title");
+        assert_eq!(hydrated[0]["snapshot"]["bodyText"], "Captured body");
+        assert_eq!(hydrated[0]["attempts"][0]["id"], "attempt:test");
     }
 
     #[test]
@@ -243,6 +322,48 @@ mod tests {
                 }))
                 .expect("canonical direct operation");
         }
+        let bound = json!({
+            "id": "operation:payload",
+            "ownerContextId": "test",
+            "intent": "canvas.image.generate",
+            "status": "active",
+            "projectId": project.id,
+            "panelId": panel.id,
+            "targetId": "shape:payload",
+            "baseRevision": 7,
+            "target": {
+                "placeholderShapeId": "shape:payload",
+                "bounds": { "x": 1, "y": 2 }
+            },
+            "input": { "prompt": "hello" },
+            "result": null,
+            "error": null,
+            "createdAt": "2026-01-01T00:00:00.000Z",
+            "updatedAt": "2026-01-01T00:00:00.000Z",
+            "completedAt": null,
+        });
+        storage
+            .write_direct_operation(&bound)
+            .expect("payload operation");
+        let payload: String = storage
+            .connection()
+            .query_row(
+                "SELECT payload_json FROM direct_operations WHERE id = 'operation:payload'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("stored payload");
+        let payload = serde_json::from_str::<Value>(&payload).expect("payload JSON");
+        assert!(payload.get("status").is_none());
+        assert!(payload.get("projectId").is_none());
+        assert!(payload["target"].get("placeholderShapeId").is_none());
+        assert_eq!(
+            storage
+                .read_direct_operation("operation:payload")
+                .expect("read operation")
+                .expect("operation")["target"]["placeholderShapeId"],
+            "shape:payload"
+        );
         let invalid = json!({
             "id": "operation:prepared",
             "ownerContextId": "test",
@@ -362,6 +483,108 @@ mod tests {
             .expect("task");
         assert_eq!(task["attemptLimit"], 3);
         assert!(task.get("maxAttempts").is_none());
+    }
+
+    #[test]
+    fn project_scoped_relationships_reject_cross_project_targets() {
+        let temp = tempdir().expect("tempdir");
+        let paths = paths_for(temp.path().join(".myopenpanels"));
+        let storage = Storage::open(&paths).expect("storage");
+        let (project, panel) = project_and_panel(&storage, PanelKind::Wiki);
+        storage
+            .connection()
+            .execute_batch(
+                r#"
+                INSERT INTO projects (
+                  id, title, root_path, created_at, updated_at
+                ) VALUES (
+                  'project:other', 'Other', '/other',
+                  '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+                );
+                INSERT INTO panels (
+                  project_id, id, kind, position, created_at, updated_at
+                ) VALUES (
+                  'project:other', 'panel:other', 'wiki', 0,
+                  '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+                );
+                INSERT INTO resources (
+                  id, project_id, kind, title, created_at, updated_at
+                ) VALUES
+                  ('document:other', 'project:other', 'document', 'Document',
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+                  ('publication:owner', 'project:test', 'publication', 'Owner',
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+                  ('publication:other', 'project:other', 'publication', 'Other',
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+                  ('release:owner', 'project:test', 'release', 'Release',
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+                INSERT INTO documents (resource_id, document_kind)
+                VALUES ('document:other', 'my_document');
+                INSERT INTO publications (project_id, resource_id)
+                VALUES ('project:other', 'publication:other');
+                INSERT INTO tasks (
+                  id, project_id, origin_panel_id, handler_key, target_ref,
+                  input_json, source_json, available_at, created_at, updated_at
+                ) VALUES
+                  ('task:owner', 'project:test', 'panel:wiki',
+                   'handler.wiki.maintain', 'owner', '{}', '{}',
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
+                   '2026-01-01T00:00:00.000Z'),
+                  ('task:child', 'project:test', 'panel:wiki',
+                   'handler.wiki.maintain', 'child', '{}', '{}',
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
+                   '2026-01-01T00:00:00.000Z'),
+                  ('task:other', 'project:other', 'panel:other',
+                   'handler.wiki.maintain', 'other', '{}', '{}',
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
+                   '2026-01-01T00:00:00.000Z');
+                "#,
+            )
+            .expect("fixtures");
+
+        assert!(storage
+            .connection()
+            .execute(
+                "INSERT INTO publications (project_id, resource_id, source_document_id) VALUES (?, 'publication:owner', 'document:other')",
+                [&project.id],
+            )
+            .is_err());
+        storage
+            .connection()
+            .execute(
+                "UPDATE tasks SET depends_on_task_id = 'task:owner' WHERE project_id = ? AND id = 'task:child'",
+                [&project.id],
+            )
+            .expect("valid dependency");
+        assert!(storage
+            .connection()
+            .execute(
+                "UPDATE tasks SET depends_on_task_id = 'task:child' WHERE project_id = ? AND id = 'task:owner'",
+                [&project.id],
+            )
+            .is_err());
+        assert!(storage
+            .connection()
+            .execute(
+                "INSERT INTO releases (project_id, resource_id, publication_id, platform_key) VALUES (?, 'release:owner', 'publication:other', 'test')",
+                [&project.id],
+            )
+            .is_err());
+        assert!(storage
+            .connection()
+            .execute(
+                "UPDATE tasks SET depends_on_task_id = 'task:other' WHERE project_id = ? AND id = 'task:owner'",
+                [&project.id],
+            )
+            .is_err());
+        assert!(storage
+            .connection()
+            .execute(
+                "INSERT INTO task_resources (project_id, task_id, resource_id, role, created_at) VALUES (?, 'task:owner', 'document:other', 'input', '2026-01-01T00:00:00.000Z')",
+                [&project.id],
+            )
+            .is_err());
+        assert_eq!(panel.id, "panel:wiki");
     }
 
     #[test]
@@ -510,33 +733,6 @@ mod tests {
     }
 
     #[test]
-    fn schema_fingerprint_mismatch_is_rejected_without_changes() {
-        let temp = tempdir().expect("tempdir");
-        let storage_dir = temp.path().join(".myopenpanels");
-        let paths = paths_for(storage_dir.clone());
-        let storage = Storage::open(&paths).expect("storage");
-        storage
-            .write_setting("fixture", "value", r#""keep me""#)
-            .expect("setting");
-        storage
-            .connection()
-            .execute(
-                "UPDATE storage_meta SET schema_fingerprint = 'old-schema' WHERE id = 1",
-                [],
-            )
-            .expect("old fingerprint");
-        fs::write(storage_dir.join("content-marker.txt"), "keep me").expect("content marker");
-        drop(storage);
-
-        let error = Storage::open(&paths).expect_err("schema mismatch");
-        assert_eq!(error.code(), Some("storage_schema_mismatch"));
-        assert_eq!(
-            fs::read_to_string(storage_dir.join("content-marker.txt")).expect("preserved content"),
-            "keep me"
-        );
-    }
-
-    #[test]
     fn assets_are_written_only_to_project_content_storage() {
         let temp = tempdir().expect("tempdir");
         let paths = paths_for(temp.path().join(".myopenpanels"));
@@ -552,7 +748,7 @@ mod tests {
             )
             .expect("asset");
         assert!(written.asset_ref.starts_with(&format!(
-            "projects/{}/content/asset/{}/1/",
+            "projects/{}/content/asset/{}/asset-revision:",
             project.id, written.resource_id
         )));
         assert!(written.file_path.is_file());

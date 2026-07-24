@@ -27,7 +27,7 @@ pub fn complete_task(paths: &MyOpenPanelsPaths, task_id: &str) -> Result<Value, 
 pub(crate) fn prepare_task_completion(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
-) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
+) -> Result<Option<crate::tasks::PreparedMyDocumentContent>, CliError> {
     let payload = complete_task(paths, task_id)?;
     if payload["task"]["type"].as_str() != Some("write_my_document") {
         return Ok(None);
@@ -63,7 +63,7 @@ pub(crate) fn prepare_task_completion(
             )
         })?;
     let storage = Storage::open(paths)?;
-    let (mut state, base_revision) = storage
+    let (mut state, _) = storage
         .read_panel_state_snapshot(project_id, wiki_panel_id)?
         .ok_or_else(|| CliError::with_code("target_not_found", "Wiki state not found."))?;
     let document = state
@@ -111,45 +111,41 @@ pub(crate) fn prepare_task_completion(
             "Staged My Document does not match the Task target version.",
         ));
     }
-    if payload["task"].pointer("/input/mode").and_then(Value::as_str) == Some("create")
-        && current_version == 0
-    {
-        if let Some(title) = metadata
-            .get("title")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            document["title"] = json!(title);
-        }
-    }
-    document["contentRef"] = json!(logical_path);
-    document["contentVersion"] = json!(current_version + 1);
-    document["format"] = json!(format);
-    document["mimeType"] = json!(mime_type);
-    document["originalFileName"] = metadata
+    let title = (payload["task"].pointer("/input/mode").and_then(Value::as_str) == Some("create")
+        && current_version == 0)
+        .then(|| metadata.get("title").and_then(Value::as_str))
+        .flatten();
+    let file_name = metadata
         .get("fileName")
-        .cloned()
-        .unwrap_or_else(|| json!(logical_path));
-    document["wordCount"] = json!(text
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .count());
-    document
-        .as_object_mut()
-        .map(|object| object.remove("writeOperation"));
-    document["updatedAt"] = json!(now_iso());
-    Ok(Some(crate::tasks::PreparedPanelState::new(
-        wiki_panel_id,
-        base_revision,
-        state,
+        .and_then(Value::as_str)
+        .unwrap_or(logical_path);
+    let updated_at = now_iso();
+    crate::my_document::apply_content_update(
+        document,
+        crate::my_document::ContentUpdate {
+            expected_version: base_version,
+            committed_version: current_version + 1,
+            content_ref: logical_path,
+            format,
+            mime_type,
+            original_file_name: Some(file_name),
+            title,
+            content: bytes,
+            required_operation_id: None,
+            clear_write_operation: true,
+            updated_at: &updated_at,
+        },
+    )?;
+    Ok(Some(crate::tasks::PreparedMyDocumentContent::new(
+        base_version,
+        document.clone(),
     )))
 }
 
 pub(crate) fn prepare_task_cancellation(
     paths: &MyOpenPanelsPaths,
     task_id: &str,
-) -> Result<Option<crate::tasks::PreparedPanelState>, CliError> {
+) -> Result<Option<crate::tasks::PreparedMyDocumentDeletion>, CliError> {
     let payload = read_writing_task(paths, task_id)?;
     let task = &payload["task"];
     if task.get("type").and_then(Value::as_str) != Some("write_my_document")
@@ -165,12 +161,16 @@ pub(crate) fn prepare_task_cancellation(
     ) else {
         return Ok(None);
     };
-    crate::wiki::prepare_pending_writing_document_removal(
+    let pending = crate::my_document::prepare_pending_writing_document_removal(
         paths,
         project_id,
         panel_id,
         document_id,
-    )
+    )?;
+    Ok(pending.map(|_| crate::tasks::PreparedMyDocumentDeletion {
+        panel_id: panel_id.to_owned(),
+        document_id: document_id.to_owned(),
+    }))
 }
 
 pub(crate) fn cleanup_uncommitted_writing_skill(

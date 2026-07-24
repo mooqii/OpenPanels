@@ -957,7 +957,8 @@ fn parse_asset_ref(asset_ref: &str) -> Result<ParsedAssetRef, CliError> {
         || parts[3] != "asset"
         || parts[1].is_empty()
         || parts[4].is_empty()
-        || parts[5].parse::<i64>().is_err()
+        || parts[5].is_empty()
+        || parts[6..].iter().any(|part| part.is_empty())
     {
         return Err(CliError::with_code(
             "invalid_target",

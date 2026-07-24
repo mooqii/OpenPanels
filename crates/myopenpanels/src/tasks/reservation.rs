@@ -165,7 +165,8 @@ fn update_tasks_for_resource(
         .prepare(
             r#"
             SELECT DISTINCT t.id FROM tasks t
-            JOIN task_resources tr ON tr.task_id = t.id
+            JOIN task_resources tr
+              ON tr.project_id = t.project_id AND tr.task_id = t.id
             WHERE t.project_id = ? AND t.status IN ('queued', 'running')
               AND tr.resource_id = ?
             "#,
@@ -193,12 +194,16 @@ fn update_tasks_for_resource(
             params![status, reason.to_string(), now, now, task_id],
         )
         .map_err(to_cli_error)?;
-        tx.execute(
-            "UPDATE tasks SET status = 'cancelled', error_json = ?, completed_at = ?, updated_at = ? WHERE depends_on_task_id = ? AND status = 'queued'",
-            params![reason.to_string(), now, now, task_id],
-        )
-        .map_err(to_cli_error)?;
         crate::content::abandon_task_staging_in_transaction(&tx, task_id, &now)?;
+    }
+    for task_id in &ids {
+        terminate_task_descendants_in_transaction(
+            &tx,
+            project_id,
+            task_id,
+            status,
+            &now,
+        )?;
     }
     if !ids.is_empty() {
         crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;
@@ -236,6 +241,13 @@ pub(crate) fn supersede_active_wiki_mutations(
         )
         .map_err(to_cli_error)?;
         crate::content::abandon_task_staging_in_transaction(&tx, task_id, &now)?;
+        terminate_task_descendants_in_transaction(
+            &tx,
+            project_id,
+            task_id,
+            "superseded",
+            &now,
+        )?;
     }
     if !ids.is_empty() {
         crate::storage::record_scope(&tx, "tasks", Some(project_id), None)?;

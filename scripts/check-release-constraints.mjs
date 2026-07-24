@@ -41,7 +41,11 @@ const rootVersion = readJson("package.json").version
 const studioVersion = readJson("apps/studio/package.json").version
 const rustVersion = readCargoVersion("crates/myopenpanels/Cargo.toml")
 const tag =
-  process.env.GITHUB_REF_NAME || process.env.RELEASE_TAG || `v${rootVersion}`
+  process.env.RELEASE_TAG ||
+  (process.env.GITHUB_REF_TYPE === "tag"
+    ? process.env.GITHUB_REF_NAME
+    : undefined) ||
+  `v${rootVersion}`
 const tagVersion = tag.startsWith("v") ? tag.slice(1) : tag
 
 assert(

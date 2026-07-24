@@ -2,7 +2,7 @@ use crate::error::CliError;
 use crate::paths::{sanitize_logical_path_part, sanitize_path_part, MyOpenPanelsPaths};
 use crate::types::{Panel, PanelKind, Project};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -83,7 +83,6 @@ impl Storage {
     pub fn open(paths: &MyOpenPanelsPaths) -> Result<Self, CliError> {
         fs::create_dir_all(&paths.storage_dir).map_err(to_cli_error)?;
         let database_path = paths.storage_dir.join(DATABASE_FILE_NAME);
-        archive_legacy_storage_if_needed(paths, &database_path)?;
         let mut connection = Connection::open(&database_path).map_err(to_cli_error)?;
         connection
             .execute_batch(
@@ -94,7 +93,7 @@ impl Storage {
                 "#,
         )
         .map_err(to_cli_error)?;
-        initialize_storage_schema(&mut connection)?;
+        initialize_storage_schema(paths, &mut connection)?;
         Ok(Self {
             connection,
             root_dir: paths.storage_dir.clone(),
@@ -143,6 +142,7 @@ impl Storage {
     }
 
     pub fn write_project(&self, project: &Project) -> Result<(), CliError> {
+        ensure_project_storage_dir(&self.root_dir, &project.id)?;
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
         tx.execute(
@@ -176,10 +176,7 @@ impl Storage {
             .map_err(to_cli_error)?;
         record_scope(&tx, "catalog", None, None)?;
         tx.commit().map_err(to_cli_error)?;
-        let project_dir = self
-            .root_dir
-            .join("projects")
-            .join(sanitize_path_part(project_id));
+        let project_dir = project_storage_dir(&self.root_dir, project_id);
         fs::remove_dir_all(project_dir)
             .or_else(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {

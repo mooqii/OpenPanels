@@ -56,8 +56,8 @@ fn read_documents(
         .prepare(
             r#"
             SELECT r.id, r.title, r.created_at, r.updated_at, d.media_type, d.source,
-                   d.original_file_name, d.original_revision_id, d.active_revision_id,
-                   d.content_version, d.character_count, d.metadata_json
+                   d.original_file_name, d.original_content_ref, d.active_content_ref,
+                   d.logical_content_version, d.character_count, d.metadata_json
             FROM documents d JOIN resources r ON r.id = d.resource_id
             WHERE r.project_id = ? AND r.deleted_at IS NULL AND d.document_kind = ?
             ORDER BY d.position ASC, r.id ASC
@@ -128,8 +128,8 @@ fn read_wiki_spaces(
     let mut statement = connection
         .prepare(
             r#"
-            SELECT r.id, r.title, r.created_at, r.updated_at, w.active_revision_id,
-                   w.content_version, w.selected_skill_id, w.metadata_json
+            SELECT r.id, r.title, r.created_at, r.updated_at, w.root_ref,
+                   r.content_version, w.selected_skill_id, w.metadata_json
             FROM wiki_spaces w JOIN resources r ON r.id = w.resource_id
             WHERE r.project_id = ? AND r.deleted_at IS NULL
             ORDER BY w.position ASC, r.id ASC
@@ -179,7 +179,8 @@ fn read_resource_task_projections(
             r#"
             SELECT DISTINCT tr.resource_id, t.id, t.handler_key, t.status, t.depends_on_task_id,
                    t.input_json, t.source_json, t.error_json, t.updated_at
-            FROM task_resources tr JOIN tasks t ON t.id = tr.task_id
+            FROM task_resources tr
+            JOIN tasks t ON t.project_id = tr.project_id AND t.id = tr.task_id
             WHERE t.project_id = ?
             ORDER BY t.updated_at DESC, t.id ASC
             "#,

@@ -101,7 +101,7 @@ pub fn create_execution_context_in_transaction(
 }
 
 pub fn abandon_task_staging_in_transaction(
-    tx: &Transaction<'_>,
+    tx: &rusqlite::Connection,
     task_id: &str,
     _now: &str,
 ) -> Result<(), CliError> {
@@ -136,10 +136,13 @@ pub(crate) fn stage_file_internal(
     domain_validated: bool,
 ) -> Result<Value, CliError> {
     let kind = ResourceKind::parse(&request.resource_kind)?;
-    if !domain_validated && matches!(kind, ResourceKind::MyDocument | ResourceKind::WritingSkill) {
+    if kind == ResourceKind::Asset
+        || (!domain_validated
+            && matches!(kind, ResourceKind::MyDocument | ResourceKind::WritingSkill))
+    {
         return Err(CliError::with_code(
             "invalid_broker_route",
-            "My Documents and Writing Skills must use their domain preparation endpoint.",
+            "This resource kind must use its domain preparation endpoint.",
         ));
     }
     validate_logical_path(&request.logical_path)?;
@@ -156,10 +159,11 @@ pub(crate) fn stage_file_internal(
     }
     let context = authorize(paths, execution_token)?;
     let resource_dir = staging_resource_dir(paths, &context, kind, &request.resource_key);
-    fs::create_dir_all(resource_dir.join("files")).map_err(to_cli_error)?;
+    fs::create_dir_all(&resource_dir).map_err(to_cli_error)?;
     let metadata_path = resource_dir.join("resource.json");
     if !metadata_path.exists() {
-        let active = read_active_pointer(paths, &context.project_id, kind, &request.resource_key)?;
+        let active =
+            read_authoritative_pointer(paths, &context.project_id, kind, &request.resource_key)?;
         write_json_atomic(
             &metadata_path,
             &StagedResource {
@@ -173,25 +177,37 @@ pub(crate) fn stage_file_internal(
             },
         )?;
     }
-    let destination = resource_dir
-        .join("files")
-        .join(logical_path_buf(&request.logical_path)?);
-    write_materialized_file(&destination, &bytes)?;
-    let file_metadata = destination.with_extension(format!(
-        "{}mopmeta",
-        destination
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|value| format!("{value}."))
-            .unwrap_or_default()
-    ));
-    write_json_atomic(
-        &file_metadata,
-        &json!({ "mimeType": request.mime_type, "metadata": request.metadata }),
+    let previous = read_staged_files(&resource_dir)?
+        .into_iter()
+        .find(|file| file.logical_path == request.logical_path)
+        .map(|file| {
+            let bytes = fs::read(staged_file_path(&resource_dir, &file)?).map_err(to_cli_error)?;
+            Ok::<_, CliError>((file, bytes))
+        })
+        .transpose()?;
+    let destination = write_staged_file(
+        &resource_dir,
+        &request.logical_path,
+        &bytes,
+        &request.mime_type,
+        request.metadata.clone(),
     )?;
     let total = directory_size(&staging_task_dir(paths, &context))?;
     if total > MAX_STAGING_BYTES as u64 {
-        let _ = fs::remove_file(&destination);
+        if let Some((previous, bytes)) = previous {
+            write_staged_file(
+                &resource_dir,
+                &previous.logical_path,
+                &bytes,
+                &previous.mime_type,
+                previous.metadata,
+            )?;
+        } else {
+            let _ = fs::remove_file(&destination);
+            let mut staged = read_staged_files(&resource_dir)?;
+            staged.retain(|file| file.logical_path != request.logical_path);
+            write_json_atomic(&staged_files_manifest(&resource_dir), &staged)?;
+        }
         return Err(CliError::with_code(
             "content_too_large",
             format!("An Attempt cannot stage more than {MAX_STAGING_BYTES} bytes."),
@@ -216,15 +232,22 @@ pub fn read_file(
     request: &ReadFileRequest,
 ) -> Result<Value, CliError> {
     let kind = ResourceKind::parse(&request.resource_kind)?;
+    if kind == ResourceKind::Asset {
+        return Err(CliError::with_code(
+            "invalid_broker_route",
+            "Assets must use their domain content endpoint.",
+        ));
+    }
     validate_logical_path(&request.logical_path)?;
     let context = authorize(paths, execution_token)?;
-    let staged = staging_resource_dir(paths, &context, kind, &request.resource_key)
-        .join("files")
-        .join(logical_path_buf(&request.logical_path)?);
-    let (bytes, mime_type) = if staged.is_file() {
+    let stage_dir = staging_resource_dir(paths, &context, kind, &request.resource_key);
+    let staged = read_staged_files(&stage_dir)?
+        .into_iter()
+        .find(|file| file.logical_path == request.logical_path);
+    let (bytes, mime_type) = if let Some(staged) = staged {
         (
-            fs::read(&staged).map_err(to_cli_error)?,
-            mime_for_path(&staged),
+            fs::read(staged_file_path(&stage_dir, &staged)?).map_err(to_cli_error)?,
+            staged.mime_type,
         )
     } else {
         let snapshot = resource_snapshot_for_task(

@@ -8,6 +8,17 @@ impl Storage {
     ) -> Result<(), CliError> {
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
             .map_err(to_cli_error)?;
+        Self::upsert_tasks_in_transaction(&tx, project_id, panel_id, queue, tasks)?;
+        tx.commit().map_err(to_cli_error)
+    }
+
+    pub(crate) fn upsert_tasks_in_transaction(
+        tx: &Transaction<'_>,
+        project_id: &str,
+        panel_id: &str,
+        queue: &str,
+        tasks: &[Value],
+    ) -> Result<(), CliError> {
         let mut changed = false;
         let mut dependencies = Vec::new();
         for task in tasks {
@@ -121,10 +132,9 @@ impl Storage {
                 > 0;
         }
         if changed {
-            record_scope(&tx, "tasks", Some(project_id), None)?;
+            record_scope(tx, "tasks", Some(project_id), None)?;
         }
-        sync_task_resources_for_project(&tx, project_id)?;
-        tx.commit().map_err(to_cli_error)
+        sync_task_resources_for_project(tx, project_id)
     }
 
     pub fn insert_capability_task(
@@ -327,7 +337,8 @@ impl Storage {
                 r#"
                 SELECT tr.resource_id, r.kind, tr.role, tr.captured_version
                 FROM task_resources tr
-                JOIN resources r ON r.id = tr.resource_id
+                JOIN resources r
+                  ON r.project_id = tr.project_id AND r.id = tr.resource_id
                 WHERE tr.task_id = ?
                 ORDER BY
                   CASE tr.role

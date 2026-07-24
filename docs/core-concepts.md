@@ -6,6 +6,10 @@ This document defines the conceptual contract for the MyOpenPanels core. It is
 the reference for future changes to Tasks, Operations, Procedures, CLI
 commands, panels, module capabilities, and Skills.
 
+The corresponding persistence contract for database ownership, revision
+semantics, immutable content, migrations, and local file classes is defined in
+[`storage-contract.md`](storage-contract.md).
+
 Runtime code remains authoritative for current behavior while the repository is
 being refactored. New implementation work should converge on the boundaries in
 this document. Documentation must not be used to preserve an implementation
@@ -78,6 +82,11 @@ Task B depends_on Task A
 
 The current core needs only one direct predecessor per Task. It does not need a
 persisted workflow graph or a generic workflow engine.
+
+Dependencies are always within one Project and cannot form a cycle. If a
+prerequisite fails, is cancelled, or is superseded, every queued or running
+descendant is terminated in the same transaction and any active executor is
+fenced from further writes or completion.
 
 ### Mutation serialization
 
@@ -218,6 +227,9 @@ A Panel is a user workspace, not a business ownership boundary. It owns:
 A module owns stable resources and behavior. The same My Document can be used
 by Wiki, Writing, and Typesetting without being copied into each panel. Task
 status and module resources must not be persisted again inside panel UI state.
+SQLite owns each resource's stable identity and active content revision;
+immutable content owns the bytes of that revision. Filesystem pointers and
+materialized views are projections, not additional owners.
 
 ## Skill layers
 

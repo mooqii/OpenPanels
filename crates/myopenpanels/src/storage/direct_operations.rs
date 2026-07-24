@@ -48,12 +48,13 @@ impl Storage {
         let created_at = required("createdAt")?;
         let updated_at = required("updatedAt")?;
         let completed_at = operation.get("completedAt").and_then(Value::as_str);
-        let operation_json = serde_json::to_string(operation).map_err(to_cli_error)?;
+        let payload_json = serde_json::to_string(&direct_operation_payload(operation))
+            .map_err(to_cli_error)?;
         tx.execute(
             r#"
             INSERT INTO direct_operations (
               id, owner_context_id, intent, status, project_id, panel_id,
-              target_id, base_revision, operation_json, created_at, updated_at, completed_at
+              target_id, base_revision, payload_json, created_at, updated_at, completed_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               owner_context_id = excluded.owner_context_id,
@@ -63,7 +64,7 @@ impl Storage {
               panel_id = excluded.panel_id,
               target_id = excluded.target_id,
               base_revision = excluded.base_revision,
-              operation_json = excluded.operation_json,
+              payload_json = excluded.payload_json,
               updated_at = excluded.updated_at,
               completed_at = excluded.completed_at
             "#,
@@ -76,7 +77,7 @@ impl Storage {
                 panel_id,
                 target_id,
                 base_revision,
-                operation_json,
+                payload_json,
                 created_at,
                 updated_at,
                 completed_at,
@@ -90,16 +91,20 @@ impl Storage {
         &self,
         operation_id: &str,
     ) -> Result<Option<Value>, CliError> {
-        self.connection
+        Ok(self
+            .connection
             .query_row(
-                "SELECT operation_json FROM direct_operations WHERE id = ?",
+                r#"
+                SELECT id, owner_context_id, intent, status, project_id, panel_id,
+                       target_id, base_revision, payload_json,
+                       created_at, updated_at, completed_at
+                FROM direct_operations WHERE id = ?
+                "#,
                 [operation_id],
-                |row| row.get::<_, String>(0),
+                direct_operation_from_row,
             )
             .optional()
-            .map_err(to_cli_error)?
-            .map(|raw| serde_json::from_str(&raw).map_err(to_cli_error))
-            .transpose()
+            .map_err(to_cli_error)?)
     }
 
     pub fn list_direct_operations(
@@ -111,7 +116,10 @@ impl Storage {
             .connection
             .prepare(
                 r#"
-                SELECT operation_json FROM direct_operations
+                SELECT id, owner_context_id, intent, status, project_id, panel_id,
+                       target_id, base_revision, payload_json,
+                       created_at, updated_at, completed_at
+                FROM direct_operations
                 WHERE (? IS NULL OR owner_context_id = ?)
                   AND (? IS NULL OR status = ?)
                 ORDER BY updated_at DESC, id ASC
@@ -121,13 +129,10 @@ impl Storage {
         let operations = statement
             .query_map(
                 params![owner_context_id, owner_context_id, status, status],
-                |row| row.get::<_, String>(0),
+                direct_operation_from_row,
             )
             .map_err(to_cli_error)?
-            .map(|row| {
-                let raw = row.map_err(to_cli_error)?;
-                serde_json::from_str(&raw).map_err(to_cli_error)
-            })
+            .map(|row| row.map_err(to_cli_error))
             .collect();
         operations
     }
@@ -167,4 +172,73 @@ impl Storage {
             .collect();
         operation_ids
     }
+}
+
+fn direct_operation_payload(operation: &Value) -> Value {
+    let mut payload = operation.as_object().cloned().unwrap_or_default();
+    for key in [
+        "id",
+        "ownerContextId",
+        "intent",
+        "status",
+        "projectId",
+        "panelId",
+        "targetId",
+        "baseRevision",
+        "createdAt",
+        "updatedAt",
+        "completedAt",
+    ] {
+        payload.remove(key);
+    }
+    if let Some(target) = payload.get_mut("target").and_then(Value::as_object_mut) {
+        for key in ["placeholderShapeId", "documentId", "baseContentVersion"] {
+            target.remove(key);
+        }
+    }
+    Value::Object(payload)
+}
+
+fn direct_operation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let id = row.get::<_, String>(0)?;
+    let owner_context_id = row.get::<_, String>(1)?;
+    let intent = row.get::<_, String>(2)?;
+    let status = row.get::<_, String>(3)?;
+    let project_id = row.get::<_, String>(4)?;
+    let panel_id = row.get::<_, String>(5)?;
+    let target_id = row.get::<_, String>(6)?;
+    let base_revision = row.get::<_, i64>(7)?;
+    let payload_json = row.get::<_, String>(8)?;
+    let created_at = row.get::<_, String>(9)?;
+    let updated_at = row.get::<_, String>(10)?;
+    let completed_at = row.get::<_, Option<String>>(11)?;
+    let mut operation = serde_json::from_str::<Value>(&payload_json).unwrap_or_else(|_| json!({}));
+    if !operation.is_object() {
+        operation = json!({});
+    }
+    operation["id"] = json!(id);
+    operation["ownerContextId"] = json!(owner_context_id);
+    operation["intent"] = json!(intent);
+    operation["status"] = json!(status);
+    operation["projectId"] = json!(project_id);
+    operation["panelId"] = json!(panel_id);
+    operation["targetId"] = json!(target_id);
+    operation["baseRevision"] = json!(base_revision);
+    operation["createdAt"] = json!(created_at);
+    operation["updatedAt"] = json!(updated_at);
+    operation["completedAt"] = completed_at.map_or(Value::Null, Value::String);
+    if operation.get("target").is_none_or(|value| !value.is_object()) {
+        operation["target"] = json!({});
+    }
+    match intent.as_str() {
+        "canvas.image.generate" => {
+            operation["target"]["placeholderShapeId"] = operation["targetId"].clone();
+        }
+        "my-document.create" | "my-document.revise" => {
+            operation["target"]["documentId"] = operation["targetId"].clone();
+            operation["target"]["baseContentVersion"] = operation["baseRevision"].clone();
+        }
+        _ => {}
+    }
+    Ok(operation)
 }

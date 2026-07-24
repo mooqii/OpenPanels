@@ -1,35 +1,9 @@
-import {
-  Button,
-  Chip,
-  InputGroup,
-  type Key,
-  Label,
-  Spinner,
-  Tabs,
-  Tag,
-  TagGroup,
-  Tooltip,
-} from "@heroui/react"
 import { TextAlign } from "@tiptap/extension-text-align"
 import { Markdown } from "@tiptap/markdown"
 import { GapCursor } from "@tiptap/pm/gapcursor"
 import { Selection } from "@tiptap/pm/state"
-import { EditorContent, useEditor } from "@tiptap/react"
+import { useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
-import {
-  AlertCircle,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  Eye,
-  GripVertical,
-  LoaderCircle,
-  PanelLeft,
-  Plus,
-  Sparkles,
-  Trash2,
-  X,
-} from "lucide-react"
 import {
   type DragEvent,
   useCallback,
@@ -39,29 +13,15 @@ import {
   useState,
 } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
-import { apiUrl } from "../../lib/api"
-import { randomId } from "../../lib/id"
 import { taskIsSucceeded } from "../../lib/task-status"
 import {
-  addPublicationTitle,
-  appendTypesettingTags,
   isSupportedTypesettingCoverMedia,
-  isTypesettingCoverVideo,
-  isTypesettingDocumentEmpty,
   isTypesettingLayoutTaskActive,
   latestTypesettingLayoutTask,
-  moveTypesettingCover,
   parseTypesettingAssetDrag,
   plainTextToTypesettingContent,
-  publicationCoverTaskStatus,
-  publicationLayoutTaskStatus,
   publicationTitleAfterDocumentInsert,
-  publicationTitleTaskStatus,
-  removePublicationTitle,
   selectedPublicationTitleId,
-  selectPublicationTitle,
-  TYPESETTING_ASSET_DRAG_TYPE,
-  type TypesettingCoverTaskDisplayStatus,
   typesettingImageClickSide,
   typesettingImagesToContent,
   typesettingInsertPosition,
@@ -75,114 +35,24 @@ import type {
   TypesettingPublication,
   TypesettingPublicationImage,
 } from "../../types"
-import { ImagePreviewDialog } from "../ImagePreviewDialog"
 import { TypesettingAddCoverDialog } from "./TypesettingAddCoverDialog"
 import { TypesettingCoverTaskDialog } from "./TypesettingCoverTaskDialog"
 import { TypesettingLayoutDialog } from "./TypesettingLayoutDialog"
-import { PublicationTitleTaskDialog } from "./TypesettingTitleTaskDialog"
+import { PublicationContentSection } from "./TypesettingPublicationContent"
+import { PublicationCoversSection } from "./TypesettingPublicationCovers"
 import {
-  createTypesettingImageExtension,
-  formatPublicationTime,
-  TypesettingToolbar,
-} from "./TypesettingToolbar"
+  PublicationTagsField,
+  PublicationTitleField,
+} from "./TypesettingPublicationFields"
+import {
+  PublicationDetailHeader,
+  type PublicationSaveStatus,
+} from "./TypesettingPublicationHeader"
+import { PublicationTitleTaskDialog } from "./TypesettingTitleTaskDialog"
+import { createTypesettingImageExtension } from "./TypesettingToolbar"
 
-type SaveStatus = "saved" | "saving" | "failed"
-export type PublicationView = "edit" | "preview"
-const TYPESETTING_COVER_DRAG_TYPE = "application/x-myopenpanels-cover-index"
-export function PublicationModeHeader({
-  onDelete,
-  onOpenLibrary,
-  onRetrySave,
-  onViewChange,
-  publication,
-  saveError,
-  saveStatus,
-  view,
-}: {
-  onDelete: () => void
-  onOpenLibrary?: () => void
-  onRetrySave: () => void
-  onViewChange: (view: PublicationView) => void
-  publication: TypesettingPublication
-  saveError: string | null
-  saveStatus: SaveStatus
-  view: PublicationView
-}) {
-  const { locale, t } = useMyOpenPanelsI18n()
-  return (
-    <div className="op-typesetting-view-header op-typesetting-detail-header op-typesetting-mode-header">
-      <div className="op-typesetting-detail-header__save-meta">
-        <span>
-          {t`Last edited`}{" "}
-          <time dateTime={publication.updatedAt}>
-            {formatPublicationTime(publication.updatedAt, locale)}
-          </time>
-        </span>
-        {saveStatus === "failed" ? (
-          <button
-            className="is-failed op-typesetting-detail-header__save-state"
-            onClick={onRetrySave}
-            title={saveError ?? t`Retry save`}
-            type="button"
-          >
-            <AlertCircle size={12} />
-            {t`Save failed`}
-          </button>
-        ) : (
-          <span
-            className="op-typesetting-detail-header__save-state"
-            data-status={saveStatus}
-          >
-            {saveStatus === "saving" ? (
-              <LoaderCircle className="op-spin" size={12} />
-            ) : null}
-            {saveStatus === "saving" ? t`Saving` : t`Auto-saved`}
-          </span>
-        )}
-      </div>
-      {onOpenLibrary ? (
-        <Button
-          aria-label={t`Open library`}
-          className="op-typesetting-mobile-library-button"
-          isIconOnly
-          onPress={onOpenLibrary}
-          size="sm"
-          variant="ghost"
-        >
-          <PanelLeft size={17} />
-        </Button>
-      ) : null}
-      <Tabs
-        onSelectionChange={(key) =>
-          onViewChange(key === "preview" ? "preview" : "edit")
-        }
-        selectedKey={view}
-      >
-        <Tabs.ListContainer>
-          <Tabs.List aria-label={t`Publication view`}>
-            <Tabs.Tab id="edit">
-              {t`Edit`}
-              <Tabs.Indicator />
-            </Tabs.Tab>
-            <Tabs.Tab id="preview">
-              {t`Preview`}
-              <Tabs.Indicator />
-            </Tabs.Tab>
-          </Tabs.List>
-        </Tabs.ListContainer>
-      </Tabs>
-      <Button
-        aria-label={t`Delete publication project`}
-        isIconOnly
-        onPress={onDelete}
-        size="sm"
-        variant="ghost"
-      >
-        <Trash2 size={15} />
-      </Button>
-    </div>
-  )
-}
+export type { PublicationView } from "./TypesettingPublicationHeader"
+export { PublicationModeHeader } from "./TypesettingPublicationHeader"
 export function PublicationDetail({
   importAsset,
   onDelete,
@@ -224,30 +94,20 @@ export function PublicationDetail({
   publication: TypesettingPublication
   projectId: string
   saveError: string | null
-  saveStatus: SaveStatus
+  saveStatus: PublicationSaveStatus
   showHeader?: boolean
   tasks: ProjectTask[]
   transport: MyOpenPanelsTransport
   uploadAsset: (file: File) => Promise<TypesettingPublicationImage>
 }) {
-  const { locale, t } = useMyOpenPanelsI18n()
+  const { t } = useMyOpenPanelsI18n()
   const [assetError, setAssetError] = useState<string | null>(null)
-  const [coverDropActive, setCoverDropActive] = useState(false)
   const [isCoverUploading, setIsCoverUploading] = useState(false)
-  const [draggedCoverIndex, setDraggedCoverIndex] = useState<number | null>(
-    null
-  )
   const [lastSavedAt, setLastSavedAt] = useState(publication.updatedAt)
   const [isCoverDialogOpen, setIsCoverDialogOpen] = useState(false)
   const [isAddCoverDialogOpen, setIsAddCoverDialogOpen] = useState(false)
-  const [previewedCover, setPreviewedCover] = useState<{
-    alt: string
-    src: string
-  } | null>(null)
   const [isInsertImageDialogOpen, setIsInsertImageDialogOpen] = useState(false)
   const [isTitleDialogOpen, setIsTitleDialogOpen] = useState(false)
-  const [isTitleListExpanded, setIsTitleListExpanded] = useState(false)
-  const [tagDraft, setTagDraft] = useState("")
   const [createdCoverTasks, setCreatedCoverTasks] = useState<ProjectTask[]>([])
   const [createdLayoutTasks, setCreatedLayoutTasks] = useState<ProjectTask[]>(
     []
@@ -256,60 +116,11 @@ export function PublicationDetail({
   const [isLayoutDialogOpen, setIsLayoutDialogOpen] = useState(false)
   const editorRef = useRef<ReturnType<typeof useEditor>>(null)
   const lastInsertPositionRef = useRef<number | null>(null)
-  const titleFieldRef = useRef<HTMLDivElement>(null)
-  const titleInputRef = useRef<HTMLInputElement>(null)
-  const titleListPublicationIdRef = useRef(publication.id)
-  const tagDraftPublicationIdRef = useRef(publication.id)
   const publicationRef = useRef(publication)
   publicationRef.current = publication
   useEffect(() => {
     if (saveStatus === "saved") setLastSavedAt(publication.updatedAt)
   }, [publication.updatedAt, saveStatus])
-  useEffect(() => {
-    if (titleListPublicationIdRef.current === publication.id) return
-    titleListPublicationIdRef.current = publication.id
-    setIsTitleListExpanded(false)
-  }, [publication.id])
-  useEffect(() => {
-    if (!isTitleListExpanded) return
-    const collapseTitleList = (event: PointerEvent) => {
-      if (
-        event.target instanceof Node &&
-        !titleFieldRef.current?.contains(event.target)
-      ) {
-        setIsTitleListExpanded(false)
-      }
-    }
-    document.addEventListener("pointerdown", collapseTitleList)
-    return () => document.removeEventListener("pointerdown", collapseTitleList)
-  }, [isTitleListExpanded])
-  useEffect(() => {
-    if (tagDraftPublicationIdRef.current === publication.id) return
-    tagDraftPublicationIdRef.current = publication.id
-    setTagDraft("")
-  }, [publication.id])
-
-  const commitTagDraft = useCallback(() => {
-    const nextTags = appendTypesettingTags(publication.tags ?? [], tagDraft)
-    setTagDraft("")
-    if (nextTags.length === (publication.tags ?? []).length) return
-    onUpdate((current) => ({
-      ...current,
-      tags: appendTypesettingTags(current.tags ?? [], tagDraft),
-      updatedAt: new Date().toISOString(),
-    }))
-  }, [onUpdate, publication.tags, tagDraft])
-  const removeTags = useCallback(
-    (keys: Set<Key>) => {
-      onUpdate((current) => ({
-        ...current,
-        tags: (current.tags ?? []).filter((tag) => !keys.has(tag)),
-        updatedAt: new Date().toISOString(),
-      }))
-    },
-    [onUpdate]
-  )
-
   const coverTasks = useMemo(() => {
     const byId = new Map(tasks.map((task) => [task.id, task]))
     for (const task of createdCoverTasks) {
@@ -371,9 +182,6 @@ export function PublicationDetail({
   const activeLayoutTask =
     layoutTasks.find(isTypesettingLayoutTaskActive) ?? null
   const titleOptions = typesettingPublicationTitles(publication)
-  const activeTitleId = selectedPublicationTitleId(publication)
-  const activeTitle =
-    titleOptions.find(({ id }) => id === activeTitleId) ?? titleOptions[0]
   const titleTasks = useMemo(() => {
     const byId = new Map(tasks.map((task) => [task.id, task]))
     for (const task of createdTitleTasks) {
@@ -581,7 +389,6 @@ export function PublicationDetail({
     async (event: DragEvent<HTMLElement>) => {
       const asset = parseTypesettingAssetDrag(event.dataTransfer)
       event.preventDefault()
-      setCoverDropActive(false)
       setAssetError(null)
       if (!asset) {
         const supported = Array.from(event.dataTransfer.files).filter(
@@ -626,567 +433,50 @@ export function PublicationDetail({
   return (
     <div className="op-typesetting-detail-view">
       {showHeader ? (
-        <div className="op-typesetting-view-header op-typesetting-detail-header">
-          {onOpenLibrary ? (
-            <Button
-              aria-label={t`Open library`}
-              className="op-typesetting-mobile-library-button"
-              isIconOnly
-              onPress={onOpenLibrary}
-              size="sm"
-              variant="ghost"
-            >
-              <PanelLeft size={17} />
-            </Button>
-          ) : null}
-          <div className="op-typesetting-detail-header__save-meta">
-            <span>
-              {t`Last edited`}{" "}
-              <time dateTime={lastSavedAt}>
-                {formatPublicationTime(lastSavedAt, locale)}
-              </time>
-            </span>
-            {saveStatus === "failed" ? (
-              <button
-                className="is-failed op-typesetting-detail-header__save-state"
-                onClick={onRetrySave}
-                title={saveError ?? t`Retry save`}
-                type="button"
-              >
-                <AlertCircle size={12} />
-                {t`Save failed`}
-              </button>
-            ) : (
-              <span
-                className="op-typesetting-detail-header__save-state"
-                data-status={saveStatus}
-              >
-                {saveStatus === "saving" ? (
-                  <LoaderCircle className="op-spin" size={12} />
-                ) : null}
-                {saveStatus === "saving" ? t`Saving` : t`Auto-saved`}
-              </span>
-            )}
-          </div>
-          <Button
-            aria-label={t`Preview`}
-            onPress={onPreview}
-            size="sm"
-            variant="primary"
-          >
-            {t`Preview`}
-          </Button>
-          <Button
-            aria-label={t`Delete publication project`}
-            isIconOnly
-            onPress={onDelete}
-            size="sm"
-            variant="ghost"
-          >
-            <Trash2 size={15} />
-          </Button>
-        </div>
+        <PublicationDetailHeader
+          lastSavedAt={lastSavedAt}
+          onDelete={onDelete}
+          onOpenLibrary={onOpenLibrary}
+          onPreview={onPreview}
+          onRetrySave={onRetrySave}
+          publication={publication}
+          saveError={saveError}
+          saveStatus={saveStatus}
+        />
       ) : null}
 
       <div className="op-typesetting-detail-scroll">
-        <div
-          className="op-typesetting-field op-publication-title-field"
-          ref={titleFieldRef}
-        >
-          <div className="op-publication-title-field__heading">
-            <Label htmlFor={`publication-title-${publication.id}`}>
-              {t`Title`}
-            </Label>
-            <div className="op-publication-title-field__actions">
-              {visibleTitleTask ? (
-                <TitleTaskStatus
-                  onOpen={() => onOpenAgentTasks([visibleTitleTask.id])}
-                  t={t}
-                  task={visibleTitleTask}
-                />
-              ) : null}
-              <Button
-                onPress={() => setIsTitleDialogOpen(true)}
-                size="sm"
-                variant="secondary"
-              >
-                <Sparkles size={14} />
-                {t`Generate titles`}
-              </Button>
-            </div>
-          </div>
-          <InputGroup
-            aria-label={t`Title`}
-            className="op-publication-title-field__control"
-            fullWidth
-            variant="secondary"
-          >
-            <InputGroup.Input
-              aria-label={t`Title`}
-              id={`publication-title-${publication.id}`}
-              onChange={(event) => {
-                const value = event.currentTarget.value
-                onUpdate((current) => ({
-                  ...updatePublicationTitle(current, activeTitleId, value),
-                  updatedAt: new Date().toISOString(),
-                }))
-              }}
-              placeholder={t`Untitled publication`}
-              ref={titleInputRef}
-              value={activeTitle.value}
-            />
-            <InputGroup.Suffix className="op-publication-title-field__suffix">
-              <Tooltip closeDelay={0} delay={300}>
-                <Button
-                  aria-controls={`publication-title-options-${publication.id}`}
-                  aria-expanded={isTitleListExpanded}
-                  aria-label={
-                    isTitleListExpanded ? t`Collapse titles` : t`Expand titles`
-                  }
-                  className="op-publication-title-field__expand-button"
-                  isIconOnly
-                  onPress={() =>
-                    setIsTitleListExpanded((expanded) => !expanded)
-                  }
-                  size="sm"
-                  variant="ghost"
-                >
-                  <ChevronDown
-                    className="op-publication-title-field__chevron"
-                    data-expanded={isTitleListExpanded}
-                    size={16}
-                  />
-                </Button>
-                <Tooltip.Content placement="top">
-                  {isTitleListExpanded ? t`Collapse titles` : t`Expand titles`}
-                </Tooltip.Content>
-              </Tooltip>
-            </InputGroup.Suffix>
-          </InputGroup>
+        <PublicationTitleField
+          onGenerate={() => setIsTitleDialogOpen(true)}
+          onOpenTask={(taskId) => onOpenAgentTasks([taskId])}
+          onUpdate={onUpdate}
+          publication={publication}
+          task={visibleTitleTask}
+        />
+        <PublicationTagsField onUpdate={onUpdate} publication={publication} />
 
-          {isTitleListExpanded ? (
-            <div
-              aria-label={t`Titles`}
-              className="op-publication-title-field__list"
-              id={`publication-title-options-${publication.id}`}
-              role="list"
-            >
-              {titleOptions.map((title) => (
-                <div
-                  className="op-publication-title-field__row"
-                  data-selected={title.id === activeTitleId}
-                  key={title.id}
-                  role="listitem"
-                >
-                  <Button
-                    aria-pressed={title.id === activeTitleId}
-                    className="op-publication-title-field__option"
-                    onPress={() => {
-                      onUpdate((current) => ({
-                        ...selectPublicationTitle(current, title.id),
-                        updatedAt: new Date().toISOString(),
-                      }))
-                      setIsTitleListExpanded(false)
-                      titleInputRef.current?.focus()
-                    }}
-                    variant="ghost"
-                  >
-                    <span className="op-publication-title-field__option-label">
-                      {title.value.trim() || t`Untitled publication`}
-                    </span>
-                  </Button>
-                  <Tooltip closeDelay={0} delay={300}>
-                    <Button
-                      aria-label={t`Delete title`}
-                      isIconOnly
-                      onPress={() => {
-                        const replacementTitleId = randomId("publication-title")
-                        onUpdate((current) => ({
-                          ...removePublicationTitle(
-                            current,
-                            title.id,
-                            replacementTitleId
-                          ),
-                          updatedAt: new Date().toISOString(),
-                        }))
-                      }}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <Trash2 size={15} />
-                    </Button>
-                    <Tooltip.Content placement="top">
-                      {t`Delete title`}
-                    </Tooltip.Content>
-                  </Tooltip>
-                </div>
-              ))}
-              <Button
-                className="op-publication-title-field__add-option"
-                onPress={() => {
-                  onUpdate((current) => ({
-                    ...addPublicationTitle(current, {
-                      id: randomId("publication-title"),
-                      value: "",
-                    }),
-                    updatedAt: new Date().toISOString(),
-                  }))
-                  setIsTitleListExpanded(false)
-                  titleInputRef.current?.focus()
-                }}
-                variant="ghost"
-              >
-                <Plus size={16} />
-                {t`New title`}
-              </Button>
-            </div>
-          ) : null}
-        </div>
+        <PublicationCoversSection
+          isUploading={isCoverUploading}
+          onAdd={() => setIsAddCoverDialogOpen(true)}
+          onCreate={() => setIsCoverDialogOpen(true)}
+          onDropCover={dropCover}
+          onOpenTask={(taskId) => onOpenAgentTasks([taskId])}
+          onUpdate={onUpdate}
+          publication={publication}
+          tasks={visibleCoverTasks}
+          transport={transport}
+        />
 
-        <div className="op-typesetting-field op-typesetting-tags-field">
-          <Label htmlFor="op-typesetting-tags-input">{t`Tags`}</Label>
-          <InputGroup
-            aria-label={t`Tags`}
-            className="op-typesetting-tags-field__control"
-            fullWidth
-          >
-            {(publication.tags ?? []).length > 0 ? (
-              <InputGroup.Prefix className="op-typesetting-tags-field__prefix">
-                <TagGroup
-                  aria-label={t`Tags`}
-                  className="op-typesetting-tags-field__tags"
-                  onRemove={removeTags}
-                  size="sm"
-                  variant="surface"
-                >
-                  <TagGroup.List
-                    items={(publication.tags ?? []).map((tag) => ({
-                      id: tag,
-                      name: tag,
-                    }))}
-                  >
-                    {(tag) => (
-                      <Tag id={tag.id} textValue={tag.name}>
-                        {tag.name}
-                      </Tag>
-                    )}
-                  </TagGroup.List>
-                </TagGroup>
-              </InputGroup.Prefix>
-            ) : null}
-            <InputGroup.Input
-              aria-label={t`Add tag`}
-              id="op-typesetting-tags-input"
-              onChange={(event) => setTagDraft(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.nativeEvent.isComposing || event.key !== "Enter")
-                  return
-                event.preventDefault()
-                commitTagDraft()
-              }}
-              placeholder={t`Add tag`}
-              value={tagDraft}
-            />
-          </InputGroup>
-        </div>
-
-        <section className="op-typesetting-section">
-          <div className="op-typesetting-section__heading">
-            <div>
-              <span>{t`Covers`}</span>
-            </div>
-            <div className="op-typesetting-section__actions">
-              <Button
-                onPress={() => setIsAddCoverDialogOpen(true)}
-                size="sm"
-                variant="secondary"
-              >
-                <Plus size={14} />
-                {t`Add`}
-              </Button>
-              <Button
-                onPress={() => setIsCoverDialogOpen(true)}
-                size="sm"
-                variant="secondary"
-              >
-                <Sparkles size={14} />
-                {t`Create cover`}
-              </Button>
-            </div>
-          </div>
-          <div
-            className={
-              coverDropActive
-                ? "is-active op-publication-cover-zone"
-                : "op-publication-cover-zone"
-            }
-            onDragLeave={() => setCoverDropActive(false)}
-            onDragOver={(event) => {
-              const isAssetDrag = event.dataTransfer.types.includes(
-                TYPESETTING_ASSET_DRAG_TYPE
-              )
-              const isFileDrag = event.dataTransfer.types.includes("Files")
-              if (!(isAssetDrag || isFileDrag)) {
-                return
-              }
-              event.preventDefault()
-              event.dataTransfer.dropEffect = "copy"
-              setCoverDropActive(true)
-            }}
-            onDrop={(event) => {
-              dropCover(event).catch(() => undefined)
-            }}
-          >
-            {publication.covers.length ||
-            visibleCoverTasks.length ||
-            isCoverUploading ? (
-              <div className="op-publication-covers">
-                {publication.covers.map((cover, index) => (
-                  <div
-                    className="op-publication-cover"
-                    draggable
-                    key={cover.assetRef}
-                    onDragEnd={() => setDraggedCoverIndex(null)}
-                    onDragOver={(event) => {
-                      if (
-                        draggedCoverIndex === null ||
-                        !event.dataTransfer.types.includes(
-                          TYPESETTING_COVER_DRAG_TYPE
-                        )
-                      ) {
-                        return
-                      }
-                      event.preventDefault()
-                      event.dataTransfer.dropEffect = "move"
-                    }}
-                    onDragStart={(event) => {
-                      if (
-                        (event.target as HTMLElement).closest(
-                          "button, [role='button']"
-                        )
-                      ) {
-                        event.preventDefault()
-                        return
-                      }
-                      setDraggedCoverIndex(index)
-                      event.dataTransfer.effectAllowed = "move"
-                      event.dataTransfer.setData(
-                        TYPESETTING_COVER_DRAG_TYPE,
-                        String(index)
-                      )
-                    }}
-                    onDrop={(event) => {
-                      const rawIndex = event.dataTransfer.getData(
-                        TYPESETTING_COVER_DRAG_TYPE
-                      )
-                      if (!rawIndex) return
-                      const from = Number(rawIndex)
-                      if (!Number.isInteger(from)) return
-                      event.preventDefault()
-                      event.stopPropagation()
-                      onUpdate((current) => ({
-                        ...current,
-                        covers: moveTypesettingCover(
-                          current.covers,
-                          from,
-                          index
-                        ),
-                        updatedAt: new Date().toISOString(),
-                      }))
-                      setDraggedCoverIndex(null)
-                    }}
-                  >
-                    <PublicationCoverMedia
-                      cover={cover}
-                      src={apiUrl(transport.apiBase, cover.src).toString()}
-                    />
-                    <span className="op-publication-cover__grip">
-                      <GripVertical size={14} />
-                    </span>
-                    {isTypesettingCoverVideo(cover) ? null : (
-                      <Button
-                        aria-label={t`View cover`}
-                        className="op-publication-cover__view"
-                        isIconOnly
-                        onPress={() =>
-                          setPreviewedCover({
-                            alt: cover.fileName,
-                            src: apiUrl(
-                              transport.apiBase,
-                              cover.src
-                            ).toString(),
-                          })
-                        }
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <Eye size={14} />
-                      </Button>
-                    )}
-                    <div className="op-publication-cover__actions">
-                      <Button
-                        aria-label={t`Move cover left`}
-                        isDisabled={index === 0}
-                        isIconOnly
-                        onPress={() =>
-                          onUpdate((current) => ({
-                            ...current,
-                            covers: moveTypesettingCover(
-                              current.covers,
-                              index,
-                              index - 1
-                            ),
-                            updatedAt: new Date().toISOString(),
-                          }))
-                        }
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <ChevronLeft size={14} />
-                      </Button>
-                      <Button
-                        aria-label={t`Move cover right`}
-                        isDisabled={index === publication.covers.length - 1}
-                        isIconOnly
-                        onPress={() =>
-                          onUpdate((current) => ({
-                            ...current,
-                            covers: moveTypesettingCover(
-                              current.covers,
-                              index,
-                              index + 1
-                            ),
-                            updatedAt: new Date().toISOString(),
-                          }))
-                        }
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <ChevronRight size={14} />
-                      </Button>
-                      <Button
-                        aria-label={t`Remove cover`}
-                        isIconOnly
-                        onPress={() =>
-                          onUpdate((current) => ({
-                            ...current,
-                            covers: current.covers.filter(
-                              (candidate) =>
-                                candidate.assetRef !== cover.assetRef
-                            ),
-                            updatedAt: new Date().toISOString(),
-                          }))
-                        }
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <Trash2 size={14} />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-                {visibleCoverTasks.map((task) => (
-                  <CoverTaskPlaceholder
-                    key={task.id}
-                    onOpen={() => onOpenAgentTasks([task.id])}
-                    status={publicationCoverTaskStatus(task)}
-                    t={t}
-                  />
-                ))}
-                {isCoverUploading ? (
-                  <div className="op-publication-cover-task">
-                    <span className="op-publication-cover-task__icon">
-                      <Spinner size="sm" />
-                    </span>
-                    <strong>{t`Uploading media`}</strong>
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <div className="op-typesetting-drop-empty">
-                <span>{t`Drag Canvas assets or image/video files here to add covers.`}</span>
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="op-typesetting-section op-publication-content-section">
-          <div className="op-typesetting-section__heading">
-            <div>
-              <span>{t`Content details`}</span>
-            </div>
-            <div className="op-typesetting-section__actions">
-              {latestLayoutTask ? (
-                <LayoutTaskStatus
-                  onOpen={() => onOpenAgentTasks([latestLayoutTask.id])}
-                  t={t}
-                  task={latestLayoutTask}
-                />
-              ) : null}
-              <Button
-                isDisabled={Boolean(activeLayoutTask)}
-                onPress={() => setIsLayoutDialogOpen(true)}
-                size="sm"
-                variant="secondary"
-              >
-                <Sparkles size={14} />
-                {t`Automatic layout`}
-              </Button>
-            </div>
-          </div>
-          <div
-            aria-disabled={Boolean(activeLayoutTask)}
-            className={
-              activeLayoutTask
-                ? "is-layout-locked op-typesetting-editor"
-                : "op-typesetting-editor"
-            }
-          >
-            <TypesettingToolbar
-              disabled={Boolean(activeLayoutTask)}
-              editor={editor}
-              onInsertImages={() => setIsInsertImageDialogOpen(true)}
-            />
-            <div className="op-typesetting-editor__body">
-              {editor && isTypesettingDocumentEmpty(editor.getJSON()) ? (
-                <div className="op-typesetting-editor__empty">
-                  <span>{t`Open a document from the library and insert it here.`}</span>
-                </div>
-              ) : null}
-              <EditorContent editor={editor} />
-            </div>
-            {activeLayoutTask ? (
-              <Tooltip closeDelay={0} delay={0}>
-                <button
-                  aria-label={t`A layout task is in progress. Cancel it or wait for it to finish before editing.`}
-                  className="op-typesetting-editor__lock"
-                  onClick={() => onOpenAgentTasks([activeLayoutTask.id])}
-                  type="button"
-                />
-                <Tooltip.Content placement="top">
-                  {t`A layout task is in progress. Cancel it or wait for it to finish before editing.`}
-                </Tooltip.Content>
-              </Tooltip>
-            ) : null}
-          </div>
-        </section>
-        {assetError ? (
-          <div className="op-typesetting-inline-error" role="alert">
-            <AlertCircle size={15} />
-            <span className="op-typesetting-inline-error__message">
-              {assetError}
-            </span>
-            <Button
-              aria-label={t`Dismiss`}
-              isIconOnly
-              onPress={() => setAssetError(null)}
-              size="sm"
-              variant="ghost"
-            >
-              <X size={14} />
-            </Button>
-          </div>
-        ) : null}
+        <PublicationContentSection
+          activeTask={activeLayoutTask}
+          assetError={assetError}
+          editor={editor}
+          latestTask={latestLayoutTask}
+          onDismissError={() => setAssetError(null)}
+          onInsertImages={() => setIsInsertImageDialogOpen(true)}
+          onOpenLayout={() => setIsLayoutDialogOpen(true)}
+          onOpenTask={(taskId) => onOpenAgentTasks([taskId])}
+        />
       </div>
 
       <TypesettingAddCoverDialog
@@ -1260,154 +550,6 @@ export function PublicationDetail({
         publication={publication}
         transport={transport}
       />
-      {previewedCover ? (
-        <ImagePreviewDialog
-          alt={previewedCover.alt}
-          closeLabel={t`Close`}
-          onClose={() => setPreviewedCover(null)}
-          src={previewedCover.src}
-        />
-      ) : null}
     </div>
-  )
-}
-
-function PublicationCoverMedia({
-  cover,
-  src,
-}: {
-  cover: TypesettingPublicationImage
-  src: string
-}) {
-  if (isTypesettingCoverVideo(cover)) {
-    return (
-      <video
-        aria-label={cover.fileName}
-        draggable={false}
-        muted
-        playsInline
-        preload="metadata"
-        src={src}
-      />
-    )
-  }
-  return <img alt={cover.fileName} draggable={false} src={src} />
-}
-
-function TitleTaskStatus({
-  onOpen,
-  task,
-  t,
-}: {
-  onOpen: () => void
-  task: ProjectTask
-  t: (value: TemplateStringsArray) => string
-}) {
-  const status = publicationTitleTaskStatus(task)
-  const label =
-    status === "waiting"
-      ? t`Waiting for titles`
-      : status === "running"
-        ? t`Generating titles`
-        : status === "saving"
-          ? t`Saving titles`
-          : status === "failed"
-            ? t`Title generation failed`
-            : t`Title generation cancelled`
-  return (
-    <button
-      className={`is-${status} op-publication-title-status`}
-      onClick={onOpen}
-      type="button"
-    >
-      {status === "waiting" || status === "running" || status === "saving" ? (
-        <LoaderCircle className="op-spin" size={13} />
-      ) : status === "failed" ? (
-        <AlertCircle size={13} />
-      ) : null}
-      <span>{label}</span>
-    </button>
-  )
-}
-
-function LayoutTaskStatus({
-  onOpen,
-  task,
-  t,
-}: {
-  onOpen: () => void
-  task: ProjectTask
-  t: (value: TemplateStringsArray) => string
-}) {
-  const status = publicationLayoutTaskStatus(task)
-  const label =
-    status === "waiting"
-      ? t`Waiting for layout`
-      : status === "running"
-        ? t`Formatting content`
-        : status === "completed"
-          ? t`Layout completed`
-          : status === "failed"
-            ? t`Layout failed`
-            : t`Layout cancelled`
-  return (
-    <button
-      className={`is-${status} op-publication-layout-status`}
-      onClick={onOpen}
-      type="button"
-    >
-      {status === "waiting" || status === "running" ? (
-        <LoaderCircle className="op-spin" size={13} />
-      ) : status === "failed" ? (
-        <AlertCircle size={13} />
-      ) : null}
-      <span>{label}</span>
-    </button>
-  )
-}
-
-function CoverTaskPlaceholder({
-  onOpen,
-  status,
-  t,
-}: {
-  onOpen: () => void
-  status: TypesettingCoverTaskDisplayStatus
-  t: (value: TemplateStringsArray) => string
-}) {
-  const active =
-    status === "waiting" || status === "running" || status === "saving"
-  const label =
-    status === "waiting"
-      ? t`Waiting to create`
-      : status === "running"
-        ? t`Creating cover`
-        : status === "saving"
-          ? t`Saving cover`
-          : status === "failed"
-            ? t`Cover creation failed`
-            : t`Cover creation cancelled`
-  return (
-    <button
-      className={`is-${status} op-publication-cover-task`}
-      onClick={onOpen}
-      type="button"
-    >
-      <span className="op-publication-cover-task__icon">
-        {active ? (
-          <LoaderCircle className="op-spin" size={18} />
-        ) : (
-          <AlertCircle size={18} />
-        )}
-      </span>
-      <strong>{label}</strong>
-      <Chip
-        color={status === "failed" ? "danger" : "default"}
-        size="sm"
-        variant="soft"
-      >
-        {t`Open task`}
-      </Chip>
-    </button>
   )
 }

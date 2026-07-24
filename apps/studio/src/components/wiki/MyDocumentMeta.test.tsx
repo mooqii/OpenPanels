@@ -35,6 +35,39 @@ function importedDocument(): MyDocument {
 }
 
 describe("MyDocumentMeta", () => {
+  it("marks Agent-generated documents before the character count", () => {
+    const document = importedDocument()
+    document.id = "document:generated"
+    document.importSource = undefined
+    document.conversion = undefined
+    document.taskId = "task:writing"
+
+    const markup = renderToStaticMarkup(
+      <MyDocumentMeta apiBase="http://127.0.0.1:43217" document={document} />
+    )
+
+    expect(markup).toMatch(
+      /op-my-document-meta__generated.*lucide-sparkle.*12.*characters/
+    )
+  })
+
+  it("does not mark manually created or imported documents as generated", () => {
+    const imported = importedDocument()
+    const manual = importedDocument()
+    manual.id = "document:manual"
+    manual.importSource = undefined
+    manual.conversion = undefined
+
+    for (const document of [manual, imported]) {
+      const markup = renderToStaticMarkup(
+        <MyDocumentMeta apiBase="http://127.0.0.1:43217" document={document} />
+      )
+
+      expect(markup).not.toContain("op-my-document-meta__generated")
+      expect(markup).not.toContain("lucide-sparkle")
+    }
+  })
+
   it("keeps the original format visible without an original-file action", () => {
     const markup = renderToStaticMarkup(
       <MyDocumentMeta

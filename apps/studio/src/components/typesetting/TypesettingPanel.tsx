@@ -190,6 +190,13 @@ export function TypesettingPanel({
     [activePublicationId, replaceState, state]
   )
 
+  const closePublication = useCallback(() => {
+    insertDocumentRef.current = null
+    pendingInsertionRef.current = null
+    setActivePublicationId(null)
+    setView("edit")
+  }, [])
+
   const openMyDocument = useCallback(
     async (document: MyDocument) => {
       try {
@@ -480,6 +487,7 @@ export function TypesettingPanel({
           {activePublication ? (
             <div className="op-typesetting-publication-workspace">
               <PublicationModeHeader
+                onClose={closePublication}
                 onDelete={() => setPendingDelete(activePublication)}
                 onOpenLibrary={() => setIsLibraryOpen(true)}
                 onRetrySave={() => flushSave().catch(() => undefined)}

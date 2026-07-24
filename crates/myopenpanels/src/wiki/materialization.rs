@@ -376,11 +376,7 @@ pub(crate) fn agent_content_context(
 }
 
 fn wiki_materialization_dir(paths: &MyOpenPanelsPaths, project_id: &str) -> PathBuf {
-    paths
-        .storage_dir
-        .join("projects")
-        .join(sanitize_path_part(project_id))
-        .join("materialized")
+    crate::storage::project_storage_dir(&paths.storage_dir, project_id).join("materialized")
 }
 
 fn wiki_local_paths(
@@ -390,7 +386,7 @@ fn wiki_local_paths(
 ) -> (PathBuf, PathBuf, PathBuf) {
     let wiki_dir = wiki_materialization_dir(paths, project_id)
         .join("wikis")
-        .join(sanitize_path_part(wiki_space_id));
+        .join(crate::paths::stable_path_key(wiki_space_id));
     (
         wiki_dir.clone(),
         wiki_dir.join("pages"),

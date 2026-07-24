@@ -267,7 +267,7 @@ fn materialize_task_inputs(
                 .and_then(Value::as_str)
                 == Some("my_document")
             {
-                crate::wiki::my_document_import_original_for_target(
+                crate::my_document::my_document_import_original_for_target(
                     paths,
                     task.get("projectId").and_then(Value::as_str).unwrap_or_default(),
                     task.get("panelId").and_then(Value::as_str).unwrap_or_default(),

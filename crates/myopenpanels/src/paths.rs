@@ -1,4 +1,6 @@
 use crate::error::CliError;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use sha2::{Digest, Sha256};
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -125,6 +127,11 @@ pub fn sanitize_logical_path_part(value: &str) -> String {
     }
 }
 
+pub fn stable_path_key(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    format!("v2-{}", URL_SAFE_NO_PAD.encode(&digest[..12]))
+}
+
 pub fn sanitize_file_name(value: &str) -> String {
     let sanitized = value
         .trim()
@@ -234,6 +241,23 @@ mod tests {
     fn filesystem_parts_are_portable_while_logical_parts_preserve_ids() {
         assert_eq!(sanitize_path_part("task:example"), "task_example");
         assert_eq!(sanitize_logical_path_part("task:example"), "task:example");
+    }
+
+    #[test]
+    fn stable_path_keys_are_bounded_and_do_not_share_sanitizer_collisions() {
+        assert_eq!(stable_path_key("project:a/b").len(), 19);
+        assert_eq!(
+            stable_path_key("project:a/b").len(),
+            stable_path_key(&"x".repeat(10_000)).len()
+        );
+        assert_ne!(
+            stable_path_key("project:a/b"),
+            stable_path_key("project:a?b")
+        );
+        assert_eq!(
+            stable_path_key("project:a/b"),
+            stable_path_key("project:a/b")
+        );
     }
 
     #[test]

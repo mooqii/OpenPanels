@@ -18,8 +18,10 @@ const version = (
 ).replace(/^v/, "")
 const tag =
   args.tag ??
-  process.env.GITHUB_REF_NAME ??
   process.env.RELEASE_TAG ??
+  (process.env.GITHUB_REF_TYPE === "tag"
+    ? process.env.GITHUB_REF_NAME
+    : undefined) ??
   `v${version}`
 const repo = args.repo ?? process.env.GITHUB_REPOSITORY ?? "mooqii/OpenPanels"
 const channel =
