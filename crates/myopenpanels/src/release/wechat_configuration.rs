@@ -337,7 +337,7 @@ fn write_stored_wechat_credentials(
     secure_directory_permissions(parent)?;
     let temporary = parent.join(format!(
         ".wechat-official-account-{}.tmp",
-        crate::ids::random_id("credential")
+        crate::ids::random_base64url_96()
     ));
     let bytes = serde_json::to_vec(credentials).map_err(|error| CliError::new(error.to_string()))?;
     let mut options = fs::OpenOptions::new();
@@ -353,8 +353,32 @@ fn write_stored_wechat_credentials(
     file.write_all(&bytes)
         .and_then(|_| file.sync_all())
         .map_err(|error| CliError::new(error.to_string()))?;
-    fs::rename(&temporary, &destination).map_err(|error| CliError::new(error.to_string()))?;
+    replace_credentials_file(&temporary, &destination)?;
     secure_file_permissions(&destination)
+}
+
+fn replace_credentials_file(temporary: &Path, destination: &Path) -> Result<(), CliError> {
+    #[cfg(windows)]
+    {
+        if destination.exists() {
+            let parent = destination
+                .parent()
+                .ok_or_else(|| CliError::new("WeChat credential directory is invalid."))?;
+            let backup = parent.join(format!(
+                ".wechat-official-account-backup-{}.tmp",
+                crate::ids::random_base64url_96()
+            ));
+            fs::rename(destination, &backup).map_err(|error| CliError::new(error.to_string()))?;
+            if let Err(error) = fs::rename(temporary, destination) {
+                let _ = fs::rename(&backup, destination);
+                let _ = fs::remove_file(temporary);
+                return Err(CliError::new(error.to_string()));
+            }
+            fs::remove_file(backup).map_err(|error| CliError::new(error.to_string()))?;
+            return Ok(());
+        }
+    }
+    fs::rename(temporary, destination).map_err(|error| CliError::new(error.to_string()))
 }
 
 fn secure_directory_permissions(path: &Path) -> Result<(), CliError> {
