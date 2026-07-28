@@ -225,6 +225,65 @@ pub fn rename_active_file(
     })))
 }
 
+pub fn remove_active_file(
+    paths: &MyOpenPanelsPaths,
+    project_id: &str,
+    kind: ResourceKind,
+    resource_key: &str,
+    logical_path: &str,
+) -> Result<Option<Value>, CliError> {
+    let Some(snapshot) = active_resource_snapshot(paths, project_id, kind, resource_key)? else {
+        return Ok(None);
+    };
+    if !snapshot
+        .files
+        .iter()
+        .any(|file| file.logical_path == logical_path)
+    {
+        return Err(CliError::with_code(
+            "content_unavailable",
+            "Content does not exist.",
+        ));
+    }
+    let stage = tempfile::tempdir_in(&paths.storage_dir).map_err(to_cli_error)?;
+    for file in &snapshot.files {
+        if file.logical_path == logical_path {
+            continue;
+        }
+        write_staged_file(
+            stage.path(),
+            &file.logical_path,
+            &file.bytes,
+            &file.mime_type,
+            json!({}),
+        )?;
+    }
+    let staged = StagedResource {
+        project_id: project_id.to_owned(),
+        panel_id: String::new(),
+        resource_kind: kind.as_str().to_owned(),
+        resource_key: resource_key.to_owned(),
+        base_revision_id: Some(snapshot.revision_id),
+        base_content_version: snapshot.content_version,
+        metadata: json!({ "replaceAll": true }),
+    };
+    let (active_path, pointer) = prepare_staged_resource(paths, &staged, stage.path(), None)?;
+    crate::content::publish_immediate_pointer_with_authority(
+        paths,
+        project_id,
+        kind,
+        resource_key,
+        &active_path,
+        &pointer,
+    )?;
+    Ok(Some(json!({
+        "revisionId": pointer.revision_id,
+        "contentVersion": pointer.content_version,
+        "manifestHash": pointer.manifest_hash,
+        "contentHash": pointer.content_hash,
+    })))
+}
+
 pub fn materialize_active_file(
     paths: &MyOpenPanelsPaths,
     project_id: &str,

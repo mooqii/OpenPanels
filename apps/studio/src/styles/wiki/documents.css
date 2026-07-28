@@ -472,6 +472,15 @@
   pointer-events: auto;
 }
 
+.op-my-document-meta__writing {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  align-items: center;
+  margin-left: 1px;
+  color: var(--accent-soft-foreground);
+}
+
 .op-my-document-meta__generated {
   display: inline-flex;
   flex: 0 0 auto;

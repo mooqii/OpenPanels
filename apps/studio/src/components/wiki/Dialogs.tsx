@@ -11,7 +11,14 @@ import {
   Trash2,
   X,
 } from "lucide-react"
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
+import {
+  type PointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { formatBytes, originalPreviewKind } from "../../lib/api"
 import type { WikiOriginalPreviewDocument } from "../../types"
@@ -384,6 +391,7 @@ export function MarkdownDialog({
   fileName,
   onChange,
   onClose,
+  onDelete,
   onRenameFileName,
   onSave,
   primaryAction,
@@ -394,6 +402,7 @@ export function MarkdownDialog({
   fileName: string
   onChange: (content: string) => void
   onClose: () => void
+  onDelete?: () => Promise<void>
   onRenameFileName: (fileName: string) => Promise<void>
   onSave: (content: string) => Promise<void>
   primaryAction?: {
@@ -405,6 +414,8 @@ export function MarkdownDialog({
 }) {
   const { t } = useMyOpenPanelsI18n()
   const [isEditingFileName, setIsEditingFileName] = useState(false)
+  const [isDeleteArmed, setIsDeleteArmed] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [fileNameDraft, setFileNameDraft] = useState("")
   const [saveStatus, setSaveStatus] = useState<
     "idle" | "saving" | "saved" | "error"
@@ -415,6 +426,7 @@ export function MarkdownDialog({
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveChainRef = useRef<Promise<void>>(Promise.resolve())
   const cancelFileNameEditRef = useRef(false)
+  const deleteButtonRef = useRef<HTMLButtonElement | null>(null)
 
   latestContentRef.current = content
 
@@ -506,12 +518,44 @@ export function MarkdownDialog({
     onClose()
   }, [onClose, queueSave])
 
+  const handleDelete = useCallback(async () => {
+    if (!onDelete) return
+    if (!isDeleteArmed) {
+      setIsDeleteArmed(true)
+      return
+    }
+    setIsDeleting(true)
+    try {
+      await onDelete()
+      onClose()
+    } finally {
+      setIsDeleting(false)
+    }
+  }, [isDeleteArmed, onClose, onDelete])
+
+  const resetArmedDeleteFromOutside = useCallback(
+    (event: PointerEvent) => {
+      if (!isDeleteArmed) return
+      const target = event.target
+      if (target instanceof Node && deleteButtonRef.current?.contains(target)) {
+        return
+      }
+      setIsDeleteArmed(false)
+      event.preventDefault()
+      event.stopPropagation()
+    },
+    [isDeleteArmed]
+  )
+
   return (
     <Modal.Backdrop
+      isDismissable={!isDeleting}
+      isKeyboardDismissDisabled={isDeleting}
       isOpen
       onOpenChange={(isOpen) => {
-        if (!isOpen) closeAfterSave()
+        if (!(isOpen || isDeleting)) closeAfterSave()
       }}
+      onPointerDownCapture={resetArmedDeleteFromOutside}
     >
       <Modal.Container className="op-markdown-dialog__container" size="cover">
         <Modal.Dialog className="op-markdown-dialog__panel">
@@ -589,9 +633,30 @@ export function MarkdownDialog({
                       : t`Save failed`}
                 </span>
               ) : null}
+              {onDelete ? (
+                <Button
+                  aria-label={isDeleteArmed ? t`Confirm delete` : t`Delete`}
+                  className="op-markdown-dialog__delete"
+                  isDisabled={isDeleting}
+                  isIconOnly={!isDeleteArmed}
+                  isPending={isDeleting}
+                  onPress={() => {
+                    handleDelete().catch((error) => {
+                      console.error("Failed to delete document", error)
+                    })
+                  }}
+                  ref={deleteButtonRef}
+                  size="md"
+                  variant={isDeleteArmed ? "danger" : "ghost"}
+                >
+                  <Trash2 size={18} />
+                  {isDeleteArmed ? t`Confirm delete` : null}
+                </Button>
+              ) : null}
               <Button
                 aria-label={closeLabel}
                 className="op-markdown-dialog__close"
+                isDisabled={isDeleting}
                 isIconOnly
                 onPress={() => closeAfterSave()}
                 size="md"

@@ -413,7 +413,8 @@ fn build_router(
             get(api_wiki_read_page)
                 .patch(api_wiki_rename_page)
                 .put(api_wiki_write_page)
-                .post(api_wiki_write_page),
+                .post(api_wiki_write_page)
+                .delete(api_wiki_delete_page),
         )
         .route(
             "/api/active-project",

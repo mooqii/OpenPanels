@@ -32,6 +32,8 @@ import {
   publicationTitleRequestPayload,
   removePublicationTitle,
   selectPublicationTitle,
+  setTypesettingEditorEditable,
+  shouldPersistTypesettingEditorUpdate,
   TYPESETTING_ASSET_DRAG_TYPE,
   TYPESETTING_AUTOSAVE_DELAY_MS,
   typesettingImageClickSide,
@@ -516,6 +518,41 @@ describe("Typesetting title tasks", () => {
 })
 
 describe("Typesetting layout tasks", () => {
+  it("unlocks the editor without emitting a synthetic content update", () => {
+    const calls: [boolean, boolean | undefined][] = []
+    setTypesettingEditorEditable(
+      {
+        setEditable: (editable, emitUpdate) => {
+          calls.push([editable, emitUpdate])
+        },
+      },
+      true
+    )
+
+    expect(calls).toEqual([[true, false]])
+  })
+
+  it("persists only real document changes made while layout is inactive", () => {
+    expect(
+      shouldPersistTypesettingEditorUpdate({
+        isLayoutTaskActive: false,
+        transactionChangedDocument: false,
+      })
+    ).toBe(false)
+    expect(
+      shouldPersistTypesettingEditorUpdate({
+        isLayoutTaskActive: true,
+        transactionChangedDocument: true,
+      })
+    ).toBe(false)
+    expect(
+      shouldPersistTypesettingEditorUpdate({
+        isLayoutTaskActive: false,
+        transactionChangedDocument: true,
+      })
+    ).toBe(true)
+  })
+
   it("builds layout payloads and maps terminal status to an unlocked state", () => {
     expect(
       publicationLayoutRequestPayload({

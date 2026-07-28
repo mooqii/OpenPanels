@@ -611,6 +611,16 @@ pub(super) async fn api_wiki_rename_page(
     }
 }
 
+pub(super) async fn api_wiki_delete_page(
+    State(state): State<Arc<AppState>>,
+    Path((wiki_space_id, page_path)): Path<(String, String)>,
+) -> Response {
+    match wiki::delete_page(&state.paths, &wiki_space_id, &page_path) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => my_document_error(error),
+    }
+}
+
 pub(super) fn write_page_response(
     state: Arc<AppState>,
     wiki_space_id: &str,

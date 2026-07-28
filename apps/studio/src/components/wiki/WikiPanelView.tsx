@@ -13,7 +13,6 @@ import {
   FileOutput,
   MoreHorizontal,
   PanelLeft,
-  Pencil,
   RefreshCw,
   RotateCcw,
   Trash2,
@@ -59,7 +58,6 @@ export function WikiPanelView(
     agentSkills,
     setPendingWikiAgentSkillId,
     setPendingDeleteMyDocument,
-    setPendingRenameMyDocument,
     isBusy,
     retryingMyDocumentId,
     myDocumentRetryError,
@@ -322,10 +320,10 @@ export function WikiPanelView(
                           <Dropdown.Menu
                             disabledKeys={[
                               ...(isBusy || isWritingLocked
-                                ? ["publish", "rename", "delete"]
+                                ? ["publish", "delete"]
                                 : []),
                               ...(isContentLocked || conversionFailed
-                                ? ["publish", "rename"]
+                                ? ["publish"]
                                 : []),
                             ]}
                             onAction={(key) => {
@@ -336,35 +334,31 @@ export function WikiPanelView(
                                     error
                                   )
                                 })
-                              } else if (key === "rename") {
-                                setPendingRenameMyDocument(document)
                               } else if (key === "delete") {
                                 setPendingDeleteMyDocument(document)
                               }
                             }}
                           >
                             {writing ? null : (
-                              <Dropdown.Item
-                                id="publish"
-                                textValue={
-                                  document.publishHistory.length
-                                    ? t`Add latest version to raw documents`
-                                    : t`Add to raw documents`
-                                }
-                              >
-                                <FileOutput size={14} />
-                                <Label>
-                                  {document.publishHistory.length
-                                    ? t`Add latest version to raw documents`
-                                    : t`Add to raw documents`}
-                                </Label>
-                              </Dropdown.Item>
+                              <>
+                                <Dropdown.Item
+                                  id="publish"
+                                  textValue={
+                                    document.publishHistory.length
+                                      ? t`Add latest version to raw documents`
+                                      : t`Add to raw documents`
+                                  }
+                                >
+                                  <FileOutput size={14} />
+                                  <Label>
+                                    {document.publishHistory.length
+                                      ? t`Add latest version to raw documents`
+                                      : t`Add to raw documents`}
+                                  </Label>
+                                </Dropdown.Item>
+                                <Separator />
+                              </>
                             )}
-                            <Dropdown.Item id="rename" textValue={t`Rename`}>
-                              <Pencil size={14} />
-                              <Label>{t`Rename`}</Label>
-                            </Dropdown.Item>
-                            <Separator />
                             <Dropdown.Item
                               id="delete"
                               textValue={t`Delete`}

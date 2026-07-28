@@ -81,6 +81,13 @@
   min-height: 36px;
 }
 
+.op-markdown-dialog__delete {
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  white-space: nowrap;
+}
+
 .op-markdown-dialog__editor {
   height: 100%;
   min-height: 0;

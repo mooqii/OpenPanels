@@ -124,11 +124,15 @@ export function PublicationTitleField({
               aria-expanded={isExpanded}
               aria-label={isExpanded ? t`Collapse titles` : t`Expand titles`}
               className="op-publication-title-field__expand-button"
-              isIconOnly
               onPress={() => setIsExpanded((expanded) => !expanded)}
               size="sm"
               variant="ghost"
             >
+              {titleOptions.length > 1 ? (
+                <span className="op-publication-title-field__count">
+                  {titleOptions.length}
+                </span>
+              ) : null}
               <ChevronDown
                 className="op-publication-title-field__chevron"
                 data-expanded={isExpanded}

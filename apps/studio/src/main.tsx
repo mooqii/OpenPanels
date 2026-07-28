@@ -1,3 +1,4 @@
+import { Toast } from "@heroui/react"
 import { StrictMode, useEffect, useState } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App"
@@ -9,6 +10,7 @@ import {
   useMyOpenPanelsI18n,
 } from "./canvas"
 import { apiFetch } from "./lib/api"
+import { appToastQueue } from "./lib/app-toast"
 import { transportKey, useMyOpenPanelsTransport } from "./lib/transport"
 import "./styles.css"
 
@@ -68,6 +70,7 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <MyOpenPanelsI18nProvider>
       <MyOpenPanelsThemeProvider>
+        <Toast.Provider placement="top end" queue={appToastQueue} />
         <AppBootstrap />
       </MyOpenPanelsThemeProvider>
     </MyOpenPanelsI18nProvider>

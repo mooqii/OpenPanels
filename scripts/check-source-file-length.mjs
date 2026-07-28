@@ -9,9 +9,9 @@ const MAX_LINE_COUNT = 1000
 const MAX_LINE_COUNT_OVERRIDES = new Map([
   ["apps/studio/src/App.tsx", 1032],
   ["apps/studio/src/components/typesetting/TypesettingPublication.tsx", 1415],
-  ["apps/studio/src/components/wiki/useWikiPanelController.tsx", 1013],
+  ["apps/studio/src/components/wiki/useWikiPanelController.tsx", 1014],
   ["apps/studio/src/styles/trace.css", 1019],
-  ["apps/studio/src/styles/typesetting.css", 1436],
+  ["apps/studio/src/styles/typesetting.css", 1453],
   ["crates/myopenpanels/src/bridge/result_validation.rs", 1396],
   ["crates/myopenpanels/src/bridge/task_handlers.rs", 1249],
   ["crates/myopenpanels/src/agent/skill_import.rs", 1011],

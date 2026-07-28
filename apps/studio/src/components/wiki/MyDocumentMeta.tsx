@@ -1,4 +1,4 @@
-import { Sparkle } from "lucide-react"
+import { RefreshCw, Sparkle } from "lucide-react"
 import { type ReactNode, useEffect, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiJson } from "../../lib/api"
@@ -25,6 +25,7 @@ export function MyDocumentMeta({
   const [wordCount, setWordCount] = useState(document.wordCount)
   const formats = myDocumentFormats(document)
   const hasOriginalFormat = Boolean(formats.original)
+  const isWriting = document.writeOperation !== undefined
 
   useEffect(() => {
     setWordCount(document.wordCount)
@@ -79,11 +80,18 @@ export function MyDocumentMeta({
           <span>{formats.converted}</span>
         </>
       ) : null}
-      {status ? (
+      {isWriting ? (
+        <span className="op-my-document-meta__writing">
+          <RefreshCw aria-hidden className="op-wiki-spin" size={11} />
+          <span>{t`Creating`}</span>
+        </span>
+      ) : status ? (
         <span className="op-my-document-meta__status">{status}</span>
       ) : null}
-      {hasOriginalFormat || status ? <span aria-hidden="true">·</span> : null}
-      {document.taskId ? (
+      {hasOriginalFormat || status || isWriting ? (
+        <span aria-hidden="true">·</span>
+      ) : null}
+      {!isWriting && document.taskId ? (
         <span
           aria-label={t`Agent generated`}
           className="op-my-document-meta__generated"
@@ -92,7 +100,7 @@ export function MyDocumentMeta({
           <Sparkle aria-hidden size={13} />
         </span>
       ) : null}
-      {wordCount !== null && wordCount !== undefined ? (
+      {!isWriting && wordCount !== null && wordCount !== undefined ? (
         <>
           <span>
             {wordCount.toLocaleString(locale)} {t`characters`}

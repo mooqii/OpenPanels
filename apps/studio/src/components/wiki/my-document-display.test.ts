@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   countDocumentCharacters,
+  isMyDocumentVersionPublished,
   myDocumentConversionDisplay,
   myDocumentFormats,
 } from "./my-document-display"
@@ -96,5 +97,28 @@ describe("myDocumentFormats", () => {
         importSource: undefined,
       })
     ).toEqual({ converted: null, original: null })
+  })
+})
+
+describe("isMyDocumentVersionPublished", () => {
+  const document = {
+    contentVersion: 2,
+    publishHistory: [
+      {
+        documentVersion: 2,
+        publishedAt: "2026-07-28T00:00:00Z",
+        rawDocumentId: "raw:published",
+      },
+    ],
+  }
+
+  it("recognizes the current version while its raw document exists", () => {
+    expect(
+      isMyDocumentVersionPublished(document, [{ id: "raw:published" }])
+    ).toBe(true)
+  })
+
+  it("allows the same version after its raw document is deleted", () => {
+    expect(isMyDocumentVersionPublished(document, [])).toBe(false)
   })
 })

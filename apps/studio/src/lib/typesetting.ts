@@ -45,6 +45,25 @@ const TYPESETTING_COVER_VIDEO_EXTENSIONS = new Set([
   "webm",
 ])
 
+export function setTypesettingEditorEditable(
+  editor: {
+    setEditable: (editable: boolean, emitUpdate?: boolean) => void
+  } | null,
+  editable: boolean
+): void {
+  editor?.setEditable(editable, false)
+}
+
+export function shouldPersistTypesettingEditorUpdate({
+  isLayoutTaskActive,
+  transactionChangedDocument,
+}: {
+  isLayoutTaskActive: boolean
+  transactionChangedDocument: boolean
+}): boolean {
+  return !isLayoutTaskActive && transactionChangedDocument
+}
+
 export function isInsertableTypesettingDocument(document: {
   conversion?: Pick<NonNullable<MyDocument["conversion"]>, "status">
   mimeType: string

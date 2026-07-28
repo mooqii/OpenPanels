@@ -1,5 +1,5 @@
 import { extensionFromFileName } from "../../lib/api"
-import type { MyDocument } from "../../types"
+import type { MyDocument, WikiRawDocument } from "../../types"
 
 function displayFormat(fileName: string): string {
   const extension = extensionFromFileName(fileName)
@@ -47,4 +47,18 @@ export function myDocumentConversionDisplay(
     default:
       return { isFailed: false, isLocked: false, label: null }
   }
+}
+
+export function isMyDocumentVersionPublished(
+  document: Pick<MyDocument, "contentVersion" | "publishHistory">,
+  rawDocuments: Pick<WikiRawDocument, "id">[]
+): boolean {
+  const activeRawDocumentIds = new Set(
+    rawDocuments.map((rawDocument) => rawDocument.id)
+  )
+  return document.publishHistory.some(
+    (publication) =>
+      publication.documentVersion === document.contentVersion &&
+      activeRawDocumentIds.has(publication.rawDocumentId)
+  )
 }

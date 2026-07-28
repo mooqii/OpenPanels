@@ -14,6 +14,7 @@ import {
   BookOpen,
   Eye,
   FileOutput,
+  LoaderCircle,
   MoreHorizontal,
   PanelLeft,
   Pencil,
@@ -601,8 +602,17 @@ export function WritingComposer({
                 size="sm"
                 variant={group === "error" ? "danger" : "ghost"}
               >
-                {groupTasks.length}{" "}
-                {groupTasks.length === 1 ? singularLabel : pluralLabel}
+                {group === "active" ? (
+                  <LoaderCircle
+                    aria-hidden
+                    className="op-wiki-spin"
+                    size={11}
+                  />
+                ) : null}
+                <span>
+                  {groupTasks.length}{" "}
+                  {groupTasks.length === 1 ? singularLabel : pluralLabel}
+                </span>
               </Button>
             )
           })}

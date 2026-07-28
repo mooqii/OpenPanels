@@ -345,6 +345,82 @@ pub fn rename_page(
     )
 }
 
+pub fn delete_page(
+    paths: &MyOpenPanelsPaths,
+    wiki_space_id: &str,
+    page_path: &str,
+) -> Result<Value, CliError> {
+    let mut wiki = get_wiki_bootstrap(paths)?;
+    let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
+    let page = space
+        .value
+        .get("pageIndex")
+        .and_then(Value::as_array)
+        .and_then(|pages| {
+            pages
+                .iter()
+                .find(|page| page.get("path").and_then(Value::as_str) == Some(page_path))
+        })
+        .cloned()
+        .ok_or_else(|| CliError::new(format!("Wiki page not found: {page_path}")))?;
+    let mutation_key = wiki_mutation_key(&wiki.project.id);
+    crate::tasks::supersede_active_wiki_mutations(paths, &wiki.project.id, &mutation_key)?;
+    crate::content::remove_active_file(
+        paths,
+        &wiki.project.id,
+        crate::content::ResourceKind::WikiSpace,
+        &space.id,
+        page_path,
+    )?
+    .ok_or_else(|| CliError::new(format!("Wiki page not found: {page_path}")))?;
+    let (root_path, _, _) = wiki_local_paths(paths, &wiki.project.id, &space.id);
+    let _ = fs::remove_dir_all(root_path);
+
+    let now = now_iso();
+    let spaces = state_array_mut(&mut wiki.state, "wikiSpaces")?;
+    let page_index = spaces
+        .iter_mut()
+        .find(|item| item.get("id").and_then(Value::as_str) == Some(space.id.as_str()))
+        .and_then(|item| item.get_mut("pageIndex"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| CliError::new("Wiki page index is invalid."))?;
+    page_index.retain(|item| item.get("path").and_then(Value::as_str) != Some(page_path));
+    let next_page_path = page_index
+        .first()
+        .and_then(|item| item.get("path"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    if wiki
+        .state
+        .get("activeWikiPagePath")
+        .and_then(Value::as_str)
+        == Some(page_path)
+    {
+        state_object_mut(&mut wiki.state)?
+            .insert("activeWikiPagePath".to_owned(), next_page_path);
+    }
+    update_wiki_space_timestamp(&mut wiki.state, &space.id, &now)?;
+    let task = create_wiki_maintenance_task(
+        &wiki.state,
+        &mut wiki.tasks,
+        Some(space.id.as_str()),
+        &mutation_key,
+        json!({
+            "kind": "wiki_page_deleted",
+            "path": page_path,
+            "title": page.get("title").cloned().unwrap_or(Value::Null),
+        }),
+    )?;
+    save_wiki_state(paths, &wiki)?;
+    let space = resolve_wiki_space(&wiki.state, Some(wiki_space_id))?;
+    Ok(json!({
+        "page": page,
+        "task": task,
+        "wikiSpace": space.value,
+        "state": wiki.state,
+    }))
+}
+
 pub fn maintain_wiki_space(
     paths: &MyOpenPanelsPaths,
     wiki_space_id: Option<&str>,

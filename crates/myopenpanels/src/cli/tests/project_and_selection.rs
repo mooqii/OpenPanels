@@ -311,6 +311,18 @@ fn my_documents_support_versions_selection_publication_and_deletion() {
     );
     assert!(wiki::publish_my_document(&paths, &document_id, None).is_err());
 
+    wiki::delete_raw_document(&paths, first_raw_id, Some(&wiki_space_id))
+        .expect("delete first publication");
+    let republished =
+        wiki::publish_my_document(&paths, &document_id, None).expect("republish deleted version");
+    assert_ne!(republished["rawDocument"]["id"], first_raw_id);
+    assert_eq!(
+        republished["document"]["publishHistory"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+
     let updated = wiki::write_my_document(
         &paths,
         &document_id,
@@ -327,7 +339,7 @@ fn my_documents_support_versions_selection_publication_and_deletion() {
         second_publish["document"]["publishHistory"]
             .as_array()
             .map(Vec::len),
-        Some(2)
+        Some(3)
     );
 
     wiki::delete_my_document(&paths, &document_id).expect("delete");
@@ -453,6 +465,34 @@ fn wiki_document_file_names_can_be_renamed_without_changing_extensions() {
             ["markdown"],
         "# Page"
     );
+    let deleted_page =
+        wiki::delete_page(&paths, &wiki_space_id, "notes/final.md").expect("delete page");
+    assert_eq!(deleted_page["page"]["path"], "notes/final.md");
+    assert_eq!(
+        deleted_page["task"]["changeEvents"],
+        json!([
+            {
+                "kind": "wiki_page_written",
+                "path": "notes/draft.md",
+                "operation": "created"
+            },
+            {
+                "kind": "wiki_page_renamed",
+                "fromPath": "notes/draft.md",
+                "toPath": "notes/final.md"
+            },
+            {
+                "kind": "wiki_page_deleted",
+                "path": "notes/final.md",
+                "title": "final"
+            }
+        ])
+    );
+    assert!(deleted_page["wikiSpace"]["pageIndex"]
+        .as_array()
+        .expect("page index")
+        .is_empty());
+    assert!(wiki::read_page(&paths, &wiki_space_id, "notes/final.md").is_err());
 }
 
 #[test]

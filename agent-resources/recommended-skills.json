@@ -13,6 +13,13 @@
       "description": "以「数字生命卡兹克」的个人风格撰写微信公众号长文，适合基于素材写作、续写与扩写。",
       "sourceUrl": "https://github.com/KKKKhazix/khazix-skills/tree/main/khazix-writer",
       "moduleKinds": ["writing"]
+    },
+    {
+      "id": "huashu-article-to-x",
+      "name": "huashu-article-to-x",
+      "description": "将长文精简为 200-500 字的 X 平台内容，保留核心观点与个人风格，并加入互动引导。",
+      "sourceUrl": "https://github.com/alchaincyf/huashu-skills/tree/master/huashu-article-to-x",
+      "moduleKinds": ["writing"]
     }
   ]
 }

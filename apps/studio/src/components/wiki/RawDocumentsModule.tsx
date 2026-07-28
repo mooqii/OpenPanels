@@ -5,7 +5,6 @@ import {
   FilePlus2,
   FileUp,
   MoreHorizontal,
-  Pencil,
   Plus,
   RefreshCw,
   Trash2,
@@ -48,7 +47,6 @@ export function RawDocumentsModule({
     openRawOriginal,
     reindexDocument,
     setPendingDeleteDocument,
-    setPendingRenameRawDocument,
   } = controller
 
   return (
@@ -186,7 +184,7 @@ export function RawDocumentsModule({
                     <Dropdown.Menu
                       disabledKeys={[
                         ...(isBusy
-                          ? ["preview", "open", "sync", "rename", "delete"]
+                          ? ["preview", "open", "sync", "delete"]
                           : []),
                         ...(previewKind ? [] : ["preview"]),
                       ]}
@@ -210,9 +208,6 @@ export function RawDocumentsModule({
                                 error
                               )
                             })
-                            break
-                          case "rename":
-                            setPendingRenameRawDocument(document)
                             break
                           case "delete":
                             setPendingDeleteDocument(document)
@@ -244,10 +239,6 @@ export function RawDocumentsModule({
                         <Label>
                           {hasMarkdown ? t`Reindex` : t`Re-extract`}
                         </Label>
-                      </Dropdown.Item>
-                      <Dropdown.Item id="rename" textValue={t`Rename`}>
-                        <Pencil size={14} />
-                        <Label>{t`Rename`}</Label>
                       </Dropdown.Item>
                       <Separator />
                       <Dropdown.Item

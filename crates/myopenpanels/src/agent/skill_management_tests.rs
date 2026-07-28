@@ -144,12 +144,28 @@ mod skill_management_tests {
             .join("skills")
             .join("writing-default")
             .join("SKILL.md");
+        let wiki_skill_path = paths
+            .storage_dir
+            .join("skills")
+            .join("wiki-default")
+            .join("SKILL.md");
         let english = fs::read_to_string(&skill_path).expect("English preset");
         assert!(english.contains("Follow the user's writing instruction"));
+        let english_wiki = fs::read_to_string(&wiki_skill_path).expect("English Wiki preset");
+        assert!(english_wiki.contains("clean Markdown only"));
+        assert!(english_wiki.contains("unrelated durable topics"));
+        assert!(english_wiki.contains("Separate stable identity or"));
+        assert!(english_wiki.contains("explicit relationship labels"));
 
         set_preset_skill_locale(&paths, "zh-CN").expect("Chinese presets");
         let chinese = fs::read_to_string(&skill_path).expect("Chinese preset");
         assert!(chinese.contains("直接执行用户的写作要求"));
+        let chinese_wiki =
+            fs::read_to_string(&wiki_skill_path).expect("Chinese Wiki preset");
+        assert!(chinese_wiki.contains("干净的 Markdown"));
+        assert!(chinese_wiki.contains("彼此无关但具有持续价值的主题"));
+        assert!(chinese_wiki.contains("稳定的身份或定义"));
+        assert!(chinese_wiki.contains("含义明确的关系名称"));
         let chinese_listing = list_writing_agent_skills(&paths)
             .expect("Chinese listing")
             .into_iter()
@@ -162,6 +178,10 @@ mod skill_management_tests {
         assert_eq!(
             fs::read_to_string(&skill_path).expect("reset English preset"),
             english
+        );
+        assert_eq!(
+            fs::read_to_string(&wiki_skill_path).expect("reset English Wiki preset"),
+            english_wiki
         );
         let english_listing = list_writing_agent_skills(&paths)
             .expect("English listing")

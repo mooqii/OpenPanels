@@ -34,12 +34,6 @@ fn build_publication_layout_output_plan(
         .pointer("/input/snapshot/content")
         .ok_or_else(|| CliError::with_code("invalid_target", "Layout source is missing."))?;
     validate_layout_document(source)?;
-    if layout_text(source) != layout_text(&content) {
-        return Err(CliError::with_code(
-            "invalid_output",
-            "Publication Layout cannot change publication text.",
-        ));
-    }
     if layout_images(source) != layout_images(&content) {
         return Err(CliError::with_code(
             "invalid_output",
@@ -165,16 +159,6 @@ fn validate_layout_node(node: &Value) -> Result<(), CliError> {
     Ok(())
 }
 
-fn layout_text(document: &Value) -> String {
-    let mut text = String::new();
-    walk_layout(document, &mut |node, _| {
-        if let Some(value) = node.get("text").and_then(Value::as_str) {
-            text.push_str(value);
-        }
-    });
-    text
-}
-
 fn layout_images(document: &Value) -> Vec<Value> {
     let mut images = Vec::new();
     walk_layout(document, &mut |node, _| {
@@ -185,33 +169,38 @@ fn layout_images(document: &Value) -> Vec<Value> {
     images
 }
 
-fn layout_links(document: &Value) -> Vec<(usize, usize, Value)> {
+fn layout_links(document: &Value) -> Vec<Value> {
     let mut links = Vec::new();
-    let mut offset = 0_usize;
-    walk_layout(document, &mut |node, _| {
-        let Some(text) = node.get("text").and_then(Value::as_str) else {
-            return;
-        };
-        let length = text.chars().count();
-        for mark in node
-            .get("marks")
+    fn collect(node: &Value, links: &mut Vec<Value>) {
+        let mut previous_inline_link = None;
+        for child in node
+            .get("content")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
         {
-            if mark.get("type").and_then(Value::as_str) == Some("link") {
-                let attrs = mark.get("attrs").cloned().unwrap_or(Value::Null);
-                if let Some((_, end, previous_attrs)) = links.last_mut() {
-                    if *end == offset && *previous_attrs == attrs {
-                        *end = offset + length;
-                        continue;
+            if child.get("type").and_then(Value::as_str) == Some("text") {
+                let link = child
+                    .get("marks")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .find(|mark| mark.get("type").and_then(Value::as_str) == Some("link"))
+                    .and_then(|mark| mark.get("attrs"))
+                    .cloned();
+                if let Some(attrs) = &link {
+                    if previous_inline_link.as_ref() != Some(attrs) {
+                        links.push(attrs.clone());
                     }
                 }
-                links.push((offset, offset + length, attrs));
+                previous_inline_link = link;
+            } else {
+                previous_inline_link = None;
+                collect(child, links);
             }
         }
-        offset += length;
-    });
+    }
+    collect(document, &mut links);
     links
 }
 
@@ -273,7 +262,7 @@ mod publication_layout_output_tests {
     }
 
     #[test]
-    fn layout_output_preserves_text_images_and_links() {
+    fn layout_output_allows_text_edits_and_preserves_images_and_links() {
         let temp = tempfile::tempdir().expect("temp");
         let project = temp.path().join("project");
         let storage = temp.path().join("storage");
@@ -331,7 +320,7 @@ mod publication_layout_output_tests {
             1,
             &json!({}),
         )
-        .is_err());
+        .is_ok());
     }
 
     #[test]

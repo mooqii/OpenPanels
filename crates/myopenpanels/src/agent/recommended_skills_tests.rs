@@ -78,7 +78,7 @@ mod recommended_skills_tests {
         let payload = recommended_skills(&paths).expect("recommended skills");
         assert!(payload.get("schemaVersion").is_none());
         let skills = payload["skills"].as_array().expect("skills");
-        assert_eq!(skills.len(), 2);
+        assert_eq!(skills.len(), 3);
 
         let guizang = skills
             .iter()
@@ -103,6 +103,18 @@ mod recommended_skills_tests {
         );
         assert_eq!(khazix["moduleKinds"], json!(["writing"]));
         assert_eq!(khazix["installStatus"], "notInstalled");
+
+        let huashu = skills
+            .iter()
+            .find(|skill| skill["id"] == "huashu-article-to-x")
+            .expect("huashu recommendation");
+        assert_eq!(huashu["name"], "huashu-article-to-x");
+        assert_eq!(
+            huashu["sourceUrl"],
+            "https://github.com/alchaincyf/huashu-skills/tree/master/huashu-article-to-x"
+        );
+        assert_eq!(huashu["moduleKinds"], json!(["writing"]));
+        assert_eq!(huashu["installStatus"], "notInstalled");
     }
 
     #[test]

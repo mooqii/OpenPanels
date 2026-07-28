@@ -15,6 +15,7 @@ import {
   createTypesettingPublication,
   isInsertableTypesettingDocument,
   isTypesettingLayoutTaskActive,
+  selectPublicationTitle,
 } from "../../lib/typesetting"
 import type {
   MyDocument,
@@ -530,6 +531,12 @@ export function TypesettingPanel({
                   key={activePublication.id}
                   onEdit={() => setView("edit")}
                   onOpenSources={() => setIsLibraryOpen(true)}
+                  onSelectTitle={(titleId) =>
+                    updatePublication(activePublication.id, (current) => ({
+                      ...selectPublicationTitle(current, titleId),
+                      updatedAt: new Date().toISOString(),
+                    }))
+                  }
                   publication={activePublication}
                   showHeader={false}
                   transport={transport}

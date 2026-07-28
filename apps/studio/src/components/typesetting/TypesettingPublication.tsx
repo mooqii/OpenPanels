@@ -22,6 +22,8 @@ import {
   plainTextToTypesettingContent,
   publicationTitleAfterDocumentInsert,
   selectedPublicationTitleId,
+  setTypesettingEditorEditable,
+  shouldPersistTypesettingEditorUpdate,
   typesettingImageClickSide,
   typesettingImagesToContent,
   typesettingInsertPosition,
@@ -305,8 +307,15 @@ export function PublicationDetail({
     onSelectionUpdate: ({ editor: currentEditor }) => {
       lastInsertPositionRef.current = currentEditor.state.selection.to
     },
-    onUpdate: ({ editor: currentEditor }) => {
-      if (activeLayoutTask) return
+    onUpdate: ({ editor: currentEditor, transaction }) => {
+      if (
+        !shouldPersistTypesettingEditorUpdate({
+          isLayoutTaskActive: Boolean(activeLayoutTask),
+          transactionChangedDocument: transaction.docChanged,
+        })
+      ) {
+        return
+      }
       onUpdate((current) => ({
         ...current,
         content: currentEditor.getJSON(),
@@ -317,7 +326,7 @@ export function PublicationDetail({
   editorRef.current = editor
 
   useEffect(() => {
-    editor?.setEditable(!activeLayoutTask)
+    setTypesettingEditorEditable(editor, !activeLayoutTask)
   }, [activeLayoutTask, editor])
 
   useEffect(() => {

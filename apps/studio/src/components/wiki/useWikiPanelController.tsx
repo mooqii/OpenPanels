@@ -17,6 +17,7 @@ import {
   tryOpenBrowserWindow,
   wikiRawOriginalUrl,
 } from "../../lib/api"
+import { showAppToast } from "../../lib/app-toast"
 import { taskCanRetry } from "../../lib/task-status"
 import { sortMyDocumentsByActivity } from "../../lib/writing"
 import type {
@@ -30,6 +31,7 @@ import type {
   WritingState,
 } from "../../types"
 import { nextCollapsedModules, type WikiModule } from "./module-collapse"
+import { isMyDocumentVersionPublished } from "./my-document-display"
 import { buildWikiPageTree, type WikiPageTreeNode } from "./page-tree"
 import { useMyDocumentDrop } from "./useMyDocumentDrop"
 import { useRawDocumentDrop } from "./useRawDocumentDrop"
@@ -671,6 +673,25 @@ export function useWikiPanelController({
     [activeSpaceId, onReload, pageDialogPath, transport.apiBase]
   )
 
+  const deleteWikiPage = useCallback(async () => {
+    if (!(pageDialogPath && activeSpaceId)) return
+    setIsBusy(true)
+    try {
+      await apiFetch(
+        transport.apiBase,
+        `/api/wiki/spaces/${encodeURIComponent(activeSpaceId)}/pages/${pageDialogPath
+          .split("/")
+          .map(encodeURIComponent)
+          .join("/")}`,
+        { method: "DELETE" }
+      )
+      setPageDialog(null)
+      await onReload()
+    } finally {
+      setIsBusy(false)
+    }
+  }, [activeSpaceId, onReload, pageDialogPath, transport.apiBase])
+
   const updateWikiAgentSkill = useCallback(
     async (agentSkillId: string, rebuildConfirmed = true) => {
       setIsBusy(true)
@@ -804,9 +825,15 @@ export function useWikiPanelController({
 
   const publishMyDocument = useCallback(
     async (document: MyDocument) => {
+      if (isMyDocumentVersionPublished(document, state.rawDocuments)) {
+        showAppToast(t`This version is already in Raw Documents`, {
+          variant: "accent",
+        })
+        return
+      }
       setIsBusy(true)
       try {
-        await apiFetch(
+        await apiJson(
           transport.apiBase,
           `/api/wiki-sources/from-my-document/${encodeURIComponent(document.id)}`,
           {
@@ -816,11 +843,17 @@ export function useWikiPanelController({
           }
         )
         await onReload()
+      } catch (error) {
+        showAppToast(t`Could not add to Raw Documents`, {
+          description:
+            error instanceof Error ? error.message : t`Please try again`,
+          variant: "danger",
+        })
       } finally {
         setIsBusy(false)
       }
     },
-    [activeSpace?.id, onReload, transport.apiBase]
+    [activeSpace?.id, onReload, state.rawDocuments, t, transport.apiBase]
   )
 
   const renameMyDocument = useCallback(
@@ -955,6 +988,7 @@ export function useWikiPanelController({
     handleRawDrop,
     saveWikiPage,
     renameWikiPageFile,
+    deleteWikiPage,
     updateWikiAgentSkill,
     openMyDocument,
     openMyDocumentOriginal,

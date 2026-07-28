@@ -35,6 +35,22 @@ function importedDocument(): MyDocument {
 }
 
 describe("MyDocumentMeta", () => {
+  it("shows an animated creation status instead of a zero character count while writing", () => {
+    const document = importedDocument()
+    document.contentVersion = 0
+    document.wordCount = 0
+    document.writeOperation = { operationId: "operation:writing" }
+
+    const markup = renderToStaticMarkup(
+      <MyDocumentMeta apiBase="http://127.0.0.1:43217" document={document} />
+    )
+
+    expect(markup).toMatch(
+      /op-my-document-meta__writing.*op-wiki-spin.*Creating/
+    )
+    expect(markup).not.toContain("0 characters")
+  })
+
   it("marks Agent-generated documents before the character count", () => {
     const document = importedDocument()
     document.id = "document:generated"

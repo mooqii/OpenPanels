@@ -136,6 +136,7 @@
         assert!(prompt.contains(skill_id));
         assert!(prompt.contains("Create one reusable Writing Skill"));
         assert!(prompt.contains("captured portable Distiller Skill"));
+        assert!(prompt.contains("de-identified source excerpts"));
         assert!(prompt.contains(&format!("name: {skill_id}")));
         assert!(!prompt.contains("appliesTo: writing"));
         assert!(prompt.contains("# Raw style"));

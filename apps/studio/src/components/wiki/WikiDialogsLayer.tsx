@@ -60,6 +60,7 @@ export function WikiDialogsLayer({
             )
           }
           onClose={() => setMarkdownDialog(null)}
+          onDelete={() => deleteRawDocument(markdownDialog.document)}
           onRenameFileName={renameRawDocumentFile}
           onSave={saveMarkdown}
         />
@@ -76,6 +77,7 @@ export function WikiDialogsLayer({
             )
           }
           onClose={() => setPageDialog(null)}
+          onDelete={() => controller.deleteWikiPage()}
           onRenameFileName={renameWikiPageFile}
           onSave={saveWikiPage}
         />
@@ -103,6 +105,7 @@ export function WikiDialogsLayer({
             )
           }
           onClose={() => setMyDocumentDialog(null)}
+          onDelete={() => deleteMyDocument(myDocumentDialog.document)}
           onRenameFileName={renameMyDocumentFile}
           onSave={saveMyDocumentMarkdown}
         />

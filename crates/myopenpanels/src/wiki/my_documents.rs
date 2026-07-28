@@ -682,12 +682,20 @@ pub(crate) fn publish_my_document_into_wiki(
             "My Document changed while its publication was being prepared.",
         ));
     }
+    let active_raw_documents = wiki.state["rawDocuments"].as_array();
     let already_published = document["publishHistory"]
         .as_array()
         .is_some_and(|history| {
-            history
-                .iter()
-                .any(|entry| entry["documentVersion"].as_u64() == Some(version))
+            history.iter().any(|entry| {
+                entry["documentVersion"].as_u64() == Some(version)
+                    && entry["rawDocumentId"].as_str().is_some_and(|raw_document_id| {
+                        active_raw_documents.is_some_and(|documents| {
+                            documents.iter().any(|document| {
+                                document["id"].as_str() == Some(raw_document_id)
+                            })
+                        })
+                    })
+            })
         });
     if already_published {
         return Err(CliError::with_code(
