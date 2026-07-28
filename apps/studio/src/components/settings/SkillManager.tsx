@@ -316,12 +316,7 @@ export function SkillManagerDialog({
     } finally {
       setIsDeleting(false)
     }
-  }, [
-    loadInstalled,
-    pendingDeleteSkill,
-    refreshRecommended,
-    transport.apiBase,
-  ])
+  }, [loadInstalled, pendingDeleteSkill, refreshRecommended, transport.apiBase])
 
   const refreshSkills = useCallback(async () => {
     invalidateUpdates()

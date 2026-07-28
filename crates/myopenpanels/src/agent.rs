@@ -7,6 +7,7 @@ include!("agent/skill_management.rs");
 include!("agent/device_skills.rs");
 include!("agent/skill_associations.rs");
 include!("agent/skill_import.rs");
+include!("agent/github_skill_import.rs");
 include!("agent/skill_updates.rs");
 include!("agent/recommended_skills.rs");
 include!("agent/skill_management_tests.rs");
