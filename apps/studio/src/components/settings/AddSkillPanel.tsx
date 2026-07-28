@@ -89,7 +89,7 @@ export function AddSkillPanel({
   onInstallRecommended,
   onScanUrl,
   onUpdateRecommended,
-  pendingCatalogId,
+  pendingCatalogIds,
   recommendedSkills,
   skillUpdateStates,
   updatingSkillId,
@@ -102,7 +102,7 @@ export function AddSkillPanel({
   onInstallRecommended: (skill: RecommendedSkill) => void
   onScanUrl: (url: string) => Promise<SkillUrlScanResponse>
   onUpdateRecommended: (skill: RecommendedSkill) => void
-  pendingCatalogId: string | null
+  pendingCatalogIds: ReadonlySet<string>
   recommendedSkills: RecommendedSkill[]
   skillUpdateStates: Record<string, SkillUpdateState>
   updatingSkillId: string | null
@@ -270,7 +270,7 @@ export function AddSkillPanel({
             isLoading={isLoadingRecommended}
             onInstall={onInstallRecommended}
             onUpdate={onUpdateRecommended}
-            pendingCatalogId={pendingCatalogId}
+            pendingCatalogIds={pendingCatalogIds}
             skills={recommendedSkills}
             updateStates={skillUpdateStates}
             updatingSkillId={updatingSkillId}

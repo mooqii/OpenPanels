@@ -23,7 +23,9 @@ export function useRecommendedSkills({
     skills: [],
   })
   const [isLoading, setIsLoading] = useState(false)
-  const [pendingCatalogId, setPendingCatalogId] = useState<string | null>(null)
+  const [pendingCatalogIds, setPendingCatalogIds] = useState<Set<string>>(
+    () => new Set()
+  )
 
   const refresh = useCallback(async () => {
     setCatalog(
@@ -48,7 +50,7 @@ export function useRecommendedSkills({
 
   const install = useCallback(
     async (catalogId: string) => {
-      setPendingCatalogId(catalogId)
+      setPendingCatalogIds((current) => new Set(current).add(catalogId))
       onError("")
       try {
         const response = await apiJson<RecommendedSkillInstallResponse>(
@@ -63,7 +65,11 @@ export function useRecommendedSkills({
         onError(String((cause as Error)?.message || cause))
         return false
       } finally {
-        setPendingCatalogId(null)
+        setPendingCatalogIds((current) => {
+          const next = new Set(current)
+          next.delete(catalogId)
+          return next
+        })
       }
     },
     [apiBase, onApplied, onError, refresh]
@@ -74,7 +80,7 @@ export function useRecommendedSkills({
     install,
     isLoading,
     load,
-    pendingCatalogId,
+    pendingCatalogIds,
     refresh,
   }
 }

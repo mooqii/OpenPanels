@@ -188,7 +188,7 @@ export function SkillManagerDialog({
     install: installRecommended,
     isLoading: isLoadingRecommended,
     load: loadRecommended,
-    pendingCatalogId,
+    pendingCatalogIds,
     refresh: refreshRecommended,
   } = useRecommendedSkills({
     apiBase: transport.apiBase,
@@ -310,12 +310,18 @@ export function SkillManagerDialog({
       )
       setPendingDeleteSkill(null)
       await loadInstalled()
+      await refreshRecommended()
     } catch (cause) {
       setError(String((cause as Error)?.message || cause))
     } finally {
       setIsDeleting(false)
     }
-  }, [loadInstalled, pendingDeleteSkill, transport.apiBase])
+  }, [
+    loadInstalled,
+    pendingDeleteSkill,
+    refreshRecommended,
+    transport.apiBase,
+  ])
 
   const refreshSkills = useCallback(async () => {
     invalidateUpdates()
@@ -668,7 +674,7 @@ export function SkillManagerDialog({
                     }}
                     onScanUrl={scanSkillUrl}
                     onUpdateRecommended={updateRecommendedSkill}
-                    pendingCatalogId={pendingCatalogId}
+                    pendingCatalogIds={pendingCatalogIds}
                     recommendedSkills={recommendedCatalog.skills}
                     skillUpdateStates={skillUpdateStates}
                     updatingSkillId={updatingSkillId}

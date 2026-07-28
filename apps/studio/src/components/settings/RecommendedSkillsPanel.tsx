@@ -101,7 +101,7 @@ export function RecommendedSkillsPanel({
   isLoading,
   onInstall,
   onUpdate,
-  pendingCatalogId,
+  pendingCatalogIds,
   skills,
   updateStates,
   updatingSkillId,
@@ -111,7 +111,7 @@ export function RecommendedSkillsPanel({
   isLoading: boolean
   onInstall: (skill: RecommendedSkill) => void
   onUpdate: (skill: RecommendedSkill) => void
-  pendingCatalogId: string | null
+  pendingCatalogIds: ReadonlySet<string>
   skills: RecommendedSkill[]
   updateStates: Record<string, SkillUpdateState>
   updatingSkillId: string | null
@@ -140,7 +140,7 @@ export function RecommendedSkillsPanel({
               const updateState = skill.installedSkillId
                 ? updateStates[skill.installedSkillId]
                 : undefined
-              const isInstalling = pendingCatalogId === skill.id
+              const isInstalling = pendingCatalogIds.has(skill.id)
               const isUpdating =
                 skill.installedSkillId === updatingSkillId &&
                 updatingSkillId !== null

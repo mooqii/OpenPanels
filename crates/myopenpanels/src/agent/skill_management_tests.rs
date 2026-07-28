@@ -780,6 +780,13 @@ mod skill_management_tests {
             "https://codeload.github.com/example/skills/zip/main"
         );
         assert_eq!(github.subpath.as_deref(), Some("catalog/editorial"));
+        assert_eq!(
+            github_contents_api_url(
+                github.github.as_ref().expect("GitHub metadata"),
+                "catalog/文字 skill"
+            ),
+            "https://api.github.com/repos/example/skills/contents/catalog/%E6%96%87%E5%AD%97%20skill?ref=main"
+        );
         assert_eq!(github.provenance.source_type, "github");
         assert_eq!(
             github.provenance.source_locator,
@@ -846,6 +853,32 @@ mod skill_management_tests {
         let error = parse_remote_skill_source("https://example.com/skill.zip")
             .expect_err("unsupported host");
         assert_eq!(error.code(), Some("unsupported_skill_source"));
+    }
+
+    #[test]
+    fn github_contents_response_accepts_directory_and_file_entries() {
+        let response = serde_json::from_value::<GithubContentsResponse>(json!([
+            {
+                "type": "dir",
+                "path": "skills/example/references",
+                "size": 0,
+                "download_url": null
+            },
+            {
+                "type": "file",
+                "path": "skills/example/SKILL.md",
+                "size": 128,
+                "download_url": "https://raw.githubusercontent.com/example/skills/main/skills/example/SKILL.md"
+            }
+        ]))
+        .expect("GitHub contents response");
+        let GithubContentsResponse::Entries(entries) = response else {
+            panic!("expected directory entries");
+        };
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].entry_type, "dir");
+        assert_eq!(entries[1].path, "skills/example/SKILL.md");
+        assert_eq!(entries[1].size, 128);
     }
 
     #[test]
