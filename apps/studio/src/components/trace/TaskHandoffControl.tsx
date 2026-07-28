@@ -7,15 +7,18 @@ export function TaskHandoffControl({
   hasUsableAgentCli,
   instructionLabel,
   onOpenManualTask,
+  requiresAgentMessage = false,
   scope,
 }: {
   hasUsableAgentCli: boolean | null
   instructionLabel?: string
   onOpenManualTask: (scope: TaskExecutionScope) => void
+  requiresAgentMessage?: boolean
   scope: TaskExecutionScope
 }) {
   const { t } = useMyOpenPanelsI18n()
-  const requiresManualInstruction = hasUsableAgentCli === false
+  const requiresManualInstruction =
+    requiresAgentMessage || hasUsableAgentCli === false
   const accessibleLabel = instructionLabel ?? t`Copy task instruction`
   const openInstruction = () => onOpenManualTask(scope)
 
@@ -47,9 +50,11 @@ export function TaskHandoffControl({
         </Tooltip>
       )}
       <small>
-        {requiresManualInstruction
-          ? t`Please send the instruction to an Agent manually`
-          : t`Waiting for an active Agent CLI to claim the task`}
+        {requiresAgentMessage
+          ? t`This task requires Agent Message`
+          : requiresManualInstruction
+            ? t`Please send the instruction to an Agent manually`
+            : t`Waiting for an active Agent CLI to claim the task`}
       </small>
     </div>
   )

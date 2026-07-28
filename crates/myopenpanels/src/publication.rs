@@ -816,10 +816,10 @@ pub fn import_canvas_asset(
                 format!("Typesetting panel not found: {target_panel_id}"),
             )
         })?;
-    if target.kind != PanelKind::Typesetting {
+    if !matches!(target.kind, PanelKind::Typesetting | PanelKind::Publishing) {
         return Err(CliError::with_code(
             "invalid_target",
-            "Canvas assets can only be imported into a Typesetting panel.",
+            "Canvas assets can only be imported into a Typesetting or Publishing panel.",
         ));
     }
 

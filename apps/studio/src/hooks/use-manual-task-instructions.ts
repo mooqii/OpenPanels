@@ -16,6 +16,11 @@ import type {
 
 const EMPTY_TASKS: ProjectTask[] = []
 
+interface ManualTaskInstructionRequest {
+  requiresAgentMessage: boolean
+  scope: TaskExecutionScope
+}
+
 export function useManualTaskInstructions({
   projectId,
   tasks = EMPTY_TASKS,
@@ -30,7 +35,7 @@ export function useManualTaskInstructions({
     checkKey: string
     hasUsableCli: boolean
   } | null>(null)
-  const [queue, setQueue] = useState<TaskExecutionScope[]>([])
+  const [queue, setQueue] = useState<ManualTaskInstructionRequest[]>([])
   const [awaitingCheck, setAwaitingCheck] = useState<TaskExecutionScope[]>([])
   const observedRef = useRef<{
     ids: Set<string>
@@ -122,12 +127,20 @@ export function useManualTaskInstructions({
   useEffect(() => {
     if (hasUsableCli === null) return
     if (hasUsableCli) {
-      setQueue(clearTasksIfNeeded)
+      setQueue(keepRequiredAgentMessageRequests)
       setAwaitingCheck(clearTasksIfNeeded)
       return
     }
     if (!awaitingCheck.length) return
-    setQueue((current) => appendUniqueScopes(current, awaitingCheck))
+    setQueue((current) =>
+      appendUniqueRequests(
+        current,
+        awaitingCheck.map((scope) => ({
+          requiresAgentMessage: false,
+          scope,
+        }))
+      )
+    )
     setAwaitingCheck([])
   }, [awaitingCheck, hasUsableCli])
 
@@ -138,8 +151,18 @@ export function useManualTaskInstructions({
       setAwaitingCheck([])
     }, []),
     hasUsableCli,
-    open: useCallback((scope: TaskExecutionScope) => setQueue([scope]), []),
-    scope: queue[0] ?? null,
+    open: useCallback(
+      (scope: TaskExecutionScope) =>
+        setQueue([{ requiresAgentMessage: false, scope }]),
+      []
+    ),
+    openRequiredAgentMessage: useCallback(
+      (scope: TaskExecutionScope) =>
+        setQueue([{ requiresAgentMessage: true, scope }]),
+      []
+    ),
+    requiresAgentMessage: queue[0]?.requiresAgentMessage ?? false,
+    scope: queue[0]?.scope ?? null,
   }
 }
 
@@ -149,6 +172,27 @@ export type ManualTaskInstructionsController = ReturnType<
 
 export function clearTasksIfNeeded<T>(tasks: T[]): T[] {
   return tasks.length ? [] : tasks
+}
+
+export function keepRequiredAgentMessageRequests(
+  requests: ManualTaskInstructionRequest[]
+): ManualTaskInstructionRequest[] {
+  return requests.filter((request) => request.requiresAgentMessage)
+}
+
+function appendUniqueRequests(
+  current: ManualTaskInstructionRequest[],
+  incoming: ManualTaskInstructionRequest[]
+): ManualTaskInstructionRequest[] {
+  return [
+    ...current,
+    ...incoming.filter((request) => {
+      const key = taskExecutionScopeKey(request.scope)
+      return !current.some(
+        (candidate) => taskExecutionScopeKey(candidate.scope) === key
+      )
+    }),
+  ]
 }
 
 function appendUniqueScopes(

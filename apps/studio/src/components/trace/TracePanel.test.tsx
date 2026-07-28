@@ -201,6 +201,45 @@ describe("AgentPanel release UI", () => {
     )
   })
 
+  it("requires Agent Message for publishing tasks even when Agent CLI is usable", () => {
+    const markup = renderToStaticMarkup(
+      <MyOpenPanelsI18nProvider initialLocale="en">
+        <AgentPanel
+          activeTab="tasks"
+          buildInfo={{
+            channel: "release",
+            label: "v0.4.15",
+            version: "0.4.15",
+          }}
+          focusedTaskIds={null}
+          hasUsableAgentCli
+          isOpen
+          onClearFocusedTasks={() => undefined}
+          onClose={() => undefined}
+          onOpenManualTask={() => undefined}
+          onOpenModelSettings={() => undefined}
+          onTabChange={() => undefined}
+          onTaskFilterChange={() => undefined}
+          taskFilter="pending"
+          tasks={[
+            projectTask({
+              panelKind: "publishing",
+              queue: "release",
+              type: "release_xiaohongshu",
+            }),
+          ]}
+          transport={{ apiBase: "http://127.0.0.1:43217", kind: "http" }}
+        />
+      </MyOpenPanelsI18nProvider>
+    )
+
+    expect(markup).toContain("This task requires Agent Message")
+    expect(markup).toContain(">Copy instruction</button>")
+    expect(markup).not.toContain(
+      "Waiting for an active Agent CLI to claim the task"
+    )
+  })
+
   it("renders the compact status, title, channel, time, and eligible delete action", () => {
     const markup = renderToStaticMarkup(
       <AgentPanel

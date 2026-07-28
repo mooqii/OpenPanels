@@ -69,6 +69,8 @@ Core ownership is documented in
 [`docs/core-concepts.md`](docs/core-concepts.md). The database, immutable
 content, migration, and local-layout contract for 1.0 is documented in
 [`docs/storage-contract.md`](docs/storage-contract.md).
+The server-side WeChat Official Account draft integration is documented in
+[`docs/wechat-official-account-api.md`](docs/wechat-official-account-api.md).
 
 ## Install
 

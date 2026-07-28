@@ -184,11 +184,20 @@ mod tests {
         let target = create_project(&paths, Some("Target")).expect("target");
         let target_canvas = panel_id(&target, PanelKind::Canvas);
         let target_typesetting = panel_id(&target, PanelKind::Typesetting);
+        let target_publishing = panel_id(&target, PanelKind::Publishing);
 
         let wrong_target =
             import_canvas_asset(&paths, &target.project.id, &target_canvas, &source_ref)
                 .expect_err("canvas target must fail");
         assert_eq!(wrong_target.code(), Some("invalid_target"));
+
+        import_canvas_asset(
+            &paths,
+            &target.project.id,
+            &target_publishing,
+            &source_ref,
+        )
+        .expect("publishing can import publication media");
 
         let imported =
             import_canvas_asset(&paths, &target.project.id, &target_typesetting, &source_ref)

@@ -48,10 +48,10 @@ longer select their own platform reference files.
 | My Document | 4 | 0 | 0 |
 | Writing | 1 | 1 | 1 |
 | Typesetting | 1 | 3 | 3 |
-| Publishing | 0 | 1 | 2 |
+| Publishing | 0 | 1 | 4 |
 | Skills | 0 | 1 | 1 |
 | Task queue | 4 | 1 | 0 |
-| Total | 19 | 9 | 10 |
+| Total | 19 | 9 | 12 |
 <!-- END GENERATED CAPABILITY MATRIX -->
 
 All 19 direct Procedures are indexed by the MyOpenPanels Entry Skill and have

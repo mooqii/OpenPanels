@@ -1,23 +1,12 @@
 import { Button, Chip, Modal, Spinner, Tooltip } from "@heroui/react"
-import {
-  AlertTriangle,
-  CheckCircle2,
-  CircleHelp,
-  CircleX,
-  Clock3,
-  LoaderCircle,
-  Send,
-  X,
-} from "lucide-react"
-import { type ReactNode, useEffect, useMemo, useState } from "react"
+import { AlertTriangle, KeyRound, Send, X } from "lucide-react"
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { useTypesettingStateEditor } from "../../hooks/use-typesetting-state-editor"
 import { apiJson } from "../../lib/api"
 import { randomId } from "../../lib/id"
 import {
-  type PublishingPublicationStatus,
   publishingAttemptIsActive,
-  publishingAttemptStatus,
   publishingPublicationSummary,
   publishingSourceHasContent,
   typesettingContentToPlainText,
@@ -46,6 +35,13 @@ import {
 } from "../typesetting/TypesettingPublication"
 import { ConfirmDialog } from "../wiki/Dialogs"
 import { PublicationPreview } from "./PublicationPreview"
+import { PublishingAttemptRow } from "./PublishingAttemptRow"
+import {
+  loadWechatConfiguration,
+  WECHAT_API_SKILL_ID,
+  WechatApiConfigurationDialog,
+  type WechatConfigurationStatus,
+} from "./WechatApiConfigurationDialog"
 
 interface PublishingResponse {
   attempt?: PublishingAttempt
@@ -60,7 +56,7 @@ type PendingAction =
   | {
       acknowledgedUnknown: boolean
       kind: "attempt"
-      mode: "auto" | "manual"
+      mode: "manual"
       release: PublishingRelease
       skillId: string
       skillName: string
@@ -111,6 +107,18 @@ export function PublishingPanel({
   const [pendingDelete, setPendingDelete] =
     useState<TypesettingPublication | null>(null)
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
+  const [wechatConfiguration, setWechatConfiguration] =
+    useState<WechatConfigurationStatus | null>(null)
+  const [wechatConfigurationOpen, setWechatConfigurationOpen] = useState(false)
+  const [wechatIssueReasonCode, setWechatIssueReasonCode] = useState<
+    string | null
+  >(null)
+  const [wechatPendingAction, setWechatPendingAction] =
+    useState<PendingAction | null>(null)
+  const [wechatPendingDirect, setWechatPendingDirect] = useState(false)
+  const [checkingWechatConfiguration, setCheckingWechatConfiguration] =
+    useState(false)
+  const promptedWechatAttemptRef = useRef<string | null>(null)
   const [publicationState, setPublicationState] = useState<TypesettingState>({
     publications: [],
   })
@@ -231,7 +239,12 @@ export function PublishingPanel({
     >()
     for (const release of relatedReleases) {
       for (const attempt of [...release.attempts].reverse()) {
-        if (!visibleTaskIds.has(attempt.taskId)) continue
+        if (
+          attempt.mode !== "direct" &&
+          !visibleTaskIds.has(attempt.taskId ?? "")
+        ) {
+          continue
+        }
         const current = grouped.get(attempt.skillId) ?? []
         current.push({ attempt, release })
         grouped.set(attempt.skillId, current)
@@ -239,6 +252,41 @@ export function PublishingPanel({
     }
     return grouped
   }, [relatedReleases, tasks])
+  const wechatConfigurationProblem = useMemo(
+    () =>
+      state.releases
+        .flatMap((release) =>
+          release.attempts.map((attempt) => ({ attempt, release }))
+        )
+        .filter(
+          ({ attempt }) =>
+            attempt.skillId === WECHAT_API_SKILL_ID &&
+            Boolean(attempt.taskId) &&
+            attempt.outcome === "needs_user_action" &&
+            isWechatConfigurationReason(attempt.reasonCode)
+        )
+        .sort((left, right) =>
+          right.attempt.createdAt.localeCompare(left.attempt.createdAt)
+        )[0],
+    [state.releases]
+  )
+  useEffect(() => {
+    const problem = wechatConfigurationProblem
+    if (!problem || promptedWechatAttemptRef.current === problem.attempt.id) {
+      return
+    }
+    promptedWechatAttemptRef.current = problem.attempt.id
+    setWechatIssueReasonCode(problem.attempt.reasonCode)
+    setWechatPendingAction({
+      acknowledgedUnknown: false,
+      kind: "attempt",
+      mode: "manual",
+      release: problem.release,
+      skillId: problem.attempt.skillId,
+      skillName: problem.attempt.skillName,
+    })
+    setWechatConfigurationOpen(true)
+  }, [wechatConfigurationProblem])
   const publicationSummaryById = useMemo(() => {
     const releasesByPublicationId = new Map<string, PublishingRelease[]>()
     for (const release of state.releases) {
@@ -262,12 +310,30 @@ export function PublishingPanel({
       publishingSourceHasContent(bodyText, selectedPublication.covers.length)
   )
   const skillRows = [
-    ...skills.map((skill) => ({ ...skill, isInstalled: true as const })),
+    {
+      description: t`Built-in direct API submission`,
+      id: WECHAT_API_SKILL_ID,
+      isDirect: true as const,
+      isInstalled: true as const,
+      name: t`WeChat Official Account (API)`,
+    },
+    ...skills
+      .filter((skill) => skill.id !== WECHAT_API_SKILL_ID)
+      .map((skill) => ({
+        ...skill,
+        isDirect: false as const,
+        isInstalled: true as const,
+      })),
     ...Array.from(attemptsBySkill.entries())
-      .filter(([skillId]) => !skills.some((skill) => skill.id === skillId))
+      .filter(
+        ([skillId]) =>
+          skillId !== WECHAT_API_SKILL_ID &&
+          !skills.some((skill) => skill.id === skillId)
+      )
       .map(([skillId, attempts]) => ({
         description: t`This Skill is no longer installed`,
         id: skillId,
+        isDirect: false as const,
         isInstalled: false as const,
         name: attempts[0]?.attempt.skillName ?? skillId,
       })),
@@ -296,7 +362,10 @@ export function PublishingPanel({
             {skillRows.map((skill) => {
               const attempts = attemptsBySkill.get(skill.id) ?? []
               const hasActiveAttempt = attempts.some(({ attempt }) =>
-                publishingAttemptIsActive(attempt, taskById.get(attempt.taskId))
+                publishingAttemptIsActive(
+                  attempt,
+                  taskById.get(attempt.taskId ?? "")
+                )
               )
               return (
                 <section className="op-publishing-skill-status" key={skill.id}>
@@ -305,24 +374,54 @@ export function PublishingPanel({
                       {skill.name}
                     </strong>
                     {skill.isInstalled ? (
-                      <Button
-                        isDisabled={
-                          !sourceComplete || hasActiveAttempt || isSubmitting
-                        }
-                        isPending={submittingSkillId === skill.id}
-                        onPress={() =>
-                          executeAction({
-                            kind: "release",
-                            skillId: skill.id,
-                            skillName: skill.name,
-                          })
-                        }
-                        size="sm"
-                        variant="secondary"
-                      >
-                        <Send size={14} />
-                        {hasActiveAttempt ? t`In progress` : t`Publish`}
-                      </Button>
+                      <div className="op-publishing-skill-status__actions">
+                        {skill.isDirect ? (
+                          <Tooltip closeDelay={0} delay={300}>
+                            <Button
+                              aria-label={t`Configure WeChat API`}
+                              isDisabled={isSubmitting}
+                              isIconOnly
+                              onPress={() => {
+                                setWechatIssueReasonCode(null)
+                                setWechatPendingAction(null)
+                                setWechatPendingDirect(false)
+                                setWechatConfigurationOpen(true)
+                              }}
+                              size="sm"
+                              variant="ghost"
+                            >
+                              <KeyRound size={14} />
+                            </Button>
+                            <Tooltip.Content placement="top">
+                              {t`Configure WeChat API`}
+                            </Tooltip.Content>
+                          </Tooltip>
+                        ) : null}
+                        <Button
+                          isDisabled={
+                            !sourceComplete || hasActiveAttempt || isSubmitting
+                          }
+                          isPending={
+                            submittingSkillId === skill.id ||
+                            (skill.id === WECHAT_API_SKILL_ID &&
+                              checkingWechatConfiguration)
+                          }
+                          onPress={() =>
+                            skill.isDirect
+                              ? beginDirectWechatDraft()
+                              : beginRelease({
+                                  kind: "release",
+                                  skillId: skill.id,
+                                  skillName: skill.name,
+                                })
+                          }
+                          size="sm"
+                          variant="secondary"
+                        >
+                          <Send size={14} />
+                          {hasActiveAttempt ? t`In progress` : t`Publish`}
+                        </Button>
+                      </div>
                     ) : (
                       <Chip size="sm" variant="soft">
                         {t`Unavailable`}
@@ -332,18 +431,25 @@ export function PublishingPanel({
                   {attempts.length ? (
                     <div className="op-publishing-skill-attempts">
                       {attempts.map(({ attempt }) => (
-                        <AttemptRow
+                        <PublishingAttemptRow
                           attempt={attempt}
                           key={attempt.id}
-                          onOpenTask={() => onOpenAgentTasks([attempt.taskId])}
+                          onOpenTask={
+                            attempt.taskId
+                              ? () =>
+                                  onOpenAgentTasks([attempt.taskId as string])
+                              : undefined
+                          }
                           t={t}
-                          task={taskById.get(attempt.taskId)}
+                          task={taskById.get(attempt.taskId ?? "")}
                         />
                       ))}
                     </div>
                   ) : (
                     <p className="op-publishing-skill-status__empty">
-                      {t`No publishing tasks yet`}
+                      {skill.isDirect
+                        ? t`No submissions yet`
+                        : t`No publishing tasks yet`}
                     </p>
                   )}
                 </section>
@@ -442,16 +548,98 @@ export function PublishingPanel({
             )
       setState(response.state)
       onStateSaved(response.state, response.revision, response.task)
-      if (action.kind === "attempt" && action.mode === "manual") {
-        const taskId = response.task?.id ?? response.attempt?.taskId
-        if (taskId) onOpenManualTask({ kind: "exact-task", taskId })
-      }
+      const taskId = response.task?.id ?? response.attempt?.taskId
+      if (taskId) onOpenManualTask({ kind: "exact-task", taskId })
       setPendingAction(null)
     } catch (cause) {
       setError(String((cause as Error)?.message || cause))
     } finally {
       setIsSubmitting(false)
       setSubmittingSkillId(null)
+    }
+  }
+
+  async function beginRelease(action: PendingAction) {
+    if (action.skillId !== WECHAT_API_SKILL_ID) {
+      await executeAction(action)
+      return
+    }
+    setCheckingWechatConfiguration(true)
+    setError(null)
+    try {
+      const configuration = await loadWechatConfiguration(transport.apiBase)
+      setWechatConfiguration(configuration)
+      if (!configuration.ready) {
+        setWechatIssueReasonCode(configuration.reasonCode)
+        setWechatPendingAction(action)
+        setWechatConfigurationOpen(true)
+        return
+      }
+      await executeAction(action)
+    } catch (cause) {
+      setError(String((cause as Error)?.message || cause))
+    } finally {
+      setCheckingWechatConfiguration(false)
+    }
+  }
+
+  async function submitDirectWechatDraft() {
+    if (!selectedPublication) return
+    setIsSubmitting(true)
+    setSubmittingSkillId(WECHAT_API_SKILL_ID)
+    setError(null)
+    try {
+      await flushTypesettingSave()
+      const response = await apiJson<PublishingResponse>(
+        transport.apiBase,
+        "/api/publishing/wechat/drafts",
+        {
+          body: JSON.stringify({
+            publicationId: selectedPublication.id,
+            requestId: randomId("wechat-draft-request"),
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }
+      )
+      setState(response.state)
+      onStateSaved(response.state, response.revision)
+      const attempt = response.attempt
+      if (
+        attempt?.outcome === "needs_user_action" &&
+        isWechatConfigurationReason(attempt.reasonCode)
+      ) {
+        setWechatIssueReasonCode(attempt.reasonCode)
+        setWechatPendingDirect(true)
+        setWechatConfigurationOpen(true)
+      } else if (attempt?.outcome && attempt.outcome !== "published") {
+        setError(attempt.summary ?? t`WeChat draft submission failed`)
+      }
+    } catch (cause) {
+      setError(String((cause as Error)?.message || cause))
+    } finally {
+      setIsSubmitting(false)
+      setSubmittingSkillId(null)
+    }
+  }
+
+  async function beginDirectWechatDraft() {
+    setCheckingWechatConfiguration(true)
+    setError(null)
+    try {
+      const configuration = await loadWechatConfiguration(transport.apiBase)
+      setWechatConfiguration(configuration)
+      if (!configuration.ready) {
+        setWechatIssueReasonCode(configuration.reasonCode)
+        setWechatPendingDirect(true)
+        setWechatConfigurationOpen(true)
+        return
+      }
+      await submitDirectWechatDraft()
+    } catch (cause) {
+      setError(String((cause as Error)?.message || cause))
+    } finally {
+      setCheckingWechatConfiguration(false)
     }
   }
 
@@ -504,14 +692,6 @@ export function PublishingPanel({
                 </span>
               ) : null
             }}
-            renderPublicationStatus={(publication) =>
-              publicationSummaryById
-                .get(publication.id)
-                ?.statuses.slice(0, 1)
-                .map((status) => (
-                  <PublicationStatusChip key={status} status={status} t={t} />
-                )) ?? null
-            }
             transport={transport}
           />
         </aside>
@@ -621,6 +801,30 @@ export function PublishingPanel({
           t={t}
         />
       ) : null}
+      <WechatApiConfigurationDialog
+        initialStatus={wechatConfiguration}
+        isOpen={wechatConfigurationOpen}
+        issueReasonCode={wechatIssueReasonCode}
+        onCancel={() => {
+          setWechatConfigurationOpen(false)
+          setWechatPendingAction(null)
+          setWechatPendingDirect(false)
+        }}
+        onReady={() => {
+          const action = wechatPendingAction
+          const submitDirect = wechatPendingDirect
+          setWechatConfigurationOpen(false)
+          setWechatIssueReasonCode(null)
+          setWechatPendingAction(null)
+          setWechatPendingDirect(false)
+          if (submitDirect) {
+            submitDirectWechatDraft()
+          } else if (action) {
+            executeAction(action)
+          }
+        }}
+        transport={transport}
+      />
       {pendingDelete ? (
         <ConfirmDialog
           cancelLabel={t`Cancel`}
@@ -647,92 +851,6 @@ export function PublishingPanel({
         />
       ) : null}
     </section>
-  )
-}
-
-function AttemptRow({
-  attempt,
-  onOpenTask,
-  task,
-  t,
-}: {
-  attempt: PublishingAttempt
-  onOpenTask: () => void
-  task?: ProjectTask
-  t: (value: TemplateStringsArray) => string
-}) {
-  const status = publishingAttemptStatus(attempt, task)
-  const label = publishingStatusLabel(status, t)
-  return (
-    <div className="op-publishing-attempt">
-      <time dateTime={attempt.createdAt}>
-        {new Date(attempt.createdAt).toLocaleString()}
-      </time>
-      <Tooltip closeDelay={0} delay={300}>
-        <Button
-          aria-label={`${label}: ${t`Open task`}`}
-          className="op-publishing-attempt__status"
-          data-status={status}
-          isIconOnly
-          onPress={onOpenTask}
-          size="sm"
-          variant="ghost"
-        >
-          {publishingStatusIcon(status)}
-        </Button>
-        <Tooltip.Content placement="top">{label}</Tooltip.Content>
-      </Tooltip>
-    </div>
-  )
-}
-
-function publishingStatusIcon(
-  status: ReturnType<typeof publishingAttemptStatus>
-) {
-  if (status === "queued") return <Clock3 size={16} />
-  if (status === "running") return <LoaderCircle size={16} />
-  if (status === "committing") return <Send size={16} />
-  if (status === "published") return <CheckCircle2 size={16} />
-  if (status === "needs_user_action") return <AlertTriangle size={16} />
-  if (status === "not_published") return <CircleX size={16} />
-  return <CircleHelp size={16} />
-}
-
-function PublicationStatusChip({
-  status,
-  t,
-}: {
-  status: PublishingPublicationStatus
-  t: (value: TemplateStringsArray) => string
-}) {
-  const color =
-    status === "error"
-      ? "danger"
-      : status === "pending" || status === "needs_user_action"
-        ? "warning"
-        : status === "publishing"
-          ? "accent"
-          : "default"
-  const label =
-    status === "pending"
-      ? t`Pending publish`
-      : status === "publishing"
-        ? t`Publishing now`
-        : status === "needs_user_action"
-          ? t`Needs user action`
-          : status === "error"
-            ? t`Publishing error`
-            : t`Publishing status unknown`
-
-  return (
-    <Chip
-      className="op-typesetting-publication-row__status"
-      color={color}
-      size="sm"
-      variant="soft"
-    >
-      {label}
-    </Chip>
   )
 }
 
@@ -783,9 +901,7 @@ function PublishingConfirmDialog({
               variant="tertiary"
             >{t`Cancel`}</Button>
             <Button isPending={isBusy} onPress={onConfirm}>
-              {action.kind === "attempt" && action.mode === "manual"
-                ? t`Create handoff`
-                : t`Confirm start`}
+              {t`Create handoff`}
             </Button>
           </Modal.Footer>
         </Modal.Dialog>
@@ -803,15 +919,18 @@ function EmptyMessage({ icon, message }: { icon: ReactNode; message: string }) {
   )
 }
 
-function publishingStatusLabel(
-  status: ReturnType<typeof publishingAttemptStatus>,
-  t: (value: TemplateStringsArray) => string
-) {
-  if (status === "queued") return t`Queued`
-  if (status === "running") return t`Running`
-  if (status === "committing") return t`Submitting`
-  if (status === "published") return t`Published`
-  if (status === "needs_user_action") return t`Needs user action`
-  if (status === "not_published") return t`Not published`
-  return t`Result unknown`
+function isWechatConfigurationReason(reasonCode: string | null) {
+  return Boolean(
+    reasonCode &&
+      [
+        "wechat_api_unauthorized",
+        "wechat_app_id_missing",
+        "wechat_app_secret_missing",
+        "wechat_configuration_validation_required",
+        "wechat_credentials_missing",
+        "wechat_credentials_rejected",
+        "wechat_ip_not_allowed",
+        "wechat_public_ip_unavailable",
+      ].includes(reasonCode)
+  )
 }

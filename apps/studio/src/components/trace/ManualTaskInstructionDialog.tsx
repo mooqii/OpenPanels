@@ -24,6 +24,7 @@ export function ManualTaskInstructionPrompt({
         controller.dismissAll()
         onConfigureCli()
       }}
+      requiresAgentMessage={controller.requiresAgentMessage}
       scope={controller.scope}
     />
   )
@@ -33,11 +34,13 @@ export function ManualTaskInstructionDialog({
   buildInfo,
   onClose,
   onConfigureCli,
+  requiresAgentMessage = false,
   scope,
 }: {
   buildInfo: MyOpenPanelsBuildInfo
   onClose: () => void
   onConfigureCli: () => void
+  requiresAgentMessage?: boolean
   scope: TaskExecutionScope | null
 }) {
   const { locale, t } = useMyOpenPanelsI18n()
@@ -74,18 +77,27 @@ export function ManualTaskInstructionDialog({
           </Modal.Header>
           <Modal.Body>
             <p>
-              {t`No active and usable Agent CLI is available. Copy the instruction below and send it to an Agent to run this Task Handoff.`}
+              {requiresAgentMessage
+                ? t`This publishing task requires Agent Message. Copy the instruction below and send it to an Agent to run this Task Handoff.`
+                : t`No active and usable Agent CLI is available. Copy the instruction below and send it to an Agent to run this Task Handoff.`}
             </p>
             <div className="op-manual-task-dialog__instruction">
               <span>{t`Task Handoff instruction`}</span>
               <pre>{instruction}</pre>
             </div>
           </Modal.Body>
-          <Modal.Footer className="op-manual-task-dialog__footer">
-            <Button onPress={onConfigureCli} variant="tertiary">
-              <Settings size={16} />
-              {t`Configure CLI`}
-            </Button>
+          <Modal.Footer
+            className="op-manual-task-dialog__footer"
+            style={{
+              justifyContent: requiresAgentMessage ? "flex-end" : undefined,
+            }}
+          >
+            {requiresAgentMessage ? null : (
+              <Button onPress={onConfigureCli} variant="tertiary">
+                <Settings size={16} />
+                {t`Configure CLI`}
+              </Button>
+            )}
             <div className="op-manual-task-dialog__actions">
               {copyStatus ? (
                 <span

@@ -142,6 +142,28 @@ async fn api_broker_publishing_checkpoint(
     }
 }
 
+async fn api_broker_wechat_draft(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<WechatDraftRequest>,
+) -> Response {
+    let token = match broker_token(&headers) {
+        Ok(token) => token,
+        Err(error) => return broker_error(error),
+    };
+    if let Err(error) = content::authorize_agent_broker_capability(
+        &state.paths,
+        token,
+        "release.wechat.draft",
+    ) {
+        return broker_error(error);
+    }
+    match content::save_wechat_draft(&state.paths, token, &body) {
+        Ok(payload) => json_response(StatusCode::OK, &payload),
+        Err(error) => broker_error(error),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BootstrapQuery {

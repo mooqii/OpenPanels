@@ -196,6 +196,14 @@ const SPECS: &[CommandDefinition] = &[
         true
     ),
     spec!(
+        "release.wechat.draft",
+        ["release", "wechat", "draft"],
+        "Save a WeChat Official Account draft through the official API",
+        "release",
+        "task",
+        true
+    ),
+    spec!(
         "publication.list",
         ["publication", "list"],
         "List Publications",

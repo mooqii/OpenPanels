@@ -533,8 +533,8 @@ assert(
   `Expected 9 Task Capabilities; got ${taskCapabilityCount}.`
 )
 assert(
-  taskRoutes.size === 10,
-  `Expected 10 Task routes; got ${taskRoutes.size}.`
+  taskRoutes.size === 12,
+  `Expected 12 Task routes; got ${taskRoutes.size}.`
 )
 
 const manifest = {

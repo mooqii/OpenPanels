@@ -292,6 +292,24 @@ pub fn publishing_checkpoint(
     crate::release::checkpoint_attempt_for_broker(paths, &request.task_id, &request.phase)
 }
 
+pub fn save_wechat_draft(
+    paths: &MyOpenPanelsPaths,
+    execution_token: &str,
+    request: &WechatDraftRequest,
+) -> Result<Value, CliError> {
+    let context = authorize(paths, execution_token)?;
+    if context.task_id != request.task_id
+        || context.task_type != crate::release::WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE
+        || context.task_capability != "release.wechat_official_account"
+    {
+        return Err(CliError::with_code(
+            "execution_fenced",
+            "Execution cannot save a draft for this Task.",
+        ));
+    }
+    crate::release::save_wechat_draft_for_broker(paths, &request.task_id)
+}
+
 pub fn read_task_context(
     paths: &MyOpenPanelsPaths,
     execution_token: &str,

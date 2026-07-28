@@ -915,7 +915,7 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
               skillManager.open("add", moduleKind)
             }
             onOpenAgentTasks={(taskIds) => openAgentTaskList("all", taskIds)}
-            onOpenManualTask={manualTaskInstructions.open}
+            onOpenManualTask={manualTaskInstructions.openRequiredAgentMessage}
             onStateSaved={handlePublishingStateSaved}
             panelId={appState.panel.id}
             projectId={appState.project.id}

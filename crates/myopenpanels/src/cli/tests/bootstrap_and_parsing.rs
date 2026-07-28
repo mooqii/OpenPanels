@@ -1,4 +1,25 @@
 #[test]
+fn wechat_draft_api_command_parses_to_its_fenced_intent() {
+    let argv = [
+        "release",
+        "wechat",
+        "draft",
+        "--task-id",
+        "task:wechat",
+        "--format",
+        "json",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let args::ParseOutcome::Invocation(parsed) = args::parse(&argv) else {
+        panic!("WeChat draft command should parse");
+    };
+    assert_eq!(parsed.intent(), "release.wechat.draft");
+    assert_eq!(string_flag(&parsed, "task-id"), Some("task:wechat"));
+}
+
+#[test]
 fn cli_trace_url_falls_back_to_running_studio_session() {
     let _lock = TRACE_ENV_LOCK.lock().expect("trace env lock");
     let temp = tempfile::tempdir().expect("temp dir");

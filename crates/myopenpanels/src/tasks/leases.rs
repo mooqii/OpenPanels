@@ -161,6 +161,11 @@ fn claim_once(
             "input": serde_json::from_str::<Value>(&input_json).map_err(to_cli_error)?,
             "attempts": serde_json::from_str::<Value>(&attempt_history_json).map_err(to_cli_error)?,
         });
+        if handler_key.starts_with("handler.release.")
+            && !runner_key.starts_with("manual-task-handoff:")
+        {
+            continue;
+        }
         if requested_task_id.is_some() || runner_matches_task(&settings, &task, runner_key) {
             candidate_id = Some(task_id);
             break;
@@ -297,8 +302,18 @@ pub(crate) fn complete_task(
     result: Option<Value>,
 ) -> Result<Value, CliError> {
     let lease = verify_lease(paths, task_id, lease_token)?;
+    let domain = task_domain(lease["queue"].as_str().unwrap_or(""))?;
+    if domain == TaskDomain::Release
+        && result
+            .as_ref()
+            .and_then(|value| value.get("outcome"))
+            .and_then(Value::as_str)
+            != Some("published")
+    {
+        return fail_publishing_task_with_result(paths, task_id, &lease, result);
+    }
     let (prepared_panel_state, prepared_my_document) =
-        match task_domain(lease["queue"].as_str().unwrap_or(""))? {
+        match domain {
             TaskDomain::Wiki => (
                 crate::wiki::prepare_task_completion(paths, task_id, result.clone())?,
                 None,
@@ -326,6 +341,53 @@ pub(crate) fn complete_task(
         None,
         None,
         None,
+        lease["executionGeneration"].as_i64(),
+    )?;
+    inspect_task_in_session(paths, project_id, task_id)
+}
+
+fn fail_publishing_task_with_result(
+    paths: &MyOpenPanelsPaths,
+    task_id: &str,
+    lease: &Value,
+    result: Option<Value>,
+) -> Result<Value, CliError> {
+    let result = result.ok_or_else(|| {
+        CliError::with_code("invalid_output", "Publishing Task result is missing.")
+    })?;
+    let prepared_panel_state =
+        crate::release::prepare_task_completion(paths, task_id, Some(result.clone()))?;
+    let outcome = result
+        .get("outcome")
+        .and_then(Value::as_str)
+        .unwrap_or("not_published")
+        .to_owned();
+    let reason_code = result
+        .get("reasonCode")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("publishing_not_completed")
+        .to_owned();
+    let message = result
+        .get("summary")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Publishing did not complete successfully.")
+        .to_owned();
+    let project_id = lease["projectId"].as_str().unwrap_or_default();
+    finalize_task_runtime(
+        paths,
+        project_id,
+        task_id,
+        "failed",
+        TaskOutputPlan::completed(Some(result), prepared_panel_state, None, None),
+        Some(json!({
+            "code": reason_code,
+            "message": message,
+            "outcome": outcome,
+        })),
+        None,
+        Some(TaskFailureClass::TerminalTask),
         lease["executionGeneration"].as_i64(),
     )?;
     inspect_task_in_session(paths, project_id, task_id)

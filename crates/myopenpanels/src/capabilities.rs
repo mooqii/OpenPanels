@@ -544,7 +544,7 @@ mod tests {
                 .count(),
             7
         );
-        assert_eq!(task_routes().expect("Task routes").count(), 10);
+        assert_eq!(task_routes().expect("Task routes").count(), 12);
         assert_eq!(
             module_key_for_capability("my-document.create").expect("module"),
             Some("my-document")

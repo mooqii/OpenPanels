@@ -9,10 +9,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 include!("release/task_lifecycle.rs");
+include!("release/wechat_api.rs");
+include!("release/wechat_format.rs");
+include!("release/wechat_configuration.rs");
 
 pub const DEFAULT_XIAOHONGSHU_SKILL_ID: &str = "release-xiaohongshu";
 pub const XIAOHONGSHU_TASK_TYPE: &str = "release_xiaohongshu";
 pub const WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE: &str = "release_wechat_official_account";
+include!("release/social_targets.rs");
 const PUBLISHING_TASK_CAPABILITY_KEY: &str = "release.execute";
 
 #[derive(Clone, Copy)]
@@ -34,7 +38,7 @@ const WECHAT_OFFICIAL_ACCOUNT_TARGET: PublishingTarget = PublishingTarget {
 pub fn is_publishing_task_type(task_type: &str) -> bool {
     matches!(
         task_type,
-        XIAOHONGSHU_TASK_TYPE | WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE
+        XIAOHONGSHU_TASK_TYPE | WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE | X_TASK_TYPE | REDDIT_TASK_TYPE
     )
 }
 
@@ -48,6 +52,22 @@ pub fn publishing_task_capability(task_type: &str) -> Result<&'static str, CliEr
 fn publishing_target_for_skill(
     skill: &crate::agent::AgentSkillListing,
 ) -> Result<PublishingTarget, CliError> {
+    if skill
+        .skill
+        .task_types
+        .iter()
+        .any(|value| value == X_TASK_TYPE)
+    {
+        return Ok(X_TARGET);
+    }
+    if skill
+        .skill
+        .task_types
+        .iter()
+        .any(|value| value == REDDIT_TASK_TYPE)
+    {
+        return Ok(REDDIT_TARGET);
+    }
     if skill
         .skill
         .task_types
@@ -139,7 +159,7 @@ fn validate_release(release: &Value) -> bool {
     release.get("id").is_some_and(Value::is_string)
         && matches!(
             release.get("platform").and_then(Value::as_str),
-            Some("xiaohongshu" | "wechat_official_account")
+            Some("xiaohongshu" | "wechat_official_account" | "x" | "reddit")
         )
         && release
             .get("sourcePublicationId")
@@ -169,11 +189,11 @@ fn validate_release(release: &Value) -> bool {
 
 fn validate_attempt(attempt: &Value) -> bool {
     attempt.get("id").is_some_and(Value::is_string)
-        && attempt.get("taskId").is_some_and(Value::is_string)
+        && publishing_task_id_is_valid(attempt.get("taskId"))
         && attempt.get("requestId").is_some_and(Value::is_string)
         && matches!(
             attempt.get("mode").and_then(Value::as_str),
-            Some("auto" | "manual")
+            Some("auto" | "direct" | "manual")
         )
         && matches!(
             attempt.get("phase").and_then(Value::as_str),
@@ -323,7 +343,7 @@ pub fn create_release(
             &release,
             skill_id,
             request_id,
-            "auto",
+            "manual",
         )?;
         release["attempts"] = json!([attempt]);
         state["selectedPublicationId"] = json!(publication_id);
@@ -347,7 +367,6 @@ pub fn create_release(
         }))
     })()
 }
-
 pub fn create_attempt(
     paths: &MyOpenPanelsPaths,
     release_id: &str,
@@ -356,10 +375,10 @@ pub fn create_attempt(
     mode: &str,
     acknowledged_unknown: bool,
 ) -> Result<Value, CliError> {
-    if !matches!(mode, "auto" | "manual") || request_id.trim().is_empty() {
+    if mode != "manual" || request_id.trim().is_empty() {
         return Err(CliError::with_code(
             "invalid_publishing_request",
-            "Publishing attempt mode must be auto or manual and request id is required.",
+            "Publishing attempts require Agent Message mode and a request id.",
         ));
     }
     let bootstrap = publishing_bootstrap(paths)?;
@@ -672,6 +691,7 @@ pub(crate) fn recapture_retry_skill_snapshot(
         ));
     }
     let content_hash = hash_file_manifest(&files);
+    input["executionMode"] = json!("manual");
     input["publishingSkillId"] = json!(skill.skill.id);
     input["publishingSkillSnapshot"] = json!({
         "id": skill.skill.id,
@@ -1016,27 +1036,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn publishing_skills_select_their_platform_route() {
-        let xiaohongshu =
-            publishing_target_for_skill(&publishing_skill_listing(XIAOHONGSHU_TASK_TYPE))
-                .expect("Xiaohongshu target");
-        assert_eq!(xiaohongshu.platform, "xiaohongshu");
-        assert_eq!(
-            publishing_task_capability(xiaohongshu.task_type).expect("Xiaohongshu capability"),
-            "release.xiaohongshu"
-        );
-
-        let wechat = publishing_target_for_skill(&publishing_skill_listing(
-            WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE,
-        ))
-        .expect("WeChat target");
-        assert_eq!(wechat.platform, "wechat_official_account");
-        assert_eq!(
-            publishing_task_capability(wechat.task_type).expect("WeChat capability"),
-            "release.wechat_official_account"
-        );
-    }
+    include!("release/social_target_tests.rs");
 
     #[test]
     fn current_state_defaults_optional_scaffold_fields() {

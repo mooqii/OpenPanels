@@ -24,6 +24,22 @@ struct PublishingAttemptBody {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+struct WechatConfigurationBody {
+    app_id: String,
+    app_secret: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+struct WechatDraftSubmissionBody {
+    publication_id: String,
+    request_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PublicationsBody {
     base_revision: i64,
     publications: Vec<Value>,
@@ -90,6 +106,96 @@ async fn api_releases(State(state): State<Arc<AppState>>) -> Response {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_cli_error(&error),
     }
+}
+
+async fn api_wechat_configuration(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !trusted_studio_origin(&headers) {
+        return json_error(StatusCode::FORBIDDEN, "Untrusted Studio origin.");
+    }
+    let paths = state.paths.clone();
+    match tokio::task::spawn_blocking(move || crate::release::wechat_configuration_status(&paths))
+        .await
+    {
+        Ok(Ok(payload)) => no_store_response(json_response(StatusCode::OK, &payload)),
+        Ok(Err(error)) => no_store_response(json_cli_error(&error)),
+        Err(error) => no_store_response(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &error.to_string(),
+        )),
+    }
+}
+
+async fn api_save_wechat_configuration(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<WechatConfigurationBody>,
+) -> Response {
+    if !trusted_studio_origin(&headers) {
+        return json_error(StatusCode::FORBIDDEN, "Untrusted Studio origin.");
+    }
+    let paths = state.paths.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::release::validate_and_save_wechat_configuration(
+            &paths,
+            &body.app_id,
+            body.app_secret.as_deref(),
+        )
+    })
+    .await
+    {
+        Ok(Ok(payload)) => no_store_response(json_response(StatusCode::OK, &payload)),
+        Ok(Err(error)) => no_store_response(json_cli_error(&error)),
+        Err(error) => no_store_response(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &error.to_string(),
+        )),
+    }
+}
+
+async fn api_submit_wechat_draft(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<WechatDraftSubmissionBody>,
+) -> Response {
+    if !trusted_studio_origin(&headers) {
+        return json_error(StatusCode::FORBIDDEN, "Untrusted Studio origin.");
+    }
+    let paths = state.paths.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::release::submit_wechat_draft_direct(
+            &paths,
+            &body.publication_id,
+            &body.request_id,
+        )
+    })
+    .await
+    {
+        Ok(Ok(payload)) => no_store_response(json_response(StatusCode::CREATED, &payload)),
+        Ok(Err(error)) => no_store_response(json_cli_error(&error)),
+        Err(error) => no_store_response(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &error.to_string(),
+        )),
+    }
+}
+
+fn trusted_studio_origin(headers: &HeaderMap) -> bool {
+    let Some(host) = headers.get(header::HOST).and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    let expected = format!("http://{host}");
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|value| value.to_str().ok()) {
+        return origin == expected;
+    }
+    headers
+        .get(header::REFERER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|referer| {
+            referer == expected || referer.starts_with(&format!("{expected}/"))
+        })
 }
 
 async fn api_publishing_preferences(

@@ -114,6 +114,21 @@ enum ReleaseCommand {
         #[arg(long, value_parser = ["prepared", "committing"])]
         phase: String,
     },
+    Wechat(ReleaseWechatArgs),
+}
+
+#[derive(Debug, Args)]
+struct ReleaseWechatArgs {
+    #[command(subcommand)]
+    command: ReleaseWechatCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ReleaseWechatCommand {
+    Draft {
+        #[arg(long)]
+        task_id: String,
+    },
 }
 
 #[derive(Debug, Args)]

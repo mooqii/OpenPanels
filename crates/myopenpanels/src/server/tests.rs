@@ -440,4 +440,26 @@ mod tests {
             "public, max-age=31536000, immutable"
         );
     }
+
+    #[test]
+    fn wechat_configuration_accepts_only_the_current_studio_origin() {
+        let mut trusted = HeaderMap::new();
+        trusted.insert(header::HOST, "127.0.0.1:53160".parse().unwrap());
+        trusted.insert(
+            header::ORIGIN,
+            "http://127.0.0.1:53160".parse().unwrap(),
+        );
+        assert!(trusted_studio_origin(&trusted));
+
+        trusted.insert(header::ORIGIN, "https://example.com".parse().unwrap());
+        assert!(!trusted_studio_origin(&trusted));
+
+        let mut same_origin_get = HeaderMap::new();
+        same_origin_get.insert(header::HOST, "localhost:53160".parse().unwrap());
+        same_origin_get.insert(
+            header::REFERER,
+            "http://localhost:53160/publishing".parse().unwrap(),
+        );
+        assert!(trusted_studio_origin(&same_origin_get));
+    }
 }

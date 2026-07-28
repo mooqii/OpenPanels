@@ -350,6 +350,9 @@ const zhCNMessages: Record<string, string> = {
   "Copy Wiki update instruction": "复制 Wiki 更新指令",
   "Copy Project drain instruction": "复制 Project 排空指令",
   "Please send the instruction to an Agent manually": "请手动发送指令给 Agent",
+  "This task requires Agent Message": "此任务必须通过 Agent Message 执行",
+  "This publishing task requires Agent Message. Copy the instruction below and send it to an Agent to run this Task Handoff.":
+    "此发布任务必须通过 Agent Message 执行。请复制下方指令并发送给 Agent，以运行此任务交接。",
   "Waiting for an active Agent CLI to claim the task":
     "待连接的 Agent CLI 领取任务",
   subtasks: "个子任务",
@@ -442,7 +445,10 @@ const zhCNMessages: Record<string, string> = {
   "Start publishing task?": "启动发布任务？",
   "Confirm start": "确认启动",
   "No publishing tasks yet": "还没有发布任务",
+  "No submissions yet": "还没有提交记录",
   "No content publishing Skills installed": "还没有安装内容发布 Skill",
+  "Built-in direct API submission": "内置 API 直接提交",
+  "WeChat draft submission failed": "微信公众号草稿提交失败",
   "This Skill is no longer installed": "这个 Skill 已不再安装",
   "Add text content or at least one image to publish":
     "正文或图片至少填写一项后即可发布",
@@ -466,6 +472,50 @@ const zhCNMessages: Record<string, string> = {
   "Publishing now": "发布中",
   "Publishing error": "发布错误",
   "Publishing status unknown": "状态未知",
+  "Configure WeChat API": "配置微信公众号 API",
+  "WeChat Official Account (API)": "公众号（API）",
+  "Validate the account before creating a draft.":
+    "创建草稿前，请先完成账号与网络配置校验。",
+  "Checking configuration": "正在检查配置",
+  "Account credentials": "账号凭据",
+  "Open the WeChat Developer Platform page for this AppID to manage the Official Account credentials.":
+    "打开当前 AppID 对应的微信开发者平台页面，管理公众号凭据。",
+  "Open platform": "打开平台",
+  "Saved; leave blank to keep it": "已保存，留空则保持不变",
+  "Enter AppSecret": "请输入 AppSecret",
+  "IP allowlist": "IP 白名单",
+  "On the same Official Account page, add the Studio server address to the IP allowlist.":
+    "在同一公众号页面中，将当前 Studio 服务器地址添加到 IP 白名单。",
+  "Current public IP": "当前公网 IP",
+  "IP observed by WeChat API": "微信接口识别到的 IP",
+  "The egress IP addresses differ": "出口 IP 不一致",
+  "Add the IP observed by WeChat to the allowlist too, and check the Studio host VPN or proxy routing.":
+    "请同时将微信接口识别到的 IP 添加到白名单，并检查 Studio 所在主机的 VPN 或代理路由。",
+  "After saving the allowlist, wait briefly and validate again. The IP observed by WeChat is authoritative.":
+    "保存白名单后请稍等片刻再重新校验，最终以微信接口实际识别到的 IP 为准。",
+  "Copy current public IP": "复制当前公网 IP",
+  "AppID and AppSecret": "AppID 与 AppSecret",
+  "Public IP detected": "公网 IP 检测",
+  "Current IP allowlist": "当前 IP 白名单",
+  "Draft API permission": "草稿 API 权限",
+  "Validation failed": "校验失败",
+  "Validate and save": "校验并保存",
+  Passed: "已通过",
+  "Pending validation": "待校验",
+  "Enter the AppID and AppSecret from Basic Configuration.":
+    "请输入「基本配置」中的 AppID 和 AppSecret。",
+  "Account credentials are required": "需要配置账号凭据",
+  "Check the AppID and reset or copy the AppSecret again.":
+    "请核对 AppID，并重新生成或复制 AppSecret。",
+  "Account credentials were rejected": "账号凭据校验失败",
+  "Add the IP shown below to the IP allowlist, then validate again.":
+    "请将下方显示的 IP 添加到 IP 白名单，然后重新校验。",
+  "Current IP is not validated": "当前 IP 尚未通过校验",
+  "Confirm that this account has draft-management API permission.":
+    "请确认当前公众号具备草稿管理 API 权限。",
+  "Draft API permission is unavailable": "草稿 API 权限不可用",
+  "Review the settings below and validate again.": "请检查下方配置并重新校验。",
+  "WeChat API configuration needs attention": "微信公众号 API 配置需要处理",
   Queued: "排队中",
   "Read only": "只读",
   "Result unknown": "结果未知",
@@ -479,7 +529,7 @@ const zhCNMessages: Record<string, string> = {
   "Open publication content": "展开发布内容列表",
   "Close publication content": "收起发布内容列表",
   "Xiaohongshu image note": "小红书图文笔记",
-  "Xiaohongshu publishing": "小红书发布",
+  "Xiaohongshu publishing": "小红书（浏览器）",
   "Publishing is being prepared": "发布功能正在准备中",
   "Documents and assets": "文档与素材",
   "Close library": "关闭资料栏",

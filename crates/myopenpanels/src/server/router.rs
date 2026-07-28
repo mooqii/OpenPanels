@@ -2,7 +2,7 @@ use crate::agent as agent_resources;
 use crate::bridge;
 use crate::content::{
     self, PrepareSkillRequest, PublishingCheckpointRequest, ReadFileRequest, SkillReadRequest,
-    StageFileRequest, TaskContextRequest,
+    StageFileRequest, TaskContextRequest, WechatDraftRequest,
 };
 use crate::control::{
     create_project, delete_project, ensure_project_bootstrap, now_iso, open_runtime_panel,
@@ -261,6 +261,14 @@ fn build_router(
             post(api_model_gateway_test_local_cli),
         )
         .route(
+            "/api/publishing/wechat/configuration",
+            get(api_wechat_configuration).put(api_save_wechat_configuration),
+        )
+        .route(
+            "/api/publishing/wechat/drafts",
+            post(api_submit_wechat_draft),
+        )
+        .route(
             "/api/projects/{project_id}",
             patch(api_rename_project).delete(api_delete_project),
         )
@@ -462,6 +470,10 @@ fn build_router(
         .route(
             "/api/task-broker/v3/publishing/checkpoint",
             post(api_broker_publishing_checkpoint),
+        )
+        .route(
+            "/api/task-broker/v3/publishing/wechat-draft",
+            post(api_broker_wechat_draft),
         );
     regular
         .merge(broker)

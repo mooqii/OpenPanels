@@ -24,4 +24,5 @@ mod tests {
     include!("bridge/tests/distillation.rs");
     include!("bridge/tests/wiki.rs");
     include!("bridge/tests/skills_process.rs");
+    include!("bridge/tests/publishing.rs");
 }

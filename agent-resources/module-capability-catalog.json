@@ -577,6 +577,18 @@
             "taskType": "release_wechat_official_account",
             "capability": "release.wechat_official_account",
             "handlerKey": "handler.release.wechat-official-account"
+          },
+          {
+            "queue": "release",
+            "taskType": "release_x",
+            "capability": "release.x",
+            "handlerKey": "handler.release.x"
+          },
+          {
+            "queue": "release",
+            "taskType": "release_reddit",
+            "capability": "release.reddit",
+            "handlerKey": "handler.release.reddit"
           }
         ]
       }

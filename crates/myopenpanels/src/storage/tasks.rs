@@ -426,14 +426,20 @@ fn task_value_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         .ok()
         .flatten();
     let current_runner = row.get::<_, Option<String>>(16)?;
-    let execution_method = current_runner
-        .as_deref()
-        .map(|provider_id| json!({
-            "kind": "localCli",
-            "connectionId": format!("local-cli:{provider_id}"),
-            "providerId": provider_id,
-        }))
-        .unwrap_or(Value::Null);
+    let execution_method = current_runner.as_deref().map_or(Value::Null, |provider_id| {
+        if provider_id.starts_with("manual-task-handoff:") {
+            json!({
+                "kind": "manualInstruction",
+                "label": "Agent Message",
+            })
+        } else {
+            json!({
+                "kind": "localCli",
+                "connectionId": format!("local-cli:{provider_id}"),
+                "providerId": provider_id,
+            })
+        }
+    });
     let attempt_history = parse(15);
     let error = parse_optional(10);
     let available_at = row.get::<_, String>(17)?;

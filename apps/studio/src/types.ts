@@ -354,7 +354,7 @@ export interface PublishingAttempt {
   completedAt: string | null
   createdAt: string
   id: string
-  mode: "auto" | "manual"
+  mode: "auto" | "direct" | "manual"
   outcome: PublishingOutcome | null
   phase: "queued" | "prepared" | "committing" | "completed"
   publishedAt?: string | null
@@ -365,7 +365,8 @@ export interface PublishingAttempt {
   skillId: string
   skillName: string
   summary: string | null
-  taskId: string
+  taskId: string | null
+  truncatedFields?: string[]
   updatedAt?: string
 }
 

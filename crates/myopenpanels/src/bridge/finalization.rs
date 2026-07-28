@@ -168,6 +168,10 @@ pub(crate) fn finalize_execution_unit(
                 .pointer("/task/result")
                 .cloned()
                 .unwrap_or(result);
+            let status = lifecycle
+                .pointer("/task/status")
+                .and_then(Value::as_str)
+                .unwrap_or("failed");
             record_finalization_phase(
                 task_id,
                 request.handler_key,
@@ -179,10 +183,11 @@ pub(crate) fn finalize_execution_unit(
             );
             Ok(json!({
                 "taskId": task_id,
-                "status": "succeeded",
+                "status": status,
                 "finalizationState": finalization_state(RuntimeFinalizationPhase::Completed, request.handler_key, Some(&prepared.plan.content_hash), None),
                 "result": committed_result,
                 "runtimeFinalization": runtime_finalization,
+                "error": lifecycle.pointer("/task/error").cloned().unwrap_or(Value::Null),
                 "lifecycle": lifecycle,
             }))
         }

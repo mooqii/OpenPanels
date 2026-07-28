@@ -117,7 +117,7 @@ export function publishingPublicationSummary(
   const attempts = [...attemptsById.values()]
   const publishedCount = attempts.filter(
     (attempt) =>
-      publishingAttemptStatus(attempt, taskById.get(attempt.taskId)) ===
+      publishingAttemptStatus(attempt, taskById.get(attempt.taskId ?? "")) ===
       "published"
   ).length
   const latestBySkill = new Map<string, PublishingAttempt>()
@@ -132,7 +132,7 @@ export function publishingPublicationSummary(
   for (const attempt of latestBySkill.values()) {
     const status = publishingAttemptStatus(
       attempt,
-      taskById.get(attempt.taskId)
+      taskById.get(attempt.taskId ?? "")
     )
     if (status === "queued") activeStatuses.add("pending")
     if (status === "running" || status === "committing") {

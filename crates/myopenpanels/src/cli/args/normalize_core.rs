@@ -75,6 +75,15 @@ fn normalize_command(
                     "release.checkpoint",
                 )
             }
+            ReleaseCommand::Wechat(args) => match args.command {
+                ReleaseWechatCommand::Draft { task_id } => {
+                    put(flags, "task-id", Some(task_id));
+                    (
+                        vec!["release".into(), "wechat".into(), "draft".into()],
+                        "release.wechat.draft",
+                    )
+                }
+            },
         },
         RootCommand::Asset(args) => match args.command {
             AssetCommand::List => (vec!["asset".into(), "list".into()], "asset.list"),

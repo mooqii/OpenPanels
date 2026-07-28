@@ -13,10 +13,11 @@ fn annotate_dispatch_state(
             .iter()
             .any(|dependency| dependency.get("status").and_then(Value::as_str) != Some("succeeded"));
         let mutation_blocked = mutation_task_blocked(storage.connection(), task_id)?;
-        let manual = task
-            .pointer("/input/executionMode")
-            .and_then(Value::as_str)
-            == Some("manual");
+        let manual = task.get("queue").and_then(Value::as_str) == Some("release")
+            || task
+                .pointer("/input/executionMode")
+                .and_then(Value::as_str)
+                == Some("manual");
         let compatible = if manual { 0 } else { available_runners.len() };
         let dispatch_state = match task.get("status").and_then(Value::as_str) {
             Some("running") => "running",

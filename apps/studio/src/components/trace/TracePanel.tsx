@@ -639,6 +639,7 @@ function TaskList({
                   <TaskHandoffControl
                     hasUsableAgentCli={hasUsableAgentCli}
                     onOpenManualTask={onOpenManualTask}
+                    requiresAgentMessage={task.queue === "release"}
                     scope={taskExecutionScope(task)}
                   />
                 ) : null}

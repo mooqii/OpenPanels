@@ -449,6 +449,7 @@ fn handoff_command_intent(command: &[String]) -> Option<&'static str> {
         [domain, resource, action, ..] if domain == "wiki" && resource == "page" && action == "update" => Some("wiki.page.update"),
         [domain, resource, action, ..] if domain == "writing" && resource == "skill" && action == "install" => Some("writing.skill.install"),
         [domain, action, ..] if domain == "release" && action == "checkpoint" => Some("release.checkpoint"),
+        [domain, resource, action, ..] if domain == "release" && resource == "wechat" && action == "draft" => Some("release.wechat.draft"),
         [domain, action, ..] if domain == "operation" && action == "complete" => Some("operation.complete"),
         _ => None,
     }
@@ -685,12 +686,27 @@ fn remove_handoff_directory(
 
 #[cfg(test)]
 mod tests {
-    use super::is_valid_handoff_id;
+    use super::{handoff_command_intent, is_valid_handoff_id};
 
     #[test]
     fn handoff_ids_allow_the_colon_used_by_generated_ids() {
         assert!(is_valid_handoff_id("task-handoff:AbCdEf0123-_xYz9"));
         assert!(!is_valid_handoff_id("task-handoff-AbCdEf0123-_xYz9"));
         assert!(!is_valid_handoff_id("task-handoff:../../escape"));
+    }
+
+    #[test]
+    fn handoff_recognizes_the_fenced_wechat_draft_command() {
+        let command = vec![
+            "release".to_owned(),
+            "wechat".to_owned(),
+            "draft".to_owned(),
+            "--task-id".to_owned(),
+            "task:wechat".to_owned(),
+        ];
+        assert_eq!(
+            handoff_command_intent(&command),
+            Some("release.wechat.draft")
+        );
     }
 }

@@ -153,27 +153,29 @@
     {
       "packageDir": "release-xiaohongshu",
       "id": "release-xiaohongshu",
-      "name": "Publish to Xiaohongshu",
+      "name": "Xiaohongshu (Browser)",
       "localizations": {
         "zh-CN": {
-          "name": "小红书发布",
-          "loadWhen": ["当前发布请求面向小红书图文笔记。"]
+          "name": "小红书（浏览器）",
+          "loadWhen": ["当前发布请求面向小红书视频、图文或纯文字笔记。"]
         }
       },
       "source": "builtin",
       "appliesTo": ["publishing"],
       "taskTypes": ["release_xiaohongshu"],
       "requiresCommands": [],
-      "loadWhen": ["The publishing request targets a Xiaohongshu image note."],
+      "loadWhen": [
+        "The publishing request targets a Xiaohongshu video, image, or text-only note."
+      ],
       "tokens": "short"
     },
     {
       "packageDir": "release-wechat-official-account",
       "id": "release-wechat-official-account",
-      "name": "Publish to WeChat Official Account",
+      "name": "WeChat Official Account (API)",
       "localizations": {
         "zh-CN": {
-          "name": "微信公众号发布",
+          "name": "公众号（API）",
           "loadWhen": ["当前发布请求面向微信公众号草稿。"]
         }
       },
@@ -184,6 +186,40 @@
       "loadWhen": [
         "The publishing request targets a WeChat Official Account draft."
       ],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "release-x",
+      "id": "release-x",
+      "name": "X (Browser)",
+      "localizations": {
+        "zh-CN": {
+          "name": "X（浏览器）",
+          "loadWhen": ["当前发布请求面向 X 帖子。"]
+        }
+      },
+      "source": "builtin",
+      "appliesTo": ["publishing"],
+      "taskTypes": ["release_x"],
+      "requiresCommands": [],
+      "loadWhen": ["The publishing request targets an X post."],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "release-reddit",
+      "id": "release-reddit",
+      "name": "Reddit (Browser)",
+      "localizations": {
+        "zh-CN": {
+          "name": "Reddit（浏览器）",
+          "loadWhen": ["当前发布请求面向 Reddit 社区帖子。"]
+        }
+      },
+      "source": "builtin",
+      "appliesTo": ["publishing"],
+      "taskTypes": ["release_reddit"],
+      "requiresCommands": [],
+      "loadWhen": ["The publishing request targets a Reddit community post."],
       "tokens": "short"
     }
   ]

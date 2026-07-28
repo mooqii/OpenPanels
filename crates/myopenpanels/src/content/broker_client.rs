@@ -1,6 +1,6 @@
 use super::filesystem::{
     to_cli_error, PrepareSkillRequest, PublishingCheckpointRequest, ReadFileRequest,
-    SkillReadRequest, StageFileRequest, TaskContextRequest,
+    SkillReadRequest, StageFileRequest, TaskContextRequest, WechatDraftRequest,
 };
 use crate::error::CliError;
 use serde::Serialize;
@@ -30,6 +30,10 @@ pub fn broker_publishing_checkpoint(
     request: &PublishingCheckpointRequest,
 ) -> Result<Value, CliError> {
     broker_json("/api/task-broker/v3/publishing/checkpoint", request)
+}
+
+pub fn broker_wechat_draft(request: &WechatDraftRequest) -> Result<Value, CliError> {
+    broker_json("/api/task-broker/v3/publishing/wechat-draft", request)
 }
 
 #[cfg(test)]

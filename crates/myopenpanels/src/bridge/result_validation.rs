@@ -640,6 +640,28 @@ fn build_wechat_official_account_publishing_output_plan(
     )
 }
 
+fn build_x_publishing_output_plan(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    _attempt_id: &str,
+    _execution_generation: i64,
+    _execution_unit: &Value,
+) -> Result<TaskOutputPlanDraft, CliError> {
+    build_publishing_output_plan(paths, task, workspace, "X publishing", "x")
+}
+
+fn build_reddit_publishing_output_plan(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    _attempt_id: &str,
+    _execution_generation: i64,
+    _execution_unit: &Value,
+) -> Result<TaskOutputPlanDraft, CliError> {
+    build_publishing_output_plan(paths, task, workspace, "Reddit publishing", "reddit")
+}
+
 fn build_publishing_output_plan(
     paths: &MyOpenPanelsPaths,
     task: &Value,
@@ -724,6 +746,8 @@ fn build_publishing_output_plan(
                     host == "xiaohongshu.com" || host.ends_with(".xiaohongshu.com")
                 }
                 "wechat_official_account" => host == "mp.weixin.qq.com",
+                "x" => host == "x.com" || host.ends_with(".x.com"),
+                "reddit" => host == "reddit.com" || host.ends_with(".reddit.com"),
                 _ => false,
             };
             if !allowed {

@@ -89,6 +89,12 @@ pub struct PublishingCheckpointRequest {
     pub phase: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WechatDraftRequest {
+    pub task_id: String,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutionContext {
     pub(super) task_id: String,
