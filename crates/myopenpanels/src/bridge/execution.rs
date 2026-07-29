@@ -42,7 +42,9 @@ fn run_task_command(
         || serde_json::to_string_pretty(&execution_task).map_err(to_cli_error),
         |bundle| Ok(bundle.instructions.clone()),
     )?;
-    let mut child = shell_command(command)
+    let mut task_command = shell_command(command);
+    crate::process_environment::remove_ephemeral_host_proxies(&mut task_command);
+    let mut child = task_command
         .current_dir(&execution_workspace)
         .env_remove("MYOPENPANELS_STORAGE_DIR")
         .env("MYOPENPANELS_PROJECT_DIR", &execution_workspace)

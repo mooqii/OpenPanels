@@ -146,3 +146,33 @@
         assert_eq!(result["success"], false);
         assert!(started.elapsed() < Duration::from_secs(2));
     }
+
+    #[test]
+    fn bridge_failure_prefers_the_final_codex_turn_error() {
+        let result = json!({
+            "stdout": concat!(
+                "{\"type\":\"error\",\"message\":\"Reconnecting...\"}\n",
+                "{\"type\":\"turn.failed\",\"error\":{\"message\":\"stream disconnected before completion: Connection refused\"}}\n",
+                "{\"type\":\"error\",\"message\":\"analytics shutdown failed\"}\n"
+            ),
+            "stderr": "earlier model cache warning",
+        });
+
+        assert_eq!(
+            bridge_failure_message(&result),
+            "stream disconnected before completion: Connection refused"
+        );
+    }
+
+    #[test]
+    fn bridge_failure_uses_the_end_of_stderr_without_structured_error() {
+        let result = json!({
+            "stdout": "",
+            "stderr": "early warning\nfatal connection error\n",
+        });
+
+        assert_eq!(
+            bridge_failure_message(&result),
+            "early warning\nfatal connection error"
+        );
+    }

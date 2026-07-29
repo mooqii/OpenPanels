@@ -561,12 +561,7 @@ fn finalize_task_result(
         let message = if result.get("timedOut").and_then(Value::as_bool) == Some(true) {
             "Bridge command timed out.".to_owned()
         } else {
-            result
-                .get("stderr")
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .map(|value| value.trim().chars().take(500).collect())
-                .unwrap_or_else(|| "Bridge command failed.".to_owned())
+            bridge_failure_message(result)
         };
         tasks::fail_task(paths, task_id, lease_token, &message, None)
     };
@@ -600,6 +595,68 @@ fn finalize_task_result(
         }
     }
     Ok(())
+}
+
+fn bridge_failure_message(result: &Value) -> String {
+    if let Some(message) = result
+        .get("stdout")
+        .and_then(Value::as_str)
+        .and_then(final_agent_error)
+    {
+        return message;
+    }
+    result
+        .get("stderr")
+        .and_then(Value::as_str)
+        .and_then(last_non_empty_output)
+        .unwrap_or_else(|| "Bridge command failed.".to_owned())
+}
+
+fn final_agent_error(stdout: &str) -> Option<String> {
+    agent_event_error(stdout, "turn.failed").or_else(|| agent_event_error(stdout, "error"))
+}
+
+fn agent_event_error(stdout: &str, event_type: &str) -> Option<String> {
+    stdout.lines().rev().find_map(|line| {
+        let event = serde_json::from_str::<Value>(line.trim()).ok()?;
+        if event.get("type").and_then(Value::as_str) != Some(event_type) {
+            return None;
+        }
+        let message = if event_type == "turn.failed" {
+            event.pointer("/error/message")
+        } else {
+            event.get("message")
+        };
+        message
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .map(|message| message.chars().take(500).collect())
+    })
+}
+
+fn last_non_empty_output(output: &str) -> Option<String> {
+    let lines = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(8)
+        .collect::<Vec<_>>();
+    (!lines.is_empty()).then(|| {
+        lines
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .rev()
+            .take(500)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect()
+    })
 }
 
 pub fn read_bridge_status(paths: &MyOpenPanelsPaths) -> Result<Value, CliError> {

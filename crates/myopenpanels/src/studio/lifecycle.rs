@@ -931,6 +931,7 @@ fn spawn_detached_current_exe(
     stderr: fs::File,
 ) -> Result<Child, CliError> {
     let mut command = Command::new(std::env::current_exe().map_err(to_cli_error)?);
+    crate::process_environment::remove_ephemeral_host_proxies(&mut command);
     command
         .args(args)
         .stdin(Stdio::null())

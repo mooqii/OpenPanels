@@ -15,6 +15,7 @@ pub mod my_document;
 pub mod operations;
 pub mod panel;
 pub mod paths;
+pub(crate) mod process_environment;
 pub mod publication;
 pub mod release;
 pub mod selection;
