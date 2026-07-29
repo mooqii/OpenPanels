@@ -1,10 +1,4 @@
-import {
-  Button,
-  Dropdown,
-  Label,
-  Separator,
-  Tooltip,
-} from "@heroui/react"
+import { Button, Dropdown, Label, Separator, Tooltip } from "@heroui/react"
 import {
   FileOutput,
   FilePlus2,
@@ -275,11 +269,7 @@ export function MyDocumentActions({
             <Label>{publishLabel}</Label>
           </Dropdown.Item>
           <Separator />
-          <Dropdown.Item
-            id="delete"
-            textValue={t`Delete`}
-            variant="danger"
-          >
+          <Dropdown.Item id="delete" textValue={t`Delete`} variant="danger">
             <Trash2 size={14} />
             <Label>{t`Delete`}</Label>
           </Dropdown.Item>

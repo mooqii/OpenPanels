@@ -226,6 +226,14 @@ fn run_task_command(
             }
         }
     }
+    if let (Some(validation_message), Some(agent_message)) = (
+        validation_error.as_deref(),
+        final_agent_message(&stdout),
+    ) {
+        if !validation_message.contains(&agent_message) {
+            validation_error = Some(format!("{validation_message} Agent: {agent_message}"));
+        }
+    }
     let success = status.success() && !timed_out && !interrupted && validation_error.is_none();
     let runtime_lifecycle = runtime_finalization
         .get("lifecycle")

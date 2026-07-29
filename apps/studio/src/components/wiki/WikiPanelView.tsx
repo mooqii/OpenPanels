@@ -7,13 +7,7 @@ import {
   Surface,
   Tooltip,
 } from "@heroui/react"
-import {
-  ChevronDown,
-  PanelLeft,
-  RefreshCw,
-  RotateCcw,
-  X,
-} from "lucide-react"
+import { ChevronDown, PanelLeft, RefreshCw, RotateCcw, X } from "lucide-react"
 import {
   latestWritingTaskForDocument,
   writingDocumentStatus,
@@ -309,9 +303,7 @@ export function WikiPanelView(
                       <MyDocumentActions
                         document={document}
                         isBusy={isBusy}
-                        isContentLocked={
-                          isContentLocked || conversionFailed
-                        }
+                        isContentLocked={isContentLocked || conversionFailed}
                         isWritingLocked={isWritingLocked}
                         onDelete={() => setPendingDeleteMyDocument(document)}
                         onPublish={() => publishMyDocument(document)}

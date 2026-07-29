@@ -10,8 +10,12 @@ const PROXY_ENVIRONMENT_KEYS: [&str; 6] = [
     "all_proxy",
 ];
 
+pub(crate) fn is_workbuddy_host() -> bool {
+    std::env::var_os("WORKBUDDY_PAC_RPC_SOCKET").is_some()
+}
+
 pub(crate) fn remove_ephemeral_host_proxies(command: &mut Command) {
-    if std::env::var_os("WORKBUDDY_PAC_RPC_SOCKET").is_none() {
+    if !is_workbuddy_host() {
         return;
     }
     for key in PROXY_ENVIRONMENT_KEYS {

@@ -9,11 +9,9 @@ fn codex_smoke_invocation(
         "--ephemeral".to_owned(),
         "--ignore-rules".to_owned(),
         "--skip-git-repo-check".to_owned(),
-        "--sandbox".to_owned(),
-        "workspace-write".to_owned(),
-        "-C".to_owned(),
-        cwd.display().to_string(),
     ];
+    push_codex_sandbox_args(&mut args, crate::process_environment::is_workbuddy_host());
+    args.extend(["-C".to_owned(), cwd.display().to_string()]);
     push_codex_model_args(&mut args, model, reasoning);
     LocalCliInvocation {
         args,
@@ -107,6 +105,20 @@ fn stdin_smoke_invocation(args: Vec<String>) -> LocalCliInvocation {
 }
 
 fn codex_task_command(executable: &str, model: Option<&str>, reasoning: Option<&str>) -> String {
+    codex_task_command_for_host(
+        executable,
+        model,
+        reasoning,
+        crate::process_environment::is_workbuddy_host(),
+    )
+}
+
+fn codex_task_command_for_host(
+    executable: &str,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    workbuddy_host: bool,
+) -> String {
     let mut args = vec![
         shell_quote(executable),
         "exec".to_owned(),
@@ -114,15 +126,27 @@ fn codex_task_command(executable: &str, model: Option<&str>, reasoning: Option<&
         "--ephemeral".to_owned(),
         "--ignore-rules".to_owned(),
         "--skip-git-repo-check".to_owned(),
-        "--sandbox".to_owned(),
-        "workspace-write".to_owned(),
-        "-c".to_owned(),
-        "sandbox_workspace_write.network_access=true".to_owned(),
+    ];
+    push_codex_sandbox_args(&mut args, workbuddy_host);
+    args.extend([
         "-C".to_owned(),
         "\"$MYOPENPANELS_EXECUTION_WORKSPACE\"".to_owned(),
-    ];
+    ]);
     push_codex_model_args(&mut args, clean_optional(model), clean_optional(reasoning));
     args.join(" ")
+}
+
+fn push_codex_sandbox_args(args: &mut Vec<String>, workbuddy_host: bool) {
+    if workbuddy_host {
+        args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+    } else {
+        args.extend([
+            "--sandbox".to_owned(),
+            "workspace-write".to_owned(),
+            "-c".to_owned(),
+            "sandbox_workspace_write.network_access=true".to_owned(),
+        ]);
+    }
 }
 
 fn hermes_task_command(executable: &str, model: Option<&str>, _reasoning: Option<&str>) -> String {

@@ -176,3 +176,16 @@
             "early warning\nfatal connection error"
         );
     }
+
+    #[test]
+    fn reads_the_final_codex_agent_message() {
+        let stdout = concat!(
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"earlier\"}}\n",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"sandbox_apply: Operation not permitted\"}}\n"
+        );
+
+        assert_eq!(
+            final_agent_message(stdout).as_deref(),
+            Some("sandbox_apply: Operation not permitted")
+        );
+    }

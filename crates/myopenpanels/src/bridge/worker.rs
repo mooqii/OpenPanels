@@ -616,6 +616,23 @@ fn final_agent_error(stdout: &str) -> Option<String> {
     agent_event_error(stdout, "turn.failed").or_else(|| agent_event_error(stdout, "error"))
 }
 
+fn final_agent_message(stdout: &str) -> Option<String> {
+    stdout.lines().rev().find_map(|line| {
+        let event = serde_json::from_str::<Value>(line.trim()).ok()?;
+        if event.get("type").and_then(Value::as_str) != Some("item.completed")
+            || event.pointer("/item/type").and_then(Value::as_str) != Some("agent_message")
+        {
+            return None;
+        }
+        event
+            .pointer("/item/text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .map(|message| message.chars().take(500).collect())
+    })
+}
+
 fn agent_event_error(stdout: &str, event_type: &str) -> Option<String> {
     stdout.lines().rev().find_map(|line| {
         let event = serde_json::from_str::<Value>(line.trim()).ok()?;

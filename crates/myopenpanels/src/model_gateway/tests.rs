@@ -29,9 +29,19 @@ mod tests {
 
     #[test]
     fn codex_task_command_allows_the_task_broker_connection() {
-        let command = (definition("codex").unwrap().task_command)("/opt/bin/codex", None, None);
+        let command = codex_task_command_for_host("/opt/bin/codex", None, None, false);
 
         assert!(command.contains("sandbox_workspace_write.network_access=true"));
+        assert!(!command.contains("--dangerously-bypass-approvals-and-sandbox"));
+    }
+
+    #[test]
+    fn codex_task_command_uses_the_external_workbuddy_sandbox() {
+        let command = codex_task_command_for_host("/opt/bin/codex", None, None, true);
+
+        assert!(command.contains("--dangerously-bypass-approvals-and-sandbox"));
+        assert!(!command.contains("--sandbox workspace-write"));
+        assert!(!command.contains("sandbox_workspace_write.network_access=true"));
     }
 
     #[test]
