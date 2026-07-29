@@ -328,3 +328,146 @@ mod publication_title_output_tests {
         )));
     }
 }
+
+#[cfg(test)]
+mod wiki_output_discovery_tests {
+    use super::*;
+
+    fn wiki_task() -> Value {
+        json!({
+            "id": "task:wiki-output",
+            "type": "ingest_markdown_into_wiki",
+            "projectId": "project:wiki-output",
+            "source": {
+                "wikiSpaceId": "wiki:custom"
+            }
+        })
+    }
+
+    fn test_paths(temp: &tempfile::TempDir) -> MyOpenPanelsPaths {
+        let project = temp.path().join("project");
+        let storage = temp.path().join("storage");
+        fs::create_dir_all(&project).expect("project");
+        crate::paths::resolve_myopenpanels_paths(
+            Some(project.to_str().unwrap()),
+            Some(storage.to_str().unwrap()),
+            Some("wiki-output-test"),
+        )
+        .expect("paths")
+    }
+
+    #[test]
+    fn wiki_runtime_discovers_arbitrary_markdown_structure_and_owns_metadata() {
+        let temp = tempfile::tempdir().expect("temp");
+        let paths = test_paths(&temp);
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("outputs/wiki/knowledge/maps")).expect("outputs");
+        fs::write(
+            workspace.join("outputs/wiki/knowledge/maps/start-here.md"),
+            "# Start here\n",
+        )
+        .expect("nested page");
+        fs::write(workspace.join("outputs/wiki/home.md"), "# Home\n").expect("home page");
+        write_test_result(
+            &workspace,
+            &json!({
+                "outcome": "changed",
+                "disposition": "included",
+                "reasonCode": null,
+                "summary": "Custom Wiki structure",
+                "changedPaths": ["stale-agent-value.md"],
+                "artifacts": ["stale-agent-value.md"]
+            }),
+        )
+        .expect("execution result");
+
+        let draft = build_wiki_output_plan(
+            &paths,
+            &wiki_task(),
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .expect("runtime-discovered Wiki outputs");
+
+        assert_eq!(
+            draft.result["changedPaths"],
+            json!(["home.md", "knowledge/maps/start-here.md"])
+        );
+        assert_eq!(
+            draft.result["artifacts"],
+            json!([
+                {
+                    "role": "wiki-page",
+                    "relativePath": "outputs/wiki/home.md",
+                    "logicalPath": "home.md"
+                },
+                {
+                    "role": "wiki-page",
+                    "relativePath": "outputs/wiki/knowledge/maps/start-here.md",
+                    "logicalPath": "knowledge/maps/start-here.md"
+                }
+            ])
+        );
+        assert_eq!(draft.actions.len(), 2);
+    }
+
+    #[test]
+    fn wiki_runtime_rejects_non_markdown_outputs_and_no_change_with_pages() {
+        let temp = tempfile::tempdir().expect("temp");
+        let paths = test_paths(&temp);
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("outputs/wiki/custom")).expect("outputs");
+        fs::write(workspace.join("outputs/wiki/custom/index.json"), "{}").expect("json output");
+        write_test_result(
+            &workspace,
+            &json!({
+                "outcome": "changed",
+                "disposition": "included",
+                "reasonCode": null,
+                "summary": "Invalid non-Markdown output"
+            }),
+        )
+        .expect("execution result");
+
+        let error = build_wiki_output_plan(
+            &paths,
+            &wiki_task(),
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .expect_err("non-Markdown Wiki output must fail");
+        assert_eq!(error.code(), Some("invalid_output"));
+        assert!(error.message().contains("must be Markdown files"));
+
+        fs::remove_file(workspace.join("outputs/wiki/custom/index.json")).expect("remove json");
+        fs::write(workspace.join("outputs/wiki/custom/index.md"), "# Index\n")
+            .expect("Markdown output");
+        write_test_result(
+            &workspace,
+            &json!({
+                "outcome": "no_change",
+                "disposition": "already_covered",
+                "reasonCode": null,
+                "summary": "Contradictory no-change output"
+            }),
+        )
+        .expect("execution result");
+        let error = build_wiki_output_plan(
+            &paths,
+            &wiki_task(),
+            &workspace,
+            "attempt:1",
+            1,
+            &json!({}),
+        )
+        .expect_err("no_change with Markdown pages must fail");
+        assert_eq!(error.code(), Some("invalid_output"));
+        assert!(error
+            .message()
+            .contains("no_change output cannot include changed paths"));
+    }
+}

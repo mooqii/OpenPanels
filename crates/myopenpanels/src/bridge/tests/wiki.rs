@@ -53,9 +53,11 @@
         assert!(prompt.contains("Default Wiki"));
         assert!(!prompt.contains("wiki page create"));
         assert!(prompt.contains("outputs/wiki/<path.md>"));
-        assert!(prompt.contains(r#""role": "wiki-page""#));
-        assert!(prompt.contains(r#""relativePath": "outputs/wiki/index.md""#));
-        assert!(prompt.contains(r#""logicalPath": "index.md""#));
+        assert!(prompt.contains("may define any useful Wiki content model"));
+        assert!(prompt.contains("MUST be a non-empty UTF-8 Markdown document"));
+        assert!(prompt.contains("Runtime discovers Markdown pages"));
+        assert!(prompt.contains("Do not write `changedPaths` or `artifacts`"));
+        assert!(!prompt.contains(r#""role": "wiki-page""#));
         assert!(prompt.contains(&format!(
             "--project-dir {}",
             shell_quote_prompt_arg(&paths.project_dir.display().to_string())
@@ -173,6 +175,9 @@
         assert!(prompt.contains("wiki_page_renamed"));
         assert!(prompt.contains("old/place.md"));
         assert!(prompt.contains("new/place.md"));
+        assert!(prompt.contains("MUST be a non-empty UTF-8 Markdown document"));
+        assert!(prompt.contains("Runtime discovers Markdown pages"));
+        assert!(prompt.contains("For maintenance write exactly `outcome` and `summary`"));
         assert!(!prompt.contains("workflow:noise"));
         assert!(!prompt.contains("wiki:noise"));
         assert!(!prompt.contains("mutationSequence"));

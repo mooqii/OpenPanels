@@ -450,7 +450,7 @@ fn build_wiki_output_plan(
     _execution_generation: i64,
     _execution_unit: &Value,
 ) -> Result<TaskOutputPlanDraft, CliError> {
-    let result = read_execution_result(workspace, "Wiki")?;
+    let mut result = read_execution_result(workspace, "Wiki")?;
     let is_ingestion = task.get("type").and_then(Value::as_str)
         == Some("ingest_markdown_into_wiki");
     validate_result_keys(
@@ -469,38 +469,40 @@ fn build_wiki_output_plan(
         },
         "Wiki",
     )?;
-    let outcome = result.get("outcome").and_then(Value::as_str).unwrap_or("");
-    if !matches!(outcome, "changed" | "no_change") {
+    let outcome = result
+        .get("outcome")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    if !matches!(outcome.as_str(), "changed" | "no_change") {
         return Err(CliError::with_code(
             "invalid_output",
             "Wiki execution result outcome must be changed or no_change.",
         ));
     }
-    let declared_values = result
-        .get("changedPaths")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            CliError::with_code(
-                "invalid_output",
-                "Wiki execution result changedPaths must be an array.",
-            )
-        })?;
-    let mut changed_paths = BTreeSet::new();
-    for value in declared_values {
-        let path = value.as_str().ok_or_else(|| {
-            CliError::with_code(
-                "invalid_output",
-                "Wiki execution result paths must be strings.",
-            )
-        })?;
-        validate_logical_output_path(path, "Wiki page")?;
-        if !path.ends_with(".md") || !changed_paths.insert(path.to_owned()) {
-            return Err(CliError::with_code(
-                "invalid_output",
-                "Wiki changedPaths must contain unique Markdown paths.",
-            ));
-        }
-    }
+    let changed_paths = discover_wiki_output_paths(workspace)?;
+    let canonical_artifacts = changed_paths
+        .iter()
+        .map(|logical_path| {
+            json!({
+                "role": "wiki-page",
+                "relativePath": format!("outputs/wiki/{logical_path}"),
+                "logicalPath": logical_path,
+            })
+        })
+        .collect::<Vec<_>>();
+    let result_object = result.as_object_mut().ok_or_else(|| {
+        CliError::with_code(
+            "invalid_output",
+            "Wiki execution result must be a JSON object.",
+        )
+    })?;
+    result_object.insert(
+        "changedPaths".to_owned(),
+        json!(changed_paths.iter().cloned().collect::<Vec<_>>()),
+    );
+    result_object.insert("artifacts".to_owned(), json!(canonical_artifacts));
+
     let artifacts = read_artifacts(workspace, &result, "Wiki")?;
     if artifacts.len() > crate::content::MAX_WIKI_FILES {
         return Err(CliError::with_code(
@@ -508,7 +510,6 @@ fn build_wiki_output_plan(
             "Wiki execution result declares too many pages.",
         ));
     }
-    let mut artifact_paths = BTreeSet::new();
     let mut artifacts_by_path = BTreeMap::new();
     for artifact in artifacts {
         let logical_path = artifact.logical_path.clone().ok_or_else(|| {
@@ -518,10 +519,7 @@ fn build_wiki_output_plan(
             )
         })?;
         let expected_relative = format!("outputs/wiki/{logical_path}");
-        if artifact.role != "wiki-page"
-            || artifact.relative_path != expected_relative
-            || !artifact_paths.insert(logical_path.clone())
-        {
+        if artifact.role != "wiki-page" || artifact.relative_path != expected_relative {
             return Err(CliError::with_code(
                 "invalid_output",
                 "Wiki artifacts must uniquely mirror outputs/wiki/<logicalPath>.",
@@ -536,11 +534,11 @@ fn build_wiki_output_plan(
         ));
     }
     if outcome == "changed"
-        && (changed_paths.is_empty() || changed_paths != artifact_paths)
+        && changed_paths.is_empty()
     {
         return Err(CliError::with_code(
             "invalid_output",
-            "Wiki changedPaths must exactly match the declared Wiki page artifacts.",
+            "Wiki changed output must contain at least one Markdown page.",
         ));
     }
     if is_ingestion {
@@ -548,7 +546,7 @@ fn build_wiki_output_plan(
             .get("disposition")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let valid_disposition = match outcome {
+        let valid_disposition = match outcome.as_str() {
             "changed" => disposition == "included",
             "no_change" => matches!(disposition, "already_covered" | "excluded"),
             _ => false,
@@ -610,6 +608,85 @@ fn build_wiki_output_plan(
         })
         .collect();
     Ok(TaskOutputPlanDraft { result, actions })
+}
+
+fn discover_wiki_output_paths(workspace: &Path) -> Result<BTreeSet<String>, CliError> {
+    let root = workspace.join("outputs").join("wiki");
+    if !root.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let metadata = fs::symlink_metadata(&root).map_err(to_cli_error)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(CliError::with_code(
+            "invalid_output",
+            "Wiki output root must be a regular directory.",
+        ));
+    }
+
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        paths: &mut BTreeSet<String>,
+    ) -> Result<(), CliError> {
+        for entry in fs::read_dir(directory).map_err(to_cli_error)? {
+            let entry = entry.map_err(to_cli_error)?;
+            let file_type = entry.file_type().map_err(to_cli_error)?;
+            if file_type.is_symlink() {
+                return Err(CliError::with_code(
+                    "invalid_output",
+                    "Wiki output paths cannot contain symlinks.",
+                ));
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                visit(root, &path, paths)?;
+                continue;
+            }
+            if !file_type.is_file() {
+                return Err(CliError::with_code(
+                    "invalid_output",
+                    "Wiki outputs must be regular Markdown files.",
+                ));
+            }
+            let relative = path.strip_prefix(root).map_err(to_cli_error)?;
+            let logical_path = relative
+                .components()
+                .map(|component| {
+                    component.as_os_str().to_str().ok_or_else(|| {
+                        CliError::with_code(
+                            "invalid_output",
+                            "Wiki output paths must be valid UTF-8.",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join("/");
+            validate_logical_output_path(&logical_path, "Wiki page")?;
+            if !logical_path.ends_with(".md") {
+                return Err(CliError::with_code(
+                    "invalid_output",
+                    format!("Wiki outputs must be Markdown files: {logical_path}"),
+                ));
+            }
+            if !paths.insert(logical_path) {
+                return Err(CliError::with_code(
+                    "invalid_output",
+                    "Wiki output paths must be unique.",
+                ));
+            }
+            if paths.len() > crate::content::MAX_WIKI_FILES {
+                return Err(CliError::with_code(
+                    "invalid_output",
+                    "Wiki execution result declares too many pages.",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let mut paths = BTreeSet::new();
+    visit(&root, &root, &mut paths)?;
+    Ok(paths)
 }
 
 fn build_xiaohongshu_publishing_output_plan(
