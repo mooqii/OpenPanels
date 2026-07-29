@@ -53,6 +53,9 @@
         assert!(prompt.contains("Default Wiki"));
         assert!(!prompt.contains("wiki page create"));
         assert!(prompt.contains("outputs/wiki/<path.md>"));
+        assert!(prompt.contains(r#""role": "wiki-page""#));
+        assert!(prompt.contains(r#""relativePath": "outputs/wiki/index.md""#));
+        assert!(prompt.contains(r#""logicalPath": "index.md""#));
         assert!(prompt.contains(&format!(
             "--project-dir {}",
             shell_quote_prompt_arg(&paths.project_dir.display().to_string())
