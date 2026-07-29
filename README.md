@@ -1,150 +1,113 @@
 # MyOpenPanels
 
-MyOpenPanels is a local panel system for shell-capable AI agents. It lets agents
-open interactive panels, insert artifacts, and persist local panel state through
-the `myopenpanels` CLI.
+English | [简体中文](README.zh-CN.md)
 
-## Skills
-
-MyOpenPanels is distributed from the
-[`mooqii/OpenPanels`](https://github.com/mooqii/OpenPanels) repository as a
-portable entry skill:
-`skills/myopenpanels/SKILL.md`.
-
-Paste this into your agent to install the skill:
-
-```text
-Install the MyOpenPanels Agent Skill directly from this GitHub skill URL:
-https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels
-
-Use your agent's skill installer for GitHub skill URLs if one is available.
-Download only that skill directory. Do not clone or inspect the full repository
-unless direct skill-directory installation fails.
-
-After the skill is installed, invoke the MyOpenPanels skill once so it can run
-its setup process, install or verify the `myopenpanels` CLI, and open the
-MyOpenPanels panel.
-```
-
-This gives the agent the exact skill directory URL instead of only a repository
-and path. If your agent only accepts repo/path syntax, use repository
-`mooqii/OpenPanels` with path `skills/myopenpanels`.
-Installing the skill only adds the agent instructions; the first MyOpenPanels
-skill run installs or verifies the native CLI from GitHub Releases, starts the
-MyOpenPanels Studio, and opens the MyOpenPanels panel URL returned by the CLI.
-
-The entry skill keeps itself small and stable. It uses the Rust-native
-`myopenpanels` CLI from GitHub Releases, then asks the CLI for
-`agent bootstrap`, which is the source of truth for wiki, writing, canvas,
-typesetting, publishing, and future panel Procedures. A normal Bootstrap
-contains no Entry Skill update fields. After a CLI
-release changes the Entry Skill requirement, Bootstrap delivers a one-time
-Agent-host update check and keeps it pending until that Agent context
-acknowledges the installed version. The installed CLI remains authoritative for
-current command catalogs and returned actions.
-Protocol v12 keeps the complete Bootstrap envelope under 8192 UTF-8 bytes.
-Procedure Bootstrap returns only its required panel context, Skill references,
-blockers, and Command Catalog v5 descriptors; generic Bootstrap keeps broader
-discovery progressive. Longer
-built-in Agent resources live under `agent-resources/` and are synced into the
-MyOpenPanels data directory at runtime.
-
-## Development
-
-```bash
-pnpm install
-pnpm dev
-```
-
-The MyOpenPanels Studio runs from `apps/studio`. The publishable agent CLI is the
-Rust binary in `crates/myopenpanels`.
-
-The checkout-local `scripts/myopenpanels-dev` wrapper stores development data in
-the repository's ignored `.myopenpanels/` directory. The installed CLI stores
-release data in `~/.myopenpanels/`; this is intentionally a new, empty storage
-location and does not migrate or delete data from the previous platform-specific
-directory. Set `MYOPENPANELS_STORAGE_DIR` explicitly to override either location.
-
-Core ownership is documented in
-[`docs/core-concepts.md`](docs/core-concepts.md). The database, immutable
-content, migration, and local-layout contract for 1.0 is documented in
-[`docs/storage-contract.md`](docs/storage-contract.md).
-The server-side WeChat Official Account draft integration is documented in
-[`docs/wechat-official-account-api.md`](docs/wechat-official-account-api.md).
+MyOpenPanels is a local-first visual workspace for AI agents.
 
 ## Install
 
-Install the Rust-native CLI from GitHub Releases, then verify it:
+Paste the following message into your AI agent:
 
-macOS:
+```text
+Install the MyOpenPanels Agent Skill from:
+https://github.com/mooqii/OpenPanels/tree/main/skills/myopenpanels
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-myopenpanels.sh | sh
+Use your Skill installer to install only this directory. Then invoke
+MyOpenPanels once to finish setup and open Studio.
 ```
 
-Windows PowerShell:
+After installation, simply ask:
 
-```powershell
-iwr https://raw.githubusercontent.com/mooqii/OpenPanels/main/scripts/install-myopenpanels.ps1 -UseB | iex
+```text
+Open MyOpenPanels.
 ```
 
-```bash
-myopenpanels --version
-```
+The first run installs or verifies the native `myopenpanels` CLI, starts the
+local Studio, and opens it for you. MyOpenPanels currently supports macOS and
+Windows.
 
-Check for and install release updates:
+## A Visual Workspace for AI Agents
 
-```bash
-myopenpanels update check
-myopenpanels update install
-```
+AI agents are good at reasoning and generating content, but a chat window is
+not always the best place to organize knowledge, edit visual material, or move
+work toward publication.
 
-`update install` also returns an immediate advisory Agent-host reminder when an
-Agent invoked the update. Studio-initiated updates are covered by a persistent,
-one-time control event delivered on the next Bootstrap; normal Bootstraps do not
-carry the reminder.
+MyOpenPanels gives local, shell-capable AI agents a shared visual workspace.
+You and your agent can work on the same project through persistent panels,
+explicit selections, reusable Skills, and visible task progress. Project
+content stays on your computer, while the native CLI connects the agent to
+Studio.
 
-GitHub Releases are the update source. Release constraints and manifest
-requirements live in [docs/release.md](docs/release.md).
+The current workflow is organized into five panels:
 
-## Use with Shell Agents
+- **Wiki** for persistent, structured knowledge
+- **Writing** for creating and revising documents
+- **Canvas** for visual thinking and image work
+- **Typesetting** for preparing publication-ready content
+- **Publishing** for releasing content to target platforms
 
-MyOpenPanels works in any local agent that can run shell commands. `studio
-start` prepares the current Project without opening a browser. Its
-`data.nextRequiredAction` describes the separate, required open step. Open the
-returned URL unchanged in an in-app Browser only when the host exposes a
-callable URL opener:
+<!-- Screenshot: add an overview of the five-panel Studio here. -->
 
-```bash
-myopenpanels studio start --local-only --project-dir /path/to/project --format json
-```
+## Wiki
 
-Each storage directory owns exactly one Studio process and one user-visible
-Project/Panel focus. Calls from other Agents or working directories reuse that
-same service while retaining their own Agent context for private lifecycle data.
+Wiki turns source material into a structured knowledge space that can grow over
+time. Import files or Markdown as source documents, organize knowledge into
+Wiki spaces, and maintain interlinked Markdown pages instead of repeatedly
+rediscovering the same information.
 
-If the host has no callable opener, or the attempt fails or cannot report
-success, execute the conditional CLI fallback in `actions.required` with the
-same resolved CLI executable. The CLI reports `data.opened: true` only after the
-operating-system launcher succeeds. An open-only request is complete only after
-an opener succeeds. Bootstrap is needed only for subsequent panel work.
+You can select Wiki knowledge or individual documents as context for the agent.
+The original sources remain available alongside the synthesized Wiki, making
+the knowledge base useful for both research and later writing.
 
-Agents can then use project-backed CLI commands:
+<!-- Screenshot: add the Wiki panel here. -->
 
-```bash
-myopenpanels agent bootstrap --procedure <procedure-key> --format json
-myopenpanels agent bootstrap --format json
-```
+## Writing
 
-Use Procedure Bootstrap for a clear indexed intent and generic Bootstrap only
-as fallback. Execute top-level `actions.required` in order, then applicable
-`actions.suggested` entries with the same resolved executable. Business command
-paths remain CLI-owned data and are not hardcoded into the Entry Skill.
+Writing uses selected Wiki knowledge and documents as source context for
+focused writing tasks. It supports creating new documents, revising existing
+ones, and applying one or more Writing Skills for different voices, structures,
+or editorial methods.
 
-## v0.1 Scope
+You can also distill selected example articles into a reusable Writing Skill.
+The result is saved as a persistent document that can continue into the
+Typesetting and Publishing workflow.
 
-- Local operation for generic shell agents
-- Rust CLI/server/storage with a React Studio frontend
-- Multi-panel project workspace with wiki, writing, canvas, typesetting, and publishing panels
-- Image artifacts and editable canvas image shapes
-- Platform-native persistence with checkout-local development isolation
+<!-- Screenshot: add the Writing panel here. -->
+
+## Canvas
+
+Canvas is a persistent visual workspace for arranging ideas, images, text,
+shapes, drawings, and connectors. Use it for diagrams, moodboards,
+brainstorming, visual research, and asset preparation.
+
+The agent can read an explicit selection, insert or generate images, edit a
+selected image, and export selected content. This keeps visual collaboration
+grounded in the objects you choose instead of relying on a vague description of
+the whole board.
+
+<!-- Screenshot: add the Canvas panel here. -->
+
+## Typesetting
+
+Typesetting turns documents into publication projects. Edit rich text, insert
+documents and Canvas assets, manage titles, covers, tags, and media, then switch
+between editing and previewing the final result.
+
+Title, cover, and layout Skills can hand work to an agent while keeping the
+result visible and editable. This makes Typesetting the bridge between a
+finished draft and content that is ready for a specific publishing format.
+
+<!-- Screenshot: add the Typesetting panel here. -->
+
+## Publishing
+
+Publishing takes a prepared publication and releases a captured version through
+a selected Publishing Skill. Each release keeps its own attempts and outcomes,
+so queued, running, completed, uncertain, or failed publishing work remains
+visible.
+
+Publishing Skills can describe platform-specific release workflows. MyOpenPanels
+also includes direct WeChat Official Account draft integration, with local
+credential storage and configuration validation.
+
+<!-- Screenshot: add the Publishing panel here. -->

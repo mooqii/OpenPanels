@@ -4,18 +4,14 @@ import {
   Dropdown,
   Header,
   Label,
-  Separator,
   Surface,
   Tooltip,
 } from "@heroui/react"
 import {
   ChevronDown,
-  FileOutput,
-  MoreHorizontal,
   PanelLeft,
   RefreshCw,
   RotateCcw,
-  Trash2,
   X,
 } from "lucide-react"
 import {
@@ -28,7 +24,11 @@ import {
   WikiTaskStatusIcon,
   type WikiTaskStatusKind,
 } from "./helpers"
-import { MyDocumentItem, MyDocumentsModule } from "./MyDocumentsModule"
+import {
+  MyDocumentActions,
+  MyDocumentItem,
+  MyDocumentsModule,
+} from "./MyDocumentsModule"
 import { myDocumentConversionDisplay } from "./my-document-display"
 import { RawDocumentsModule } from "./RawDocumentsModule"
 import type {
@@ -306,70 +306,16 @@ export function WikiPanelView(
                           </Tooltip.Content>
                         </Tooltip>
                       ) : null}
-                      <Dropdown>
-                        <Button
-                          aria-label={t`Document actions`}
-                          isDisabled={isBusy || isWritingLocked}
-                          isIconOnly
-                          size="sm"
-                          variant="ghost"
-                        >
-                          <MoreHorizontal size={16} />
-                        </Button>
-                        <Dropdown.Popover>
-                          <Dropdown.Menu
-                            disabledKeys={[
-                              ...(isBusy || isWritingLocked
-                                ? ["publish", "delete"]
-                                : []),
-                              ...(isContentLocked || conversionFailed
-                                ? ["publish"]
-                                : []),
-                            ]}
-                            onAction={(key) => {
-                              if (key === "publish") {
-                                publishMyDocument(document).catch((error) => {
-                                  console.error(
-                                    "Failed to publish My Document",
-                                    error
-                                  )
-                                })
-                              } else if (key === "delete") {
-                                setPendingDeleteMyDocument(document)
-                              }
-                            }}
-                          >
-                            {writing ? null : (
-                              <>
-                                <Dropdown.Item
-                                  id="publish"
-                                  textValue={
-                                    document.publishHistory.length
-                                      ? t`Add latest version to raw documents`
-                                      : t`Add to raw documents`
-                                  }
-                                >
-                                  <FileOutput size={14} />
-                                  <Label>
-                                    {document.publishHistory.length
-                                      ? t`Add latest version to raw documents`
-                                      : t`Add to raw documents`}
-                                  </Label>
-                                </Dropdown.Item>
-                                <Separator />
-                              </>
-                            )}
-                            <Dropdown.Item
-                              id="delete"
-                              textValue={t`Delete`}
-                              variant="danger"
-                            >
-                              <Trash2 size={14} />
-                              <Label>{t`Delete`}</Label>
-                            </Dropdown.Item>
-                          </Dropdown.Menu>
-                        </Dropdown.Popover>
-                      </Dropdown>
+                      <MyDocumentActions
+                        document={document}
+                        isBusy={isBusy}
+                        isContentLocked={
+                          isContentLocked || conversionFailed
+                        }
+                        isWritingLocked={isWritingLocked}
+                        onDelete={() => setPendingDeleteMyDocument(document)}
+                        onPublish={() => publishMyDocument(document)}
+                      />
                     </MyDocumentItem>
                   )
                 })}

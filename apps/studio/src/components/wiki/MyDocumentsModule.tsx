@@ -1,5 +1,20 @@
-import { Button, Dropdown, Label, Tooltip } from "@heroui/react"
-import { FilePlus2, FileText, FileUp, Info, Plus } from "lucide-react"
+import {
+  Button,
+  Dropdown,
+  Label,
+  Separator,
+  Tooltip,
+} from "@heroui/react"
+import {
+  FileOutput,
+  FilePlus2,
+  FileText,
+  FileUp,
+  Info,
+  MoreHorizontal,
+  Plus,
+  Trash2,
+} from "lucide-react"
 import type { DragEventHandler, ReactNode, RefObject } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import type { MyDocument, MyOpenPanelsTransport } from "../../types"
@@ -208,4 +223,76 @@ export function MyDocumentItem({
       <div className="op-wiki-list-item__tools">{children}</div>
     </div>
   )
+}
+
+export function MyDocumentActions({
+  document,
+  isBusy,
+  isContentLocked,
+  isWritingLocked,
+  onDelete,
+  onPublish,
+}: {
+  document: MyDocument
+  isBusy: boolean
+  isContentLocked: boolean
+  isWritingLocked: boolean
+  onDelete: () => void
+  onPublish: () => Promise<void>
+}) {
+  const { t } = useMyOpenPanelsI18n()
+  const publishLabel = t(myDocumentPublishActionText(document))
+
+  return (
+    <Dropdown>
+      <Button
+        aria-label={t`Document actions`}
+        isDisabled={isBusy || isWritingLocked}
+        isIconOnly
+        size="sm"
+        variant="ghost"
+      >
+        <MoreHorizontal size={16} />
+      </Button>
+      <Dropdown.Popover>
+        <Dropdown.Menu
+          disabledKeys={[
+            ...(isBusy || isWritingLocked ? ["publish", "delete"] : []),
+            ...(isContentLocked ? ["publish"] : []),
+          ]}
+          onAction={(key) => {
+            if (key === "publish") {
+              onPublish().catch((error) => {
+                console.error("Failed to publish My Document", error)
+              })
+            } else if (key === "delete") {
+              onDelete()
+            }
+          }}
+        >
+          <Dropdown.Item id="publish" textValue={publishLabel}>
+            <FileOutput size={14} />
+            <Label>{publishLabel}</Label>
+          </Dropdown.Item>
+          <Separator />
+          <Dropdown.Item
+            id="delete"
+            textValue={t`Delete`}
+            variant="danger"
+          >
+            <Trash2 size={14} />
+            <Label>{t`Delete`}</Label>
+          </Dropdown.Item>
+        </Dropdown.Menu>
+      </Dropdown.Popover>
+    </Dropdown>
+  )
+}
+
+export function myDocumentPublishActionText(
+  document: Pick<MyDocument, "publishHistory">
+) {
+  return document.publishHistory.length
+    ? "Add latest version to raw documents"
+    : "Add to raw documents"
 }
