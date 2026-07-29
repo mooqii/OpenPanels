@@ -7,6 +7,7 @@ import type { Transformer } from "../../shapes/Transformer"
 import type { ImageShape, Shape } from "../../types/shapes"
 import { captureTransformer } from "../../utils/capture"
 import { exportCroppedImageDataUrl, hasCrop } from "../../utils/crop-image"
+import { downloadUrlAsFile } from "../../utils/download"
 import { CanvasToolbarTooltip as Tooltip } from "./CanvasToolbarTooltip"
 
 interface DownloadItemProps {
@@ -104,14 +105,7 @@ export function DownloadItem({
         name = addFilenameSuffix(name as string, "-cropped")
       }
 
-      // Create download link
-      const link = document.createElement("a")
-      link.target = "_blank"
-      link.download = name as string
-      link.href = url
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
+      downloadUrlAsFile(url, name as string)
     } catch (error) {
       console.error("Failed to export shape:", error)
     }
