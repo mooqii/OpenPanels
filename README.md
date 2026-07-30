@@ -46,7 +46,7 @@ The current workflow is organized into five panels:
 - **Typesetting** for preparing publication-ready content
 - **Publishing** for releasing content to target platforms
 
-<!-- Screenshot: add an overview of the five-panel Studio here. -->
+[![Watch the OpenPanels introduction video](https://img.youtube.com/vi/6I8ZIPALg54/maxresdefault.jpg)](https://www.youtube.com/watch?v=6I8ZIPALg54)
 
 ## Wiki
 
