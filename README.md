@@ -61,7 +61,7 @@ You can select Wiki knowledge or individual documents as context for the agent.
 The original sources remain available alongside the synthesized Wiki, making
 the knowledge base useful for both research and later writing.
 
-<!-- Screenshot: add the Wiki panel here. -->
+![OpenPanels Wiki panel](docs/assets/readme/wiki.png)
 
 ## Writing
 
@@ -74,7 +74,7 @@ You can also distill selected example articles into a reusable Writing Skill.
 The result is saved as a persistent document that can continue into the
 Typesetting and Publishing workflow.
 
-<!-- Screenshot: add the Writing panel here. -->
+![OpenPanels Writing panel](docs/assets/readme/writing.png)
 
 ## Canvas
 
@@ -87,7 +87,7 @@ selected image, and export selected content. This keeps visual collaboration
 grounded in the objects you choose instead of relying on a vague description of
 the whole board.
 
-<!-- Screenshot: add the Canvas panel here. -->
+![OpenPanels Canvas panel](docs/assets/readme/canvas.png)
 
 ## Typesetting
 
@@ -99,7 +99,7 @@ Title, cover, and layout Skills can hand work to an agent while keeping the
 result visible and editable. This makes Typesetting the bridge between a
 finished draft and content that is ready for a specific publishing format.
 
-<!-- Screenshot: add the Typesetting panel here. -->
+![OpenPanels Typesetting panel](docs/assets/readme/typesetting.png)
 
 ## Publishing
 
@@ -112,4 +112,4 @@ Publishing Skills can describe platform-specific release workflows. MyOpenPanels
 also includes direct WeChat Official Account draft integration, with local
 credential storage and configuration validation.
 
-<!-- Screenshot: add the Publishing panel here. -->
+![OpenPanels Publishing panel](docs/assets/readme/publishing.png)

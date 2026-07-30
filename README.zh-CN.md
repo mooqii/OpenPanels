@@ -56,7 +56,7 @@ Markdown，建立不同的 Wiki 空间，并让 Agent 维护相互链接的 Mark
 你可以把整个 Wiki 或指定文档选择为 Agent 的上下文。原始资料与整理后的 Wiki
 会同时保留，既方便研究和追溯，也可以继续用于后续写作。
 
-<!-- 截图：在这里添加 Wiki 面板。 -->
+![OpenPanels Wiki 面板](docs/assets/readme/wiki.png)
 
 ## Writing
 
@@ -67,7 +67,7 @@ Writing 使用选中的 Wiki 知识和文档作为参考资料，完成明确的
 你还可以从选中的示例文章中提炼出可复用的 Writing Skill。完成的内容会保存为
 持久化文档，并可以继续进入 Typesetting 和 Publishing 工作流。
 
-<!-- 截图：在这里添加 Writing 面板。 -->
+![OpenPanels Writing 面板](docs/assets/readme/writing.png)
 
 ## Canvas
 
@@ -77,7 +77,7 @@ Canvas 是一个持久化的可视化空间，可以自由组织想法、图片�
 Agent 可以读取你明确选中的内容，插入或生成图片，编辑选中的图片，并导出选区。
 这样，人和 Agent 的协作会围绕具体对象展开，而不需要依赖对整张画布的模糊描述。
 
-<!-- 截图：在这里添加 Canvas 面板。 -->
+![OpenPanels Canvas 面板](docs/assets/readme/canvas.png)
 
 ## Typesetting
 
@@ -87,7 +87,7 @@ Canvas 素材，管理标题、封面、标签及媒体内容，并在编辑和�
 标题、封面和排版 Skill 可以把具体任务交给 Agent，同时让生成结果始终保持可见、
 可编辑。Typesetting 是成稿与目标平台发布格式之间的连接环节。
 
-<!-- 截图：在这里添加 Typesetting 面板。 -->
+![OpenPanels Typesetting 面板](docs/assets/readme/typesetting.png)
 
 ## Publishing
 
@@ -98,4 +98,4 @@ Publishing 会捕获当前作品的确定版本，并通过选中的 Publishing 
 Publishing Skill 可以描述不同平台的发布流程。MyOpenPanels 目前还提供微信公众号
 草稿的直接 API 集成，并在本地保存凭据和执行配置校验。
 
-<!-- 截图：在这里添加 Publishing 面板。 -->
+![OpenPanels Publishing 面板](docs/assets/readme/publishing.png)
