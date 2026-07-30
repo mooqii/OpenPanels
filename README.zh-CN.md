@@ -43,7 +43,9 @@ Agent 与 Studio。
 - **Typesetting**：将内容整理为可发布的作品
 - **Publishing**：把作品发布到目标平台
 
-<!-- 截图：在这里添加五个面板的 Studio 总览。 -->
+https://github.com/user-attachments/assets/58c3e174-8369-4720-9d64-e1168ec2749b
+
+[在 YouTube 上观看](https://www.youtube.com/watch?v=6I8ZIPALg54)
 
 ## Wiki
 
