@@ -38,3 +38,14 @@ describe("task panel translations", () => {
     )
   })
 })
+
+describe("publication editor translations", () => {
+  it("makes free-form input explicit in the empty editor", () => {
+    expect(
+      translateMyOpenPanelsMessage(
+        "zh-CN",
+        "Write here, or open a document from the library and insert it."
+      )
+    ).toBe("可直接在此输入，也可从左侧文档库插入内容。")
+  })
+})

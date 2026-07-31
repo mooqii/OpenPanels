@@ -46,6 +46,14 @@ export function typesettingContentToPlainText(document: JSONContent): string {
     .trim()
 }
 
+export function typesettingContentImageCount(document: JSONContent): number {
+  let count = document.type === "image" ? 1 : 0
+  for (const child of document.content ?? []) {
+    count += typesettingContentImageCount(child)
+  }
+  return count
+}
+
 function renderNode(node: JSONContent, output: string[]) {
   if (node.type === "text") {
     output.push(node.text ?? "")

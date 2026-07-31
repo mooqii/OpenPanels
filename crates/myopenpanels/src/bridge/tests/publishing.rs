@@ -153,7 +153,11 @@ fn finalize_publishing_result(outcome: &str) -> (Value, Value) {
         } else {
             json!("login_required")
         },
-        "remoteUrl": null,
+        "remoteUrl": if outcome == "published" {
+            json!("https://creator.xiaohongshu.com/new/note-manager")
+        } else {
+            Value::Null
+        },
         "publishedAt": if outcome == "published" {
             json!("2026-07-28T08:00:00Z")
         } else {
@@ -250,4 +254,110 @@ fn observed_published_release_result_is_the_only_successful_task_outcome() {
         panel_state["releases"][0]["attempts"][0]["outcome"],
         "published"
     );
+}
+
+#[test]
+fn published_xiaohongshu_result_requires_remote_url() {
+    let temp = tempfile::tempdir().expect("temp");
+    let project = temp.path().join("project");
+    let storage = temp.path().join("storage");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&project).expect("project");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let paths = crate::paths::resolve_myopenpanels_paths(
+        Some(project.to_str().unwrap()),
+        Some(storage.to_str().unwrap()),
+        Some("xiaohongshu-remote-url-test"),
+    )
+    .expect("paths");
+    let task = json!({
+        "projectId": "project:test",
+        "panelId": "panel:test",
+        "input": {
+            "releaseId": "release:test",
+            "attemptId": "attempt:test"
+        }
+    });
+    let result = json!({
+        "outcome": "published",
+        "summary": "Published successfully.",
+        "artifacts": [],
+        "platform": "xiaohongshu",
+        "releaseId": "release:test",
+        "attemptId": "attempt:test",
+        "reasonCode": null,
+        "remoteUrl": null,
+        "publishedAt": "2026-07-28T08:00:00Z"
+    });
+    std::fs::write(
+        workspace.join(EXECUTION_RESULT_FILE),
+        serde_json::to_vec(&result).expect("result json"),
+    )
+    .expect("execution result");
+
+    let error = build_xiaohongshu_publishing_output_plan(
+        &paths,
+        &task,
+        &workspace,
+        "attempt:test",
+        1,
+        &json!({}),
+    )
+    .expect_err("published Xiaohongshu result without remoteUrl must fail");
+
+    assert_eq!(error.code(), Some("invalid_output"));
+    assert!(error.message().contains("requires a note or Note Management URL"));
+}
+
+#[test]
+fn published_v2ex_result_requires_observed_topic_url() {
+    let temp = tempfile::tempdir().expect("temp");
+    let project = temp.path().join("project");
+    let storage = temp.path().join("storage");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&project).expect("project");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let paths = crate::paths::resolve_myopenpanels_paths(
+        Some(project.to_str().unwrap()),
+        Some(storage.to_str().unwrap()),
+        Some("v2ex-remote-url-test"),
+    )
+    .expect("paths");
+    let task = json!({
+        "projectId": "project:test",
+        "panelId": "panel:test",
+        "input": {
+            "releaseId": "release:test",
+            "attemptId": "attempt:test"
+        }
+    });
+    std::fs::write(
+        workspace.join(EXECUTION_RESULT_FILE),
+        serde_json::to_vec(&json!({
+            "outcome": "published",
+            "summary": "Published successfully.",
+            "artifacts": [],
+            "platform": "v2ex",
+            "releaseId": "release:test",
+            "attemptId": "attempt:test",
+            "reasonCode": null,
+            "remoteUrl": null,
+            "publishedAt": "2026-07-31T08:00:00Z"
+        }))
+        .expect("result json"),
+    )
+    .expect("execution result");
+
+    let error = build_v2ex_publishing_output_plan(
+        &paths,
+        &task,
+        &workspace,
+        "attempt:test",
+        1,
+        &json!({}),
+    )
+    .expect_err("published V2EX result without remoteUrl must fail");
+
+    assert_eq!(error.code(), Some("invalid_output"));
+    assert!(error.message().contains("requires the observed topic URL"));
 }

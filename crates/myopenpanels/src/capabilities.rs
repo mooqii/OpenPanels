@@ -544,7 +544,7 @@ mod tests {
                 .count(),
             7
         );
-        assert_eq!(task_routes().expect("Task routes").count(), 12);
+        assert_eq!(task_routes().expect("Task routes").count(), 14);
         assert_eq!(
             module_key_for_capability("my-document.create").expect("module"),
             Some("my-document")
@@ -566,6 +566,18 @@ mod tests {
         assert_eq!(route.queue, "release");
         assert_eq!(route.capability, "release.xiaohongshu");
         assert_eq!(route.handler_key, "handler.release.xiaohongshu");
+
+        let route = task_route_for_capability("release.execute", "release_bilibili")
+            .expect("Bilibili publishing route");
+        assert_eq!(route.queue, "release");
+        assert_eq!(route.capability, "release.bilibili");
+        assert_eq!(route.handler_key, "handler.release.bilibili");
+
+        let route =
+            task_route_for_capability("release.execute", "release_v2ex").expect("V2EX route");
+        assert_eq!(route.queue, "release");
+        assert_eq!(route.capability, "release.v2ex");
+        assert_eq!(route.handler_key, "handler.release.v2ex");
     }
 
     #[test]

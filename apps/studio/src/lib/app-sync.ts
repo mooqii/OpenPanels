@@ -34,6 +34,27 @@ export interface LiveProjectMergeResult {
   shouldReloadCanvas: boolean
 }
 
+export type LiveProjectChangeAction =
+  | "focus"
+  | "ignore"
+  | "project"
+  | "selection"
+
+export function liveProjectChangeAction(
+  kind?: string
+): LiveProjectChangeAction {
+  switch (kind) {
+    case "focus":
+      return "focus"
+    case "panel_selection":
+      return "selection"
+    case "settings":
+      return "ignore"
+    default:
+      return "project"
+  }
+}
+
 export function mergeActivePanelResponse(
   current: AppState,
   response: ActivePanelResponse

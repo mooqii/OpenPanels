@@ -19,6 +19,7 @@ import {
 import { useEffect, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { apiJson } from "../../lib/api"
+import { STABLE_BACKDROP_VARIANT } from "../../lib/overlay-safety"
 import type { MyOpenPanelsTransport } from "../../types"
 
 export const WECHAT_API_SKILL_ID = "release-wechat-official-account"
@@ -173,7 +174,7 @@ export function WechatApiConfigurationDialog({
     <Modal.Backdrop
       isOpen={isOpen}
       onOpenChange={(open) => !open && onCancel()}
-      variant="blur"
+      variant={STABLE_BACKDROP_VARIANT}
     >
       <Modal.Container placement="center" size="lg">
         <Modal.Dialog className="op-wechat-config">

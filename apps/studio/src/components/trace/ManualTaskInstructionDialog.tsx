@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import type { ManualTaskInstructionsController } from "../../hooks/use-manual-task-instructions"
 import { copyTextToClipboard } from "../../lib/clipboard"
+import { STABLE_BACKDROP_VARIANT } from "../../lib/overlay-safety"
 import type { MyOpenPanelsBuildInfo, TaskExecutionScope } from "../../types"
 import { manualTaskInstruction, taskExecutionScopeKey } from "./trace-utils"
 
@@ -65,7 +66,7 @@ export function ManualTaskInstructionDialog({
     <Modal.Backdrop
       isOpen
       onOpenChange={(isOpen) => !isOpen && onClose()}
-      variant="blur"
+      variant={STABLE_BACKDROP_VARIANT}
     >
       <Modal.Container size="md">
         <Modal.Dialog className="op-manual-task-dialog">

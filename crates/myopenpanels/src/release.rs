@@ -12,6 +12,7 @@ include!("release/task_lifecycle.rs");
 include!("release/wechat_api.rs");
 include!("release/wechat_format.rs");
 include!("release/wechat_configuration.rs");
+include!("release/v2ex.rs");
 
 pub const DEFAULT_XIAOHONGSHU_SKILL_ID: &str = "release-xiaohongshu";
 pub const XIAOHONGSHU_TASK_TYPE: &str = "release_xiaohongshu";
@@ -38,7 +39,12 @@ const WECHAT_OFFICIAL_ACCOUNT_TARGET: PublishingTarget = PublishingTarget {
 pub fn is_publishing_task_type(task_type: &str) -> bool {
     matches!(
         task_type,
-        XIAOHONGSHU_TASK_TYPE | WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE | X_TASK_TYPE | REDDIT_TASK_TYPE
+        XIAOHONGSHU_TASK_TYPE
+            | BILIBILI_TASK_TYPE
+            | WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE
+            | X_TASK_TYPE
+            | REDDIT_TASK_TYPE
+            | V2EX_TASK_TYPE
     )
 }
 
@@ -52,37 +58,22 @@ pub fn publishing_task_capability(task_type: &str) -> Result<&'static str, CliEr
 fn publishing_target_for_skill(
     skill: &crate::agent::AgentSkillListing,
 ) -> Result<PublishingTarget, CliError> {
-    if skill
-        .skill
-        .task_types
-        .iter()
-        .any(|value| value == X_TASK_TYPE)
-    {
-        return Ok(X_TARGET);
-    }
-    if skill
-        .skill
-        .task_types
-        .iter()
-        .any(|value| value == REDDIT_TASK_TYPE)
-    {
-        return Ok(REDDIT_TARGET);
-    }
-    if skill
-        .skill
-        .task_types
-        .iter()
-        .any(|value| value == WECHAT_OFFICIAL_ACCOUNT_TASK_TYPE)
-    {
-        return Ok(WECHAT_OFFICIAL_ACCOUNT_TARGET);
-    }
-    if skill
-        .skill
-        .task_types
-        .iter()
-        .any(|value| value == XIAOHONGSHU_TASK_TYPE)
-    {
-        return Ok(XIAOHONGSHU_TARGET);
+    for target in [
+        BILIBILI_TARGET,
+        X_TARGET,
+        REDDIT_TARGET,
+        V2EX_TARGET,
+        WECHAT_OFFICIAL_ACCOUNT_TARGET,
+        XIAOHONGSHU_TARGET,
+    ] {
+        if skill
+            .skill
+            .task_types
+            .iter()
+            .any(|value| value == target.task_type)
+        {
+            return Ok(target);
+        }
     }
     Err(CliError::with_code(
         "publishing_skill_not_supported",
@@ -159,7 +150,7 @@ fn validate_release(release: &Value) -> bool {
     release.get("id").is_some_and(Value::is_string)
         && matches!(
             release.get("platform").and_then(Value::as_str),
-            Some("xiaohongshu" | "wechat_official_account" | "x" | "reddit")
+            Some("xiaohongshu" | "bilibili" | "wechat_official_account" | "x" | "reddit" | "v2ex")
         )
         && release
             .get("sourcePublicationId")
@@ -175,6 +166,30 @@ fn validate_release(release: &Value) -> bool {
                 .is_some_and(|items| items.iter().all(Value::is_string))
         })
         && publishing_source_has_content(body_text, media.len())
+        && release
+            .get("platform")
+            .and_then(Value::as_str)
+            .is_none_or(|platform| {
+                if platform != "v2ex" {
+                    return true;
+                }
+                !release
+                    .pointer("/snapshot/title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+                    && !body_text.trim().is_empty()
+                    && media.is_empty()
+                    && release
+                        .pointer("/snapshot/destination/nodeName")
+                        .and_then(Value::as_str)
+                        .is_some_and(valid_v2ex_node_name)
+                    && release
+                        .pointer("/snapshot/destination/nodeTitle")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty())
+            })
         && media.iter().enumerate().all(|(index, item)| {
             item.get("assetRef").is_some_and(Value::is_string)
                 && item.get("fileName").is_some_and(Value::is_string)
@@ -257,6 +272,8 @@ pub fn create_release(
     publication_id: &str,
     skill_id: &str,
     request_id: &str,
+    destination_node_name: Option<&str>,
+    destination_node_title: Option<&str>,
 ) -> Result<Value, CliError> {
     if publication_id.trim().is_empty() || request_id.trim().is_empty() {
         return Err(CliError::with_code(
@@ -298,11 +315,25 @@ pub fn create_release(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let destination =
+        publishing_destination(target, destination_node_name, destination_node_title)?;
     let covers = publication
         .get("covers")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    if target.platform == "v2ex" && title.trim().is_empty() {
+        return Err(CliError::with_code(
+            "v2ex_title_missing",
+            "A V2EX topic requires a title.",
+        ));
+    }
+    if target.platform == "v2ex" && body_text.trim().is_empty() {
+        return Err(CliError::with_code(
+            "v2ex_body_missing",
+            "A V2EX topic requires text after article images are removed.",
+        ));
+    }
     if !publishing_source_has_content(&body_text, covers.len()) {
         return Err(CliError::with_code(
             "publishing_source_incomplete",
@@ -312,13 +343,17 @@ pub fn create_release(
 
     let release_id = crate::ids::random_id("release");
     (|| {
-        let media = snapshot_media(
-            &storage,
-            &bootstrap.project.id,
-            &bootstrap.panel.id,
-            &release_id,
-            &covers,
-        )?;
+        let media = if target.platform == "v2ex" {
+            Vec::new()
+        } else {
+            snapshot_media(
+                &storage,
+                &bootstrap.project.id,
+                &bootstrap.panel.id,
+                &release_id,
+                &covers,
+            )?
+        };
         let now = now_iso();
         let mut release = json!({
             "id": release_id,
@@ -330,6 +365,7 @@ pub fn create_release(
                 "bodyText": body_text,
                 "tags": tags,
                 "media": media,
+                "destination": destination,
             },
             "attempts": [],
             "createdAt": now,
@@ -1157,6 +1193,50 @@ mod tests {
         assert!(validate_release(&release("Body", json!([]))));
         assert!(validate_release(&release("", image)));
         assert!(!validate_release(&release("", json!([]))));
+    }
+
+    #[test]
+    fn v2ex_release_requires_text_destination_and_no_media() {
+        let release = |body: &str, media: Value, destination: Value| {
+            json!({
+                "id": "release:v2ex",
+                "platform": "v2ex",
+                "sourcePublicationId": "publication:1",
+                "snapshot": {
+                    "title": "Title",
+                    "bodyText": body,
+                    "destination": destination,
+                    "media": media
+                },
+                "attempts": []
+            })
+        };
+        let destination = json!({
+            "kind": "v2ex_node",
+            "nodeName": "create",
+            "nodeTitle": "分享创造"
+        });
+        assert!(validate_release(&release(
+            "Text after images are removed",
+            json!([]),
+            destination.clone()
+        )));
+        assert!(!validate_release(&release(
+            "",
+            json!([]),
+            destination.clone()
+        )));
+        assert!(!validate_release(&release(
+            "Body",
+            json!([{
+                "assetRef": "asset:cover",
+                "fileName": "cover.png",
+                "src": "/cover.png",
+                "isPrimary": true
+            }]),
+            destination
+        )));
+        assert!(!validate_release(&release("Body", json!([]), Value::Null)));
     }
 
     #[test]

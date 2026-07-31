@@ -9,6 +9,7 @@ import {
   publishingAttemptIsActive,
   publishingPublicationSummary,
   publishingSourceHasContent,
+  typesettingContentImageCount,
   typesettingContentToPlainText,
 } from "../../lib/publishing"
 import {
@@ -37,6 +38,11 @@ import { ConfirmDialog } from "../wiki/Dialogs"
 import { PublicationPreview } from "./PublicationPreview"
 import { PublishingAttemptRow } from "./PublishingAttemptRow"
 import {
+  V2EX_SKILL_ID,
+  type V2exNode,
+  V2exNodeSelectionDialog,
+} from "./V2exNodeSelectionDialog"
+import {
   loadWechatConfiguration,
   WECHAT_API_SKILL_ID,
   WechatApiConfigurationDialog,
@@ -52,7 +58,12 @@ interface PublishingResponse {
 }
 
 type PendingAction =
-  | { kind: "release"; skillId: string; skillName: string }
+  | {
+      destination?: V2exNode
+      kind: "release"
+      skillId: string
+      skillName: string
+    }
   | {
       acknowledgedUnknown: boolean
       kind: "attempt"
@@ -68,6 +79,7 @@ export function PublishingPanel({
   onManageSkillModule,
   onOpenAgentTasks,
   onOpenManualTask,
+  onOpenManualTaskWhenCliUnavailable,
   onStateSaved,
   panelId,
   projectId,
@@ -81,6 +93,7 @@ export function PublishingPanel({
   onManageSkillModule: (moduleKind: string) => void
   onOpenAgentTasks: (taskIds: string[]) => void
   onOpenManualTask: (scope: TaskExecutionScope) => void
+  onOpenManualTaskWhenCliUnavailable: (scope: TaskExecutionScope) => void
   onStateSaved: (
     state: PublishingState,
     revision: number,
@@ -107,6 +120,11 @@ export function PublishingPanel({
   const [pendingDelete, setPendingDelete] =
     useState<TypesettingPublication | null>(null)
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
+  const [pendingV2exAction, setPendingV2exAction] = useState<Extract<
+    PendingAction,
+    { kind: "release" }
+  > | null>(null)
+  const [lastV2exNode, setLastV2exNode] = useState<V2exNode | null>(null)
   const [wechatConfiguration, setWechatConfiguration] =
     useState<WechatConfigurationStatus | null>(null)
   const [wechatConfigurationOpen, setWechatConfigurationOpen] = useState(false)
@@ -309,6 +327,13 @@ export function PublishingPanel({
     selectedPublication &&
       publishingSourceHasContent(bodyText, selectedPublication.covers.length)
   )
+  const v2exSourceComplete = Boolean(
+    selectedPublication?.title.trim() && bodyText.trim()
+  )
+  const v2exFilteredImageCount = selectedPublication
+    ? selectedPublication.covers.length +
+      typesettingContentImageCount(selectedPublication.content)
+    : 0
   const skillRows = [
     {
       description: t`Built-in direct API submission`,
@@ -367,6 +392,8 @@ export function PublishingPanel({
                   taskById.get(attempt.taskId ?? "")
                 )
               )
+              const skillSourceComplete =
+                skill.id === V2EX_SKILL_ID ? v2exSourceComplete : sourceComplete
               return (
                 <section className="op-publishing-skill-status" key={skill.id}>
                   <div className="op-publishing-skill-status__header">
@@ -399,7 +426,9 @@ export function PublishingPanel({
                         ) : null}
                         <Button
                           isDisabled={
-                            !sourceComplete || hasActiveAttempt || isSubmitting
+                            !skillSourceComplete ||
+                            hasActiveAttempt ||
+                            isSubmitting
                           }
                           isPending={
                             submittingSkillId === skill.id ||
@@ -524,6 +553,12 @@ export function PublishingPanel({
               "/api/releases",
               {
                 body: JSON.stringify({
+                  destination: action.destination
+                    ? {
+                        nodeName: action.destination.name,
+                        nodeTitle: action.destination.title,
+                      }
+                    : undefined,
                   publicationId: selectedPublication.id,
                   requestId: randomId("publishing-request"),
                   skillId: action.skillId,
@@ -560,6 +595,10 @@ export function PublishingPanel({
   }
 
   async function beginRelease(action: PendingAction) {
+    if (action.kind === "release" && action.skillId === V2EX_SKILL_ID) {
+      setPendingV2exAction(action)
+      return
+    }
     if (action.skillId !== WECHAT_API_SKILL_ID) {
       await executeAction(action)
       return
@@ -727,6 +766,7 @@ export function PublishingPanel({
                   onManageSkillModule={onManageSkillModule}
                   onOpenAgentTasks={onOpenAgentTasks}
                   onOpenLibrary={() => setIsSourceListOpen(true)}
+                  onOpenManualTask={onOpenManualTaskWhenCliUnavailable}
                   onPreview={() => setView("preview")}
                   onRetrySave={() =>
                     flushTypesettingSave().catch(() => undefined)
@@ -822,6 +862,19 @@ export function PublishingPanel({
           } else if (action) {
             executeAction(action)
           }
+        }}
+        transport={transport}
+      />
+      <V2exNodeSelectionDialog
+        imageCount={v2exFilteredImageCount}
+        initialNode={lastV2exNode}
+        isOpen={Boolean(pendingV2exAction)}
+        onCancel={() => setPendingV2exAction(null)}
+        onConfirm={(node) => {
+          const action = pendingV2exAction
+          setLastV2exNode(node)
+          setPendingV2exAction(null)
+          if (action) executeAction({ ...action, destination: node })
         }}
         transport={transport}
       />

@@ -321,6 +321,7 @@ fn build_router(
             "/api/releases/{release_id}/attempts",
             post(api_publishing_create_attempt),
         )
+        .route("/api/publishing/v2ex/nodes", get(api_v2ex_nodes))
         .route(
             "/api/writing/selection",
             get(api_writing_selection).put(api_writing_set_selection),

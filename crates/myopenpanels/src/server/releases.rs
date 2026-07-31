@@ -8,9 +8,17 @@ struct PublishingPreferencesBody {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PublishingReleaseBody {
+    destination: Option<PublishingDestinationBody>,
     publication_id: String,
     skill_id: String,
     request_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishingDestinationBody {
+    node_name: String,
+    node_title: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +113,17 @@ async fn api_releases(State(state): State<Arc<AppState>>) -> Response {
     match result {
         Ok(payload) => json_response(StatusCode::OK, &payload),
         Err(error) => json_cli_error(&error),
+    }
+}
+
+async fn api_v2ex_nodes(State(_state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !trusted_studio_origin(&headers) {
+        return json_error(StatusCode::FORBIDDEN, "Untrusted Studio origin.");
+    }
+    match tokio::task::spawn_blocking(crate::release::v2ex_nodes).await {
+        Ok(Ok(payload)) => json_response(StatusCode::OK, &payload),
+        Ok(Err(error)) => json_cli_error(&error),
+        Err(error) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     }
 }
 
@@ -221,6 +240,12 @@ async fn api_publishing_create_release(
         &body.publication_id,
         &body.skill_id,
         &body.request_id,
+        body.destination
+            .as_ref()
+            .map(|destination| destination.node_name.as_str()),
+        body.destination
+            .as_ref()
+            .map(|destination| destination.node_title.as_str()),
     ) {
         Ok(payload) => json_response(StatusCode::CREATED, &payload),
         Err(error) => json_cli_error(&error),

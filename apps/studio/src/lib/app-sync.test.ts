@@ -17,9 +17,22 @@ import type {
 } from "../types"
 import {
   canvasAssetStoreKey,
+  liveProjectChangeAction,
   mergeLiveProjectBootstrap,
   sameSelectedShapeIds,
 } from "./app-sync"
+
+describe("liveProjectChangeAction", () => {
+  it("ignores global settings changes instead of rebuilding the project view", () => {
+    expect(liveProjectChangeAction("settings")).toBe("ignore")
+  })
+
+  it("routes project, focus, and selection changes to their sync paths", () => {
+    expect(liveProjectChangeAction("panel_selection")).toBe("selection")
+    expect(liveProjectChangeAction("focus")).toBe("focus")
+    expect(liveProjectChangeAction("tasks")).toBe("project")
+  })
+})
 
 describe("mergeLiveProjectBootstrap", () => {
   it("keeps the local canvas snapshot for selection-only storage events", () => {

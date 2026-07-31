@@ -33,6 +33,7 @@ import {
 import type {
   MyOpenPanelsTransport,
   ProjectTask,
+  TaskExecutionScope,
   TypesettingCanvasAsset,
   TypesettingPublication,
   TypesettingPublicationImage,
@@ -62,6 +63,7 @@ export function PublicationDetail({
   onInsertHandlerChange,
   onManageSkillModule,
   onOpenAgentTasks,
+  onOpenManualTask,
   onOpenLibrary,
   onPreview,
   onRetrySave,
@@ -87,6 +89,7 @@ export function PublicationDetail({
   ) => void
   onManageSkillModule: (moduleKind: string) => void
   onOpenAgentTasks: (taskIds: string[]) => void
+  onOpenManualTask: (scope: TaskExecutionScope) => void
   onOpenLibrary?: () => void
   onPreview: () => void
   onRetrySave: () => void
@@ -525,6 +528,7 @@ export function PublicationDetail({
             task,
             ...current.filter((candidate) => candidate.id !== task.id),
           ])
+          onOpenManualTask({ kind: "exact-task", taskId: task.id })
         }}
         publication={publication}
         transport={transport}
@@ -540,6 +544,7 @@ export function PublicationDetail({
             task,
             ...current.filter((candidate) => candidate.id !== task.id),
           ])
+          onOpenManualTask({ kind: "exact-task", taskId: task.id })
         }}
         publication={publication}
         transport={transport}
@@ -555,6 +560,7 @@ export function PublicationDetail({
             task,
             ...current.filter((candidate) => candidate.id !== task.id),
           ])
+          onOpenManualTask({ kind: "exact-task", taskId: task.id })
         }}
         publication={publication}
         transport={transport}

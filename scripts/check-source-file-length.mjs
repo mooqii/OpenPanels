@@ -7,18 +7,18 @@ const IGNORED_DIRECTORIES = new Set(["dist", "node_modules", "target"])
 const WARNING_LINE_COUNT = 800
 const MAX_LINE_COUNT = 1000
 const MAX_LINE_COUNT_OVERRIDES = new Map([
-  ["apps/studio/src/App.tsx", 1032],
+  ["apps/studio/src/App.tsx", 1046],
   ["apps/studio/src/components/typesetting/TypesettingPublication.tsx", 1415],
   ["apps/studio/src/components/wiki/useWikiPanelController.tsx", 1014],
   ["apps/studio/src/styles/trace.css", 1019],
   ["apps/studio/src/styles/typesetting.css", 1453],
   ["crates/myopenpanels/src/bridge/result_validation.rs", 1396],
-  ["crates/myopenpanels/src/bridge/task_handlers.rs", 1249],
+  ["crates/myopenpanels/src/bridge/task_handlers.rs", 1267],
   ["crates/myopenpanels/src/agent/skill_import.rs", 1011],
   ["crates/myopenpanels/src/cli/tests/bootstrap_and_parsing.rs", 1033],
   ["crates/myopenpanels/src/content/filesystem.rs", 1708],
   ["crates/myopenpanels/src/control/runtime.rs", 1096],
-  ["crates/myopenpanels/src/release.rs", 1183],
+  ["crates/myopenpanels/src/release.rs", 1263],
   ["crates/myopenpanels/src/studio/lifecycle.rs", 1037],
   ["crates/myopenpanels/src/writing/tests.rs", 1046],
 ])

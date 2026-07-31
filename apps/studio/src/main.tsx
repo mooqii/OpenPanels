@@ -9,6 +9,7 @@ import {
   MyOpenPanelsThemeProvider,
   useMyOpenPanelsI18n,
 } from "./canvas"
+import { AppErrorBoundary } from "./components/AppStatus"
 import { apiFetch } from "./lib/api"
 import { appToastQueue } from "./lib/app-toast"
 import { transportKey, useMyOpenPanelsTransport } from "./lib/transport"
@@ -71,7 +72,9 @@ createRoot(document.getElementById("root")!).render(
     <MyOpenPanelsI18nProvider>
       <MyOpenPanelsThemeProvider>
         <Toast.Provider placement="top end" queue={appToastQueue} />
-        <AppBootstrap />
+        <AppErrorBoundary>
+          <AppBootstrap />
+        </AppErrorBoundary>
       </MyOpenPanelsThemeProvider>
     </MyOpenPanelsI18nProvider>
   </StrictMode>

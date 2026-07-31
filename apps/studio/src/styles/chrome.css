@@ -303,8 +303,7 @@
   display: grid;
   place-items: center;
   padding: 18px;
-  background: color-mix(in oklab, var(--op-bg-base) 62%, transparent);
-  backdrop-filter: blur(8px);
+  background: color-mix(in oklab, var(--op-bg-base) 92%, transparent);
 }
 
 .op-update-overlay__panel {

@@ -2,7 +2,7 @@ import { createRef } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it } from "vitest"
 import { createTypesettingPublication } from "../../lib/typesetting"
-import type { MyDocument } from "../../types"
+import type { MyDocument, TypesettingPublicationImage } from "../../types"
 import { TypesettingLibrary } from "./TypesettingLibrary"
 
 const document: MyDocument = {
@@ -21,7 +21,24 @@ const document: MyDocument = {
   wordCount: 12,
 }
 
-function renderLibrary(activePublicationId: string | null) {
+function cover(
+  fileName: string,
+  mimeType: string,
+  src: string
+): TypesettingPublicationImage {
+  return {
+    assetRef: `assets/${fileName}`,
+    fileName,
+    mimeType,
+    source: { kind: "upload" },
+    src,
+  }
+}
+
+function renderLibrary(
+  activePublicationId: string | null,
+  covers: TypesettingPublicationImage[] = []
+) {
   const publication = createTypesettingPublication(
     "publication:article",
     "2026-07-23T00:00:00Z"
@@ -50,7 +67,7 @@ function renderLibrary(activePublicationId: string | null) {
       onOpenMyDocumentOriginal={() => undefined}
       onOpenPublication={() => undefined}
       projectId="project:test"
-      publications={[publication]}
+      publications={[{ ...publication, covers }]}
       transport={{ apiBase: "http://127.0.0.1:43217", kind: "http" }}
     />
   )
@@ -77,5 +94,30 @@ describe("TypesettingLibrary My Documents actions", () => {
     expect(markup).not.toContain(
       'aria-label="Generate publication content from this document"'
     )
+  })
+})
+
+describe("TypesettingLibrary publication thumbnails", () => {
+  it("shows the empty-cover icon instead of loading a video as an image", () => {
+    const markup = renderLibrary(null, [
+      cover("cover.mp4", "video/mp4", "/api/assets/video/content"),
+    ])
+
+    expect(markup).not.toContain("/api/assets/video/content")
+    expect(markup).not.toContain("<img")
+  })
+
+  it("uses the first image cover even when videos appear before it", () => {
+    const markup = renderLibrary(null, [
+      cover("cover.mp4", "video/mp4", "/api/assets/video/content"),
+      cover("cover.png", "image/png", "/api/assets/image/content"),
+      cover("later.jpg", "image/jpeg", "/api/assets/later/content"),
+    ])
+
+    expect(markup).toContain(
+      'src="http://127.0.0.1:43217/api/assets/image/content"'
+    )
+    expect(markup).not.toContain("/api/assets/video/content")
+    expect(markup).not.toContain("/api/assets/later/content")
   })
 })

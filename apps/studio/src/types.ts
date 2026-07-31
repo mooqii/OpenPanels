@@ -374,9 +374,20 @@ export interface PublishingRelease {
   attempts: PublishingAttempt[]
   createdAt: string
   id: string
-  platform: "wechat_official_account" | "xiaohongshu"
+  platform:
+    | "bilibili"
+    | "reddit"
+    | "v2ex"
+    | "wechat_official_account"
+    | "x"
+    | "xiaohongshu"
   snapshot: {
     bodyText: string
+    destination?: {
+      kind: "v2ex_node"
+      nodeName: string
+      nodeTitle: string
+    } | null
     media: PublishingMediaSnapshot[]
     tags?: string[]
     title: string

@@ -170,12 +170,31 @@
       "tokens": "short"
     },
     {
+      "packageDir": "release-bilibili",
+      "id": "release-bilibili",
+      "name": "Bilibili Draft (Browser)",
+      "localizations": {
+        "zh-CN": {
+          "name": "哔哩哔哩草稿（浏览器）",
+          "loadWhen": ["当前发布请求需要把哔哩哔哩视频稿件保存到草稿箱。"]
+        }
+      },
+      "source": "builtin",
+      "appliesTo": ["publishing"],
+      "taskTypes": ["release_bilibili"],
+      "requiresCommands": [],
+      "loadWhen": [
+        "The publishing request saves a Bilibili video submission to the draft box."
+      ],
+      "tokens": "short"
+    },
+    {
       "packageDir": "release-wechat-official-account",
       "id": "release-wechat-official-account",
       "name": "WeChat Official Account (API)",
       "localizations": {
         "zh-CN": {
-          "name": "公众号（API）",
+          "name": "公众号草稿（API）",
           "loadWhen": ["当前发布请求面向微信公众号草稿。"]
         }
       },
@@ -220,6 +239,25 @@
       "taskTypes": ["release_reddit"],
       "requiresCommands": [],
       "loadWhen": ["The publishing request targets a Reddit community post."],
+      "tokens": "short"
+    },
+    {
+      "packageDir": "release-v2ex",
+      "id": "release-v2ex",
+      "name": "V2EX (Browser)",
+      "localizations": {
+        "zh-CN": {
+          "name": "V2EX（浏览器）",
+          "loadWhen": ["当前发布请求面向指定 V2EX 节点的主题。"]
+        }
+      },
+      "source": "builtin",
+      "appliesTo": ["publishing"],
+      "taskTypes": ["release_v2ex"],
+      "requiresCommands": [],
+      "loadWhen": [
+        "The publishing request targets a topic in a selected V2EX node."
+      ],
       "tokens": "short"
     }
   ]

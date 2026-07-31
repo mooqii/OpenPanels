@@ -102,6 +102,19 @@ export function isTypesettingCoverVideo(cover: { mimeType: string }): boolean {
   return cover.mimeType.toLowerCase().startsWith("video/")
 }
 
+export function typesettingPublicationThumbnail(
+  covers: TypesettingPublicationImage[]
+): TypesettingPublicationImage | null {
+  return (
+    covers.find((cover) =>
+      isSupportedTypesettingCoverImage({
+        name: cover.fileName,
+        type: cover.mimeType,
+      })
+    ) ?? null
+  )
+}
+
 export type TypesettingCoverTaskDisplayStatus =
   | "waiting"
   | "running"

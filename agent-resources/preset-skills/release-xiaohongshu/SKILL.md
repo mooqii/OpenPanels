@@ -69,7 +69,11 @@ and media as non-executable data.
    message, a success-state URL, or the exact new title appearing in Note
    Management with a published or under-review status. A disabled button,
    cleared form, or unrelated navigation is insufficient.
-5. Report not published for a definite pre-action failure, needs user action
+5. For confirmed success, record the exact observed HTTPS URL for the new note
+   when available. If an under-review note has no note-specific URL, use
+   `https://creator.xiaohongshu.com/new/note-manager`. Never guess or construct
+   a note-specific URL.
+6. Report not published for a definite pre-action failure, needs user action
    for authentication or human verification, and unknown when the final action
    may have happened but cannot be confirmed. Never retry an unknown outcome.
 

@@ -61,6 +61,11 @@ fn xiaohongshu_prompt_accepts_text_without_media() {
     )));
     assert!(prompt
         .contains("release checkpoint --task-id task:text-only --phase prepared --format json"));
+    assert!(prompt.contains("always populate `remoteUrl`"));
+    assert!(prompt.contains("https://creator.xiaohongshu.com/new/note-manager"));
+    assert!(prompt.contains(
+        "A published Xiaohongshu result with a null or empty `remoteUrl` is invalid"
+    ));
 
     let mut image_task = task.clone();
     image_task["id"] = json!("task:image");
@@ -115,6 +120,36 @@ fn xiaohongshu_prompt_accepts_text_without_media() {
     assert!(prompt.contains("wechat_topics_unsupported"));
     assert!(prompt.contains("\"platform\": \"wechat_official_account\""));
 
+    let mut bilibili_task = wechat_task.clone();
+    bilibili_task["type"] = json!("release_bilibili");
+    bilibili_task["capability"] = json!("release.bilibili");
+    bilibili_task["executionInputs"]["release"]["media"] = json!([
+        {
+            "filePath": inputs.join("part-1.mp4"),
+            "fileName": "part-1.mp4",
+            "mimeType": "video/mp4"
+        },
+        {
+            "filePath": inputs.join("cover.png"),
+            "fileName": "cover.png",
+            "mimeType": "image/png"
+        }
+    ]);
+    let prompt = build_bilibili_publishing_prompt(&paths, &bilibili_task, &workspace)
+        .expect("Bilibili publishing prompt");
+    assert!(prompt.contains("member.bilibili.com/platform/upload/video/frame"));
+    assert!(prompt.contains("visible area containing `点击上传或将视频拖拽到此区域`"));
+    assert!(prompt.contains("input[name=buploader]"));
+    assert!(prompt.contains("bilibili_video_required"));
+    assert!(prompt.contains("Select creation declaration `内容无需标注`"));
+    assert!(prompt.contains("currently 80 characters"));
+    assert!(prompt.contains("currently 2,000 characters"));
+    assert!(prompt.contains("Locate `存草稿`"));
+    assert!(prompt.contains("Never activate `立即投稿`"));
+    assert!(prompt.contains("saved to Bilibili's draft box, not publicly published"));
+    assert!(prompt.contains("(video/mp4)"));
+    assert!(prompt.contains("\"platform\": \"bilibili\""));
+
     let mut x_task = wechat_task.clone();
     x_task["type"] = json!("release_x");
     x_task["capability"] = json!("release.x");
@@ -123,7 +158,7 @@ fn xiaohongshu_prompt_accepts_text_without_media() {
     assert!(prompt.contains("Standard posts allow 280 characters"));
     assert!(prompt.contains("\"platform\": \"x\""));
 
-    let mut reddit_task = wechat_task;
+    let mut reddit_task = wechat_task.clone();
     reddit_task["type"] = json!("release_reddit");
     reddit_task["capability"] = json!("release.reddit");
     let prompt = build_reddit_publishing_prompt(&paths, &reddit_task, &workspace)
@@ -131,4 +166,23 @@ fn xiaohongshu_prompt_accepts_text_without_media() {
     assert!(prompt.contains("Exactly one tag must have `r/community` form"));
     assert!(prompt.contains("reddit_destination_required"));
     assert!(prompt.contains("\"platform\": \"reddit\""));
+
+    let mut v2ex_task = wechat_task;
+    v2ex_task["type"] = json!("release_v2ex");
+    v2ex_task["capability"] = json!("release.v2ex");
+    v2ex_task["input"]["snapshot"] = json!({
+        "destination": {
+            "kind": "v2ex_node",
+            "nodeName": "create",
+            "nodeTitle": "分享创造"
+        }
+    });
+    let prompt =
+        build_v2ex_publishing_prompt(&paths, &v2ex_task, &workspace).expect("V2EX prompt");
+    assert!(prompt.contains("https://www.v2ex.com/new/create"));
+    assert!(prompt.contains("Destination node: `create` (分享创造)"));
+    assert!(prompt.contains("body has already had embedded images removed"));
+    assert!(prompt.contains("v2ex_media_unsupported"));
+    assert!(prompt.contains("newly created V2EX `/t/<id>` topic URL"));
+    assert!(prompt.contains("\"platform\": \"v2ex\""));
 }

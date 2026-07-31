@@ -206,8 +206,9 @@ describe("manual task instructions", () => {
       channel: "release",
     })
     expect(release).toContain("myopenpanels task handoff start")
-    expect(release).not.toContain("scripts/myopenpanels-dev task handoff start")
-    expect(release).toContain("不要运行仓库内的 scripts/myopenpanels-dev")
+    expect(release).not.toContain("scripts/myopenpanels-dev")
+    expect(release).not.toContain("开发版")
+    expect(release).toContain("使用已安装的 myopenpanels")
   })
 
   it("folds conversion prerequisites into one ready Wiki mutation scope", () => {

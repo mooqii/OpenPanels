@@ -13,10 +13,12 @@ import {
 export function TaskDetail({
   apiBase,
   buildInfo,
+  onTaskCreated,
   task,
 }: {
   apiBase: string
   buildInfo?: MyOpenPanelsBuildInfo
+  onTaskCreated?: (taskId: string) => void
   task: ProjectTask
 }) {
   const { locale, t } = useMyOpenPanelsI18n()
@@ -54,7 +56,12 @@ export function TaskDetail({
           {t`Lease until`} {formatTaskTime(task.lease.expiresAt, locale)}
         </span>
       ) : null}
-      <TaskRetryControl apiBase={apiBase} buildInfo={buildInfo} task={task} />
+      <TaskRetryControl
+        apiBase={apiBase}
+        buildInfo={buildInfo}
+        onTaskCreated={onTaskCreated}
+        task={task}
+      />
       <code>{task.id}</code>
       {task.dependencies?.length ? (
         <div className="op-agent-task__command">

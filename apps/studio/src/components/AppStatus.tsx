@@ -1,8 +1,42 @@
 import { Button } from "@heroui/react"
-import { ExternalLink } from "lucide-react"
+import { ExternalLink, RefreshCw } from "lucide-react"
+import { Component, type ErrorInfo, type ReactNode } from "react"
 import { apiFetch } from "../lib/api"
 import { externalBrowserPath } from "../lib/browser-context"
 import type { AgentOperation, MyOpenPanelsTransport } from "../types"
+
+export class AppErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("MyOpenPanels failed to render", error, info.componentStack)
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children
+    return (
+      <main className="design-shell design-shell--status">
+        <div className="op-boot-status" role="alert">
+          <div>Studio 页面渲染失败</div>
+          <div className="op-boot-status__detail">
+            {this.state.error.message}
+          </div>
+          <Button onPress={() => window.location.reload()} variant="secondary">
+            <RefreshCw size={15} />
+            重新加载
+          </Button>
+        </div>
+      </main>
+    )
+  }
+}
 
 export function OpenBrowserPrompt({
   label,

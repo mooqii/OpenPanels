@@ -3,6 +3,7 @@ import { Blocks, Monitor, Plus, RefreshCw, Search, X } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { type MyOpenPanelsLocale, useMyOpenPanelsI18n } from "../../canvas"
 import { apiJson } from "../../lib/api"
+import { STABLE_BACKDROP_VARIANT } from "../../lib/overlay-safety"
 import type {
   DeviceSkillGroup,
   ManagedProjectSkill,
@@ -544,7 +545,7 @@ export function SkillManagerDialog({
         }
         isOpen={isOpen}
         onOpenChange={onOpenChange}
-        variant="blur"
+        variant={STABLE_BACKDROP_VARIANT}
       >
         <Modal.Container size="cover">
           <Modal.Dialog className="op-skill-manager">

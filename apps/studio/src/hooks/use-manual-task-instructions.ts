@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  type ManualAgentScopeCandidate,
   manualAgentScopeCandidates,
   taskExecutionScopeKey,
 } from "../components/trace/trace-utils"
@@ -38,8 +39,8 @@ export function useManualTaskInstructions({
   const [queue, setQueue] = useState<ManualTaskInstructionRequest[]>([])
   const [awaitingCheck, setAwaitingCheck] = useState<TaskExecutionScope[]>([])
   const observedRef = useRef<{
-    ids: Set<string>
     projectId: string
+    readyKeys: Set<string>
   } | null>(null)
   const candidates = useMemo(() => manualAgentScopeCandidates(tasks), [tasks])
   const taskIdsKey = useMemo(
@@ -53,6 +54,41 @@ export function useManualTaskInstructions({
   const checkKey = `${taskIdsKey}:${refreshVersion}`
   const hasUsableCli =
     availability?.checkKey === checkKey ? availability.hasUsableCli : null
+  const openWhenAgentCliUnavailable = useCallback(
+    (scope: TaskExecutionScope) => {
+      switch (manualTaskInstructionAction(hasUsableCli)) {
+        case "queue":
+          setQueue((current) =>
+            appendUniqueRequests(current, [
+              { requiresAgentMessage: false, scope },
+            ])
+          )
+          break
+        case "await":
+          setAwaitingCheck((current) => appendUniqueScopes(current, [scope]))
+          break
+        default:
+          break
+      }
+    },
+    [hasUsableCli]
+  )
+  const openRequiredAgentMessage = useCallback(
+    (scope: TaskExecutionScope) => {
+      const observed = observedRef.current
+      if (observed?.projectId === projectId) {
+        markManualAgentScopeObserved(observed.readyKeys, scope)
+      }
+      const scopeKey = taskExecutionScopeKey(scope)
+      setAwaitingCheck((current) =>
+        current.filter(
+          (candidate) => taskExecutionScopeKey(candidate) !== scopeKey
+        )
+      )
+      setQueue([{ requiresAgentMessage: true, scope }])
+    },
+    [projectId]
+  )
 
   useEffect(() => {
     const onSettingsChanged = () => setRefreshVersion((version) => version + 1)
@@ -106,20 +142,25 @@ export function useManualTaskInstructions({
     const observed = observedRef.current
     if (!observed || observed.projectId !== projectId) {
       observedRef.current = {
-        ids: new Set(candidates.map((candidate) => candidate.key)),
         projectId,
+        readyKeys: new Set(
+          candidates
+            .filter((candidate) => candidate.isReady)
+            .map((candidate) => candidate.key)
+        ),
       }
       setQueue([])
       setAwaitingCheck([])
       return
     }
 
-    const newScopes = candidates
-      .filter(
-        (candidate) => candidate.isReady && !observed.ids.has(candidate.key)
-      )
-      .map((candidate) => candidate.scope)
-    observed.ids = new Set(candidates.map((candidate) => candidate.key))
+    const newScopes = unobservedReadyManualAgentScopes(
+      candidates,
+      observed.readyKeys
+    )
+    for (const candidate of candidates) {
+      if (candidate.isReady) observed.readyKeys.add(candidate.key)
+    }
     if (!newScopes.length) return
     setAwaitingCheck((current) => appendUniqueScopes(current, newScopes))
   }, [candidates, projectId])
@@ -156,11 +197,8 @@ export function useManualTaskInstructions({
         setQueue([{ requiresAgentMessage: false, scope }]),
       []
     ),
-    openRequiredAgentMessage: useCallback(
-      (scope: TaskExecutionScope) =>
-        setQueue([{ requiresAgentMessage: true, scope }]),
-      []
-    ),
+    openRequiredAgentMessage,
+    openWhenAgentCliUnavailable,
     requiresAgentMessage: queue[0]?.requiresAgentMessage ?? false,
     scope: queue[0]?.scope ?? null,
   }
@@ -178,6 +216,31 @@ export function keepRequiredAgentMessageRequests(
   requests: ManualTaskInstructionRequest[]
 ): ManualTaskInstructionRequest[] {
   return requests.filter((request) => request.requiresAgentMessage)
+}
+
+export function manualTaskInstructionAction(
+  hasUsableCli: boolean | null
+): "await" | "ignore" | "queue" {
+  if (hasUsableCli === null) return "await"
+  return hasUsableCli ? "ignore" : "queue"
+}
+
+export function markManualAgentScopeObserved(
+  observedReadyKeys: Set<string>,
+  scope: TaskExecutionScope
+) {
+  observedReadyKeys.add(taskExecutionScopeKey(scope))
+}
+
+export function unobservedReadyManualAgentScopes(
+  candidates: ManualAgentScopeCandidate[],
+  observedReadyKeys: ReadonlySet<string>
+): TaskExecutionScope[] {
+  return candidates
+    .filter(
+      (candidate) => candidate.isReady && !observedReadyKeys.has(candidate.key)
+    )
+    .map((candidate) => candidate.scope)
 }
 
 function appendUniqueRequests(

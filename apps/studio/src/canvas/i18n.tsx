@@ -472,8 +472,19 @@ const zhCNMessages: Record<string, string> = {
   "Publishing now": "发布中",
   "Publishing error": "发布错误",
   "Publishing status unknown": "状态未知",
+  "Choose a V2EX node": "选择 V2EX 发布节点",
+  "The selected node is fixed for this publishing attempt.":
+    "所选节点会固定用于本次发布。",
+  "Images will not be published": "图片不会发布",
+  "Could not load V2EX nodes": "无法加载 V2EX 节点",
+  "Publishing node": "发布节点",
+  "Search node name or short name": "搜索节点名称或短名称",
+  "Loading V2EX nodes": "正在加载 V2EX 节点",
+  topics: "主题",
+  Retry: "重试",
+  Continue: "继续",
   "Configure WeChat API": "配置微信公众号 API",
-  "WeChat Official Account (API)": "公众号（API）",
+  "WeChat Official Account (API)": "公众号草稿（API）",
   "Validate the account before creating a draft.":
     "创建草稿前，请先完成账号与网络配置校验。",
   "Checking configuration": "正在检查配置",
@@ -628,8 +639,8 @@ const zhCNMessages: Record<string, string> = {
   "A layout task is in progress. Cancel it or wait for it to finish before editing.":
     "当前有一个排版中任务，取消或完成后才可以继续编辑。",
   "Rich text content is saved automatically.": "富文本内容将自动保存。",
-  "Open a document from the library and insert it here.":
-    "点击左侧文档预览，并一键填充到内容详情。",
+  "Write here, or open a document from the library and insert it.":
+    "可直接在此输入，也可从左侧文档库插入内容。",
   Dismiss: "关闭提示",
   "Text style": "文本样式",
   Paragraph: "正文",

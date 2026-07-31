@@ -22,6 +22,7 @@ import {
   groupTypesettingAssets,
   isInsertableTypesettingDocument,
   TYPESETTING_ASSET_DRAG_TYPE,
+  typesettingPublicationThumbnail,
 } from "../../lib/typesetting"
 import type {
   MyDocument,
@@ -456,61 +457,63 @@ export function PublicationList({
     <>
       {publications.length ? (
         <div className="op-typesetting-publication-list">
-          {publications.map((publication) => (
-            <button
-              className="op-typesetting-publication-row"
-              data-selected={
-                publication.id === activePublicationId || undefined
-              }
-              key={publication.id}
-              onClick={() => onOpen(publication)}
-              type="button"
-            >
-              <span className="op-typesetting-publication-row__cover">
-                {publication.covers[0] ? (
-                  <img
-                    alt=""
-                    src={apiUrl(
-                      transport.apiBase,
-                      publication.covers[0].src
-                    ).toString()}
-                  />
-                ) : (
-                  <ImageIcon size={16} />
-                )}
-              </span>
-              <span className="op-typesetting-publication-row__text">
-                <span className="op-typesetting-publication-row__title">
-                  <strong>
-                    {publication.title.trim() || t`Untitled publication`}
-                  </strong>
-                  {renderStatus ? (
-                    <span className="op-typesetting-publication-row__statuses">
-                      {renderStatus(publication)}
-                    </span>
-                  ) : null}
+          {publications.map((publication) => {
+            const thumbnail = typesettingPublicationThumbnail(
+              publication.covers
+            )
+            return (
+              <button
+                className="op-typesetting-publication-row"
+                data-selected={
+                  publication.id === activePublicationId || undefined
+                }
+                key={publication.id}
+                onClick={() => onOpen(publication)}
+                type="button"
+              >
+                <span className="op-typesetting-publication-row__cover">
+                  {thumbnail ? (
+                    <img
+                      alt=""
+                      src={apiUrl(transport.apiBase, thumbnail.src).toString()}
+                    />
+                  ) : (
+                    <ImageIcon size={16} />
+                  )}
                 </span>
-                <small className="op-typesetting-publication-row__meta">
-                  <span>
-                    {publication.covers.length.toLocaleString(locale)}{" "}
-                    {publication.covers.length === 1
-                      ? t`cover image`
-                      : t`cover images`}
+                <span className="op-typesetting-publication-row__text">
+                  <span className="op-typesetting-publication-row__title">
+                    <strong>
+                      {publication.title.trim() || t`Untitled publication`}
+                    </strong>
+                    {renderStatus ? (
+                      <span className="op-typesetting-publication-row__statuses">
+                        {renderStatus(publication)}
+                      </span>
+                    ) : null}
                   </span>
-                  <span>
-                    {countTypesettingCharacters(
-                      publication.content
-                    ).toLocaleString(locale)}{" "}
-                    {t`characters`}
-                  </span>
-                  <span>
-                    {formatRelativeOrDate(publication.updatedAt, locale, now)}
-                  </span>
-                  {renderMeta?.(publication)}
-                </small>
-              </span>
-            </button>
-          ))}
+                  <small className="op-typesetting-publication-row__meta">
+                    <span>
+                      {publication.covers.length.toLocaleString(locale)}{" "}
+                      {publication.covers.length === 1
+                        ? t`cover image`
+                        : t`cover images`}
+                    </span>
+                    <span>
+                      {countTypesettingCharacters(
+                        publication.content
+                      ).toLocaleString(locale)}{" "}
+                      {t`characters`}
+                    </span>
+                    <span>
+                      {formatRelativeOrDate(publication.updatedAt, locale, now)}
+                    </span>
+                    {renderMeta?.(publication)}
+                  </small>
+                </span>
+              </button>
+            )
+          })}
         </div>
       ) : (
         <div className="op-typesetting-list-empty">

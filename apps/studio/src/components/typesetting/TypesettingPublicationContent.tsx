@@ -70,7 +70,7 @@ export function PublicationContentSection({
           <div className="op-typesetting-editor__body">
             {editor && isTypesettingDocumentEmpty(editor.getJSON()) ? (
               <div className="op-typesetting-editor__empty">
-                <span>{t`Open a document from the library and insert it here.`}</span>
+                <span>{t`Write here, or open a document from the library and insert it.`}</span>
               </div>
             ) : null}
             <EditorContent editor={editor} />

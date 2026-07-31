@@ -106,8 +106,25 @@ mod skill_management_tests {
         }));
         assert!(modules.iter().any(|module| {
             module["kind"] == "release"
+                && module["skills"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|skill| {
+                        skill["id"] == "release-bilibili"
+                            && skill["name"] == "Bilibili Draft (Browser)"
+                    })
+        }));
+        assert!(modules.iter().any(|module| {
+            module["kind"] == "release"
                 && module["skills"].as_array().unwrap().iter().any(|skill| {
                     skill["id"] == "release-wechat-official-account"
+                })
+        }));
+        assert!(modules.iter().any(|module| {
+            module["kind"] == "release"
+                && module["skills"].as_array().unwrap().iter().any(|skill| {
+                    skill["id"] == "release-v2ex" && skill["name"] == "V2EX (Browser)"
                 })
         }));
         let all = payload["modules"]

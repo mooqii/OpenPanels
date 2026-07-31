@@ -574,6 +574,12 @@
           },
           {
             "queue": "release",
+            "taskType": "release_bilibili",
+            "capability": "release.bilibili",
+            "handlerKey": "handler.release.bilibili"
+          },
+          {
+            "queue": "release",
             "taskType": "release_wechat_official_account",
             "capability": "release.wechat_official_account",
             "handlerKey": "handler.release.wechat-official-account"
@@ -589,6 +595,12 @@
             "taskType": "release_reddit",
             "capability": "release.reddit",
             "handlerKey": "handler.release.reddit"
+          },
+          {
+            "queue": "release",
+            "taskType": "release_v2ex",
+            "capability": "release.v2ex",
+            "handlerKey": "handler.release.v2ex"
           }
         ]
       }

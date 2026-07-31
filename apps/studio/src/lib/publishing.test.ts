@@ -9,6 +9,7 @@ import {
   publishingAttemptStatus,
   publishingPublicationSummary,
   publishingSourceHasContent,
+  typesettingContentImageCount,
   typesettingContentToPlainText,
 } from "./publishing"
 
@@ -62,6 +63,24 @@ describe("publishing helpers", () => {
     expect(publishingSourceHasContent("Body", 0)).toBe(true)
     expect(publishingSourceHasContent("", 1)).toBe(true)
     expect(publishingSourceHasContent("  ", 0)).toBe(false)
+  })
+
+  it("counts images that text-only publishing omits", () => {
+    expect(
+      typesettingContentImageCount({
+        type: "doc",
+        content: [
+          { type: "image", attrs: { src: "/one.png" } },
+          {
+            type: "paragraph",
+            content: [
+              { type: "text", text: "Body" },
+              { type: "image", attrs: { src: "/two.png" } },
+            ],
+          },
+        ],
+      })
+    ).toBe(2)
   })
 
   it("preserves visible structure and excludes inline images", () => {

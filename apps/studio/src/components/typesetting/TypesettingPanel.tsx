@@ -21,6 +21,7 @@ import type {
   MyDocument,
   MyOpenPanelsTransport,
   ProjectTask,
+  TaskExecutionScope,
   TypesettingPublication,
   TypesettingState,
   WikiOriginalPreviewDocument,
@@ -56,6 +57,7 @@ export function TypesettingPanel({
   onStateSaved,
   onManageSkillModule,
   onOpenAgentTasks,
+  onOpenManualTask,
   panelId,
   projectId,
   revision,
@@ -67,6 +69,7 @@ export function TypesettingPanel({
   onManageSkillModule: (moduleKind: string) => void
   onStateSaved: (state: TypesettingState, revision: number) => void
   onOpenAgentTasks: (taskIds: string[]) => void
+  onOpenManualTask: (scope: TaskExecutionScope) => void
   panelId: string
   projectId: string
   revision: number
@@ -511,6 +514,7 @@ export function TypesettingPanel({
                   onManageSkillModule={onManageSkillModule}
                   onOpenAgentTasks={onOpenAgentTasks}
                   onOpenLibrary={() => setIsLibraryOpen(true)}
+                  onOpenManualTask={onOpenManualTask}
                   onPreview={() => setView("preview")}
                   onRetrySave={() => flushSave().catch(() => undefined)}
                   onUpdate={(updater) =>

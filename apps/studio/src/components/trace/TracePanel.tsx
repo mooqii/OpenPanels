@@ -69,6 +69,8 @@ export function AgentPanel({
   onClose,
   onOpenModelSettings,
   onOpenManualTask,
+  onOpenManualTaskWhenCliUnavailable,
+  onTasksDeleted,
   onTabChange,
   onTaskFilterChange,
   taskFilter,
@@ -85,6 +87,8 @@ export function AgentPanel({
   onClose: () => void
   onOpenModelSettings: () => void
   onOpenManualTask: (scope: TaskExecutionScope) => void
+  onOpenManualTaskWhenCliUnavailable?: (scope: TaskExecutionScope) => void
+  onTasksDeleted?: () => void
   onTabChange: (tab: AgentPanelTab) => void
   onTaskFilterChange: (filter: TaskFilter) => void
   taskFilter: TaskFilter
@@ -229,7 +233,11 @@ export function AgentPanel({
             onExpandTask={setExpandedTaskId}
             onFilterChange={onTaskFilterChange}
             onOpenManualTask={onOpenManualTask}
+            onOpenManualTaskWhenCliUnavailable={
+              onOpenManualTaskWhenCliUnavailable
+            }
             onOpenModelSettings={onOpenModelSettings}
+            onTasksDeleted={onTasksDeleted}
             tasks={tasks}
             workerStatus={workerStatus}
           />
@@ -313,6 +321,8 @@ function TaskList({
   onFilterChange,
   onOpenModelSettings,
   onOpenManualTask,
+  onOpenManualTaskWhenCliUnavailable,
+  onTasksDeleted,
   tasks,
   workerStatus,
 }: {
@@ -328,6 +338,8 @@ function TaskList({
   onFilterChange: (filter: TaskFilter) => void
   onOpenModelSettings: () => void
   onOpenManualTask: (scope: TaskExecutionScope) => void
+  onOpenManualTaskWhenCliUnavailable?: (scope: TaskExecutionScope) => void
+  onTasksDeleted?: () => void
   tasks: ProjectTask[]
   workerStatus?: AgentWorkerStatus
 }) {
@@ -447,6 +459,7 @@ function TaskList({
       if (expandedTaskId && deletedTaskIds.includes(expandedTaskId)) {
         onExpandTask(null)
       }
+      onTasksDeleted?.()
       return true
     } catch (cause) {
       setArchiveError(t(formatTaskError(cause)))
@@ -458,7 +471,9 @@ function TaskList({
 
   const confirmTaskDeletion = async () => {
     if (!taskPendingDeletion) return
-    if (await deleteTask(taskPendingDeletion)) setTaskPendingDeletion(null)
+    const task = taskPendingDeletion
+    setTaskPendingDeletion(null)
+    await deleteTask(task)
   }
 
   if (!visibleTasks.length) {
@@ -647,6 +662,12 @@ function TaskList({
                   <TaskDetail
                     apiBase={apiBase}
                     buildInfo={buildInfo}
+                    onTaskCreated={(taskId) =>
+                      onOpenManualTaskWhenCliUnavailable?.({
+                        kind: "exact-task",
+                        taskId,
+                      })
+                    }
                     task={task}
                   />
                 ) : null}

@@ -59,7 +59,11 @@ pub fn discover_device_skills(paths: &MyOpenPanelsPaths) -> Result<Value, CliErr
     let mut groups = BTreeMap::<String, DeviceSkillGroup>::new();
     for (canonical, skill) in discovered {
         let key = normalized_device_skill_name(&skill.name);
-        let content_hash = skill_package_hash(&canonical)?;
+        let content_hash = match skill_package_hash(&canonical) {
+            Ok(content_hash) => content_hash,
+            Err(error) if error.code() == Some("skill_package_too_large") => continue,
+            Err(error) => return Err(error),
+        };
         let installed_skill = installed.get(&key).cloned();
         let comparison = installed_skill
             .as_ref()

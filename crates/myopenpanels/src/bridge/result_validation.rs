@@ -700,6 +700,17 @@ fn build_xiaohongshu_publishing_output_plan(
     build_publishing_output_plan(paths, task, workspace, "Xiaohongshu publishing", "xiaohongshu")
 }
 
+fn build_bilibili_publishing_output_plan(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    _attempt_id: &str,
+    _execution_generation: i64,
+    _execution_unit: &Value,
+) -> Result<TaskOutputPlanDraft, CliError> {
+    build_publishing_output_plan(paths, task, workspace, "Bilibili draft", "bilibili")
+}
+
 fn build_wechat_official_account_publishing_output_plan(
     paths: &MyOpenPanelsPaths,
     task: &Value,
@@ -737,6 +748,17 @@ fn build_reddit_publishing_output_plan(
     _execution_unit: &Value,
 ) -> Result<TaskOutputPlanDraft, CliError> {
     build_publishing_output_plan(paths, task, workspace, "Reddit publishing", "reddit")
+}
+
+fn build_v2ex_publishing_output_plan(
+    paths: &MyOpenPanelsPaths,
+    task: &Value,
+    workspace: &Path,
+    _attempt_id: &str,
+    _execution_generation: i64,
+    _execution_unit: &Value,
+) -> Result<TaskOutputPlanDraft, CliError> {
+    build_publishing_output_plan(paths, task, workspace, "V2EX publishing", "v2ex")
 }
 
 fn build_publishing_output_plan(
@@ -796,6 +818,32 @@ fn build_publishing_output_plan(
                 "A published result requires an observed publishedAt value.",
             ));
         }
+        if platform == "xiaohongshu"
+            && result
+                .get("remoteUrl")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+        {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "A published Xiaohongshu result requires a note or Note Management URL.",
+            ));
+        }
+        if platform == "v2ex"
+            && result
+                .get("remoteUrl")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+        {
+            return Err(CliError::with_code(
+                "invalid_output",
+                "A published V2EX result requires the observed topic URL.",
+            ));
+        }
     } else if result
         .get("reasonCode")
         .and_then(Value::as_str)
@@ -822,9 +870,22 @@ fn build_publishing_output_plan(
                 "xiaohongshu" => {
                     host == "xiaohongshu.com" || host.ends_with(".xiaohongshu.com")
                 }
+                "bilibili" => host == "bilibili.com" || host.ends_with(".bilibili.com"),
                 "wechat_official_account" => host == "mp.weixin.qq.com",
                 "x" => host == "x.com" || host.ends_with(".x.com"),
                 "reddit" => host == "reddit.com" || host.ends_with(".reddit.com"),
+                "v2ex" => {
+                    (host == "v2ex.com" || host.ends_with(".v2ex.com"))
+                        && remote_url
+                            .strip_prefix("https://")
+                            .and_then(|rest| rest.split_once('/'))
+                            .and_then(|(_, path)| path.strip_prefix("t/"))
+                            .and_then(|path| path.split(['/', '?', '#']).next())
+                            .is_some_and(|topic_id| {
+                                !topic_id.is_empty()
+                                    && topic_id.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                }
                 _ => false,
             };
             if !allowed {

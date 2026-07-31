@@ -57,6 +57,7 @@ import {
 } from "./lib/api"
 import {
   type ActivePanelResponse,
+  liveProjectChangeAction,
   mergeActivePanelResponse,
   mergeLiveProjectBootstrap,
   sameSelectedShapeIds,
@@ -394,15 +395,18 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           panelId?: string | null
           projectId?: string | null
         }
-        if (change.kind === "panel_selection") {
-          syncSelection(change)
-          return
+        switch (liveProjectChangeAction(change.kind)) {
+          case "selection":
+            syncSelection(change)
+            return
+          case "focus":
+            syncFocus()
+            return
+          case "ignore":
+            return
+          default:
+            syncProject()
         }
-        if (change.kind === "focus") {
-          syncFocus()
-          return
-        }
-        syncProject()
       })
       source.addEventListener("open", () => {
         window.dispatchEvent(new Event("myopenpanels:runtime-check"))
@@ -898,6 +902,9 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
               skillManager.open("add", moduleKind)
             }
             onOpenAgentTasks={(taskIds) => openAgentTaskList("all", taskIds)}
+            onOpenManualTask={
+              manualTaskInstructions.openWhenAgentCliUnavailable
+            }
             onStateSaved={handleTypesettingStateSaved}
             panelId={appState.panel.id}
             projectId={appState.project.id}
@@ -916,6 +923,9 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
             }
             onOpenAgentTasks={(taskIds) => openAgentTaskList("all", taskIds)}
             onOpenManualTask={manualTaskInstructions.openRequiredAgentMessage}
+            onOpenManualTaskWhenCliUnavailable={
+              manualTaskInstructions.openWhenAgentCliUnavailable
+            }
             onStateSaved={handlePublishingStateSaved}
             panelId={appState.panel.id}
             projectId={appState.project.id}
@@ -1015,12 +1025,16 @@ export function App({ transport }: { transport: MyOpenPanelsTransport }) {
           setIsTraceOpen(false)
         }}
         onOpenManualTask={manualTaskInstructions.open}
+        onOpenManualTaskWhenCliUnavailable={
+          manualTaskInstructions.openWhenAgentCliUnavailable
+        }
         onOpenModelSettings={() => setIsModelSettingsOpen(true)}
         onTabChange={setAgentPanelTab}
         onTaskFilterChange={(filter) => {
           setFocusedAgentTaskIds(null)
           setAgentTaskFilter(filter)
         }}
+        onTasksDeleted={manualTaskInstructions.dismissAll}
         taskFilter={agentTaskFilter}
         tasks={appState.tasks ?? []}
         transport={transport}

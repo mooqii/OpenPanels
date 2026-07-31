@@ -28,15 +28,19 @@ describe("Agent instructions", () => {
   it("keeps release instructions on the installed CLI", () => {
     const runtime = { channel: "release" as const }
     expect(agentCliExecutable(runtime)).toBe("myopenpanels")
-    expect(agentCliBoundaryInstruction(runtime, "en")).toContain(
-      "do not run the checkout-local scripts/myopenpanels-dev"
+    expect(agentCliBoundaryInstruction(runtime, "en")).toBe(
+      "Use the installed myopenpanels."
+    )
+    expect(agentCliBoundaryInstruction(runtime, "zh-CN")).toBe(
+      "使用已安装的 myopenpanels。"
     )
     expect(agentRecoveryInstruction(runtime)).toContain(
       "myopenpanels update install"
     )
-    expect(agentRecoveryInstruction(runtime)).toContain(
-      "不要运行 scripts/myopenpanels-dev"
+    expect(agentRecoveryInstruction(runtime)).not.toContain(
+      "scripts/myopenpanels-dev"
     )
+    expect(agentRecoveryInstruction(runtime)).not.toContain("开发版")
   })
 
   it("quotes an exact CLI path with spaces", () => {

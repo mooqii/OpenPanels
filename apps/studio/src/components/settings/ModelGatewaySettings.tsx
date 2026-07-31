@@ -22,6 +22,7 @@ import { useEffect, useRef, useState } from "react"
 import { useMyOpenPanelsI18n } from "../../canvas"
 import { MODEL_GATEWAY_SETTINGS_CHANGED_EVENT } from "../../constants"
 import { apiJson, apiJsonWithTimeout } from "../../lib/api"
+import { STABLE_BACKDROP_VARIANT } from "../../lib/overlay-safety"
 import type {
   LocalCliConnectionTestResult,
   LocalCliInfo,
@@ -437,7 +438,11 @@ export function ModelGatewaySettingsDialog({
   }
 
   return (
-    <Modal.Backdrop isOpen={isOpen} onOpenChange={onOpenChange} variant="blur">
+    <Modal.Backdrop
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
+      variant={STABLE_BACKDROP_VARIANT}
+    >
       <Modal.Container size="lg">
         <Modal.Dialog className="op-model-settings">
           <Modal.CloseTrigger aria-label={t`Close`} />

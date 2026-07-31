@@ -10,10 +10,12 @@ import { formatTaskError, retryTaskAgentMessage } from "./trace-utils"
 export function TaskRetryControl({
   apiBase,
   buildInfo,
+  onTaskCreated,
   task,
 }: {
   apiBase: string
   buildInfo?: MyOpenPanelsBuildInfo
+  onTaskCreated?: (taskId: string) => void
   task: ProjectTask
 }) {
   const { locale, t } = useMyOpenPanelsI18n()
@@ -54,6 +56,7 @@ export function TaskRetryControl({
         throw new Error("Task retry returned no new Task id.")
       }
       setRetryTaskId(nextTaskId)
+      onTaskCreated?.(nextTaskId)
     } catch (cause) {
       setError(t(formatTaskError(cause)))
     } finally {
